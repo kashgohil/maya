@@ -1,0 +1,43 @@
+# Build outputs
+build/
+bin/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# C++ specific
+*.a
+*.lib
+*.pdb
+*.ilk
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+compile_commands.json
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Assets (large files)
+assets/*.bin
+assets/*.glb
+assets/*.fbx
+
+# Temporary files
+*.tmp
+*.log
