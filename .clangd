@@ -1,0 +1,10 @@
+CompileFlags:
+  CompilationDatabase: "build"
+  Add: [-Wall, -Wextra, -std=c++20]
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+
+Index:
+  Background: Build
