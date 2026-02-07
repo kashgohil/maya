@@ -1,10 +1,16 @@
 #include "maya/core/engine.hpp"
 #include "maya/core/file_system.hpp"
 #include "maya/rhi/vertex.hpp"
+#include "maya/math/matrix.hpp"
+#include <GLFW/glfw3.h> // For glfwGetTime
 #include <iostream>
 #include <vector>
 
 namespace maya {
+
+struct UniformData {
+    math::Mat4 model_matrix;
+};
 
 Engine::Engine() = default;
 Engine::~Engine() {
@@ -33,7 +39,7 @@ bool Engine::initialize() {
         return false;
     }
 
-    // Define triangle vertices using math library
+    // Define triangle vertices
     std::vector<Vertex> vertices = {
         { math::Vec3(0.0f,  0.5f, 0.0f), math::Vec4(1.0f, 0.0f, 0.0f, 1.0f) },
         { math::Vec3(-0.5f, -0.5f, 0.0f), math::Vec4(0.0f, 1.0f, 0.0f, 1.0f) },
@@ -44,6 +50,11 @@ bool Engine::initialize() {
         return false;
     }
 
+    // Create uniform buffer
+    if (!m_graphics_device->create_uniform_buffer(sizeof(UniformData))) {
+        return false;
+    }
+
     m_is_running = true;
     return true;
 }
@@ -51,6 +62,14 @@ bool Engine::initialize() {
 void Engine::run() {
     while (m_is_running && !m_window->should_close()) {
         m_window->poll_events();
+
+        // Animate!
+        float time = static_cast<float>(glfwGetTime());
+        UniformData uniforms;
+        // Rotate around Z axis (spinning)
+        uniforms.model_matrix = math::Mat4::rotate_z(time);
+
+        m_graphics_device->update_uniform_buffer(&uniforms, sizeof(UniformData));
 
         m_graphics_device->begin_frame();
         m_graphics_device->draw_triangle();
