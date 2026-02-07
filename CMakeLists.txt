@@ -62,5 +62,5 @@ add_executable(maya src/main.cpp)
 target_link_libraries(maya PRIVATE MayaEngine)
 
 # Tests
-add_executable(maya_tests tests/math_tests.cpp)
+add_executable(maya_tests tests/math_tests.cpp tests/rhi_tests.cpp)
 target_link_libraries(maya_tests PRIVATE MayaEngine Catch2::Catch2WithMain)

@@ -19,6 +19,43 @@ bool Engine::initialize() {
         return false;
     }
 
+    // Temporary: Hardcoded triangle shader
+    std::string shader_source = R"(
+        #include <metal_stdlib>
+        using namespace metal;
+
+        struct VertexOut {
+            float4 position [[position]];
+            float4 color;
+        };
+
+        vertex VertexOut vertexMain(uint vertexID [[vertex_id]]) {
+            float2 positions[3] = {
+                float2(0.0, 0.5),
+                float2(-0.5, -0.5),
+                float2(0.5, -0.5)
+            };
+            float4 colors[3] = {
+                float4(1.0, 0.0, 0.0, 1.0),
+                float4(0.0, 1.0, 0.0, 1.0),
+                float4(0.0, 0.0, 1.0, 1.0)
+            };
+
+            VertexOut out;
+            out.position = float4(positions[vertexID], 0.0, 1.0);
+            out.color = colors[vertexID];
+            return out;
+        }
+
+        fragment float4 fragmentMain(VertexOut in [[stage_in]]) {
+            return in.color;
+        }
+    )";
+
+    if (!m_graphics_device->create_pipeline(shader_source)) {
+        return false;
+    }
+
     m_is_running = true;
     return true;
 }
@@ -28,7 +65,7 @@ void Engine::run() {
         m_window->poll_events();
 
         m_graphics_device->begin_frame();
-        // Render logic here
+        m_graphics_device->draw_triangle();
         m_graphics_device->end_frame();
     }
 }
