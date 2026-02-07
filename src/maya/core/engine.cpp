@@ -1,5 +1,8 @@
 #include "maya/core/engine.hpp"
+#include "maya/core/file_system.hpp"
+#include "maya/rhi/vertex.hpp"
 #include <iostream>
+#include <vector>
 
 namespace maya {
 
@@ -19,40 +22,25 @@ bool Engine::initialize() {
         return false;
     }
 
-    // Temporary: Hardcoded triangle shader
-    std::string shader_source = R"(
-        #include <metal_stdlib>
-        using namespace metal;
-
-        struct VertexOut {
-            float4 position [[position]];
-            float4 color;
-        };
-
-        vertex VertexOut vertexMain(uint vertexID [[vertex_id]]) {
-            float2 positions[3] = {
-                float2(0.0, 0.5),
-                float2(-0.5, -0.5),
-                float2(0.5, -0.5)
-            };
-            float4 colors[3] = {
-                float4(1.0, 0.0, 0.0, 1.0),
-                float4(0.0, 1.0, 0.0, 1.0),
-                float4(0.0, 0.0, 1.0, 1.0)
-            };
-
-            VertexOut out;
-            out.position = float4(positions[vertexID], 0.0, 1.0);
-            out.color = colors[vertexID];
-            return out;
-        }
-
-        fragment float4 fragmentMain(VertexOut in [[stage_in]]) {
-            return in.color;
-        }
-    )";
+    // Load shader from file
+    std::string shader_source = FileSystem::read_text("../src/maya/rhi/metal/triangle.metal");
+    if (shader_source.empty()) {
+        std::cerr << "Failed to load shader file!" << std::endl;
+        return false;
+    }
 
     if (!m_graphics_device->create_pipeline(shader_source)) {
+        return false;
+    }
+
+    // Define triangle vertices using math library
+    std::vector<Vertex> vertices = {
+        { math::Vec3(0.0f,  0.5f, 0.0f), math::Vec4(1.0f, 0.0f, 0.0f, 1.0f) },
+        { math::Vec3(-0.5f, -0.5f, 0.0f), math::Vec4(0.0f, 1.0f, 0.0f, 1.0f) },
+        { math::Vec3(0.5f,  -0.5f, 0.0f), math::Vec4(0.0f, 0.0f, 1.0f, 1.0f) }
+    };
+
+    if (!m_graphics_device->create_vertex_buffer(vertices.data(), vertices.size() * sizeof(Vertex))) {
         return false;
     }
 
