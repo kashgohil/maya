@@ -1,3 +1,12 @@
+If:
+  PathMatch: .*\.metal
+CompileFlags:
+  # Treat as C++ to get highlighting/completion, but ignore the errors
+  Add: [-xc++, -Wno-unknown-pragmas, -Wno-unused-variable]
+Diagnostics:
+  Suppress: ["pp_file_not_found", "unknown_typename", "unknown_typename_suggest", "expected_unqualified_id", "expected_namespace_name", "invalid_token_after_toplevel_declarator"]
+
+---
 CompileFlags:
   CompilationDatabase: "build"
   Add: [-Wall, -Wextra, -std=c++20]
