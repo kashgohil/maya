@@ -38,6 +38,7 @@ bool MetalDevice::initialize(void* native_window_handle) {
 }
 
 void MetalDevice::shutdown() {
+    m_vertex_buffer = nil;
     m_pipeline_state = nil;
     m_current_command_buffer = nil;
     m_layer = nil;
@@ -73,12 +74,17 @@ bool MetalDevice::create_pipeline(const std::string& shader_source) {
     return true;
 }
 
+bool MetalDevice::create_vertex_buffer(const void* data, size_t size) {
+    m_vertex_buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
+    return m_vertex_buffer != nil;
+}
+
 void MetalDevice::begin_frame() {
     m_current_command_buffer = [m_command_queue commandBuffer];
 }
 
 void MetalDevice::draw_triangle() {
-    if (!m_layer || !m_pipeline_state) return;
+    if (!m_layer || !m_pipeline_state || !m_vertex_buffer) return;
     id<CAMetalDrawable> drawable = [m_layer nextDrawable];
     if (!drawable) return;
 
@@ -91,8 +97,9 @@ void MetalDevice::draw_triangle() {
     id<MTLRenderCommandEncoder> encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
     [encoder setRenderPipelineState:m_pipeline_state];
     
-    // We'll draw 3 vertices. Since we don't have buffers yet, 
-    // we'll generate coordinates inside the shader.
+    // Bind the vertex buffer to index 0
+    [encoder setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
+    
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     
     [encoder endEncoding];

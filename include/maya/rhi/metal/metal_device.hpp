@@ -21,6 +21,7 @@ public:
     void end_frame() override;
 
     bool create_pipeline(const std::string& shader_source) override;
+    bool create_vertex_buffer(const void* data, size_t size) override;
     void draw_triangle() override;
 
 private:
@@ -30,12 +31,14 @@ private:
     CAMetalLayer* m_layer;
     id<MTLCommandBuffer> m_current_command_buffer;
     id<MTLRenderPipelineState> m_pipeline_state;
+    id<MTLBuffer> m_vertex_buffer;
 #else
     void* m_device;
     void* m_command_queue;
     void* m_layer;
     void* m_current_command_buffer;
     void* m_pipeline_state;
+    void* m_vertex_buffer;
 #endif
 };
 
