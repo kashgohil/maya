@@ -79,6 +79,18 @@ bool MetalDevice::create_vertex_buffer(const void* data, size_t size) {
     return m_vertex_buffer != nil;
 }
 
+bool MetalDevice::create_uniform_buffer(size_t size) {
+    // Shared mode allows CPU to write, GPU to read
+    m_uniform_buffer = [m_device newBufferWithLength:size options:MTLResourceStorageModeShared];
+    return m_uniform_buffer != nil;
+}
+
+void MetalDevice::update_uniform_buffer(const void* data, size_t size) {
+    if (m_uniform_buffer) {
+        memcpy(m_uniform_buffer.contents, data, size);
+    }
+}
+
 void MetalDevice::begin_frame() {
     m_current_command_buffer = [m_command_queue commandBuffer];
 }
@@ -97,8 +109,13 @@ void MetalDevice::draw_triangle() {
     id<MTLRenderCommandEncoder> encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
     [encoder setRenderPipelineState:m_pipeline_state];
     
-    // Bind the vertex buffer to index 0
+    // Bind vertex buffer to index 0
     [encoder setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
+
+    // Bind uniform buffer to index 1 (if it exists)
+    if (m_uniform_buffer) {
+        [encoder setVertexBuffer:m_uniform_buffer offset:0 atIndex:1];
+    }
     
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     

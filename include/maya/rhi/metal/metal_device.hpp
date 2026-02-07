@@ -22,6 +22,10 @@ public:
 
     bool create_pipeline(const std::string& shader_source) override;
     bool create_vertex_buffer(const void* data, size_t size) override;
+    
+    bool create_uniform_buffer(size_t size) override;
+    void update_uniform_buffer(const void* data, size_t size) override;
+
     void draw_triangle() override;
 
 private:
@@ -32,6 +36,7 @@ private:
     id<MTLCommandBuffer> m_current_command_buffer;
     id<MTLRenderPipelineState> m_pipeline_state;
     id<MTLBuffer> m_vertex_buffer;
+    id<MTLBuffer> m_uniform_buffer;
 #else
     void* m_device;
     void* m_command_queue;
@@ -39,6 +44,7 @@ private:
     void* m_current_command_buffer;
     void* m_pipeline_state;
     void* m_vertex_buffer;
+    void* m_uniform_buffer;
 #endif
 };
 
