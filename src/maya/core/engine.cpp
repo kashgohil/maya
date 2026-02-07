@@ -1,8 +1,9 @@
 #include "maya/core/engine.hpp"
 #include "maya/core/file_system.hpp"
+#include "maya/platform/input.hpp"
 #include "maya/rhi/vertex.hpp"
 #include "maya/math/matrix.hpp"
-#include <GLFW/glfw3.h> // For glfwGetTime
+#include <GLFW/glfw3.h>
 #include <iostream>
 #include <vector>
 
@@ -60,20 +61,45 @@ bool Engine::initialize() {
 }
 
 void Engine::run() {
+    float rotation_speed = 1.0f;
+    float current_rotation = 0.0f;
+    double last_time = glfwGetTime();
+
     while (m_is_running && !m_window->should_close()) {
         m_window->poll_events();
 
-        // Animate!
-        float time = static_cast<float>(glfwGetTime());
+        // Handle Input
+        Input& input = Input::instance();
+        
+        if (input.is_key_pressed(KeyCode::Escape)) {
+            m_is_running = false;
+        }
+
+        if (input.is_key_down(KeyCode::Space)) {
+            rotation_speed = 0.0f; // Pause on space
+        } else {
+            rotation_speed = 1.0f;
+        }
+
+        // Calculate Delta Time
+        double current_time = glfwGetTime();
+        float delta_time = static_cast<float>(current_time - last_time);
+        last_time = current_time;
+
+        // Animate
+        current_rotation += rotation_speed * delta_time;
+        
         UniformData uniforms;
-        // Rotate around Z axis (spinning)
-        uniforms.model_matrix = math::Mat4::rotate_z(time);
+        uniforms.model_matrix = math::Mat4::rotate_z(current_rotation);
 
         m_graphics_device->update_uniform_buffer(&uniforms, sizeof(UniformData));
 
         m_graphics_device->begin_frame();
         m_graphics_device->draw_triangle();
         m_graphics_device->end_frame();
+
+        // Finalize input state for the next frame
+        input.update();
     }
 }
 
