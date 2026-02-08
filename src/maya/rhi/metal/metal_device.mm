@@ -38,7 +38,9 @@ bool MetalDevice::initialize(void* native_window_handle) {
 }
 
 void MetalDevice::shutdown() {
+    m_index_buffer = nil;
     m_vertex_buffer = nil;
+    m_uniform_buffer = nil;
     m_pipeline_state = nil;
     m_current_command_buffer = nil;
     m_layer = nil;
@@ -79,6 +81,11 @@ bool MetalDevice::create_vertex_buffer(const void* data, size_t size) {
     return m_vertex_buffer != nil;
 }
 
+bool MetalDevice::create_index_buffer(const void* data, size_t size) {
+    m_index_buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
+    return m_index_buffer != nil;
+}
+
 bool MetalDevice::create_uniform_buffer(size_t size) {
     // Shared mode allows CPU to write, GPU to read
     m_uniform_buffer = [m_device newBufferWithLength:size options:MTLResourceStorageModeShared];
@@ -95,8 +102,8 @@ void MetalDevice::begin_frame() {
     m_current_command_buffer = [m_command_queue commandBuffer];
 }
 
-void MetalDevice::draw_triangle() {
-    if (!m_layer || !m_pipeline_state || !m_vertex_buffer) return;
+void MetalDevice::draw_indexed(uint32_t index_count) {
+    if (!m_layer || !m_pipeline_state || !m_vertex_buffer || !m_index_buffer) return;
     id<CAMetalDrawable> drawable = [m_layer nextDrawable];
     if (!drawable) return;
 
@@ -108,6 +115,7 @@ void MetalDevice::draw_triangle() {
 
     id<MTLRenderCommandEncoder> encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
     [encoder setRenderPipelineState:m_pipeline_state];
+    [encoder setCullMode:MTLCullModeNone]; // Disable culling to see both sides
     
     // Bind vertex buffer to index 0
     [encoder setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
@@ -117,7 +125,11 @@ void MetalDevice::draw_triangle() {
         [encoder setVertexBuffer:m_uniform_buffer offset:0 atIndex:1];
     }
     
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle 
+                       indexCount:index_count 
+                        indexType:MTLIndexTypeUInt32 
+                      indexBuffer:m_index_buffer 
+                indexBufferOffset:0];
     
     [encoder endEncoding];
     [m_current_command_buffer presentDrawable:drawable];

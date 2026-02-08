@@ -104,20 +104,20 @@ struct Mat4 {
         return result;
     }
 
-    // Camera Matrices
-    static Mat4 perspective(float fov, float aspect, float near, float far) {
-        Mat4 result(0.0f);
-        float tan_half_fov = std::tan(fov * 0.5f);
-
-        result.at(0, 0) = 1.0f / (aspect * tan_half_fov);
-        result.at(1, 1) = 1.0f / tan_half_fov;
-        result.at(2, 2) = -(far + near) / (far - near);
-        result.at(2, 3) = -(2.0f * far * near) / (far - near);
-        result.at(3, 2) = -1.0f;
-
-        return result;
-    }
-
+        // Camera Matrices
+        static Mat4 perspective(float fov, float aspect, float near, float far) {
+            Mat4 result(0.0f);
+            float tan_half_fov = std::tan(fov * 0.5f);
+            
+            result.at(0, 0) = 1.0f / (aspect * tan_half_fov);
+            result.at(1, 1) = 1.0f / tan_half_fov;
+            // Metal depth is [0, 1]
+            result.at(2, 2) = far / (far - near);
+            result.at(2, 3) = -(far * near) / (far - near);
+            result.at(3, 2) = 1.0f;
+            
+            return result;
+        }
     static Mat4 look_at(const Vec3& eye, const Vec3& center, const Vec3& up) {
         Vec3 f = (center - eye).normalized(); // forward
         Vec3 s = Vec3::cross(f, up).normalized(); // right
