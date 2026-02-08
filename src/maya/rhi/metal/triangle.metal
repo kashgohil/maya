@@ -8,6 +8,7 @@ struct Vertex {
 
 struct Uniforms {
     float4x4 model_matrix;
+    float4x4 view_projection_matrix;
 };
 
 struct VertexOut {
@@ -22,8 +23,11 @@ vertex VertexOut vertexMain(uint vertexID [[vertex_id]],
     
     float4 pos = float4(vertices[vertexID].position, 1.0);
     
-    // Apply the transformation matrix
-    out.position = uniforms.model_matrix * pos;
+    // Apply Model then ViewProjection
+    // Order: Proj * View * Model * Vertex
+    float4 world_pos = uniforms.model_matrix * pos;
+    out.position = uniforms.view_projection_matrix * world_pos;
+    
     out.color = vertices[vertexID].color;
     
     return out;
