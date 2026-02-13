@@ -13,6 +13,7 @@ MetalDevice::MetalDevice()
     , m_command_queue(nil)
     , m_layer(nil)
     , m_current_command_buffer(nil)
+    , m_current_encoder(nil)
     , m_depth_texture(nil)
     , m_depth_stencil_state(nil) 
     , m_pool(nullptr) {}
@@ -57,9 +58,8 @@ bool MetalDevice::initialize(void* native_window_handle) {
 }
 
 void MetalDevice::shutdown() {
-    m_index_buffer = nil;
-    m_vertex_buffer = nil;
-    m_uniform_buffer = nil;
+    m_buffers.clear();
+    m_textures.clear();
     m_depth_texture = nil;
     m_depth_stencil_state = nil;
     m_pipeline_state = nil;
@@ -98,47 +98,56 @@ bool MetalDevice::create_pipeline(const std::string& shader_source) {
     return true;
 }
 
-bool MetalDevice::create_vertex_buffer(const void* data, size_t size) {
-    m_vertex_buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
-    return m_vertex_buffer != nil;
+VertexBufferHandle MetalDevice::create_vertex_buffer(const void* data, size_t size) {
+    id<MTLBuffer> buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
+    if (buffer) {
+        uint32_t handle = m_next_handle++;
+        m_buffers[handle] = buffer;
+        return {handle};
+    }
+    return {INVALID_HANDLE};
 }
 
-bool MetalDevice::create_index_buffer(const void* data, size_t size) {
-    m_index_buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
-    return m_index_buffer != nil;
+IndexBufferHandle MetalDevice::create_index_buffer(const void* data, size_t size) {
+    id<MTLBuffer> buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
+    if (buffer) {
+        uint32_t handle = m_next_handle++;
+        m_buffers[handle] = buffer;
+        return {handle};
+    }
+    return {INVALID_HANDLE};
 }
 
-bool MetalDevice::create_uniform_buffer(size_t size) {
-    m_uniform_buffer = [m_device newBufferWithLength:size options:MTLResourceStorageModeShared];
-    return m_uniform_buffer != nil;
+UniformBufferHandle MetalDevice::create_uniform_buffer(size_t size) {
+    id<MTLBuffer> buffer = [m_device newBufferWithLength:size options:MTLResourceStorageModeShared];
+    if (buffer) {
+        uint32_t handle = m_next_handle++;
+        m_buffers[handle] = buffer;
+        return {handle};
+    }
+    return {INVALID_HANDLE};
 }
 
-void MetalDevice::update_uniform_buffer(const void* data, size_t size) {
-    if (m_uniform_buffer) {
-        memcpy(m_uniform_buffer.contents, data, size);
+void MetalDevice::update_uniform_buffer(UniformBufferHandle handle, const void* data, size_t size) {
+    auto it = m_buffers.find(handle.handle);
+    if (it != m_buffers.end()) {
+        memcpy(it->second.contents, data, size);
     }
 }
 
-bool MetalDevice::create_texture(const void* data, uint32_t width, uint32_t height) {
+TextureHandle MetalDevice::create_texture(const void* data, uint32_t width, uint32_t height) {
     MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor 
         texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm 
                                      width:width 
                                     height:height 
                                  mipmapped:NO];
     
-    m_texture = [m_device newTextureWithDescriptor:textureDescriptor];
-    
-    MTLRegion region = {
-        {0, 0, 0},
-        {width, height, 1}
-    };
-    
-    [m_texture replaceRegion:region 
-                mipmapLevel:0 
-                  withBytes:data 
-                bytesPerRow:4 * width];
+    id<MTLTexture> texture = [m_device newTextureWithDescriptor:textureDescriptor];
+    if (!texture) return {INVALID_HANDLE};
 
-    // Create Sampler State if it doesn't exist
+    MTLRegion region = {{0, 0, 0}, {width, height, 1}};
+    [texture replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:4 * width];
+
     if (!m_sampler_state) {
         MTLSamplerDescriptor* samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
         samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
@@ -148,21 +157,13 @@ bool MetalDevice::create_texture(const void* data, uint32_t width, uint32_t heig
         m_sampler_state = [m_device newSamplerStateWithDescriptor:samplerDescriptor];
     }
 
-    return m_texture != nil;
-}
-
-void MetalDevice::bind_texture(uint32_t slot) {
-    // We'll store the logic for the actual binding in draw_indexed for now
-    // or we could use a temporary member to store the bound texture if we had multiple.
-    // Since we currently support 1, we just ensure it's set in draw_indexed.
+    uint32_t handle = m_next_handle++;
+    m_textures[handle] = texture;
+    return {handle};
 }
 
 void MetalDevice::begin_frame() {
     m_current_command_buffer = [m_command_queue commandBuffer];
-}
-
-void MetalDevice::draw_indexed(uint32_t index_count) {
-    if (!m_layer || !m_pipeline_state || !m_vertex_buffer || !m_index_buffer) return;
     
     id<CAMetalDrawable> drawable = [m_layer nextDrawable];
     if (!drawable) return;
@@ -178,37 +179,56 @@ void MetalDevice::draw_indexed(uint32_t index_count) {
     passDescriptor.depthAttachment.clearDepth = 1.0;
     passDescriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
 
-    id<MTLRenderCommandEncoder> encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
-    [encoder setRenderPipelineState:m_pipeline_state];
-    [encoder setDepthStencilState:m_depth_stencil_state];
-    [encoder setCullMode:MTLCullModeBack]; 
-    [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-    
-    [encoder setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
-
-    if (m_uniform_buffer) {
-        [encoder setVertexBuffer:m_uniform_buffer offset:0 atIndex:1];
-    }
-
-    if (m_texture) {
-        [encoder setFragmentTexture:m_texture atIndex:0];
-    }
+    m_current_encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
+    [m_current_encoder setRenderPipelineState:m_pipeline_state];
+    [m_current_encoder setDepthStencilState:m_depth_stencil_state];
+    [m_current_encoder setCullMode:MTLCullModeBack]; 
+    [m_current_encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     
     if (m_sampler_state) {
-        [encoder setFragmentSamplerState:m_sampler_state atIndex:0];
+        [m_current_encoder setFragmentSamplerState:m_sampler_state atIndex:0];
     }
-    
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle 
-                       indexCount:index_count 
-                        indexType:MTLIndexTypeUInt32 
-                      indexBuffer:m_index_buffer 
-                indexBufferOffset:0];
-    
-    [encoder endEncoding];
+
     [m_current_command_buffer presentDrawable:drawable];
 }
 
+void MetalDevice::bind_vertex_buffer(VertexBufferHandle handle, uint32_t slot) {
+    auto it = m_buffers.find(handle.handle);
+    if (it != m_buffers.end()) {
+        [m_current_encoder setVertexBuffer:it->second offset:0 atIndex:slot];
+    }
+}
+
+void MetalDevice::bind_uniform_buffer(UniformBufferHandle handle, uint32_t slot) {
+    auto it = m_buffers.find(handle.handle);
+    if (it != m_buffers.end()) {
+        [m_current_encoder setVertexBuffer:it->second offset:0 atIndex:slot];
+    }
+}
+
+void MetalDevice::bind_texture(TextureHandle handle, uint32_t slot) {
+    auto it = m_textures.find(handle.handle);
+    if (it != m_textures.end()) {
+        [m_current_encoder setFragmentTexture:it->second atIndex:slot];
+    }
+}
+
+void MetalDevice::draw_indexed(IndexBufferHandle handle, uint32_t index_count) {
+    auto it = m_buffers.find(handle.handle);
+    if (it != m_buffers.end()) {
+        [m_current_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle 
+                           indexCount:index_count 
+                            indexType:MTLIndexTypeUInt32 
+                          indexBuffer:it->second 
+                    indexBufferOffset:0];
+    }
+}
+
 void MetalDevice::end_frame() {
+    if (m_current_encoder) {
+        [m_current_encoder endEncoding];
+        m_current_encoder = nil;
+    }
     if (m_current_command_buffer) {
         [m_current_command_buffer commit];
         m_current_command_buffer = nil;
