@@ -74,6 +74,42 @@ TEST_CASE("Matrix4 basic operations", "[math][matrix]") {
         CHECK(final_point.y == 1.0f);
         CHECK(final_point.z == 0.0f);
     }
+
+    SECTION("Perspective Projection") {
+        float fov = to_radians(60.0f);
+        float aspect = 16.0f / 9.0f;
+        float near = 0.1f;
+        float far = 100.0f;
+        Mat4 p = Mat4::perspective(fov, aspect, near, far);
+
+        // A point on the near plane should have Z = -1 (or 0 depending on convention, 
+        // Maya/Metal uses 0 to 1 for depth)
+        Vec4 point_near(0, 0, -near, 1);
+        Vec4 res_near = p * point_near;
+        
+        // After perspective divide, Z should be 0.0 for Metal
+        float depth = res_near.z / res_near.w;
+        CHECK_THAT(depth, Catch::Matchers::WithinAbs(0.0f, 0.0001f));
+
+        // A point on the far plane should have Z = 1.0
+        Vec4 point_far(0, 0, -far, 1);
+        Vec4 res_far = p * point_far;
+        float depth_far = res_far.z / res_far.w;
+        CHECK_THAT(depth_far, Catch::Matchers::WithinAbs(1.0f, 0.0001f));
+    }
+
+    SECTION("Look At") {
+        Vec3 eye(0, 0, 3);
+        Vec3 target(0, 0, 0);
+        Vec3 up(0, 1, 0);
+        Mat4 v = Mat4::look_at(eye, target, up);
+
+        // Transforming the eye position by the view matrix should put it at (0, 0, 0)
+        Vec4 res = v * Vec4(eye.x, eye.y, eye.z, 1.0f);
+        CHECK_THAT(res.x, Catch::Matchers::WithinAbs(0.0f, 0.0001f));
+        CHECK_THAT(res.y, Catch::Matchers::WithinAbs(0.0f, 0.0001f));
+        CHECK_THAT(res.z, Catch::Matchers::WithinAbs(0.0f, 0.0001f));
+    }
 }
 
 TEST_CASE("Quaternion operations", "[math][quaternion]") {

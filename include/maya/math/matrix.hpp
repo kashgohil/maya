@@ -111,10 +111,10 @@ struct Mat4 {
             
             result.at(0, 0) = 1.0f / (aspect * tan_half_fov);
             result.at(1, 1) = 1.0f / tan_half_fov;
-            // Metal depth is [0, 1]
-            result.at(2, 2) = far / (far - near);
-            result.at(2, 3) = -(far * near) / (far - near);
-            result.at(3, 2) = 1.0f;
+            // Metal depth is [0, 1] - Right Handed mapping: -near to 0, -far to 1
+            result.at(2, 2) = far / (near - far);
+            result.at(2, 3) = (far * near) / (near - far);
+            result.at(3, 2) = -1.0f;
             
             return result;
         }
