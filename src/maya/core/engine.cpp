@@ -7,6 +7,9 @@
 #include <iostream>
 #include <vector>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 namespace maya {
 
 struct UniformData {
@@ -46,19 +49,19 @@ bool Engine::initialize() {
         return false;
     }
 
-    // Define Cube Vertices (8 corners, distinct colors)
+    // Define Cube Vertices (8 corners, distinct colors, and UVs)
     std::vector<Vertex> vertices = {
-        // Front Face
-        { math::Vec3(-0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 0.0f, 0.0f, 1.0f) }, // Top-Left (Red)
-        { math::Vec3( 0.5f,  0.5f,  0.5f), math::Vec4(0.0f, 1.0f, 0.0f, 1.0f) }, // Top-Right (Green)
-        { math::Vec3( 0.5f, -0.5f,  0.5f), math::Vec4(0.0f, 0.0f, 1.0f, 1.0f) }, // Bottom-Right (Blue)
-        { math::Vec3(-0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 0.0f, 1.0f) }, // Bottom-Left (Yellow)
+        // Front Face (Z = 0.5)
+        { math::Vec3(-0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) }, // TL
+        { math::Vec3( 0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) }, // TR
+        { math::Vec3( 0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) }, // BR
+        { math::Vec3(-0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) }, // BL
         
-        // Back Face
-        { math::Vec3(-0.5f,  0.5f, -0.5f), math::Vec4(0.0f, 1.0f, 1.0f, 1.0f) }, // Top-Left (Cyan)
-        { math::Vec3( 0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 0.0f, 1.0f, 1.0f) }, // Top-Right (Magenta)
-        { math::Vec3( 0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f) }, // Bottom-Right (White)
-        { math::Vec3(-0.5f, -0.5f, -0.5f), math::Vec4(0.5f, 0.5f, 0.5f, 1.0f) }  // Bottom-Left (Grey)
+        // Back Face (Z = -0.5)
+        { math::Vec3(-0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) }, 
+        { math::Vec3( 0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) }, 
+        { math::Vec3( 0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) }, 
+        { math::Vec3(-0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) }
     };
 
     // Cube Indices (12 triangles)
@@ -82,6 +85,15 @@ bool Engine::initialize() {
     }
 
     if (!m_graphics_device->create_index_buffer(indices.data(), indices.size() * sizeof(uint32_t))) {
+        return false;
+    }
+
+    // Create a 2x2 Checkerboard texture
+    uint32_t checkerboard[] = {
+        0xFFFFFFFF, 0xFF000000,
+        0xFF000000, 0xFFFFFFFF
+    };
+    if (!m_graphics_device->create_texture(checkerboard, 2, 2)) {
         return false;
     }
 
