@@ -39,6 +39,9 @@ private:
     id<MTLBuffer> m_vertex_buffer;
     id<MTLBuffer> m_index_buffer;
     id<MTLBuffer> m_uniform_buffer;
+    id<MTLTexture> m_depth_texture;
+    id<MTLDepthStencilState> m_depth_stencil_state;
+    void* m_pool;
 #else
     void* m_device;
     void* m_command_queue;
@@ -48,6 +51,9 @@ private:
     void* m_vertex_buffer;
     void* m_index_buffer;
     void* m_uniform_buffer;
+    void* m_depth_texture;
+    void* m_depth_stencil_state;
+    void* m_pool;
 #endif
 };
 

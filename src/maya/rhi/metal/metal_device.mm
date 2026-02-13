@@ -12,7 +12,10 @@ MetalDevice::MetalDevice()
     : m_device(nil)
     , m_command_queue(nil)
     , m_layer(nil)
-    , m_current_command_buffer(nil) {}
+    , m_current_command_buffer(nil)
+    , m_depth_texture(nil)
+    , m_depth_stencil_state(nil) 
+    , m_pool(nullptr) {}
 
 MetalDevice::~MetalDevice() {
     shutdown();
@@ -32,6 +35,22 @@ bool MetalDevice::initialize(void* native_window_handle) {
         
         window.contentView.layer = m_layer;
         window.contentView.wantsLayer = YES;
+
+        // Create Depth Texture
+        MTLTextureDescriptor* depthDescriptor = [MTLTextureDescriptor 
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float 
+                                         width:m_layer.drawableSize.width 
+                                        height:m_layer.drawableSize.height 
+                                     mipmapped:NO];
+        depthDescriptor.usage = MTLTextureUsageRenderTarget;
+        depthDescriptor.storageMode = MTLStorageModePrivate;
+        m_depth_texture = [m_device newTextureWithDescriptor:depthDescriptor];
+
+        // Create Depth Stencil State
+        MTLDepthStencilDescriptor* depthStencilDescriptor = [[MTLDepthStencilDescriptor alloc] init];
+        depthStencilDescriptor.depthCompareFunction = MTLCompareFunctionLess;
+        depthStencilDescriptor.depthWriteEnabled = YES;
+        m_depth_stencil_state = [m_device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
     }
 
     return true;
@@ -41,6 +60,8 @@ void MetalDevice::shutdown() {
     m_index_buffer = nil;
     m_vertex_buffer = nil;
     m_uniform_buffer = nil;
+    m_depth_texture = nil;
+    m_depth_stencil_state = nil;
     m_pipeline_state = nil;
     m_current_command_buffer = nil;
     m_layer = nil;
@@ -65,6 +86,7 @@ bool MetalDevice::create_pipeline(const std::string& shader_source) {
     pipelineDescriptor.vertexFunction = vertexFunction;
     pipelineDescriptor.fragmentFunction = fragmentFunction;
     pipelineDescriptor.colorAttachments[0].pixelFormat = m_layer.pixelFormat;
+    pipelineDescriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 
     m_pipeline_state = [m_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     
@@ -87,7 +109,6 @@ bool MetalDevice::create_index_buffer(const void* data, size_t size) {
 }
 
 bool MetalDevice::create_uniform_buffer(size_t size) {
-    // Shared mode allows CPU to write, GPU to read
     m_uniform_buffer = [m_device newBufferWithLength:size options:MTLResourceStorageModeShared];
     return m_uniform_buffer != nil;
 }
@@ -104,23 +125,29 @@ void MetalDevice::begin_frame() {
 
 void MetalDevice::draw_indexed(uint32_t index_count) {
     if (!m_layer || !m_pipeline_state || !m_vertex_buffer || !m_index_buffer) return;
+    
     id<CAMetalDrawable> drawable = [m_layer nextDrawable];
     if (!drawable) return;
 
     MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
     passDescriptor.colorAttachments[0].texture = drawable.texture;
     passDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-    passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.2, 0.3, 1.0);
+    passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.1, 1.0);
     passDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    passDescriptor.depthAttachment.texture = m_depth_texture;
+    passDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
+    passDescriptor.depthAttachment.clearDepth = 1.0;
+    passDescriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
 
     id<MTLRenderCommandEncoder> encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
     [encoder setRenderPipelineState:m_pipeline_state];
-    [encoder setCullMode:MTLCullModeNone]; // Disable culling to see both sides
+    [encoder setDepthStencilState:m_depth_stencil_state];
+    [encoder setCullMode:MTLCullModeBack]; 
+    [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     
-    // Bind vertex buffer to index 0
     [encoder setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
 
-    // Bind uniform buffer to index 1 (if it exists)
     if (m_uniform_buffer) {
         [encoder setVertexBuffer:m_uniform_buffer offset:0 atIndex:1];
     }
