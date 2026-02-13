@@ -14,6 +14,7 @@ public:
     bool should_close() const;
     void poll_events();
     void* get_native_handle() const;
+    GLFWwindow* get_glfw_window() const { return m_window; }
 
 private:
     GLFWwindow* m_window;

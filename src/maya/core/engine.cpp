@@ -30,6 +30,11 @@ bool Engine::initialize() {
         return false;
     }
 
+    // Initialize Camera
+    // FOV: 60 deg, Aspect: 16:9, Near: 0.1, Far: 100.0
+    m_camera = std::make_unique<Camera>(60.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
+    m_camera->set_position(math::Vec3(0.0f, 0.0f, 3.0f));
+
     // Load shader from file
     std::string shader_source = FileSystem::read_text("src/maya/rhi/metal/triangle.metal");
     if (shader_source.empty()) {
@@ -41,18 +46,35 @@ bool Engine::initialize() {
         return false;
     }
 
-    // Define square vertices
+    // Define Cube Vertices (8 corners, distinct colors)
     std::vector<Vertex> vertices = {
-        { math::Vec3(-0.5f,  0.5f, 0.0f), math::Vec4(1.0f, 0.0f, 0.0f, 1.0f) }, // 0: Top-Left
-        { math::Vec3( 0.5f,  0.5f, 0.0f), math::Vec4(0.0f, 1.0f, 0.0f, 1.0f) }, // 1: Top-Right
-        { math::Vec3( 0.5f, -0.5f, 0.0f), math::Vec4(0.0f, 0.0f, 1.0f, 1.0f) }, // 2: Bottom-Right
-        { math::Vec3(-0.5f, -0.5f, 0.0f), math::Vec4(1.0f, 1.0f, 0.0f, 1.0f) }  // 3: Bottom-Left
+        // Front Face
+        { math::Vec3(-0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 0.0f, 0.0f, 1.0f) }, // Top-Left (Red)
+        { math::Vec3( 0.5f,  0.5f,  0.5f), math::Vec4(0.0f, 1.0f, 0.0f, 1.0f) }, // Top-Right (Green)
+        { math::Vec3( 0.5f, -0.5f,  0.5f), math::Vec4(0.0f, 0.0f, 1.0f, 1.0f) }, // Bottom-Right (Blue)
+        { math::Vec3(-0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 0.0f, 1.0f) }, // Bottom-Left (Yellow)
+        
+        // Back Face
+        { math::Vec3(-0.5f,  0.5f, -0.5f), math::Vec4(0.0f, 1.0f, 1.0f, 1.0f) }, // Top-Left (Cyan)
+        { math::Vec3( 0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 0.0f, 1.0f, 1.0f) }, // Top-Right (Magenta)
+        { math::Vec3( 0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f) }, // Bottom-Right (White)
+        { math::Vec3(-0.5f, -0.5f, -0.5f), math::Vec4(0.5f, 0.5f, 0.5f, 1.0f) }  // Bottom-Left (Grey)
     };
 
-    // Correct CCW Indices for 2 triangles
+    // Cube Indices (12 triangles)
     std::vector<uint32_t> indices = {
-        0, 3, 2, // Triangle 1
-        2, 1, 0  // Triangle 2
+        // Front
+        0, 3, 2, 2, 1, 0,
+        // Back
+        5, 6, 7, 7, 4, 5,
+        // Left
+        4, 7, 3, 3, 0, 4,
+        // Right
+        1, 2, 6, 6, 5, 1,
+        // Top
+        4, 0, 1, 1, 5, 4,
+        // Bottom
+        3, 7, 6, 6, 2, 3
     };
 
     if (!m_graphics_device->create_vertex_buffer(vertices.data(), vertices.size() * sizeof(Vertex))) {
@@ -73,9 +95,12 @@ bool Engine::initialize() {
 }
 
 void Engine::run() {
-    float rotation_speed = 1.0f;
+    float rotation_speed = 0.5f; // Rad/s
     float current_rotation = 0.0f;
     double last_time = glfwGetTime();
+
+    // Disable cursor for camera control
+    glfwSetInputMode(m_window->get_glfw_window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     while (m_is_running && !m_window->should_close()) {
         m_window->poll_events();
@@ -87,32 +112,31 @@ void Engine::run() {
             m_is_running = false;
         }
 
-        if (input.is_key_down(KeyCode::Space)) {
-            rotation_speed = 0.0f; // Pause on space
-        } else {
-            rotation_speed = 1.0f;
-        }
-
         // Calculate Delta Time
         double current_time = glfwGetTime();
         float delta_time = static_cast<float>(current_time - last_time);
         last_time = current_time;
 
-        // Animate
+        // Update Camera
+        m_camera->update(delta_time);
+
+        // Animate Cube
         current_rotation += rotation_speed * delta_time;
         
         UniformData uniforms;
         
-        // 1. Model Matrix: Rotate around Z
-        uniforms.model_matrix = math::Mat4::rotate_z(current_rotation);
+        // 1. Model Matrix: Rotate around X and Z
+        math::Mat4 rotZ = math::Mat4::rotate_z(current_rotation);
+        math::Mat4 rotX = math::Mat4::rotate_x(current_rotation * 0.5f);
+        uniforms.model_matrix = rotZ * rotX;
 
-        // 2. View/Proj: Identity (Pass-through 2D)
-        uniforms.view_projection_matrix = math::Mat4::identity();
+        // 2. View/Proj
+        uniforms.view_projection_matrix = m_camera->get_view_projection_matrix();
 
         m_graphics_device->update_uniform_buffer(&uniforms, sizeof(UniformData));
 
         m_graphics_device->begin_frame();
-        m_graphics_device->draw_indexed(6);
+        m_graphics_device->draw_indexed(36);
         m_graphics_device->end_frame();
 
         // Finalize input state for the next frame
