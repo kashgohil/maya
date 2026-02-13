@@ -33,133 +33,87 @@ bool Engine::initialize() {
         return false;
     }
 
-    // Initialize Camera
-    // FOV: 60 deg, Aspect: 16:9, Near: 0.1, Far: 100.0
     m_camera = std::make_unique<Camera>(60.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
     m_camera->set_position(math::Vec3(0.0f, 0.0f, 3.0f));
 
-    // Load shader from file
     std::string shader_source = FileSystem::read_text("src/maya/rhi/metal/triangle.metal");
-    if (shader_source.empty()) {
-        std::cerr << "Failed to load shader file!" << std::endl;
+    if (shader_source.empty() || !m_graphics_device->create_pipeline(shader_source)) {
         return false;
     }
 
-    if (!m_graphics_device->create_pipeline(shader_source)) {
-        return false;
-    }
-
-    // Define Cube Vertices (8 corners, distinct colors, and UVs)
     std::vector<Vertex> vertices = {
-        // Front Face (Z = 0.5)
-        { math::Vec3(-0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) }, // TL
-        { math::Vec3( 0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) }, // TR
-        { math::Vec3( 0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) }, // BR
-        { math::Vec3(-0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) }, // BL
-        
-        // Back Face (Z = -0.5)
-        { math::Vec3(-0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) }, 
-        { math::Vec3( 0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) }, 
-        { math::Vec3( 0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) }, 
+        // Front Face
+        { math::Vec3(-0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) },
+        { math::Vec3( 0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) },
+        { math::Vec3( 0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) },
+        { math::Vec3(-0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) },
+        // Back Face
+        { math::Vec3(-0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) },
+        { math::Vec3( 0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) },
+        { math::Vec3( 0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) },
         { math::Vec3(-0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) }
     };
 
-    // Cube Indices (12 triangles)
     std::vector<uint32_t> indices = {
-        // Front
-        0, 3, 2, 2, 1, 0,
-        // Back
-        5, 6, 7, 7, 4, 5,
-        // Left
-        4, 7, 3, 3, 0, 4,
-        // Right
-        1, 2, 6, 6, 5, 1,
-        // Top
-        4, 0, 1, 1, 5, 4,
-        // Bottom
-        3, 7, 6, 6, 2, 3
+        0, 3, 2, 2, 1, 0, // Front
+        5, 6, 7, 7, 4, 5, // Back
+        4, 7, 3, 3, 0, 4, // Left
+        1, 2, 6, 6, 5, 1, // Right
+        4, 0, 1, 1, 5, 4, // Top
+        3, 7, 6, 6, 2, 3  // Bottom
     };
 
-    if (!m_graphics_device->create_vertex_buffer(vertices.data(), vertices.size() * sizeof(Vertex))) {
-        return false;
-    }
+    m_cube_mesh = std::make_unique<Mesh>(*m_graphics_device, vertices, indices);
 
-    if (!m_graphics_device->create_index_buffer(indices.data(), indices.size() * sizeof(uint32_t))) {
-        return false;
-    }
+    uint32_t checkerboard[] = { 0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF };
+    m_checker_texture = std::make_unique<Texture>(*m_graphics_device, checkerboard, 2, 2);
 
-    // Create a 2x2 Checkerboard texture
-    uint32_t checkerboard[] = {
-        0xFFFFFFFF, 0xFF000000,
-        0xFF000000, 0xFFFFFFFF
-    };
-    if (!m_graphics_device->create_texture(checkerboard, 2, 2)) {
-        return false;
-    }
-
-    // Create uniform buffer
-    if (!m_graphics_device->create_uniform_buffer(sizeof(UniformData))) {
-        return false;
-    }
+    m_uniform_buffer = m_graphics_device->create_uniform_buffer(sizeof(UniformData));
 
     m_is_running = true;
     return true;
 }
 
 void Engine::run() {
-    float rotation_speed = 0.5f; // Rad/s
+    float rotation_speed = 0.5f;
     float current_rotation = 0.0f;
     double last_time = glfwGetTime();
 
-    // Disable cursor for camera control
     glfwSetInputMode(m_window->get_glfw_window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     while (m_is_running && !m_window->should_close()) {
         m_window->poll_events();
-
-        // Handle Input
         Input& input = Input::instance();
-        
-        if (input.is_key_pressed(KeyCode::Escape)) {
-            m_is_running = false;
-        }
+        if (input.is_key_pressed(KeyCode::Escape)) m_is_running = false;
 
-        // Calculate Delta Time
         double current_time = glfwGetTime();
         float delta_time = static_cast<float>(current_time - last_time);
         last_time = current_time;
 
-        // Update Camera
         m_camera->update(delta_time);
-
-        // Animate Cube
         current_rotation += rotation_speed * delta_time;
         
         UniformData uniforms;
-        
-        // 1. Model Matrix: Rotate around X and Z
         math::Mat4 rotZ = math::Mat4::rotate_z(current_rotation);
         math::Mat4 rotX = math::Mat4::rotate_x(current_rotation * 0.5f);
         uniforms.model_matrix = rotZ * rotX;
-
-        // 2. View/Proj
         uniforms.view_projection_matrix = m_camera->get_view_projection_matrix();
 
-        m_graphics_device->update_uniform_buffer(&uniforms, sizeof(UniformData));
+        m_graphics_device->update_uniform_buffer(m_uniform_buffer, &uniforms, sizeof(UniformData));
 
         m_graphics_device->begin_frame();
-        m_graphics_device->draw_indexed(36);
-        m_graphics_device->end_frame();
+        
+        m_graphics_device->bind_uniform_buffer(m_uniform_buffer, 1);
+        m_checker_texture->bind(0);
+        m_cube_mesh->draw();
 
-        // Finalize input state for the next frame
+        m_graphics_device->end_frame();
         input.update();
     }
 }
 
 void Engine::shutdown() {
-    if (m_graphics_device) {
-        m_graphics_device->shutdown();
-    }
+    if (m_graphics_device) m_graphics_device->shutdown();
     m_is_running = false;
 }
 
