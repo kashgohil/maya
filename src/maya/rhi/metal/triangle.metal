@@ -4,6 +4,7 @@ using namespace metal;
 struct Vertex {
     float3 position;
     float4 color;
+    float2 uv;
 };
 
 struct Uniforms {
@@ -14,6 +15,7 @@ struct Uniforms {
 struct VertexOut {
     float4 position [[position]];
     float4 color;
+    float2 uv;
 };
 
 vertex VertexOut vertexMain(uint vertexID [[vertex_id]], 
@@ -24,15 +26,18 @@ vertex VertexOut vertexMain(uint vertexID [[vertex_id]],
     float4 pos = float4(vertices[vertexID].position, 1.0);
     
     // Apply Model then ViewProjection
-    // Order: Proj * View * Model * Vertex
     float4 world_pos = uniforms.model_matrix * pos;
     out.position = uniforms.view_projection_matrix * world_pos;
     
     out.color = vertices[vertexID].color;
+    out.uv = vertices[vertexID].uv;
     
     return out;
 }
 
-fragment float4 fragmentMain(VertexOut in [[stage_in]]) {
-    return in.color;
+fragment float4 fragmentMain(VertexOut in [[stage_in]],
+                            texture2d<float> colorTexture [[texture(0)]],
+                            sampler textureSampler [[sampler(0)]]) {
+    float4 texColor = colorTexture.sample(textureSampler, in.uv);
+    return texColor * in.color;
 }

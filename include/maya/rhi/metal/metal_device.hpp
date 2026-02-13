@@ -27,6 +27,9 @@ public:
     bool create_uniform_buffer(size_t size) override;
     void update_uniform_buffer(const void* data, size_t size) override;
 
+    bool create_texture(const void* data, uint32_t width, uint32_t height) override;
+    void bind_texture(uint32_t slot) override;
+
     void draw_indexed(uint32_t index_count) override;
 
 private:
@@ -39,6 +42,8 @@ private:
     id<MTLBuffer> m_vertex_buffer;
     id<MTLBuffer> m_index_buffer;
     id<MTLBuffer> m_uniform_buffer;
+    id<MTLTexture> m_texture;
+    id<MTLSamplerState> m_sampler_state;
     id<MTLTexture> m_depth_texture;
     id<MTLDepthStencilState> m_depth_stencil_state;
     void* m_pool;

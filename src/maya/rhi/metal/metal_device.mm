@@ -119,6 +119,44 @@ void MetalDevice::update_uniform_buffer(const void* data, size_t size) {
     }
 }
 
+bool MetalDevice::create_texture(const void* data, uint32_t width, uint32_t height) {
+    MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor 
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm 
+                                     width:width 
+                                    height:height 
+                                 mipmapped:NO];
+    
+    m_texture = [m_device newTextureWithDescriptor:textureDescriptor];
+    
+    MTLRegion region = {
+        {0, 0, 0},
+        {width, height, 1}
+    };
+    
+    [m_texture replaceRegion:region 
+                mipmapLevel:0 
+                  withBytes:data 
+                bytesPerRow:4 * width];
+
+    // Create Sampler State if it doesn't exist
+    if (!m_sampler_state) {
+        MTLSamplerDescriptor* samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
+        samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.sAddressMode = MTLSamplerAddressModeRepeat;
+        samplerDescriptor.tAddressMode = MTLSamplerAddressModeRepeat;
+        m_sampler_state = [m_device newSamplerStateWithDescriptor:samplerDescriptor];
+    }
+
+    return m_texture != nil;
+}
+
+void MetalDevice::bind_texture(uint32_t slot) {
+    // We'll store the logic for the actual binding in draw_indexed for now
+    // or we could use a temporary member to store the bound texture if we had multiple.
+    // Since we currently support 1, we just ensure it's set in draw_indexed.
+}
+
 void MetalDevice::begin_frame() {
     m_current_command_buffer = [m_command_queue commandBuffer];
 }
@@ -150,6 +188,14 @@ void MetalDevice::draw_indexed(uint32_t index_count) {
 
     if (m_uniform_buffer) {
         [encoder setVertexBuffer:m_uniform_buffer offset:0 atIndex:1];
+    }
+
+    if (m_texture) {
+        [encoder setFragmentTexture:m_texture atIndex:0];
+    }
+    
+    if (m_sampler_state) {
+        [encoder setFragmentSamplerState:m_sampler_state atIndex:0];
     }
     
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle 

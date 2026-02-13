@@ -23,6 +23,10 @@ public:
     virtual bool create_uniform_buffer(size_t size) = 0;
     virtual void update_uniform_buffer(const void* data, size_t size) = 0;
 
+    // Textures
+    virtual bool create_texture(const void* data, uint32_t width, uint32_t height) = 0;
+    virtual void bind_texture(uint32_t slot) = 0;
+
     virtual void draw_indexed(uint32_t index_count) = 0;
 
     static std::unique_ptr<GraphicsDevice> create_default();
