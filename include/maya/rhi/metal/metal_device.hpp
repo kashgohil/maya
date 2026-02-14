@@ -1,3 +1,5 @@
+#pragma once
+
 #include "maya/rhi/graphics_device.hpp"
 #include <map>
 
@@ -42,6 +44,7 @@ private:
     id<MTLCommandBuffer> m_current_command_buffer;
     id<MTLRenderPipelineState> m_pipeline_state;
     id<MTLRenderCommandEncoder> m_current_encoder;
+    id<CAMetalDrawable> m_current_drawable;
     
     std::map<uint32_t, id<MTLBuffer>> m_buffers;
     std::map<uint32_t, id<MTLTexture>> m_textures;
@@ -58,6 +61,7 @@ private:
     void* m_current_command_buffer;
     void* m_pipeline_state;
     void* m_current_encoder;
+    void* m_current_drawable;
     void* m_buffers;
     void* m_textures;
     void* m_sampler_state;

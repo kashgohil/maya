@@ -103,24 +103,26 @@ bool MetalDevice::create_pipeline(const std::string& shader_source) {
     return true;
 }
 
-VertexBufferHandle MetalDevice::create_vertex_buffer(const void* data, size_t size) {
-    id<MTLBuffer> buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
-    if (buffer) {
-        uint32_t handle = m_next_handle++;
-        m_buffers[handle] = buffer;
-        return {handle};
+namespace {
+    template<typename HandleType>
+    HandleType create_buffer_helper(id<MTLDevice> device, std::map<uint32_t, id<MTLBuffer>>& buffers, 
+                                    uint32_t& next_handle, const void* data, size_t size) {
+        id<MTLBuffer> buffer = [device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
+        if (buffer) {
+            uint32_t handle = next_handle++;
+            buffers[handle] = buffer;
+            return {handle};
+        }
+        return {INVALID_HANDLE};
     }
-    return {INVALID_HANDLE};
+}
+
+VertexBufferHandle MetalDevice::create_vertex_buffer(const void* data, size_t size) {
+    return create_buffer_helper<VertexBufferHandle>(m_device, m_buffers, m_next_handle, data, size);
 }
 
 IndexBufferHandle MetalDevice::create_index_buffer(const void* data, size_t size) {
-    id<MTLBuffer> buffer = [m_device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
-    if (buffer) {
-        uint32_t handle = m_next_handle++;
-        m_buffers[handle] = buffer;
-        return {handle};
-    }
-    return {INVALID_HANDLE};
+    return create_buffer_helper<IndexBufferHandle>(m_device, m_buffers, m_next_handle, data, size);
 }
 
 UniformBufferHandle MetalDevice::create_uniform_buffer(size_t size) {
@@ -190,11 +192,12 @@ void MetalDevice::begin_frame() {
     [m_current_encoder setCullMode:MTLCullModeBack]; 
     [m_current_encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     
+    // Store drawable to present it later
+    m_current_drawable = drawable;
+
     if (m_sampler_state) {
         [m_current_encoder setFragmentSamplerState:m_sampler_state atIndex:0];
     }
-
-    [m_current_command_buffer presentDrawable:drawable];
 }
 
 void MetalDevice::bind_vertex_buffer(VertexBufferHandle handle, uint32_t slot) {
@@ -205,10 +208,7 @@ void MetalDevice::bind_vertex_buffer(VertexBufferHandle handle, uint32_t slot) {
 }
 
 void MetalDevice::bind_uniform_buffer(UniformBufferHandle handle, uint32_t slot) {
-    auto it = m_buffers.find(handle.handle);
-    if (it != m_buffers.end()) {
-        [m_current_encoder setVertexBuffer:it->second offset:0 atIndex:slot];
-    }
+    bind_vertex_buffer(VertexBufferHandle{handle.handle}, slot);
 }
 
 void MetalDevice::bind_texture(TextureHandle handle, uint32_t slot) {
@@ -235,6 +235,10 @@ void MetalDevice::end_frame() {
         m_current_encoder = nil;
     }
     if (m_current_command_buffer) {
+        if (m_current_drawable) {
+            [m_current_command_buffer presentDrawable:m_current_drawable];
+            m_current_drawable = nil;
+        }
         [m_current_command_buffer commit];
         m_current_command_buffer = nil;
     }
