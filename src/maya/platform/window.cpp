@@ -11,8 +11,13 @@ Window::Window(int width, int height, const std::string& title) {
     if (!glfwInit()) return;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     m_window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
     if (!m_window) return;
+
+    // Show and focus window on macOS
+    glfwShowWindow(m_window);
+    glfwFocusWindow(m_window);
 
     // Set this window instance as user pointer for callbacks
     glfwSetWindowUserPointer(m_window, this);
