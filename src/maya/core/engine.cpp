@@ -23,6 +23,8 @@ Engine::~Engine() {
     shutdown();
 }
 
+static_assert(sizeof(Vertex) == 64, "Vertex struct size mismatch! Metal shader expects 64 bytes due to float4 alignment.");
+
 bool Engine::initialize() {
     m_window = std::make_unique<Window>(1280, 720, "Maya Engine - RHI Metal Backend");
     if (!m_window->get_native_handle()) {

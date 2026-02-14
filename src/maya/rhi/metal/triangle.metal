@@ -2,8 +2,8 @@
 using namespace metal;
 
 struct Vertex {
-    float3 position;
-    float3 normal;
+    packed_float3 position;
+    packed_float3 normal;
     float4 color;
     float2 uv;
 };
