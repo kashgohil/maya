@@ -5,15 +5,14 @@
 #include <string>
 #include <sstream>
 #include <map>
+#include <tuple>
 
 namespace maya {
 
 struct ObjIndex {
     int v, vt, vn;
     bool operator<(const ObjIndex& other) const {
-        if (v != other.v) return v < other.v;
-        if (vt != other.vt) return vt < other.vt;
-        return vn < other.vn;
+        return std::tie(v, vt, vn) < std::tie(other.v, other.vt, other.vn);
     }
 };
 
@@ -84,15 +83,25 @@ std::unique_ptr<Mesh> ModelLoader::load_obj(GraphicsDevice& device, const std::s
                     uint32_t new_index = static_cast<uint32_t>(vertices.size());
                     index_map[idx] = new_index;
                     
+                    if (idx.v < 0 || idx.v >= (int)positions.size()) {
+                        std::cerr << "Invalid vertex index in OBJ: " << idx.v + 1 << std::endl;
+                        return nullptr;
+                    }
+                    
                     math::Vec3 pos = positions[idx.v];
-                    math::Vec2 uv = (idx.vt >= 0) ? uvs[idx.vt] : math::Vec2{0, 0};
-                    math::Vec3 norm = (idx.vn >= 0) ? normals[idx.vn] : math::Vec3{0, 0, 0};
+                    math::Vec2 uv = (idx.vt >= 0 && idx.vt < (int)uvs.size()) ? uvs[idx.vt] : math::Vec2{0, 0};
+                    math::Vec3 norm = (idx.vn >= 0 && idx.vn < (int)normals.size()) ? normals[idx.vn] : math::Vec3{0, 0, 0};
                     
                     vertices.emplace_back(pos, norm, math::Vec4{1.0f, 1.0f, 1.0f, 1.0f}, uv);
                 }
                 indices.push_back(index_map[idx]);
             }
         }
+    }
+
+    if (vertices.empty()) {
+        std::cerr << "No vertices loaded from OBJ: " << path << std::endl;
+        return nullptr;
     }
 
     return std::make_unique<Mesh>(device, vertices, indices);
