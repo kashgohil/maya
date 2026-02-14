@@ -37,6 +37,11 @@ bool MetalDevice::initialize(void* native_window_handle) {
         window.contentView.layer = m_layer;
         window.contentView.wantsLayer = YES;
 
+        // Set drawable size explicitly
+        NSRect frame = window.contentView.bounds;
+        CGFloat scale = window.backingScaleFactor;
+        m_layer.drawableSize = CGSizeMake(frame.size.width * scale, frame.size.height * scale);
+
         // Create Depth Texture
         MTLTextureDescriptor* depthDescriptor = [MTLTextureDescriptor 
             texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float 

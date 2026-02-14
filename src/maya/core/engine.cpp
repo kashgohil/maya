@@ -1,5 +1,6 @@
 #include "maya/core/engine.hpp"
 #include "maya/core/file_system.hpp"
+#include "maya/core/model_loader.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/rhi/vertex.hpp"
 #include "maya/math/matrix.hpp"
@@ -25,11 +26,13 @@ Engine::~Engine() {
 bool Engine::initialize() {
     m_window = std::make_unique<Window>(1280, 720, "Maya Engine - RHI Metal Backend");
     if (!m_window->get_native_handle()) {
+        std::cerr << "Failed to create window native handle" << std::endl;
         return false;
     }
 
     m_graphics_device = GraphicsDevice::create_default();
     if (!m_graphics_device->initialize(m_window->get_native_handle())) {
+        std::cerr << "Failed to initialize graphics device" << std::endl;
         return false;
     }
 
@@ -37,33 +40,20 @@ bool Engine::initialize() {
     m_camera->set_position(math::Vec3(0.0f, 0.0f, 3.0f));
 
     std::string shader_source = FileSystem::read_text("src/maya/rhi/metal/triangle.metal");
-    if (shader_source.empty() || !m_graphics_device->create_pipeline(shader_source)) {
+    if (shader_source.empty()) {
+        std::cerr << "Failed to read shader source" << std::endl;
+        return false;
+    }
+    if (!m_graphics_device->create_pipeline(shader_source)) {
+        std::cerr << "Failed to create pipeline" << std::endl;
         return false;
     }
 
-    std::vector<Vertex> vertices = {
-        // Front Face
-        { math::Vec3(-0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) },
-        { math::Vec3( 0.5f,  0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) },
-        { math::Vec3( 0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) },
-        { math::Vec3(-0.5f, -0.5f,  0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) },
-        // Back Face
-        { math::Vec3(-0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 0.0f) },
-        { math::Vec3( 0.5f,  0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 0.0f) },
-        { math::Vec3( 0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(0.0f, 1.0f) },
-        { math::Vec3(-0.5f, -0.5f, -0.5f), math::Vec4(1.0f, 1.0f, 1.0f, 1.0f), math::Vec2(1.0f, 1.0f) }
-    };
-
-    std::vector<uint32_t> indices = {
-        0, 3, 2, 2, 1, 0, // Front
-        5, 6, 7, 7, 4, 5, // Back
-        4, 7, 3, 3, 0, 4, // Left
-        1, 2, 6, 6, 5, 1, // Right
-        4, 0, 1, 1, 5, 4, // Top
-        3, 7, 6, 6, 2, 3  // Bottom
-    };
-
-    m_cube_mesh = std::make_unique<Mesh>(*m_graphics_device, vertices, indices);
+    m_cube_mesh = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
+    if (!m_cube_mesh) {
+        std::cerr << "Failed to load pyramid model" << std::endl;
+        return false;
+    }
 
     uint32_t checkerboard[] = { 0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF };
     m_checker_texture = std::make_unique<Texture>(*m_graphics_device, checkerboard, 2, 2);
