@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/core/material.hpp"
+#include "maya/core/scene_draw_uniforms.hpp"
 #include "maya/math/matrix.hpp"
 #include "maya/rhi/graphics_device.hpp"
 #include "maya/rhi/resource.hpp"
@@ -34,7 +35,7 @@ public:
 
     /// Binds pipeline, uniforms, optional texture, and issues draws for every object.
     void render(GraphicsDevice& device, UniformBufferHandle uniform_buffer,
-        const math::Mat4& view_projection) const;
+        const math::Mat4& view_projection, const DirectionalLighting& lighting) const;
 
 private:
     std::vector<std::unique_ptr<Mesh>> m_mesh_storage;

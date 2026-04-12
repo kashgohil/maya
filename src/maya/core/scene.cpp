@@ -4,15 +4,6 @@
 
 namespace maya {
 
-namespace {
-
-struct PerObjectUniforms {
-    math::Mat4 model_matrix;
-    math::Mat4 view_projection_matrix;
-};
-
-} // namespace
-
 Mesh* Scene::add_mesh(std::unique_ptr<Mesh> mesh) {
     Mesh* ptr = mesh.get();
     m_mesh_storage.push_back(std::move(mesh));
@@ -25,15 +16,18 @@ void Scene::add_object(std::unique_ptr<Mesh> mesh, Material material) {
 }
 
 void Scene::render(GraphicsDevice& device, UniformBufferHandle uniform_buffer,
-    const math::Mat4& view_projection) const {
+    const math::Mat4& view_projection, const DirectionalLighting& lighting) const {
     for (const SceneObject& obj : m_objects) {
         if (!obj.mesh) {
             continue;
         }
-        PerObjectUniforms uniforms;
+        SceneDrawUniforms uniforms{};
         uniforms.model_matrix = obj.model_matrix;
         uniforms.view_projection_matrix = view_projection;
-        device.update_uniform_buffer(uniform_buffer, &uniforms, sizeof(PerObjectUniforms));
+        uniforms.light_dir_world = math::Vec4(lighting.direction_to_light, 0.0f);
+        uniforms.ambient_rgb = math::Vec4(lighting.ambient, 0.0f);
+        uniforms.light_diffuse_rgb = math::Vec4(lighting.diffuse, 0.0f);
+        device.update_uniform_buffer(uniform_buffer, &uniforms, sizeof(SceneDrawUniforms));
         device.bind_pipeline(obj.material.pipeline);
         device.bind_uniform_buffer(uniform_buffer, 1);
         if (obj.material.texture) {
