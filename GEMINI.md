@@ -42,6 +42,8 @@ cmake --build .
 - `resources/`: Runtime shaders and other packaged resources (loaded via `FileSystem`).
 - `assets/`: Models and similar content referenced by path from the repo root.
 - `make_color_cube` (`primitives.hpp`): Procedural colored cube mesh for unlit drawing.
+- `Material` (`material.hpp`): Pipeline + optional texture for a draw path.
+- `Scene` (`scene.hpp`): Owns meshes and a flat list of `SceneObject` (mesh, material, model matrix); `Scene::render` applies uniforms and issues draws.
 
 ## Window size vs framebuffer (Metal)
 
