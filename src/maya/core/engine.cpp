@@ -1,6 +1,7 @@
 #include "maya/core/engine.hpp"
 #include "maya/core/file_system.hpp"
 #include "maya/core/model_loader.hpp"
+#include "maya/core/primitives.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/rhi/vertex.hpp"
 #include "maya/math/matrix.hpp"
@@ -63,14 +64,28 @@ bool Engine::initialize() {
         std::cerr << "Failed to read shader source (see [FileSystem] messages above for search paths).\n";
         return false;
     }
-    if (!m_graphics_device->create_pipeline(shader_source)) {
-        std::cerr << "Failed to create pipeline" << std::endl;
+
+    m_pipeline_textured = m_graphics_device->create_pipeline(shader_source);
+    if (m_pipeline_textured.handle == INVALID_HANDLE) {
+        std::cerr << "Failed to create textured pipeline" << std::endl;
         return false;
     }
 
-    m_cube_mesh = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
-    if (!m_cube_mesh) {
+    m_pipeline_unlit = m_graphics_device->create_pipeline(shader_source, "vertexMain", "fragmentUnlit");
+    if (m_pipeline_unlit.handle == INVALID_HANDLE) {
+        std::cerr << "Failed to create unlit pipeline" << std::endl;
+        return false;
+    }
+
+    m_pyramid_mesh = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
+    if (!m_pyramid_mesh) {
         std::cerr << "Failed to load pyramid model.\n";
+        return false;
+    }
+
+    m_unlit_cube_mesh = make_color_cube(*m_graphics_device, 0.35f, math::Vec3(1.0f, 1.0f, 1.0f));
+    if (!m_unlit_cube_mesh) {
+        std::cerr << "Failed to create unlit cube mesh.\n";
         return false;
     }
 
@@ -107,21 +122,38 @@ void Engine::run() {
 
         m_camera->update(delta_time);
         current_rotation += rotation_speed * delta_time;
-        
-        UniformData uniforms;
+
+        const math::Mat4 vp = m_camera->get_view_projection_matrix();
+
         math::Mat4 rotZ = math::Mat4::rotate_z(current_rotation);
         math::Mat4 rotX = math::Mat4::rotate_x(current_rotation * 0.5f);
-        uniforms.model_matrix = rotZ * rotX;
-        uniforms.view_projection_matrix = m_camera->get_view_projection_matrix();
+        const math::Mat4 pyramid_model = rotZ * rotX;
 
-        m_graphics_device->update_uniform_buffer(m_uniform_buffer, &uniforms, sizeof(UniformData));
+        const float cube_rot = current_rotation * 0.35f;
+        const math::Mat4 cube_model = math::Mat4::translate(math::Vec3(-1.35f, 0.0f, 0.0f))
+            * math::Mat4::rotate_y(cube_rot);
+
+        UniformData uniforms;
 
         m_graphics_device->begin_frame();
-        
+
+        int draw_calls = 0;
+
+        uniforms.model_matrix = pyramid_model;
+        uniforms.view_projection_matrix = vp;
+        m_graphics_device->update_uniform_buffer(m_uniform_buffer, &uniforms, sizeof(UniformData));
+        m_graphics_device->bind_pipeline(m_pipeline_textured);
         m_graphics_device->bind_uniform_buffer(m_uniform_buffer, 1);
         m_checker_texture->bind(0);
-        m_cube_mesh->draw();
-        const int draw_calls = 1;
+        m_pyramid_mesh->draw();
+        ++draw_calls;
+
+        uniforms.model_matrix = cube_model;
+        m_graphics_device->update_uniform_buffer(m_uniform_buffer, &uniforms, sizeof(UniformData));
+        m_graphics_device->bind_pipeline(m_pipeline_unlit);
+        m_graphics_device->bind_uniform_buffer(m_uniform_buffer, 1);
+        m_unlit_cube_mesh->draw();
+        ++draw_calls;
 
         m_graphics_device->end_frame();
         input.update();
