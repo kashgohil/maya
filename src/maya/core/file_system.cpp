@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
+#include <sstream>
 #include <system_error>
 
 #if defined(__APPLE__)
@@ -52,6 +54,27 @@ void push_unique(std::vector<std::filesystem::path>& out, const std::filesystem:
         }
     }
     out.push_back(p);
+}
+
+void log_read_text_failure(const std::string& path_str, const std::vector<std::filesystem::path>& roots) {
+    std::cerr << "[FileSystem] read_text failed for: " << path_str << "\n";
+    std::filesystem::path p(path_str);
+    if (p.is_absolute()) {
+        std::cerr << "  The path does not exist or is not a regular file.\n";
+        return;
+    }
+    if (roots.empty()) {
+        std::cerr << "  No search roots (call FileSystem::initialize from main, or set MAYA_RESOURCES).\n";
+        return;
+    }
+    std::cerr << "  Search roots:\n";
+    for (const auto& root : roots) {
+        std::cerr << "    " << root.string() << "\n";
+    }
+    std::cerr << "  Tried (root / path):\n";
+    for (const auto& root : roots) {
+        std::cerr << "    " << (root / path_str).string() << "\n";
+    }
 }
 
 } // namespace
@@ -109,10 +132,12 @@ std::optional<std::filesystem::path> FileSystem::resolve(const std::string& path
 std::string FileSystem::read_text(const std::string& path) {
     auto resolved = resolve(path);
     if (!resolved) {
+        log_read_text_failure(path, s_roots);
         return "";
     }
     std::ifstream file(*resolved);
     if (!file.is_open()) {
+        std::cerr << "[FileSystem] read_text could not open resolved path: " << resolved->string() << "\n";
         return "";
     }
     std::stringstream buffer;
