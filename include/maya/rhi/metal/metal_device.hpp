@@ -18,6 +18,8 @@ public:
     bool initialize(void* native_window_handle) override;
     void shutdown() override;
 
+    void resize(uint32_t width, uint32_t height) override;
+
     void begin_frame() override;
     void end_frame() override;
 

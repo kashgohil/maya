@@ -31,4 +31,10 @@ TEST_CASE("RHI GraphicsDevice initialization", "[rhi]") {
         
         device->shutdown();
     }
+
+    SECTION("Resize is safe without a Metal layer (headless)") {
+        device->initialize(nullptr);
+        device->resize(1920, 1080);
+        device->shutdown();
+    }
 }

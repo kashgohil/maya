@@ -74,6 +74,23 @@ void MetalDevice::shutdown() {
     m_device = nil;
 }
 
+void MetalDevice::resize(uint32_t width, uint32_t height) {
+    if (!m_layer || width == 0 || height == 0) {
+        return;
+    }
+
+    m_layer.drawableSize = CGSizeMake(width, height);
+
+    MTLTextureDescriptor* depthDescriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                     width:width
+                                    height:height
+                                 mipmapped:NO];
+    depthDescriptor.usage = MTLTextureUsageRenderTarget;
+    depthDescriptor.storageMode = MTLStorageModePrivate;
+    m_depth_texture = [m_device newTextureWithDescriptor:depthDescriptor];
+}
+
 bool MetalDevice::create_pipeline(const std::string& shader_source) {
     NSError* error = nil;
     NSString* source = [NSString stringWithUTF8String:shader_source.c_str()];

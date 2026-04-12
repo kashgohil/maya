@@ -13,6 +13,9 @@ public:
     virtual bool initialize(void* native_window_handle) = 0;
     virtual void shutdown() = 0;
 
+    /// Backing-store dimensions in pixels (e.g. GLFW framebuffer size). No-op for headless backends.
+    virtual void resize(uint32_t width, uint32_t height) { (void)width; (void)height; }
+
     virtual void begin_frame() = 0;
     virtual void end_frame() = 0;
 
