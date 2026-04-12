@@ -34,7 +34,7 @@ Run the unit tests:
 ./maya_tests
 ```
 
-Metal-related tests expect a normal macOS environment with GPU access. If tests fail in a **sandboxed** terminal or CI without Metal, run them locally in Terminal.app or grant the environment GPU access.
+Metal-related tests expect a normal macOS environment with GPU access. If tests fail in a **sandboxed** terminal, run them locally in Terminal.app or another environment that allows Metal.
 
 While the app is running, the **window title** shows a lightweight debug readout: smoothed FPS, last-frame time, framebuffer size, camera position, and indexed draw-call count for the current frame.
 
@@ -84,10 +84,6 @@ That directory should contain `resources/` and `assets/` as in the repo.
 - **Shader or model failed to load:** Check stderr. Failed relative paths print `[FileSystem]` lines listing search roots and each candidate path tried.
 - **Tests pass locally but fail in a sandbox:** Run `./maya_tests` outside the sandbox (Metal shader compilation needs a full macOS GPU stack in practice).
 - **Wrong aspect ratio after resize:** The engine uses GLFW framebuffer size; on Retina, that is the backing-store size in pixels (see `GEMINI.md`).
-
-## CI
-
-On push and pull requests to `master` or `main`, [GitHub Actions](.github/workflows/ci.yml) configures CMake, builds Release, and runs `maya_tests` on `macos-latest` (Metal available). You can also run the workflow manually from the Actions tab (`workflow_dispatch`).
 
 ## Notes
 

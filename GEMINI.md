@@ -48,9 +48,9 @@ On Retina displays, the **logical** window size (what you pass to `glfwCreateWin
 
 The engine uses **`glfwGetFramebufferSize`** at startup and **`glfwSetFramebufferSizeCallback`** on resize to drive `GraphicsDevice::resize` and `Camera::set_aspect_ratio`. That keeps the swapchain, depth buffer, and projection matrix aligned with the actual drawable resolution.
 
-## CI and local testing
+## Local testing
 
-GitHub Actions (`.github/workflows/ci.yml`) builds and runs `maya_tests` on `macos-latest`. For local runs, use a normal shell with GPU access; sandboxes that block Metal can cause shader compilation tests to fail.
+Run `./maya_tests` from your build directory in a normal shell with GPU access. Sandboxes that block Metal can cause shader compilation tests to fail.
 
 ## Asset load failures
 
