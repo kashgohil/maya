@@ -41,6 +41,7 @@ cmake --build .
 - `src/main.cpp`: Application entry point.
 - `resources/`: Runtime shaders and other packaged resources (loaded via `FileSystem`).
 - `assets/`: Models and similar content referenced by path from the repo root.
+- `make_color_cube` (`primitives.hpp`): Procedural colored cube mesh for unlit drawing.
 
 ## Window size vs framebuffer (Metal)
 
