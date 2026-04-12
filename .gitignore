@@ -42,3 +42,7 @@ assets/*.fbx
 # Temporary files
 *.tmp
 *.log
+
+# CTest / local test metadata
+Testing/
+**/CTestCostData.txt
