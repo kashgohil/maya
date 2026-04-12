@@ -246,7 +246,13 @@ void MetalDevice::bind_vertex_buffer(VertexBufferHandle handle, uint32_t slot) {
 }
 
 void MetalDevice::bind_uniform_buffer(UniformBufferHandle handle, uint32_t slot) {
-    bind_vertex_buffer(VertexBufferHandle{handle.handle}, slot);
+    auto it = m_buffers.find(handle.handle);
+    if (it == m_buffers.end() || !m_current_encoder) {
+        return;
+    }
+    id<MTLBuffer> buf = it->second;
+    [m_current_encoder setVertexBuffer:buf offset:0 atIndex:slot];
+    [m_current_encoder setFragmentBuffer:buf offset:0 atIndex:slot];
 }
 
 void MetalDevice::bind_texture(TextureHandle handle, uint32_t slot) {
