@@ -9,17 +9,11 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 namespace maya {
-
-struct UniformData {
-    math::Mat4 model_matrix;
-    math::Mat4 view_projection_matrix;
-};
 
 Engine::Engine() = default;
 Engine::~Engine() {
@@ -65,26 +59,26 @@ bool Engine::initialize() {
         return false;
     }
 
-    m_pipeline_textured = m_graphics_device->create_pipeline(shader_source);
-    if (m_pipeline_textured.handle == INVALID_HANDLE) {
+    const PipelineHandle pipeline_textured = m_graphics_device->create_pipeline(shader_source);
+    if (pipeline_textured.handle == INVALID_HANDLE) {
         std::cerr << "Failed to create textured pipeline" << std::endl;
         return false;
     }
 
-    m_pipeline_unlit = m_graphics_device->create_pipeline(shader_source, "vertexMain", "fragmentUnlit");
-    if (m_pipeline_unlit.handle == INVALID_HANDLE) {
+    const PipelineHandle pipeline_unlit = m_graphics_device->create_pipeline(shader_source, "vertexMain", "fragmentUnlit");
+    if (pipeline_unlit.handle == INVALID_HANDLE) {
         std::cerr << "Failed to create unlit pipeline" << std::endl;
         return false;
     }
 
-    m_pyramid_mesh = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
-    if (!m_pyramid_mesh) {
+    auto pyramid = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
+    if (!pyramid) {
         std::cerr << "Failed to load pyramid model.\n";
         return false;
     }
 
-    m_unlit_cube_mesh = make_color_cube(*m_graphics_device, 0.35f, math::Vec3(1.0f, 1.0f, 1.0f));
-    if (!m_unlit_cube_mesh) {
+    auto unlit_cube = make_color_cube(*m_graphics_device, 0.35f, math::Vec3(1.0f, 1.0f, 1.0f));
+    if (!unlit_cube) {
         std::cerr << "Failed to create unlit cube mesh.\n";
         return false;
     }
@@ -92,7 +86,10 @@ bool Engine::initialize() {
     uint32_t checkerboard[] = { 0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF };
     m_checker_texture = std::make_unique<Texture>(*m_graphics_device, checkerboard, 2, 2);
 
-    m_uniform_buffer = m_graphics_device->create_uniform_buffer(sizeof(UniformData));
+    m_uniform_buffer = m_graphics_device->create_uniform_buffer(sizeof(math::Mat4) * 2);
+
+    m_scene.add_object(std::move(pyramid), Material{pipeline_textured, m_checker_texture.get()});
+    m_scene.add_object(std::move(unlit_cube), Material{pipeline_unlit, nullptr});
 
     m_is_running = true;
     return true;
@@ -133,30 +130,18 @@ void Engine::run() {
         const math::Mat4 cube_model = math::Mat4::translate(math::Vec3(-1.35f, 0.0f, 0.0f))
             * math::Mat4::rotate_y(cube_rot);
 
-        UniformData uniforms;
+        std::vector<SceneObject>& objects = m_scene.objects();
+        if (objects.size() >= 2) {
+            objects[0].model_matrix = pyramid_model;
+            objects[1].model_matrix = cube_model;
+        }
 
         m_graphics_device->begin_frame();
-
-        int draw_calls = 0;
-
-        uniforms.model_matrix = pyramid_model;
-        uniforms.view_projection_matrix = vp;
-        m_graphics_device->update_uniform_buffer(m_uniform_buffer, &uniforms, sizeof(UniformData));
-        m_graphics_device->bind_pipeline(m_pipeline_textured);
-        m_graphics_device->bind_uniform_buffer(m_uniform_buffer, 1);
-        m_checker_texture->bind(0);
-        m_pyramid_mesh->draw();
-        ++draw_calls;
-
-        uniforms.model_matrix = cube_model;
-        m_graphics_device->update_uniform_buffer(m_uniform_buffer, &uniforms, sizeof(UniformData));
-        m_graphics_device->bind_pipeline(m_pipeline_unlit);
-        m_graphics_device->bind_uniform_buffer(m_uniform_buffer, 1);
-        m_unlit_cube_mesh->draw();
-        ++draw_calls;
-
+        m_scene.render(*m_graphics_device, m_uniform_buffer, vp);
         m_graphics_device->end_frame();
         input.update();
+
+        const uint32_t draw_calls = m_scene.drawable_count();
 
         int fb_w = 0;
         int fb_h = 0;

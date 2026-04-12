@@ -4,10 +4,9 @@
 #include "maya/rhi/graphics_device.hpp"
 #include "maya/rhi/resource.hpp"
 #include "maya/core/camera.hpp"
-#include "maya/core/mesh.hpp"
+#include "maya/core/scene.hpp"
 #include "maya/core/texture.hpp"
 #include <memory>
-#include <vector>
 
 namespace maya {
 
@@ -25,11 +24,7 @@ private:
     std::unique_ptr<GraphicsDevice> m_graphics_device;
     std::unique_ptr<Camera> m_camera;
 
-    PipelineHandle m_pipeline_textured{};
-    PipelineHandle m_pipeline_unlit{};
-
-    std::unique_ptr<Mesh> m_pyramid_mesh;
-    std::unique_ptr<Mesh> m_unlit_cube_mesh;
+    Scene m_scene;
     std::unique_ptr<Texture> m_checker_texture;
     UniformBufferHandle m_uniform_buffer;
 
