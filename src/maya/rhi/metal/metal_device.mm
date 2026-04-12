@@ -65,9 +65,9 @@ bool MetalDevice::initialize(void* native_window_handle) {
 void MetalDevice::shutdown() {
     m_buffers.clear();
     m_textures.clear();
+    m_pipeline_states.clear();
     m_depth_texture = nil;
     m_depth_stencil_state = nil;
-    m_pipeline_state = nil;
     m_current_command_buffer = nil;
     m_layer = nil;
     m_command_queue = nil;
@@ -91,33 +91,55 @@ void MetalDevice::resize(uint32_t width, uint32_t height) {
     m_depth_texture = [m_device newTextureWithDescriptor:depthDescriptor];
 }
 
-bool MetalDevice::create_pipeline(const std::string& shader_source) {
+PipelineHandle MetalDevice::create_pipeline(const std::string& shader_source,
+    const std::string& vertex_entry,
+    const std::string& fragment_entry) {
     NSError* error = nil;
     NSString* source = [NSString stringWithUTF8String:shader_source.c_str()];
     id<MTLLibrary> library = [m_device newLibraryWithSource:source options:nil error:&error];
     
     if (!library) {
         NSLog(@"Failed to create library: %@", error);
-        return false;
+        return {INVALID_HANDLE};
     }
 
-    id<MTLFunction> vertexFunction = [library newFunctionWithName:@"vertexMain"];
-    id<MTLFunction> fragmentFunction = [library newFunctionWithName:@"fragmentMain"];
+    NSString* vertexName = [NSString stringWithUTF8String:vertex_entry.c_str()];
+    NSString* fragmentName = [NSString stringWithUTF8String:fragment_entry.c_str()];
+    id<MTLFunction> vertexFunction = [library newFunctionWithName:vertexName];
+    id<MTLFunction> fragmentFunction = [library newFunctionWithName:fragmentName];
+
+    if (!vertexFunction || !fragmentFunction) {
+        NSLog(@"Failed to create library: missing vertex or fragment function");
+        return {INVALID_HANDLE};
+    }
 
     MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
     pipelineDescriptor.vertexFunction = vertexFunction;
     pipelineDescriptor.fragmentFunction = fragmentFunction;
-    pipelineDescriptor.colorAttachments[0].pixelFormat = m_layer.pixelFormat;
+    MTLPixelFormat color_format = m_layer ? m_layer.pixelFormat : MTLPixelFormatBGRA8Unorm;
+    pipelineDescriptor.colorAttachments[0].pixelFormat = color_format;
     pipelineDescriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 
-    m_pipeline_state = [m_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
+    id<MTLRenderPipelineState> m_pipeline_state = [m_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     
     if (!m_pipeline_state) {
         NSLog(@"Failed to create pipeline state: %@", error);
-        return false;
+        return {INVALID_HANDLE};
     }
 
-    return true;
+    uint32_t handle = m_next_pipeline_handle++;
+    m_pipeline_states[handle] = m_pipeline_state;
+    return {handle};
+}
+
+void MetalDevice::bind_pipeline(PipelineHandle handle) {
+    if (!m_current_encoder) {
+        return;
+    }
+    auto it = m_pipeline_states.find(handle.handle);
+    if (it != m_pipeline_states.end()) {
+        [m_current_encoder setRenderPipelineState:it->second];
+    }
 }
 
 namespace {
@@ -204,7 +226,6 @@ void MetalDevice::begin_frame() {
     passDescriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
 
     m_current_encoder = [m_current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
-    [m_current_encoder setRenderPipelineState:m_pipeline_state];
     [m_current_encoder setDepthStencilState:m_depth_stencil_state];
     [m_current_encoder setCullMode:MTLCullModeBack]; 
     [m_current_encoder setFrontFacingWinding:MTLWindingCounterClockwise];

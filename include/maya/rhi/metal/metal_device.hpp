@@ -23,7 +23,10 @@ public:
     void begin_frame() override;
     void end_frame() override;
 
-    bool create_pipeline(const std::string& shader_source) override;
+    PipelineHandle create_pipeline(const std::string& shader_source,
+        const std::string& vertex_entry = "vertexMain",
+        const std::string& fragment_entry = "fragmentMain") override;
+    void bind_pipeline(PipelineHandle handle) override;
     VertexBufferHandle create_vertex_buffer(const void* data, size_t size) override;
     IndexBufferHandle create_index_buffer(const void* data, size_t size) override;
     
@@ -44,7 +47,8 @@ private:
     id<MTLCommandQueue> m_command_queue;
     CAMetalLayer* m_layer;
     id<MTLCommandBuffer> m_current_command_buffer;
-    id<MTLRenderPipelineState> m_pipeline_state;
+    std::map<uint32_t, id<MTLRenderPipelineState>> m_pipeline_states;
+    uint32_t m_next_pipeline_handle = 1;
     id<MTLRenderCommandEncoder> m_current_encoder;
     id<CAMetalDrawable> m_current_drawable;
     
@@ -61,7 +65,7 @@ private:
     void* m_command_queue;
     void* m_layer;
     void* m_current_command_buffer;
-    void* m_pipeline_state;
+    void* m_pipeline_states;
     void* m_current_encoder;
     void* m_current_drawable;
     void* m_buffers;
@@ -71,6 +75,7 @@ private:
     void* m_depth_stencil_state;
     void* m_pool;
     uint32_t m_next_handle;
+    uint32_t m_next_pipeline_handle;
 #endif
 };
 
