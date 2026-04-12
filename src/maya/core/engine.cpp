@@ -60,7 +60,7 @@ bool Engine::initialize() {
 
     std::string shader_source = FileSystem::read_text("resources/shaders/metal/triangle.metal");
     if (shader_source.empty()) {
-        std::cerr << "Failed to read shader source" << std::endl;
+        std::cerr << "Failed to read shader source (see [FileSystem] messages above for search paths).\n";
         return false;
     }
     if (!m_graphics_device->create_pipeline(shader_source)) {
@@ -70,7 +70,7 @@ bool Engine::initialize() {
 
     m_cube_mesh = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
     if (!m_cube_mesh) {
-        std::cerr << "Failed to load pyramid model" << std::endl;
+        std::cerr << "Failed to load pyramid model.\n";
         return false;
     }
 
@@ -121,6 +121,7 @@ void Engine::run() {
         m_graphics_device->bind_uniform_buffer(m_uniform_buffer, 1);
         m_checker_texture->bind(0);
         m_cube_mesh->draw();
+        const int draw_calls = 1;
 
         m_graphics_device->end_frame();
         input.update();
@@ -132,7 +133,7 @@ void Engine::run() {
         std::ostringstream title;
         title << std::fixed << std::setprecision(1)
               << "Maya | " << fps_smooth << " fps | " << (delta_time * 1000.0f) << " ms | "
-              << fb_w << "x" << fb_h << " | cam "
+              << fb_w << "x" << fb_h << " | draws " << draw_calls << " | cam "
               << std::setprecision(2) << pos.x << ", " << pos.y << ", " << pos.z;
         m_window->set_title(title.str());
     }
