@@ -42,3 +42,7 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     float4 texColor = colorTexture.sample(textureSampler, in.uv);
     return texColor * in.color;
 }
+
+fragment float4 fragmentUnlit(VertexOut in [[stage_in]]) {
+    return in.color;
+}
