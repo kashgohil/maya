@@ -14,6 +14,8 @@ public:
     void set_position(const math::Vec3& position) { m_position = position; }
     const math::Vec3& get_position() const { return m_position; }
 
+    void set_aspect_ratio(float aspect_ratio) { m_aspect_ratio = aspect_ratio; }
+
     math::Mat4 get_view_matrix() const;
     math::Mat4 get_projection_matrix() const;
     math::Mat4 get_view_projection_matrix() const;
