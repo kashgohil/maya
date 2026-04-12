@@ -20,7 +20,11 @@ public:
     virtual void end_frame() = 0;
 
     // Resource Creation
-    virtual bool create_pipeline(const std::string& shader_source) = 0;
+    /// Compiles Metal source and builds a render pipeline. Entry names default to textured mesh shader.
+    virtual PipelineHandle create_pipeline(const std::string& shader_source,
+        const std::string& vertex_entry = "vertexMain",
+        const std::string& fragment_entry = "fragmentMain") = 0;
+    virtual void bind_pipeline(PipelineHandle handle) { (void)handle; }
     virtual VertexBufferHandle create_vertex_buffer(const void* data, size_t size) = 0;
     virtual IndexBufferHandle create_index_buffer(const void* data, size_t size) = 0;
     

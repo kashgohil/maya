@@ -11,5 +11,6 @@ struct VertexBufferHandle { ResourceHandle handle = INVALID_HANDLE; };
 struct IndexBufferHandle { ResourceHandle handle = INVALID_HANDLE; };
 struct UniformBufferHandle { ResourceHandle handle = INVALID_HANDLE; };
 struct TextureHandle { ResourceHandle handle = INVALID_HANDLE; };
+struct PipelineHandle { ResourceHandle handle = INVALID_HANDLE; };
 
 } // namespace maya
