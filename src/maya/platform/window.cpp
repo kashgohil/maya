@@ -32,6 +32,27 @@ Window::Window(int width, int height, const std::string& title) {
     glfwSetCursorPosCallback(m_window, [](GLFWwindow* window, double xpos, double ypos) {
         Input::instance().set_mouse_position(static_cast<float>(xpos), static_cast<float>(ypos));
     });
+
+    glfwSetFramebufferSizeCallback(m_window, framebuffer_size_callback);
+}
+
+void Window::framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    void* user = glfwGetWindowUserPointer(window);
+    if (!user) return;
+    auto* self = static_cast<Window*>(user);
+    if (self->m_framebuffer_resize_callback) {
+        self->m_framebuffer_resize_callback(width, height);
+    }
+}
+
+void Window::set_framebuffer_resize_callback(FramebufferResizeCallback callback) {
+    m_framebuffer_resize_callback = std::move(callback);
+}
+
+void Window::set_title(const std::string& title) {
+    if (m_window) {
+        glfwSetWindowTitle(m_window, title.c_str());
+    }
 }
 
 Window::~Window() {
