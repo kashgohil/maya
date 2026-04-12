@@ -86,7 +86,7 @@ bool Engine::initialize() {
     uint32_t checkerboard[] = { 0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF };
     m_checker_texture = std::make_unique<Texture>(*m_graphics_device, checkerboard, 2, 2);
 
-    m_uniform_buffer = m_graphics_device->create_uniform_buffer(sizeof(math::Mat4) * 2);
+    m_uniform_buffer = m_graphics_device->create_uniform_buffer(sizeof(SceneDrawUniforms));
 
     m_scene.add_object(std::move(pyramid), Material{pipeline_textured, m_checker_texture.get()});
     m_scene.add_object(std::move(unlit_cube), Material{pipeline_unlit, nullptr});
@@ -137,7 +137,7 @@ void Engine::run() {
         }
 
         m_graphics_device->begin_frame();
-        m_scene.render(*m_graphics_device, m_uniform_buffer, vp);
+        m_scene.render(*m_graphics_device, m_uniform_buffer, vp, m_directional_light);
         m_graphics_device->end_frame();
         input.update();
 

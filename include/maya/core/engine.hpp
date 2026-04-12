@@ -25,6 +25,7 @@ private:
     std::unique_ptr<Camera> m_camera;
 
     Scene m_scene;
+    DirectionalLighting m_directional_light = DirectionalLighting::default_sun();
     std::unique_ptr<Texture> m_checker_texture;
     UniformBufferHandle m_uniform_buffer;
 
