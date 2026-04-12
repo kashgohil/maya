@@ -47,6 +47,10 @@ Runtime files live under the repository:
 
 You can run `./maya` from `build/` without manually setting `MAYA_RESOURCES`.
 
+## CI
+
+On push and pull requests, [GitHub Actions](.github/workflows/ci.yml) configures CMake, builds, and runs `maya_tests` on `macos-latest` (Metal available).
+
 ## Notes
 
 - **Framebuffer vs logical size:** On Retina displays, the GLFW framebuffer size in pixels differs from the window’s logical size. The engine uses framebuffer dimensions for Metal’s drawable and for the camera aspect ratio (see `GEMINI.md`).
