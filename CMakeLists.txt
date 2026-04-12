@@ -31,10 +31,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Include directories
 # Note: target_include_directories is used below instead of global include_directories
 
-# Source files
-file(GLOB_RECURSE ENGINE_SOURCES 
-    "src/maya/*.cpp"
-    "src/maya/*.mm"
+# Source files (recursive; CONFIGURE_DEPENDS picks up new files without manual cmake refresh)
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
+    "src/maya/**/*.cpp"
+    "src/maya/**/*.mm"
 )
 
 add_library(MayaEngine STATIC ${ENGINE_SOURCES})
