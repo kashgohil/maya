@@ -1,6 +1,7 @@
 #include "maya/core/file_system.hpp"
 
 #include <cstdlib>
+#include <fstream>
 #include <system_error>
 
 #if defined(__APPLE__)
