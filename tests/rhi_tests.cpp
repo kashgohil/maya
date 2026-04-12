@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "maya/rhi/graphics_device.hpp"
+#include "maya/rhi/resource.hpp"
 #include <string>
 
 using namespace maya;
@@ -24,10 +25,12 @@ TEST_CASE("RHI GraphicsDevice initialization", "[rhi]") {
             fragment float4 fragmentMain() { return float4(1); }
         )";
         
-        CHECK(device->create_pipeline(valid_shader) == true);
-        
+        PipelineHandle good = device->create_pipeline(valid_shader);
+        CHECK(good.handle != INVALID_HANDLE);
+
         std::string invalid_shader = "this is not a shader";
-        CHECK(device->create_pipeline(invalid_shader) == false);
+        PipelineHandle bad = device->create_pipeline(invalid_shader);
+        CHECK(bad.handle == INVALID_HANDLE);
         
         device->shutdown();
     }

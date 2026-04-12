@@ -11,7 +11,9 @@ public:
     void shutdown() override {}
     void begin_frame() override {}
     void end_frame() override {}
-    bool create_pipeline(const std::string&) override { return true; }
+    PipelineHandle create_pipeline(const std::string&, const std::string&, const std::string&) override {
+        return {next_pipeline++};
+    }
     VertexBufferHandle create_vertex_buffer(const void*, size_t) override { return {1}; }
     IndexBufferHandle create_index_buffer(const void*, size_t) override { return {2}; }
     UniformBufferHandle create_uniform_buffer(size_t) override { return {3}; }
@@ -40,6 +42,7 @@ public:
     
 private:
     uint32_t next_handle = 1;
+    uint32_t next_pipeline = 1;
 };
 
 // =============================================================================

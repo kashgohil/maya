@@ -14,7 +14,9 @@ public:
     void shutdown() override {}
     void begin_frame() override {}
     void end_frame() override {}
-    bool create_pipeline(const std::string&) override { return true; }
+    PipelineHandle create_pipeline(const std::string&, const std::string&, const std::string&) override {
+        return {next_pipeline++};
+    }
     VertexBufferHandle create_vertex_buffer(const void*, size_t) override { return {1}; }
     IndexBufferHandle create_index_buffer(const void*, size_t) override { return {2}; }
     UniformBufferHandle create_uniform_buffer(size_t) override { return {3}; }
@@ -24,6 +26,9 @@ public:
     void bind_uniform_buffer(UniformBufferHandle, uint32_t) override {}
     void bind_texture(TextureHandle, uint32_t) override {}
     void draw_indexed(IndexBufferHandle, uint32_t) override {}
+
+private:
+    uint32_t next_pipeline = 1;
 };
 
 // Helper to create temp OBJ files
