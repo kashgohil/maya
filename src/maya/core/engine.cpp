@@ -41,7 +41,7 @@ bool Engine::initialize() {
     m_camera = std::make_unique<Camera>(60.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
     m_camera->set_position(math::Vec3(0.0f, 0.0f, 3.0f));
 
-    std::string shader_source = FileSystem::read_text("src/maya/rhi/metal/triangle.metal");
+    std::string shader_source = FileSystem::read_text("resources/shaders/metal/triangle.metal");
     if (shader_source.empty()) {
         std::cerr << "Failed to read shader source" << std::endl;
         return false;

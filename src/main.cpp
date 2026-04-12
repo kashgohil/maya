@@ -1,7 +1,10 @@
 #include "maya/core/engine.hpp"
+#include "maya/core/file_system.hpp"
 #include <iostream>
 
-int main() {
+int main(int argc, char** argv) {
+    maya::FileSystem::initialize(argc, argv);
+
     maya::Engine engine;
     
     if (!engine.initialize()) {
