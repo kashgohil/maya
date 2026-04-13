@@ -35,7 +35,8 @@ public:
 
     /// Binds pipeline, uniforms, optional texture, and issues draws for every object.
     void render(GraphicsDevice& device, UniformBufferHandle uniform_buffer,
-        const math::Mat4& view_projection, const DirectionalLighting& lighting) const;
+        const math::Mat4& view_projection, const DirectionalLighting& lighting,
+        const math::Vec3& camera_position_world) const;
 
 private:
     std::vector<std::unique_ptr<Mesh>> m_mesh_storage;

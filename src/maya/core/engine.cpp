@@ -137,7 +137,8 @@ void Engine::run() {
         }
 
         m_graphics_device->begin_frame();
-        m_scene.render(*m_graphics_device, m_uniform_buffer, vp, m_directional_light);
+        m_scene.render(*m_graphics_device, m_uniform_buffer, vp, m_directional_light,
+            m_camera->get_position());
         m_graphics_device->end_frame();
         input.update();
 

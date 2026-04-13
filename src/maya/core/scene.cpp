@@ -16,7 +16,8 @@ void Scene::add_object(std::unique_ptr<Mesh> mesh, Material material) {
 }
 
 void Scene::render(GraphicsDevice& device, UniformBufferHandle uniform_buffer,
-    const math::Mat4& view_projection, const DirectionalLighting& lighting) const {
+    const math::Mat4& view_projection, const DirectionalLighting& lighting,
+    const math::Vec3& camera_position_world) const {
     for (const SceneObject& obj : m_objects) {
         if (!obj.mesh) {
             continue;
@@ -27,6 +28,9 @@ void Scene::render(GraphicsDevice& device, UniformBufferHandle uniform_buffer,
         uniforms.light_dir_world = math::Vec4(lighting.direction_to_light, 0.0f);
         uniforms.ambient_rgb = math::Vec4(lighting.ambient, 0.0f);
         uniforms.light_diffuse_rgb = math::Vec4(lighting.diffuse, 0.0f);
+        uniforms.camera_position_world = math::Vec4(camera_position_world, 0.0f);
+        uniforms.specular_rgb_shininess =
+            math::Vec4(lighting.specular, lighting.shininess);
         device.update_uniform_buffer(uniform_buffer, &uniforms, sizeof(SceneDrawUniforms));
         device.bind_pipeline(obj.material.pipeline);
         device.bind_uniform_buffer(uniform_buffer, 1);
