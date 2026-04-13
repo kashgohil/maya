@@ -17,9 +17,12 @@ public:
 
     bool initialize();
     void run();
+    void run_for_frames(uint32_t frames);
     void shutdown();
 
 private:
+    void run_impl(bool enable_input_capture, uint32_t max_frames);
+
     std::unique_ptr<Window> m_window;
     std::unique_ptr<GraphicsDevice> m_graphics_device;
     std::unique_ptr<Camera> m_camera;

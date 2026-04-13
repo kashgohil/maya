@@ -23,18 +23,22 @@ Engine::~Engine() {
 static_assert(sizeof(Vertex) == 64, "Vertex struct size mismatch! Metal shader expects 64 bytes due to float4 alignment.");
 
 bool Engine::initialize() {
-    m_window = std::make_unique<Window>(1280, 720, "Maya Engine - RHI Metal Backend");
+    std::cerr << "[Engine] init: window\n";
+    m_window = std::make_unique<Window>(1280, 720, "Maya Engine");
     if (!m_window->get_native_handle()) {
         std::cerr << "Failed to create window native handle" << std::endl;
         return false;
     }
 
+    m_window->set_title("Maya | init: rhi");
     m_graphics_device = GraphicsDevice::create_default();
     if (!m_graphics_device->initialize(m_window->get_native_handle())) {
         std::cerr << "Failed to initialize graphics device" << std::endl;
+        m_window->set_title("Maya | init failed: rhi");
         return false;
     }
 
+    m_window->set_title("Maya | init: camera");
     m_camera = std::make_unique<Camera>(60.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
     m_camera->set_position(math::Vec3(0.0f, 0.0f, 3.0f));
 
@@ -56,24 +60,30 @@ bool Engine::initialize() {
     std::string shader_source = FileSystem::read_text("resources/shaders/metal/triangle.metal");
     if (shader_source.empty()) {
         std::cerr << "Failed to read shader source (see [FileSystem] messages above for search paths).\n";
+        m_window->set_title("Maya | init failed: shader source");
         return false;
     }
 
+    m_window->set_title("Maya | init: pipelines");
     const PipelineHandle pipeline_textured = m_graphics_device->create_pipeline(shader_source);
     if (pipeline_textured.handle == INVALID_HANDLE) {
         std::cerr << "Failed to create textured pipeline" << std::endl;
+        m_window->set_title("Maya | init failed: textured pipeline");
         return false;
     }
 
     const PipelineHandle pipeline_unlit = m_graphics_device->create_pipeline(shader_source, "vertexMain", "fragmentUnlit");
     if (pipeline_unlit.handle == INVALID_HANDLE) {
         std::cerr << "Failed to create unlit pipeline" << std::endl;
+        m_window->set_title("Maya | init failed: unlit pipeline");
         return false;
     }
 
+    m_window->set_title("Maya | init: assets");
     auto pyramid = ModelLoader::load_obj(*m_graphics_device, "assets/models/pyramid.obj");
     if (!pyramid) {
         std::cerr << "Failed to load pyramid model.\n";
+        m_window->set_title("Maya | init failed: pyramid");
         return false;
     }
 
@@ -86,27 +96,40 @@ bool Engine::initialize() {
     uint32_t checkerboard[] = { 0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF };
     m_checker_texture = std::make_unique<Texture>(*m_graphics_device, checkerboard, 2, 2);
 
+    m_window->set_title("Maya | init: scene");
     m_uniform_buffer = m_graphics_device->create_uniform_buffer(sizeof(SceneDrawUniforms));
 
     m_scene.add_object(std::move(pyramid), Material{pipeline_textured, m_checker_texture.get()});
     m_scene.add_object(std::move(unlit_cube), Material{pipeline_unlit, nullptr});
 
     m_is_running = true;
+    m_window->set_title("Maya | ready");
     return true;
 }
 
 void Engine::run() {
+    run_impl(true, 0);
+}
+
+void Engine::run_for_frames(uint32_t frames) {
+    run_impl(false, frames);
+}
+
+void Engine::run_impl(bool enable_input_capture, uint32_t max_frames) {
     float rotation_speed = 0.5f;
     float current_rotation = 0.0f;
     double last_time = glfwGetTime();
     float fps_smooth = 0.0f;
 
-    glfwSetInputMode(m_window->get_glfw_window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    if (enable_input_capture) {
+        glfwSetInputMode(m_window->get_glfw_window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    }
+    uint32_t frame_index = 0;
 
     while (m_is_running && !m_window->should_close()) {
         m_window->poll_events();
         Input& input = Input::instance();
-        if (input.is_key_pressed(KeyCode::Escape)) m_is_running = false;
+        if (enable_input_capture && input.is_key_pressed(KeyCode::Escape)) m_is_running = false;
 
         double current_time = glfwGetTime();
         float delta_time = static_cast<float>(current_time - last_time);
@@ -154,6 +177,13 @@ void Engine::run() {
               << fb_w << "x" << fb_h << " | draws " << draw_calls << " | cam "
               << std::setprecision(2) << pos.x << ", " << pos.y << ", " << pos.z;
         m_window->set_title(title.str());
+
+        if (max_frames > 0) {
+            ++frame_index;
+            if (frame_index >= max_frames) {
+                m_is_running = false;
+            }
+        }
     }
 }
 
