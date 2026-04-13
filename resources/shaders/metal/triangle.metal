@@ -14,10 +14,13 @@ struct Uniforms {
     float4 light_dir_world;
     float4 ambient_rgb;
     float4 light_diffuse_rgb;
+    float4 camera_position_world;
+    float4 specular_rgb_shininess;
 };
 
 struct VertexOut {
     float4 position [[position]];
+    float3 world_position;
     float3 world_normal;
     float4 color;
     float2 uv;
@@ -30,6 +33,7 @@ vertex VertexOut vertexMain(uint vertexID [[vertex_id]],
 
     float4 pos = float4(vertices[vertexID].position, 1.0);
     float4 world_pos = uniforms.model_matrix * pos;
+    out.world_position = world_pos.xyz;
     out.position = uniforms.view_projection_matrix * world_pos;
 
     float3x3 normal_matrix = float3x3(
@@ -56,10 +60,17 @@ fragment float4 fragmentMain(VertexOut in [[stage_in]],
     float3 L = normalize(uniforms.light_dir_world.xyz);
     float ndotl = saturate(dot(N, L));
 
+    float3 V = normalize(uniforms.camera_position_world.xyz - in.world_position);
+    float3 H = normalize(L + V);
+    float shininess = max(uniforms.specular_rgb_shininess.w, 1.0);
+    float spec_mask = pow(saturate(dot(N, H)), shininess);
+
     float3 albedo = texColor.rgb * in.color.rgb;
     float3 ambient_term = uniforms.ambient_rgb.rgb * albedo;
     float3 diffuse_term = ndotl * uniforms.light_diffuse_rgb.rgb * albedo;
-    float3 rgb = ambient_term + diffuse_term;
+    float3 specular_term =
+        spec_mask * uniforms.specular_rgb_shininess.rgb * uniforms.light_diffuse_rgb.rgb;
+    float3 rgb = ambient_term + diffuse_term + specular_term;
 
     return float4(rgb, texColor.a * in.color.a);
 }
