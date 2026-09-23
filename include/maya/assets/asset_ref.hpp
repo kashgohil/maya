@@ -3,10 +3,10 @@
 #include "maya/core/identity.hpp"
 
 namespace maya {
-struct MeshAsset;
+class MeshAsset;
 struct MaterialAsset;
 
-/// A serializable reference, not a residency lease. Registry/loading comes in #993.
+/// A serializable reference, not a residency lease. AssetRegistry issues explicit residency leases.
 template<class Asset>
 struct AssetRef {
     AssetId id{};

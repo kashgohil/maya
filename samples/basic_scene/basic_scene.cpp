@@ -2,7 +2,8 @@
 #include "maya/core/camera.hpp"
 #include "maya/core/file_system.hpp"
 #include "maya/core/mesh.hpp"
-#include "maya/core/model_loader.hpp"
+#include "maya/assets/registry.hpp"
+#include <fstream>
 #include "maya/core/primitives.hpp"
 #include "maya/core/scene.hpp"
 #include "maya/core/texture.hpp"
@@ -22,14 +23,26 @@ public:
         const auto unlit = device.create_pipeline(source, "vertexMain", "fragmentUnlit");
         if (textured.handle == INVALID_HANDLE || unlit.handle == INVALID_HANDLE) return false;
 
-        auto pyramid = ModelLoader::load_obj(device, "samples/basic_scene/assets/pyramid.obj");
+        const auto catalog_path = FileSystem::resolve("samples/basic_scene/assets/catalog.maya");
+        if (!catalog_path) return false;
+        auto catalog_file = std::ifstream(*catalog_path);
+        const auto catalog = read_asset_catalog(catalog_file);
+        if (!catalog) { std::cerr << catalog.diagnostic.message << '\n'; return false; }
+        m_assets = std::make_unique<AssetRegistry>(catalog_path->parent_path(),
+            std::make_unique<FileAssetProvider>(device));
+        for (const auto& record : catalog.records) {
+            const auto error = m_assets->register_asset(record);
+            if (error) { std::cerr << error.message << '\n'; return false; }
+        }
+        auto pyramid = m_assets->acquire(AssetRef<MeshAsset>{{0x6d617961,1}});
+        if (!pyramid) std::cerr << pyramid.diagnostic.message << '\n';
         auto cube = make_color_cube(device, 0.35f, {1.0f, 1.0f, 1.0f});
         if (!pyramid || !cube) return false;
         const uint32_t checkerboard[] = {0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF};
         m_texture = std::make_unique<Texture>(device, checkerboard, 2, 2);
         m_uniform_buffer = device.create_uniform_buffer(sizeof(SceneDrawUniforms));
         if (m_uniform_buffer.handle == INVALID_HANDLE) return false;
-        m_scene.add_object(std::move(pyramid), Material{textured, m_texture.get()});
+        m_scene.add_object(std::move(pyramid.lease), Material{textured, m_texture.get()});
         m_scene.add_object(std::move(cube), Material{unlit, nullptr});
         std::cerr << "[BasicScene] loaded pyramid and cube\n";
         return true;
@@ -56,6 +69,7 @@ public:
 
     void on_stop() noexcept override {
         m_scene = Scene{};
+        m_assets.reset();
         m_texture.reset();
         m_camera.reset();
         m_uniform_buffer = {};
@@ -63,6 +77,7 @@ public:
     }
 
 private:
+    std::unique_ptr<AssetRegistry> m_assets;
     Scene m_scene;
     std::unique_ptr<Camera> m_camera;
     std::unique_ptr<Texture> m_texture;

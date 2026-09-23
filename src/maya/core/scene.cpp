@@ -15,6 +15,13 @@ void Scene::add_object(std::unique_ptr<Mesh> mesh, Material material) {
     m_objects.push_back(SceneObject{ptr, material, math::Mat4::identity()});
 }
 
+void Scene::add_object(AssetLease<MeshAsset> mesh, Material material) {
+    if (!mesh) return; // missing mesh fallback is an explicitly skipped draw
+    const auto& value = mesh.value().mesh();
+    m_asset_storage.push_back(std::move(mesh));
+    m_objects.push_back(SceneObject{&value, material, math::Mat4::identity()});
+}
+
 void Scene::render(GraphicsDevice& device, UniformBufferHandle uniform_buffer,
     const math::Mat4& view_projection, const DirectionalLighting& lighting,
     const math::Vec3& camera_position_world) const {

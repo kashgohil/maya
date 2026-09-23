@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/core/material.hpp"
+#include "maya/assets/asset.hpp"
 #include "maya/core/scene_draw_uniforms.hpp"
 #include "maya/math/matrix.hpp"
 #include "maya/rhi/graphics_device.hpp"
@@ -15,7 +16,7 @@ class Mesh;
 
 /// Per-object CPU state updated each frame before `render`.
 struct SceneObject {
-    Mesh* mesh = nullptr;
+    const Mesh* mesh = nullptr;
     Material material{};
     math::Mat4 model_matrix = math::Mat4::identity();
 };
@@ -27,6 +28,7 @@ public:
     Mesh* add_mesh(std::unique_ptr<Mesh> mesh);
 
     void add_object(std::unique_ptr<Mesh> mesh, Material material);
+    void add_object(AssetLease<MeshAsset> mesh, Material material);
 
     std::vector<SceneObject>& objects() { return m_objects; }
     const std::vector<SceneObject>& objects() const { return m_objects; }
@@ -40,6 +42,7 @@ public:
 
 private:
     std::vector<std::unique_ptr<Mesh>> m_mesh_storage;
+    std::vector<AssetLease<MeshAsset>> m_asset_storage;
     std::vector<SceneObject> m_objects;
 };
 

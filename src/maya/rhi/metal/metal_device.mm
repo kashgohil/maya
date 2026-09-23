@@ -40,6 +40,7 @@ MetalDevice::~MetalDevice() {
 
 bool MetalDevice::initialize(void* native_window_handle) {
     shutdown();
+    begin_resource_lifetime();
     @autoreleasepool {
         m_impl->device = MTLCreateSystemDefaultDevice();
         if (!m_impl->device) return false;
@@ -85,6 +86,7 @@ bool MetalDevice::initialize(void* native_window_handle) {
 }
 
 void MetalDevice::shutdown() {
+    invalidate_resource_lifetime();
     @autoreleasepool {
         // Finish a partially encoded frame, then drain this queue before releasing resources.
         end_frame();
@@ -198,6 +200,17 @@ VertexBufferHandle MetalDevice::create_vertex_buffer(const void* data, size_t si
 IndexBufferHandle MetalDevice::create_index_buffer(const void* data, size_t size) {
     return create_buffer_helper<IndexBufferHandle>(m_impl->device, m_impl->buffers, m_impl->next_handle, data, size);
 }
+
+void MetalDevice::release_vertex_buffer(VertexBufferHandle handle) noexcept {
+    // commandBuffer (not commandBufferWithUnretainedReferences) keeps encoded buffers alive.
+    m_impl->buffers.erase(handle.handle);
+}
+
+void MetalDevice::release_index_buffer(IndexBufferHandle handle) noexcept {
+    m_impl->buffers.erase(handle.handle);
+}
+
+size_t MetalDevice::resident_buffer_count() const noexcept { return m_impl->buffers.size(); }
 
 UniformBufferHandle MetalDevice::create_uniform_buffer(size_t size) {
     id<MTLBuffer> buffer = [m_impl->device newBufferWithLength:size options:MTLResourceStorageModeShared];

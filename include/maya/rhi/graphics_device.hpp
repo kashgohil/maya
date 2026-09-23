@@ -6,9 +6,17 @@
 
 namespace maya {
 
+struct GraphicsResourceLifetime {};
+
 class GraphicsDevice {
 public:
+    GraphicsDevice() = default;
     virtual ~GraphicsDevice() = default;
+    GraphicsDevice(const GraphicsDevice&) = delete;
+    GraphicsDevice& operator=(const GraphicsDevice&) = delete;
+
+    /// Borrowed resources must stop using this device when its session expires.
+    std::weak_ptr<const GraphicsResourceLifetime> resource_lifetime() const noexcept { return m_resource_lifetime; }
 
     virtual bool initialize(void* native_window_handle) = 0;
     /// Idempotent, non-throwing cleanup, including after a failed initialize or unfinished frame.
@@ -30,6 +38,11 @@ public:
     virtual VertexBufferHandle create_vertex_buffer(const void* data, size_t size) = 0;
     virtual IndexBufferHandle create_index_buffer(const void* data, size_t size) = 0;
     
+    /// Drop application ownership; encoded/submitted work must retain its own resource reference.
+    /// Transitional default for backends with device-wide ownership; Metal overrides both.
+    virtual void release_vertex_buffer(VertexBufferHandle) noexcept {}
+    virtual void release_index_buffer(IndexBufferHandle) noexcept {}
+
     // Uniforms (Constants)
     virtual UniformBufferHandle create_uniform_buffer(size_t size) = 0;
     virtual void update_uniform_buffer(UniformBufferHandle handle, const void* data, size_t size) = 0;
@@ -45,6 +58,11 @@ public:
     virtual void draw_indexed(IndexBufferHandle handle, uint32_t index_count) = 0;
 
     static std::unique_ptr<GraphicsDevice> create_default();
+protected:
+    void invalidate_resource_lifetime() noexcept { m_resource_lifetime.reset(); }
+    void begin_resource_lifetime() { m_resource_lifetime = std::make_shared<const GraphicsResourceLifetime>(); }
+private:
+    std::shared_ptr<const GraphicsResourceLifetime> m_resource_lifetime = std::make_shared<const GraphicsResourceLifetime>();
 };
 
 } // namespace maya

@@ -25,6 +25,10 @@ public:
     VertexBufferHandle create_vertex_buffer(const void* data, size_t size) override;
     IndexBufferHandle create_index_buffer(const void* data, size_t size) override;
     
+    void release_vertex_buffer(VertexBufferHandle handle) noexcept override;
+    void release_index_buffer(IndexBufferHandle handle) noexcept override;
+    size_t resident_buffer_count() const noexcept;
+
     UniformBufferHandle create_uniform_buffer(size_t size) override;
     void update_uniform_buffer(UniformBufferHandle handle, const void* data, size_t size) override;
 
