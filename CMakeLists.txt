@@ -37,7 +37,8 @@ find_library(COCOA_LIBRARY Cocoa REQUIRED)
 # Explicit source lists prevent editor/sample code from silently entering the runtime.
 add_library(MayaWorld STATIC
     src/maya/core/identity.cpp
-    src/maya/world/world.cpp)
+    src/maya/world/world.cpp
+    src/maya/world/spatial.cpp)
 add_library(Maya::World ALIAS MayaWorld)
 target_include_directories(MayaWorld PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaWorld)

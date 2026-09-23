@@ -1,6 +1,8 @@
 #pragma once
 
 #include "maya/world/detail/component_pool.hpp"
+#include "maya/world/components.hpp"
+#include <optional>
 #include <memory>
 #include <stdexcept>
 #include <typeindex>
@@ -8,6 +10,7 @@
 
 namespace maya {
 class World;
+enum class ReparentPolicy { keep_local, keep_world };
 using EntityTarget = std::variant<EntityHandle, PendingEntity>;
 
 /// Owned staging values; may outlive the World. No publication until World::commit.
@@ -29,13 +32,16 @@ public:
         require_active();
         m_commands.push_back({Kind::remove, target, {}, typeid(T), {}});
     }
+    void set_transform(EntityTarget target, TransformComponent value);
+    /// nullopt detaches to the root. Both targets may be pending in this batch.
+    void reparent(EntityTarget target, std::optional<EntityTarget> parent, ReparentPolicy policy);
     size_t size() const noexcept { return m_commands.size(); }
 
 private:
     friend class World;
     explicit WorldCommands(uint64_t world)
         : m_world(world), m_batch(detail::next_lifetime_token()) {}
-    enum class Kind { create, destroy, add, remove };
+    enum class Kind { create, destroy, add, remove, set_transform, reparent };
     struct AdditionBase {
         virtual ~AdditionBase() = default;
         virtual std::unique_ptr<detail::ComponentPoolBase> make_pool() const = 0;
@@ -57,6 +63,9 @@ private:
         EntityId id;
         std::type_index type{typeid(void)};
         std::unique_ptr<AdditionBase> addition;
+        std::optional<EntityTarget> parent{};
+        ReparentPolicy policy = ReparentPolicy::keep_local;
+        TransformComponent transform{};
     };
     void require_active() const {
         if (m_world == 0) throw std::logic_error("WorldCommands is consumed or moved from");

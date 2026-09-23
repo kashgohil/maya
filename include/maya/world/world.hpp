@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/world/commands.hpp"
+#include "maya/world/spatial.hpp"
 #include <functional>
 #include <optional>
 #include <tuple>
@@ -9,7 +10,8 @@
 namespace maya {
 enum class WorldError {
     none, busy, wrong_world, invalid_entity, invalid_id, duplicate_id,
-    invalid_pending_entity, component_exists, component_missing, capacity_exhausted
+    invalid_pending_entity, component_exists, component_missing, capacity_exhausted,
+    invalid_transform, hierarchy_cycle, hierarchy_in_use, unrepresentable_transform, invalid_policy
 };
 
 struct WorldCommitResult {
@@ -40,6 +42,13 @@ public:
     /// Success consumes commands. Commit cannot run inside with/for_each callbacks.
     WorldCommitResult commit(WorldCommands& commands);
 
+    /// Root/invalid/no-transform returns nullopt; use has/alive to distinguish.
+    std::optional<EntityHandle> parent(EntityHandle entity) const;
+    std::vector<EntityHandle> children(EntityHandle entity) const;
+    /// Returns a copy. Lazily updates dirty ancestors; invalid/overflowing poses fail.
+    std::optional<math::Mat4> world_matrix(EntityHandle entity) const;
+    std::optional<CameraMatrices> camera(EntityHandle entity, float aspect) const;
+
     template<Component T> bool has(EntityHandle entity) const {
         if (m_committing || !alive(entity)) return false;
         const auto pool = find_pool<T>();
@@ -54,14 +63,14 @@ public:
     bool with(EntityHandle entity, F&& callback) {
         if (!has<T>(entity)) return false;
         auto borrow = Borrow(*this);
-        std::invoke(callback, find_pool<T>()->get().value(entity.slot));
+        std::invoke(callback, query_value<T>(*this, find_pool<T>()->get(), entity.slot));
         return true;
     }
     template<Component T, class F>
     bool with(EntityHandle entity, F&& callback) const {
         if (!has<T>(entity)) return false;
         auto borrow = Borrow(*this);
-        std::invoke(callback, find_pool<T>()->get().value(entity.slot));
+        std::invoke(callback, query_value<T>(*this, find_pool<T>()->get(), entity.slot));
         return true;
     }
     template<class F> requires std::invocable<F&, EntityHandle>
@@ -77,6 +86,22 @@ public:
     void for_each(F&& callback) const { each_impl<Ts...>(*this, callback); }
 
 private:
+    struct SpatialNode {
+        uint32_t parent = invalid_entity_slot;
+        uint32_t first_child = invalid_entity_slot;
+        uint32_t previous = invalid_entity_slot;
+        uint32_t next = invalid_entity_slot;
+        bool dirty = true;
+        bool valid = false;
+        bool rigid_ancestry = true;
+        math::Mat4 world{};
+    };
+    template<Component T, class Self, class Pool>
+    static decltype(auto) query_value(Self&, Pool& pool, uint32_t slot) {
+        if constexpr (std::is_same_v<T, TransformComponent>)
+            return std::as_const(pool.value(slot));
+        else return (pool.value(slot));
+    }
     struct Slot {
         EntityId id{};
         uint64_t generation = 1;
@@ -120,7 +145,7 @@ private:
                 : smallest), ...);
             for (const auto slot : smallest.get().slots()) {
                 if ((pool->get().contains(slot) && ...))
-                    std::invoke(callback, world.handle(slot), pool->get().value(slot)...);
+                    std::invoke(callback, world.handle(slot), query_value<Ts>(world, pool->get(), slot)...);
             }
         }, pools);
     }
@@ -128,12 +153,15 @@ private:
         return {m_token, slot, m_slots[slot].generation};
     }
     void destroy(uint32_t slot) noexcept;
+    void dirty_subtree(uint32_t slot) noexcept;
 
     const uint64_t m_token;
     mutable size_t m_borrows = 0;
     bool m_committing = false;
     uint32_t m_free = invalid_entity_slot;
     std::vector<Slot> m_slots;
+    mutable std::vector<SpatialNode> m_spatial;
+    mutable std::vector<uint32_t> m_spatial_work;
     std::vector<uint32_t> m_live;
     std::unordered_map<EntityId, EntityHandle, PersistentIdHash> m_ids;
     std::unordered_map<std::type_index, std::unique_ptr<detail::ComponentPoolBase>> m_pools;

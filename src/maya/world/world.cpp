@@ -31,6 +31,87 @@ void WorldCommands::destroy(EntityTarget target) {
     m_commands.push_back({Kind::destroy, target, {}, typeid(void), {}});
 }
 
+void WorldCommands::set_transform(EntityTarget target, TransformComponent value) {
+    require_active();
+    auto command = Command{Kind::set_transform, target, {}, typeid(TransformComponent), {}};
+    command.transform = value;
+    m_commands.push_back(std::move(command));
+}
+
+void WorldCommands::reparent(EntityTarget target, std::optional<EntityTarget> parent,
+                             ReparentPolicy policy) {
+    require_active();
+    auto command = Command{Kind::reparent, target, {}, typeid(void), {}};
+    command.parent = parent;
+    command.policy = policy;
+    m_commands.push_back(std::move(command));
+}
+
+std::optional<EntityHandle> World::parent(EntityHandle entity) const {
+    if (m_committing || !alive(entity)) return std::nullopt;
+    const auto slot = m_spatial[entity.slot].parent;
+    return slot == invalid_entity_slot ? std::nullopt : std::optional{handle(slot)};
+}
+
+std::vector<EntityHandle> World::children(EntityHandle entity) const {
+    auto result = std::vector<EntityHandle>{};
+    if (m_committing || !alive(entity)) return result;
+    for (auto child = m_spatial[entity.slot].first_child; child != invalid_entity_slot;
+         child = m_spatial[child].next) result.push_back(handle(child));
+    return result;
+}
+
+void World::dirty_subtree(uint32_t slot) noexcept {
+    m_spatial_work.clear();
+    m_spatial_work.push_back(slot); // scratch capacity prepared before publication
+    while (!m_spatial_work.empty()) {
+        const auto current = m_spatial_work.back();
+        m_spatial_work.pop_back();
+        auto& node = m_spatial[current];
+        if (node.dirty) continue; // descendants already dirty
+        node.dirty = true;
+        for (auto child = node.first_child; child != invalid_entity_slot;
+             child = m_spatial[child].next) m_spatial_work.push_back(child);
+    }
+}
+
+std::optional<math::Mat4> World::world_matrix(EntityHandle entity) const {
+    if (!has<TransformComponent>(entity)) return std::nullopt;
+    m_spatial_work.clear();
+    auto current = entity.slot;
+    while (current != invalid_entity_slot && m_spatial[current].dirty) {
+        m_spatial_work.push_back(current);
+        current = m_spatial[current].parent;
+    }
+    const auto& pool = find_pool<TransformComponent>()->get();
+    while (!m_spatial_work.empty()) {
+        current = m_spatial_work.back();
+        m_spatial_work.pop_back();
+        auto& node = m_spatial[current];
+        const auto& local = pool.value(current);
+        const auto matrix = local_matrix(local);
+        auto world = std::optional{matrix};
+        node.rigid_ancestry = unit_scale(local.scale);
+        if (node.parent != invalid_entity_slot) {
+            const auto& ancestor = m_spatial[node.parent];
+            world = ancestor.valid ? compose_affine(ancestor.world, matrix) : std::nullopt;
+            node.rigid_ancestry = node.rigid_ancestry && ancestor.rigid_ancestry;
+        }
+        node.valid = world.has_value();
+        if (world) node.world = *world;
+        node.dirty = false;
+    }
+    const auto& node = m_spatial[entity.slot];
+    return node.valid ? std::optional{node.world} : std::nullopt;
+}
+
+std::optional<CameraMatrices> World::camera(EntityHandle entity, float aspect) const {
+    if (!has<CameraComponent>(entity)) return std::nullopt;
+    const auto pose = world_matrix(entity);
+    if (!pose || !m_spatial[entity.slot].rigid_ancestry) return std::nullopt;
+    return camera_matrices(find_pool<CameraComponent>()->get().value(entity.slot), *pose, aspect);
+}
+
 World::World() : m_token(detail::next_lifetime_token()) {}
 
 World::~World() {
@@ -83,6 +164,62 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     auto next_free = m_free;
     auto slot_count = m_slots.size();
 
+    struct SpatialEdit {
+        SpatialNode node;
+        std::optional<TransformComponent> local;
+    };
+    auto spatial = std::unordered_map<uint32_t, SpatialEdit>{};
+    auto transforms = std::vector<std::optional<TransformComponent>>(commands.m_commands.size());
+    auto destroyed = std::vector<std::vector<uint32_t>>(commands.m_commands.size());
+    auto changed = std::vector<uint32_t>{};
+    const auto transform_pool = find_pool<TransformComponent>();
+    const auto edit = [&](uint32_t slot) -> SpatialEdit& {
+        auto [it, inserted] = spatial.try_emplace(slot);
+        if (inserted && slot < m_spatial.size()) {
+            it->second.node = m_spatial[slot];
+            if (transform_pool && transform_pool->get().contains(slot))
+                it->second.local = transform_pool->get().value(slot);
+        }
+        return it->second;
+    };
+    const auto unlink = [&](uint32_t slot) {
+        auto& node = edit(slot).node;
+        if (node.previous != invalid_entity_slot) edit(node.previous).node.next = node.next;
+        else if (node.parent != invalid_entity_slot) edit(node.parent).node.first_child = node.next;
+        if (node.next != invalid_entity_slot) edit(node.next).node.previous = node.previous;
+        node.parent = node.previous = node.next = invalid_entity_slot;
+    };
+    const auto staged_matrix = [&](uint32_t slot) -> std::optional<math::Mat4> {
+        auto path = std::vector<uint32_t>{};
+        for (auto current = slot; current != invalid_entity_slot; current = edit(current).node.parent)
+            path.push_back(current);
+        auto matrix = math::Mat4::identity();
+        for (auto it = path.rbegin(); it != path.rend(); ++it) {
+            const auto& local = edit(*it).local;
+            if (!local) return std::nullopt;
+            auto composed = compose_affine(matrix, local_matrix(*local));
+            if (!composed) return std::nullopt;
+            matrix = *composed;
+        }
+        return matrix;
+    };
+    const auto resolve_target = [&](const EntityTarget& target, uint32_t& slot) -> WorldError {
+        if (const auto entity = std::get_if<EntityHandle>(&target)) {
+            if (entity->world != m_token) return WorldError::wrong_world;
+            if (!alive(*entity)) return WorldError::invalid_entity;
+            slot = entity->slot;
+        } else {
+            const auto pending = std::get<PendingEntity>(target);
+            if (pending.batch != commands.m_batch || pending.index >= result.created.size() ||
+                result.created[pending.index].slot == invalid_entity_slot)
+                return WorldError::invalid_pending_entity;
+            slot = result.created[pending.index].slot;
+        }
+        if (const auto it = touched.find(slot); it != touched.end() && !it->second.alive)
+            return WorldError::invalid_entity;
+        return WorldError::none;
+    };
+
     // Simulate the batch in enqueue order without modifying live identity or components.
     for (size_t index = 0; index < commands.m_commands.size(); ++index) {
         const auto& command = commands.m_commands[index];
@@ -104,25 +241,65 @@ WorldCommitResult World::commit(WorldCommands& commands) {
             const auto entity = EntityHandle{m_token, slot, generation};
             result.created[std::get<PendingEntity>(command.target).index] = entity;
             new_ids.emplace(command.id, entity);
+            spatial[slot] = SpatialEdit{};
         } else {
-            if (std::holds_alternative<EntityHandle>(command.target)) {
-                const auto entity = std::get<EntityHandle>(command.target);
-                if (entity.world != m_token) return fail(WorldError::wrong_world);
-                if (!alive(entity)) return fail(WorldError::invalid_entity);
-                slot = entity.slot;
-            } else {
-                const auto pending = std::get<PendingEntity>(command.target);
-                if (pending.batch != commands.m_batch || pending.index >= result.created.size() ||
-                    result.created[pending.index].slot == invalid_entity_slot)
-                    return fail(WorldError::invalid_pending_entity);
-                slot = result.created[pending.index].slot;
-            }
+            const auto error = resolve_target(command.target, slot);
+            if (error != WorldError::none) return fail(error);
         }
         resolved[index] = slot;
         auto& state = touched[slot];
         if (!state.alive) return fail(WorldError::invalid_entity);
         if (command.kind == Kind::destroy) {
-            state.alive = false;
+            unlink(slot);
+            auto& subtree = destroyed[index];
+            subtree.push_back(slot);
+            for (size_t i = 0; i < subtree.size(); ++i) {
+                const auto current = subtree[i];
+                touched[current].alive = false;
+                for (auto child = edit(current).node.first_child; child != invalid_entity_slot;
+                     child = edit(child).node.next) subtree.push_back(child);
+            }
+            for (const auto current : subtree) spatial[current] = SpatialEdit{};
+        } else if (command.kind == Kind::set_transform) {
+            if (!edit(slot).local) return fail(WorldError::component_missing);
+            transforms[index] = validated_transform(command.transform);
+            if (!transforms[index]) return fail(WorldError::invalid_transform);
+            edit(slot).local = transforms[index];
+            changed.push_back(slot);
+        } else if (command.kind == Kind::reparent) {
+            if (command.policy != ReparentPolicy::keep_local &&
+                command.policy != ReparentPolicy::keep_world) return fail(WorldError::invalid_policy);
+            auto parent_slot = invalid_entity_slot;
+            if (command.parent) {
+                const auto error = resolve_target(*command.parent, parent_slot);
+                if (error != WorldError::none) return fail(error);
+                if (!edit(parent_slot).local) return fail(WorldError::component_missing);
+            }
+            if (!edit(slot).local) return fail(WorldError::component_missing);
+            for (auto ancestor = parent_slot; ancestor != invalid_entity_slot;
+                 ancestor = edit(ancestor).node.parent)
+                if (ancestor == slot) return fail(WorldError::hierarchy_cycle);
+            if (parent_slot == edit(slot).node.parent) continue;
+            if (command.policy == ReparentPolicy::keep_world) {
+                const auto old_world = staged_matrix(slot);
+                const auto parent_world = staged_matrix(parent_slot);
+                if (!old_world || !parent_world) return fail(WorldError::unrepresentable_transform);
+                const auto inverse = inverse_affine(*parent_world);
+                const auto local = inverse ? compose_affine(*inverse, *old_world) : std::nullopt;
+                transforms[index] = local ? decompose_transform(*local) : std::nullopt;
+                if (!transforms[index]) return fail(WorldError::unrepresentable_transform);
+                edit(slot).local = transforms[index];
+            }
+            unlink(slot);
+            auto& node = edit(slot).node;
+            node.parent = parent_slot;
+            if (parent_slot != invalid_entity_slot) {
+                auto& parent = edit(parent_slot).node;
+                node.next = parent.first_child;
+                if (node.next != invalid_entity_slot) edit(node.next).node.previous = slot;
+                parent.first_child = slot;
+            }
+            changed.push_back(slot);
         } else if (command.kind == Kind::add || command.kind == Kind::remove) {
             auto present = state.components.find(command.type);
             if (present == state.components.end()) {
@@ -132,12 +309,27 @@ WorldCommitResult World::commit(WorldCommands& commands) {
             }
             if (command.kind == Kind::add) {
                 if (present->second) return fail(WorldError::component_exists);
+                if (command.type == typeid(TransformComponent)) {
+                    const auto& value = static_cast<const WorldCommands::Addition<TransformComponent>&>(
+                        *command.addition).value;
+                    transforms[index] = validated_transform(value);
+                    if (!transforms[index]) return fail(WorldError::invalid_transform);
+                    edit(slot).local = transforms[index];
+                    changed.push_back(slot);
+                }
                 present->second = true;
                 ++additions[command.type];
                 if (!m_pools.contains(command.type) && !new_pools.contains(command.type))
                     new_pools.emplace(command.type, command.addition->make_pool());
             } else {
                 if (!present->second) return fail(WorldError::component_missing);
+                if (command.type == typeid(TransformComponent)) {
+                    auto& value = edit(slot);
+                    if (value.node.parent != invalid_entity_slot || value.node.first_child != invalid_entity_slot)
+                        return fail(WorldError::hierarchy_in_use);
+                    value.local.reset();
+                    changed.push_back(slot);
+                }
                 present->second = false;
             }
         }
@@ -145,6 +337,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
 
     // Fallible capacity preparation. Existing values may relocate, but logical state stays intact.
     detail::reserve_for(m_slots, slot_count);
+    detail::reserve_for(m_spatial, slot_count);
+    detail::reserve_for(m_spatial_work, slot_count);
     detail::reserve_for(m_live, m_live.size() + result.created.size());
     const auto prepare_map = [](auto& map, size_t incoming) {
         const auto required = map.size() + incoming;
@@ -163,6 +357,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     // No allocation or throwing component operations after this point. Node transfer reuses
     // prepared allocations, with destination hash-table capacity already reserved above.
     m_slots.resize(slot_count);
+    m_spatial.resize(slot_count);
     m_ids.merge(new_ids);
     m_pools.merge(new_pools);
     m_free = next_free;
@@ -177,7 +372,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
             m_live.push_back(slot);
             break;
         case Kind::destroy:
-            destroy(slot);
+            for (const auto descendant : destroyed[index]) destroy(descendant);
             break;
         case Kind::add:
             command.addition->publish(*m_pools.at(command.type), slot);
@@ -185,8 +380,15 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         case Kind::remove:
             m_pools.at(command.type)->remove(slot);
             break;
+        case Kind::set_transform:
+        case Kind::reparent:
+            break;
         }
+        if (transforms[index])
+            find_pool<TransformComponent>()->get().value(slot) = *transforms[index];
     }
+    for (const auto& [slot, value] : spatial) m_spatial[slot] = value.node;
+    for (const auto slot : changed) dirty_subtree(slot);
     result.command_index = commands.m_commands.size();
     commands.m_commands.clear();
     commands.m_world = 0;

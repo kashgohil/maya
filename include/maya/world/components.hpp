@@ -9,7 +9,7 @@ struct NameComponent {
     std::string value;
 };
 
-/// Authoritative local TRS. Hierarchy, derived matrices, and validation follow in #992.
+/// Authoritative local TRS. World queries expose const values; edit via set_transform.
 struct TransformComponent {
     math::Vec3 translation{0.0f}; // metres
     math::Quat rotation{};
