@@ -20,6 +20,7 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 
 ## Boundaries
 
+- `MayaWorld` / `Maya::World`: CPU-only entity identity, packed component storage, and atomic structural command batches. No RHI, window, or editor dependency. See [docs/world.md](docs/world.md) for APIs and scoped-borrow rules.
 - `MayaRuntime`: Engine session lifecycle, existing core utilities, and graphics backend. No editor, sample, GLFW, or desktop-loop dependency.
 - `MayaDesktop`: Window ownership, event loop, input, framebuffer resize, and CLI launch handling.
 - `MayaEditor`: Editor-only application factory. Initially an empty host; authoring UI comes later.
@@ -31,6 +32,8 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 The host owns the window; Engine owns device and Application. Stop and destroy application content before device shutdown, then destroy the window. Shutdown is idempotent, startup failures roll back, and stopped engines can initialize a fresh session. Callbacks must not re-enter lifecycle methods.
 
 Current Scene, Material, Mesh, and Camera are prototype utilities retained pending their dedicated replacement issues. The application split does not implement world authoring, a new renderer, physics, or scripting.
+
+World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas exist independently of those sample utilities. Structural edits use WorldCommands and explicit commit; never retain a component reference outside a query callback. Hierarchy, asset services, validation metadata, serialization, and renderer integration follow in dependent issues.
 
 ## Conventions
 

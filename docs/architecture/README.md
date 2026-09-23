@@ -12,7 +12,7 @@ These are implementation contracts for the next issues, ready for review. They d
 
 ## Current implementation and migration
 
-The source audit is against commit `0b5eb8e`. Names such as World, AssetRef, and RenderSnapshot below describe contracts; they are not existing public APIs or new CMake targets.
+The source audit below is against commit `0b5eb8e`. Subsequent implementation is recorded separately: [#991 World storage](../world.md) adds World, typed asset-reference values, and the MayaWorld target. RenderSnapshot and the other future services remain contracts rather than existing APIs.
 
 | Evidence in the repository | Current behavior | Next implementation boundary |
 | --- | --- | --- |
