@@ -1,4 +1,5 @@
 #include "maya/platform/window.hpp"
+#include "maya/platform/app_icon.hpp"
 #include "maya/platform/input.hpp"
 #include <GLFW/glfw3.h>
 
@@ -24,6 +25,8 @@ Window::Window(int width, int height, const std::string& title) {
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     m_window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
     if (!m_window) return;
+
+    set_application_icon(glfwGetCocoaWindow(m_window));
 
     // Show and focus window on macOS
     glfwShowWindow(m_window);

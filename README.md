@@ -1,12 +1,103 @@
-# Maya
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="maya.svg">
+    <img alt="Maya" src="maya.png" width="168">
+  </picture>
+</p>
 
-Maya is being built as a production engine for realistic 3D games, with rendering and physics as its focus. The current code is the first architectural foundation: separate runtime, desktop host, editor, player, and sample targets. World authoring, physics, scripting, and the new renderer are subsequent milestones.
+<h1 align="center">Maya</h1>
 
-The current backend is **Metal on macOS**, with **C++20**, **Objective-C++**, **GLFW**, and **CMake**.
+<p align="center"><strong>A game engine for realistic worlds you can explore, and then change with your hands.</strong></p>
 
-## Build and run
+Maya is for games that ask you to pay attention. A large place. Light that belongs to the hour. Water you can enter. Weather that changes how far you can see, and how you move. Objects you can pick up, carry, and build with. Creatures that occupy the same space you do. You leave, and the world is still there when you come back.
 
-Requirements: macOS, Apple Clang/Xcode Command Line Tools, and CMake 3.20+. The initial configure fetches pinned GLFW and Catch2 sources.
+It is a single-player engine. The work is the place, the way a person moves through it, and the tools that let someone make that place. A finished game runs on its own. The editor stays with the person who is building.
+
+What runs today is the foundation that has to hold all of that: a Mac application that opens a window, draws a scene, and lets you fly a camera through it. The player and the editor are already two different programs.
+
+## The loop it is built around
+
+Author a zone. Enter it when you want to be inside it. Step back out, and the zone you authored is still the one you saved. What you did while playing stays in that session unless you choose to keep it.
+
+The player opens that same zone with no editor attached. The world you test is the world someone else will play.
+
+## Move
+
+Getting around is the first thing the world has to get right.
+
+On foot, where there is ground. Swimming, where there is water. Flying, when the space opens up. Climbing a surface that would otherwise stop you. Stairs, ledges, and steep ground should behave. Crossing from air into water should feel like entering a different place.
+
+The volume you are in changes the movement. Water, open air, and the character of a biome each carry their own feel, their own sound, and their own look. An underwater stretch has its own light, its own drag, and its own horizon.
+
+## Touch
+
+A sandbox is a world that lets you do something to it.
+
+Pick an object up. Place it. Start a structure. Keep what you are carrying. The engine is growing an interaction model for this, so a game can spend its effort on what is worth picking up.
+
+What you change is worth keeping. A save covers the parts of the world you have altered, including zones that were not in memory when you put the game down. Loading brings back that same place.
+
+## Travel
+
+The world is meant to be larger than one room loaded at startup.
+
+Biomes stream in as you travel and release what you have left behind. Crossing from one kind of country into another is a change of ground, light, sound, and what can live there. The machine you are playing on keeps the country around you.
+
+From far enough away, detail steps down. Up close, it is the real thing. You should be able to go somewhere without waiting on a corridor, and you should be able to come back to a thing you built and find it where you left it.
+
+## Light
+
+Realistic, here, means light you can direct, and materials that hold up under it.
+
+Maya is heading toward lighting done in linear color, exposure you can set, and a tone map so a hard sun and a dark interior can share an afternoon. Surfaces start simple and grow into materials with color, metal, and roughness that an artist can tune. Fog sits in the air. Underwater, light falls off the way it does in water.
+
+A scene that looks like this still has to feel immediate. Light you can believe only counts if the world keeps its pace while you move through it.
+
+## Life
+
+The player is not the only body in the world.
+
+Characters and creatures move on skeletons: a performance, a blend between performances, a mesh that follows the pose. They need somewhere to go, including through spaces that are not a flat floor, so finding a path has to understand a volume. On top of that sits behavior. A creature can patrol, keep its distance, come closer, and notice you.
+
+You should be able to tell why a creature did what it did. The same tools that run the decision can show it.
+
+Sound belongs in the same place. A mix you can shape. A sound that sits on a thing in the world, and falls off as you leave it. Weather, water, and a biome each get a voice.
+
+## Make
+
+The editor is how the world gets made.
+
+A view of the scene. A way to select something and move, turn, or scale it. An inspector for the thing you selected. A browser for the meshes, materials, and other assets behind it. Volumes for water, air, and biome, placed in the world as objects you can edit. Change a material, a mesh, or a behavior and see the result while the editor is still open.
+
+A new zone should be something one person can author and revise without editing the engine in C++.
+
+The editor today is the window that work will land in. It opens. It has Maya's icon. The panels are still ahead. It is already a separate program from the player, so the game you give to someone else is only the game.
+
+## What you can run today
+
+Three programs build from this repository.
+
+**Player.** The program a finished game grows out of. It opens the first sample: a lit, textured model and a solid companion, under a directional sun, with a free camera. It does not load a saved project yet. Project selection is still in its entry point.
+
+**Editor.** An empty editing window, cursor free, ready for the tools above. Nothing in the scene can be authored from it yet.
+
+**Sample.** The same scene as the player, kept as a sample, so the demo can stay a demo while the player becomes a game.
+
+You look with the mouse and move with WASD. Space rises. Escape closes the window. The title bar carries a smoothed frame rate, the frame time, and the size of the view in pixels.
+
+The scene is small on purpose. It is the loop the rest of the engine has to survive: open a window, draw frames, shut down cleanly, and be willing to do it again.
+
+## Under the hood
+
+Maya is written in C++20 and runs on macOS. Drawing goes through Metal. The runtime, the desktop window, the editor, and the sample are separate pieces. A game can be built without the editor. The editor can be built without the sample. The window outlives the graphics device: startup that fails gives back what it took, and a session that has ended can start again.
+
+Worlds are measured in metres, seconds, and kilograms. The space is right-handed, with up on Y. Those are the rules the later systems are being written against.
+
+The contracts for identity, time, and rendering are in the [architecture notes](docs/architecture/README.md). The path from this foundation to a shippable sandbox is the [roadmap](ENGINE_ROADMAP.md).
+
+## Setup
+
+A Mac, Xcode Command Line Tools, and CMake 3.20 or newer. The first configure fetches pinned GLFW and Catch2 sources.
 
 ```bash
 cmake -S . -B build
@@ -17,29 +108,33 @@ cmake --build build -j 4
 ./build/maya_sample
 ```
 
-- `maya_player` runs the basic-scene native sample project. Project selection is in its entry point; loading serialized game projects comes later.
-- `maya_editor` opens an empty editor host with an uncaptured cursor. Panels, inspectors, and authoring are not implemented yet.
-- `maya_sample` runs the extracted rotating pyramid/cube demo. It replaces the old `maya` executable.
-- Player/sample controls: WASD, mouse look, Space to ascend, Escape to exit.
-- Window titles show smoothed FPS, frame time, and framebuffer dimensions.
+`maya_player` and `maya_sample` capture the mouse. `maya_editor` does not. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
-For Release builds, add `-DCMAKE_BUILD_TYPE=Release` to configure. CMake exports `build/compile_commands.json` for clangd.
+### Where the files are
 
-## Independent targets
+Shaders live in `resources/shaders/metal/`. The sample model is `samples/basic_scene/assets/pyramid.obj`.
 
-| Target | Responsibility | Dependencies |
-| --- | --- | --- |
-| MayaRuntime / Maya::Runtime | Engine lifecycle, existing core utilities, RHI/Metal | Apple graphics frameworks; no GLFW, editor, or sample code |
-| MayaDesktop | Window, event loop, input routing, launch arguments | MayaRuntime, GLFW |
-| MayaBasicScene | Sample meshes, camera, materials, and animation | MayaRuntime |
-| MayaEditor | Editor application boundary | MayaRuntime |
-| maya_player | Standalone player entry point | MayaDesktop, MayaBasicScene |
-| maya_editor | Editor entry point | MayaDesktop, MayaEditor |
-| maya_sample | Explicit sample entry point | MayaDesktop, MayaBasicScene |
+Maya searches in this order:
 
-All application targets can be disabled independently. Tests are controlled by `BUILD_TESTING`; Catch2 is not fetched when tests are disabled. GLFW is not fetched when all desktop applications are disabled.
+1. `MAYA_RESOURCES`, when it is set.
+2. Parents of the executable.
+3. The working directory.
 
-Build only the runtime:
+A build made inside the repository finds its content, because a parent of the executable is the repository. For a binary copied elsewhere, point `MAYA_RESOURCES` at a tree that still contains `resources/` and `samples/basic_scene/assets/`.
+
+### Build only what you need
+
+| Target | What it is |
+| --- | --- |
+| MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
+| MayaDesktop | The window, input, and launch loop. |
+| MayaBasicScene | The sample scene. |
+| MayaEditor | The editor's application boundary. |
+| maya_player | The player. |
+| maya_editor | The editor. |
+| maya_sample | The sample. |
+
+Runtime only:
 
 ```bash
 cmake -S . -B build/runtime-only \
@@ -48,7 +143,7 @@ cmake -S . -B build/runtime-only \
 cmake --build build/runtime-only --target MayaRuntime
 ```
 
-Build the player without editor or test dependencies:
+Player, without the editor or the tests:
 
 ```bash
 cmake -S . -B build/player-only \
@@ -56,72 +151,19 @@ cmake -S . -B build/player-only \
 cmake --build build/player-only --target maya_player
 ```
 
-Sources are listed explicitly in CMake so new editor/sample files cannot silently become runtime dependencies.
-
-## Application lifecycle
-
-The desktop host owns the native window. `Engine` owns the graphics device and an `Application` for one session. The application owns game/editor content.
-
-1. Create the window, initialize the device, then call `Application::on_start`.
-2. Send framebuffer-pixel dimensions through `Engine::resize`.
-3. The host supplies time and input availability to `Engine::tick`: update, begin frame, render, end frame.
-4. Call `on_stop` and destroy application content while the device is alive.
-5. Shut down the device, retire GPU work, and release its resources before destroying the window.
-
-An initialization failure rolls back acquired state. Once `on_start` has been entered, `on_stop` runs exactly once, even if startup fails or throws. A failed device initialization never starts the application. Frame/resize exceptions terminate the session cleanly and return failure to the host.
-
-Shutdown is idempotent. A stopped or failed engine can start a fresh session; initializing an active engine is rejected. Applications and devices must tolerate destruction before startup, and cleanup must not throw. Lifecycle callbacks must not re-enter the engine. Desktop operations remain on the main thread.
-
-Metal uses an opaque implementation with ARC-owned objects and autorelease pools. Shutdown drains submitted work. Per-resource RHI destruction and per-draw/frame uniform allocation are still separate planned issues; this change does not claim those renderer features are complete.
-
-## Validation
+### Check it
 
 ```bash
-# CPU unit/lifecycle and CLI tests; no window or GPU initialization
 ctest --test-dir build -L cpu --output-on-failure
-
-# Metal tests, repeated desktop lifecycle tests, and five-frame app smoke tests
-# Requires an interactive macOS session with GPU access; briefly opens windows
 ctest --test-dir build -L gpu --output-on-failure
-
-# Direct CPU suite
-./build/maya_tests '~[rhi]'
-
-# Individual bounded sample run
-./build/maya_sample --smoke 5
 ```
 
-All applications accept `--help` and `--smoke [N]`. N must be a positive integer; omitted N defaults to 120. Smoke mode disables camera input/cursor capture and supplies a fixed 1/60-second update interval. It still uses a real window and Metal. It exits nonzero on startup failure or if the requested frames are not completed. Smoke success verifies lifecycle, not pixel correctness.
+CPU tests never open a window. GPU tests need a Mac session with a display, and they open one briefly. Each program accepts `--help` and `--smoke N`. N is a positive frame count, and it defaults to 120 when omitted. Smoke mode still uses a real window and Metal, steps at a fixed 1/60 of a second, ignores the camera, and exits with a failure if those frames do not complete. It checks the session, not the pixels.
 
-Run AddressSanitizer and UndefinedBehaviorSanitizer:
+Sanitizers, in their own build directory:
 
 ```bash
 cmake -S . -B build/sanitized -DCMAKE_BUILD_TYPE=Debug -DMAYA_ENABLE_SANITIZERS=ON
 cmake --build build/sanitized -j 4
 ctest --test-dir build/sanitized -L cpu --output-on-failure
-ctest --test-dir build/sanitized -L gpu --output-on-failure
 ```
-
-The CPU lifecycle suite injects failures and checks cleanup order, repeated sessions, invalid input, and exception rollback. The desktop suite checks real Metal rollback/reinitialization and overlapping/failed windows.
-
-If AddressSanitizer hangs before test startup, verify the toolchain with an empty sanitized program. A similar macOS startup hang is tracked in [LLVM #200447](https://github.com/llvm/llvm-project/issues/200447). Run UBSan separately with `-DMAYA_SANITIZERS=undefined`; a UBSan pass is not an ASan pass. Sanitizer findings fail the process, and CTest runs have bounded timeouts.
-
-## Content discovery
-
-Sample content lives in `samples/basic_scene/`; shared shader sources remain in `resources/shaders/metal/`. The demo model is `samples/basic_scene/assets/pyramid.obj`.
-
-The desktop host initializes `FileSystem` using these search roots:
-
-1. `MAYA_RESOURCES`, when set.
-2. Parents of the executable.
-3. The working directory.
-
-Running from the build directory works because its parents include the repository. For binaries copied elsewhere, set `MAYA_RESOURCES=/path/to/maya`, pointing to a tree containing `resources/` and `samples/basic_scene/assets/`. Automatic content cooking/packaging is later work.
-
-Failed file loads print attempted paths. On Retina displays, framebuffer pixel dimensions drive both Metal drawable size and the sample camera aspect ratio.
-
-## Tracking
-
-[Foundation issue #989](https://work.rezee.app/kash/issues/989) is part of [the author-save-run milestone](https://work.rezee.app/kash/issues/988). [DOC-58](https://work.rezee.app/kash/docs/58) records the production-engine direction and subsequent milestones.
-
-[Architecture contracts](docs/architecture/README.md), recorded for [issue #990](https://work.rezee.app/kash/issues/990), define the intended world/asset identity, ownership, coordinate, scheduling, and render-extraction rules. They include proposed performance workloads and a scenario review; planned systems and unconfirmed budgets are distinguished from current implementation.

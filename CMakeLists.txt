@@ -59,10 +59,24 @@ if(MAYA_BUILD_EDITOR OR MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(glfw)
 
+    find_program(XXD_EXECUTABLE xxd REQUIRED)
+    set(MAYA_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/maya.png")
+    set(MAYA_ICON_EMBED "${CMAKE_CURRENT_BINARY_DIR}/generated/maya_icon_png.cpp")
+    add_custom_command(
+        OUTPUT "${MAYA_ICON_EMBED}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        COMMAND "${XXD_EXECUTABLE}" -n maya_icon_png -i "${MAYA_ICON_PNG}" "${MAYA_ICON_EMBED}"
+        DEPENDS "${MAYA_ICON_PNG}"
+        COMMENT "Embedding maya.png as the application icon"
+        VERBATIM)
+
     add_library(MayaDesktop STATIC
         src/maya/platform/window.cpp
-        src/maya/platform/desktop_application.cpp)
-    target_link_libraries(MayaDesktop PUBLIC MayaRuntime PRIVATE glfw)
+        src/maya/platform/desktop_application.cpp
+        src/maya/platform/app_icon.mm
+        "${MAYA_ICON_EMBED}")
+    target_link_libraries(MayaDesktop PUBLIC MayaRuntime PRIVATE glfw ${COCOA_LIBRARY})
+    target_compile_options(MayaDesktop PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
     maya_target_options(MayaDesktop)
 endif()
 
