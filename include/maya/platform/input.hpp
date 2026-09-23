@@ -53,6 +53,12 @@ public:
     const math::Vec2& get_mouse_position() const { return m_mouse_pos; }
 
     // Lifecycle
+    void reset() {
+        m_keys.clear();
+        m_prev_keys.clear();
+        m_mouse_pos = {};
+    }
+
     void update() {
         m_prev_keys = m_keys;
     }

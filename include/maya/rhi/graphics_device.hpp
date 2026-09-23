@@ -11,6 +11,8 @@ public:
     virtual ~GraphicsDevice() = default;
 
     virtual bool initialize(void* native_window_handle) = 0;
+    /// Idempotent, non-throwing cleanup, including after a failed initialize or unfinished frame.
+    /// Retire submitted GPU work before releasing resources. The native window is still alive.
     virtual void shutdown() = 0;
 
     /// Backing-store dimensions in pixels (e.g. GLFW framebuffer size). No-op for headless backends.

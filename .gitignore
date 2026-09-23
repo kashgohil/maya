@@ -4,6 +4,7 @@ bin/
 *.o
 *.obj
 !assets/**/*.obj
+!samples/**/assets/*.obj
 *.exe
 *.dll
 *.so

@@ -19,4 +19,6 @@ struct Vertex {
         }
 };
 
+static_assert(sizeof(Vertex) == 64, "Vertex must match the Metal vertex layout");
+
 } // namespace maya

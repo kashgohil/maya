@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 
 struct GLFWwindow;
 
@@ -13,6 +14,8 @@ class Window {
 public:
     Window(int width, int height, const std::string& title);
     ~Window();
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
 
     bool should_close() const;
     void poll_events();
@@ -21,11 +24,14 @@ public:
 
     void set_framebuffer_resize_callback(FramebufferResizeCallback callback);
     void set_title(const std::string& title);
+    std::pair<int, int> framebuffer_size() const;
+    void set_cursor_captured(bool captured);
 
 private:
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 
-    GLFWwindow* m_window;
+    GLFWwindow* m_window = nullptr;
+    bool m_glfw_acquired = false;
     FramebufferResizeCallback m_framebuffer_resize_callback;
 };
 

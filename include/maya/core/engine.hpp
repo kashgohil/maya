@@ -1,38 +1,33 @@
 #pragma once
 
-#include "maya/platform/window.hpp"
+#include "maya/core/application.hpp"
 #include "maya/rhi/graphics_device.hpp"
-#include "maya/rhi/resource.hpp"
-#include "maya/core/camera.hpp"
-#include "maya/core/scene.hpp"
-#include "maya/core/texture.hpp"
 #include <memory>
 
 namespace maya {
 
+/// Owns an application session and its device; all calls run on the host thread.
+/// The host keeps its native window alive until shutdown completes.
 class Engine {
 public:
-    Engine();
+    Engine() = default;
     ~Engine();
+    Engine(const Engine&) = delete;
+    Engine& operator=(const Engine&) = delete;
 
-    bool initialize();
-    void run();
-    void run_for_frames(uint32_t frames);
+    /// Consumes ownership. Failure rolls back; shut down before starting another session.
+    bool initialize(std::unique_ptr<GraphicsDevice> device, void* native_window,
+        std::unique_ptr<Application> application);
+    bool tick(float delta_time, bool input_enabled = true);
+    bool resize(uint32_t width, uint32_t height);
     void shutdown();
+    bool is_initialized() const { return m_initialized; }
 
 private:
-    void run_impl(bool enable_input_capture, uint32_t max_frames);
-
-    std::unique_ptr<Window> m_window;
-    std::unique_ptr<GraphicsDevice> m_graphics_device;
-    std::unique_ptr<Camera> m_camera;
-
-    Scene m_scene;
-    DirectionalLighting m_directional_light = DirectionalLighting::default_sun();
-    std::unique_ptr<Texture> m_checker_texture;
-    UniformBufferHandle m_uniform_buffer;
-
-    bool m_is_running = false;
+    std::unique_ptr<GraphicsDevice> m_device;
+    std::unique_ptr<Application> m_application;
+    bool m_application_started = false;
+    bool m_initialized = false;
 };
 
 } // namespace maya

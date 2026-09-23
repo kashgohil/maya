@@ -1,12 +1,7 @@
 #pragma once
 
 #include "maya/rhi/graphics_device.hpp"
-#include <map>
-
-#ifdef __OBJC__
-#import <Metal/Metal.h>
-#import <QuartzCore/QuartzCore.h>
-#endif
+#include <memory>
 
 namespace maya {
 
@@ -42,41 +37,8 @@ public:
     void draw_indexed(IndexBufferHandle handle, uint32_t index_count) override;
 
 private:
-#ifdef __OBJC__
-    id<MTLDevice> m_device;
-    id<MTLCommandQueue> m_command_queue;
-    CAMetalLayer* m_layer;
-    id<MTLCommandBuffer> m_current_command_buffer;
-    std::map<uint32_t, id<MTLRenderPipelineState>> m_pipeline_states;
-    uint32_t m_next_pipeline_handle = 1;
-    id<MTLRenderCommandEncoder> m_current_encoder;
-    id<CAMetalDrawable> m_current_drawable;
-    
-    std::map<uint32_t, id<MTLBuffer>> m_buffers;
-    std::map<uint32_t, id<MTLTexture>> m_textures;
-    
-    id<MTLSamplerState> m_sampler_state;
-    id<MTLTexture> m_depth_texture;
-    id<MTLDepthStencilState> m_depth_stencil_state;
-    void* m_pool;
-    uint32_t m_next_handle = 1;
-#else
-    void* m_device;
-    void* m_command_queue;
-    void* m_layer;
-    void* m_current_command_buffer;
-    void* m_pipeline_states;
-    void* m_current_encoder;
-    void* m_current_drawable;
-    void* m_buffers;
-    void* m_textures;
-    void* m_sampler_state;
-    void* m_depth_texture;
-    void* m_depth_stencil_state;
-    void* m_pool;
-    uint32_t m_next_handle;
-    uint32_t m_next_pipeline_handle;
-#endif
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace maya
