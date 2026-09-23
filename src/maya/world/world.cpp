@@ -300,7 +300,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
                 parent.first_child = slot;
             }
             changed.push_back(slot);
-        } else if (command.kind == Kind::add || command.kind == Kind::remove) {
+        } else if (command.kind == Kind::add || command.kind == Kind::remove ||
+                   command.kind == Kind::replace) {
             auto present = state.components.find(command.type);
             if (present == state.components.end()) {
                 const auto pool = m_pools.find(command.type);
@@ -321,6 +322,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
                 ++additions[command.type];
                 if (!m_pools.contains(command.type) && !new_pools.contains(command.type))
                     new_pools.emplace(command.type, command.addition->make_pool());
+            } else if (command.kind == Kind::replace) {
+                if (!present->second) return fail(WorldError::component_missing);
             } else {
                 if (!present->second) return fail(WorldError::component_missing);
                 if (command.type == typeid(TransformComponent)) {
@@ -376,6 +379,9 @@ WorldCommitResult World::commit(WorldCommands& commands) {
             break;
         case Kind::add:
             command.addition->publish(*m_pools.at(command.type), slot);
+            break;
+        case Kind::replace:
+            command.addition->replace(*m_pools.at(command.type), slot);
             break;
         case Kind::remove:
             m_pools.at(command.type)->remove(slot);

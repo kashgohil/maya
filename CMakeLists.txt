@@ -38,13 +38,15 @@ find_library(COCOA_LIBRARY Cocoa REQUIRED)
 add_library(MayaWorld STATIC
     src/maya/core/identity.cpp
     src/maya/world/world.cpp
-    src/maya/world/spatial.cpp)
+    src/maya/world/spatial.cpp
+    src/maya/properties/schema.cpp)
 add_library(Maya::World ALIAS MayaWorld)
 target_include_directories(MayaWorld PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaWorld)
 
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
+    src/maya/assets/property_context.cpp
     src/maya/assets/file_provider.cpp
     src/maya/core/model_loader.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)

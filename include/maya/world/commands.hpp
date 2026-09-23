@@ -32,6 +32,16 @@ public:
         require_active();
         m_commands.push_back({Kind::remove, target, {}, typeid(T), {}});
     }
+    /// Replace an existing value atomically with the rest of the command batch.
+    template<Component T> void replace(EntityTarget target, T value) {
+        if constexpr (std::same_as<T, TransformComponent>) {
+            set_transform(target, std::move(value));
+        } else {
+            require_active();
+            auto staged = std::make_unique<Addition<T>>(std::move(value));
+            m_commands.push_back({Kind::replace, target, {}, typeid(T), std::move(staged)});
+        }
+    }
     void set_transform(EntityTarget target, TransformComponent value);
     /// nullopt detaches to the root. Both targets may be pending in this batch.
     void reparent(EntityTarget target, std::optional<EntityTarget> parent, ReparentPolicy policy);
@@ -41,10 +51,11 @@ private:
     friend class World;
     explicit WorldCommands(uint64_t world)
         : m_world(world), m_batch(detail::next_lifetime_token()) {}
-    enum class Kind { create, destroy, add, remove, set_transform, reparent };
+    enum class Kind { create, destroy, add, remove, replace, set_transform, reparent };
     struct AdditionBase {
         virtual ~AdditionBase() = default;
         virtual std::unique_ptr<detail::ComponentPoolBase> make_pool() const = 0;
+        virtual void replace(detail::ComponentPoolBase& pool, uint32_t slot) noexcept = 0;
         virtual void publish(detail::ComponentPoolBase& pool, uint32_t slot) noexcept = 0;
     };
     template<Component T> struct Addition final : AdditionBase {
@@ -54,6 +65,9 @@ private:
         }
         void publish(detail::ComponentPoolBase& pool, uint32_t slot) noexcept override {
             static_cast<detail::ComponentPool<T>&>(pool).add(slot, std::move(value));
+        }
+        void replace(detail::ComponentPoolBase& pool, uint32_t slot) noexcept override {
+            static_cast<detail::ComponentPool<T>&>(pool).value(slot) = std::move(value);
         }
         T value;
     };
