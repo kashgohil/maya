@@ -140,6 +140,12 @@ if(BUILD_TESTING)
         set_tests_properties(maya_world PROPERTIES LABELS "cpu;world" TIMEOUT 60)
     endif()
 
+    add_executable(maya_asset_tests tests/asset_tests.cpp)
+    target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain)
+    maya_target_options(maya_asset_tests)
+    add_test(NAME maya_assets COMMAND maya_asset_tests)
+    set_tests_properties(maya_assets PROPERTIES LABELS "cpu;assets" TIMEOUT 60)
+
     add_executable(maya_tests
         tests/math_tests.cpp
         tests/rhi_tests.cpp
