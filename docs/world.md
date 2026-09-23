@@ -2,7 +2,7 @@
 
 [Issue #991](https://work.rezee.app/kash/issues/991) implements the identity/storage part of the [architecture contracts](architecture/README.md). `MayaWorld` (`Maya::World`) is a CPU-only C++20 library with no GLFW, renderer, Metal, or editor dependency. `MayaRuntime` links it publicly. Include [world.hpp](../include/maya/world/world.hpp) and [components.hpp](../include/maya/world/components.hpp).
 
-The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample's renderer integration is deferred to #993 and #998; [hierarchy/camera calculations](spatial.md) are implemented by #992. Validated properties (#994), serialization (#995), a physics/script scheduler, and an asset registry remain follow-up work.
+The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample loads its mesh through the [#993 asset registry](assets.md); World render extraction remains #998. [Hierarchy/camera calculations](spatial.md) are implemented by #992. Validated properties (#994), serialization (#995), and a physics/script scheduler remain follow-up work.
 
 ## Create and query
 
@@ -72,7 +72,7 @@ This small sparse-set implementation keeps storage independent of an external EC
 | --- | --- |
 | `NameComponent` | String value; not identity. |
 | `TransformComponent` | Local translation in metres, quaternion x/y/z/w, positive scale defaulting to one. World owns hierarchy links and derived matrices; see [spatial operations](spatial.md). |
-| `MeshRendererComponent` | Typed mesh/material AssetId references and visibility. References do not load or pin assets; #993 supplies residency/ownership. |
+| `MeshRendererComponent` | Typed mesh/material AssetId references and visibility. References do not load or pin assets; [#993 leases](assets.md) supply residency/ownership. |
 | `CameraComponent` | Vertical FOV in radians, near/far clip in metres. Aspect belongs to a rendered view; no window/input ownership. |
 | `LightComponent` | Kind, linear RGB, intensity (directional lux, point/spot lumens), local-light range, spot cone full angles in radians, enabled flag. Renderer interpretation follows later. |
 
