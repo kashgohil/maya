@@ -35,6 +35,13 @@ find_library(QUARTZ_LIBRARY QuartzCore REQUIRED)
 find_library(COCOA_LIBRARY Cocoa REQUIRED)
 
 # Explicit source lists prevent editor/sample code from silently entering the runtime.
+add_library(MayaWorld STATIC
+    src/maya/core/identity.cpp
+    src/maya/world/world.cpp)
+add_library(Maya::World ALIAS MayaWorld)
+target_include_directories(MayaWorld PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+maya_target_options(MayaWorld)
+
 add_library(MayaRuntime STATIC
     src/maya/core/engine.cpp
     src/maya/core/camera.cpp
@@ -46,7 +53,7 @@ add_library(MayaRuntime STATIC
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaWorld PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 
