@@ -2,6 +2,8 @@
 
 Maya is a C++20 engine under architectural redevelopment for realistic 3D games. The current platform is macOS/Metal with Objective-C++, GLFW, and CMake. See README.md for build options, lifecycle contracts, and known limitations.
 
+Before implementing world, asset, simulation, or renderer changes, read [docs/architecture/README.md](docs/architecture/README.md) and its linked contracts from #990. They distinguish intended architecture from current APIs and leave product/platform/performance decisions explicitly open. Update the relevant record when changing a contract.
+
 ## Build and validation
 
 ```bash

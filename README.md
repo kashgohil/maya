@@ -123,3 +123,5 @@ Failed file loads print attempted paths. On Retina displays, framebuffer pixel d
 ## Tracking
 
 [Foundation issue #989](https://work.rezee.app/kash/issues/989) is part of [the author-save-run milestone](https://work.rezee.app/kash/issues/988). [DOC-58](https://work.rezee.app/kash/docs/58) records the production-engine direction and subsequent milestones.
+
+[Architecture contracts](docs/architecture/README.md), recorded for [issue #990](https://work.rezee.app/kash/issues/990), define the intended world/asset identity, ownership, coordinate, scheduling, and render-extraction rules. They include proposed performance workloads and a scenario review; planned systems and unconfirmed budgets are distinguished from current implementation.
