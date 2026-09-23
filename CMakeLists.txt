@@ -125,7 +125,7 @@ if(BUILD_TESTING)
     FetchContent_MakeAvailable(catch2)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/world_tests.cpp")
-        add_executable(maya_world_tests tests/world_tests.cpp)
+        add_executable(maya_world_tests tests/world_tests.cpp tests/spatial_tests.cpp)
         target_link_libraries(maya_world_tests PRIVATE MayaWorld Catch2::Catch2WithMain)
         maya_target_options(maya_world_tests)
         add_test(NAME maya_world COMMAND maya_world_tests)
