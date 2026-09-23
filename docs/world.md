@@ -2,7 +2,7 @@
 
 [Issue #991](https://work.rezee.app/kash/issues/991) implements the identity/storage part of the [architecture contracts](architecture/README.md). `MayaWorld` (`Maya::World`) is a CPU-only C++20 library with no GLFW, renderer, Metal, or editor dependency. `MayaRuntime` links it publicly. Include [world.hpp](../include/maya/world/world.hpp) and [components.hpp](../include/maya/world/components.hpp).
 
-The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample loads its mesh through the [#993 asset registry](assets.md); World render extraction remains #998. [Hierarchy/camera calculations](spatial.md) are implemented by #992. Validated properties (#994), serialization (#995), and a physics/script scheduler remain follow-up work.
+The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample loads its mesh through the [#993 asset registry](assets.md); World render extraction remains #998. [Hierarchy/camera calculations](spatial.md) are implemented by #992. [Shared property metadata and validated edits](properties.md) are implemented by #994. Serialization (#995) and a physics/script scheduler remain follow-up work.
 
 ## Create and query
 
@@ -42,7 +42,9 @@ std::as_const(world).for_each<maya::TransformComponent, maya::CameraComponent>(
 
 World and each command buffer have one owner thread; they are not internally synchronized. Thread-safe token generation does not make World access thread-safe. World must outlive all callbacks. Component moves/destructors must not re-enter the World or perform fallible lifecycle work; future script activation/teardown is a separate subsystem phase.
 
-Create/destroy/add/remove, transform edits, and reparent operations are recorded in `WorldCommands` and take effect only through an explicit `commit` at an application-controlled boundary. A `PendingEntity` addresses an earlier create in the same buffer; it is not a live handle. Buffers are movable and may safely outlive the World, but cannot commit into another lifetime. Success consumes the buffer; attempting to append to a consumed or moved-from buffer throws `std::logic_error`.
+Create/destroy/add/remove/replace, transform edits, and reparent operations are recorded in `WorldCommands` and take effect only through an explicit `commit` at an application-controlled boundary. A `PendingEntity` addresses an earlier create in the same buffer; it is not a live handle. Buffers are movable and may safely outlive the World, but cannot commit into another lifetime. Success consumes the buffer; attempting to append to a consumed or moved-from buffer throws `std::logic_error`.
+
+`WorldCommands::replace<T>` atomically replaces an existing component in enqueue order without changing entity identity or component pool order. Transform replacement uses `set_transform`; other native replacements are trusted values. Use the [property validation API](properties.md) for authoring, imports, or scripting input.
 
 Commit validates commands in enqueue order. Missing components, duplicate additions/IDs, commands after destruction, stale/foreign handles, and invalid pending targets return a `WorldError` and failing index. No prefix of a rejected batch is applied. Remove followed by add replaces a component. Creating then destroying a pending entity is allowed; its result handle is already invalid when commit returns. Failed buffers retain their staging values and may be discarded or retried after a transient `busy` result.
 
