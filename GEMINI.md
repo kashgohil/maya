@@ -1,69 +1,53 @@
 # Maya Engine Context
 
-## Project Overview
-Maya is a high-performance 3D game engine targeting realistic graphics, written in **C++20**. It employs a **Rendering Hardware Interface (RHI)** architecture to abstract graphics API details from the core engine logic.
+Maya is a C++20 engine under architectural redevelopment for realistic 3D games. The current platform is macOS/Metal with Objective-C++, GLFW, and CMake. See README.md for build options, lifecycle contracts, and known limitations.
 
-- **Main Technologies:** C++20, Objective-C++ (for Metal), CMake, GLFW.
-- **Current Backend:** Metal (macOS native).
-- **Architecture:** 
-  - `maya::Engine`: Central hub for lifecycle management.
-  - `maya::GraphicsDevice`: Abstract RHI base class.
-  - `maya::MetalDevice`: Metal-specific implementation of the RHI.
-  - `maya::Window`: Platform-agnostic windowing wrapper around GLFW.
+## Build and validation
 
-## Building and Running
-The project uses CMake as its build system.
-
-### Prerequisites
-- CMake 3.20+
-- AppleClang (supporting C++20 and OBJCXX)
-- Homebrew (for dependency management)
-
-### Commands
 ```bash
-# Configure the project
-mkdir -p build && cd build
-cmake ..
-
-# Build the project
-cmake --build .
-
-# Run the engine
-./maya
+cmake -S . -B build
+cmake --build build -j 4
+./build/maya_player
+./build/maya_editor
+./build/maya_sample
+ctest --test-dir build -L cpu --output-on-failure
+ctest --test-dir build -L gpu --output-on-failure
 ```
 
-## Project Structure
-- `include/maya/`: Public header files.
-  - `core/`: Engine lifecycle and core systems.
-  - `platform/`: Platform abstraction (windowing, input).
-  - `rhi/`: Rendering Hardware Interface abstractions and backends.
-- `src/maya/`: Implementation files (.cpp, .mm).
-- `src/main.cpp`: Application entry point.
-- `resources/`: Runtime shaders and other packaged resources (loaded via `FileSystem`).
-- `assets/`: Models and similar content referenced by path from the repo root.
-- `make_color_cube` (`primitives.hpp`): Procedural colored cube mesh for unlit drawing.
-- `Material` (`material.hpp`): Pipeline + optional texture for a draw path.
-- `Scene` (`scene.hpp`): Owns meshes and a flat list of `SceneObject` (mesh, material, model matrix); `Scene::render` applies uniforms and issues draws.
+GPU tests require an interactive macOS session. Applications support `--smoke [positive frame count]`. Use `MAYA_ENABLE_SANITIZERS=ON` in a separate build directory for ASan/UBSan.
 
-## Window size vs framebuffer (Metal)
+## Boundaries
 
-On Retina displays, the **logical** window size (what you pass to `glfwCreateWindow`) differs from the **framebuffer** size in **pixels** (backing store). Metal’s `CAMetalLayer.drawableSize` must match the framebuffer in pixels, not the logical size.
+- `MayaRuntime`: Engine session lifecycle, existing core utilities, and graphics backend. No editor, sample, GLFW, or desktop-loop dependency.
+- `MayaDesktop`: Window ownership, event loop, input, framebuffer resize, and CLI launch handling.
+- `MayaEditor`: Editor-only application factory. Initially an empty host; authoring UI comes later.
+- `MayaBasicScene`: Demo content and animation, owned by the sample project.
+- `apps/player/main.cpp`: Selects the initial native sample project for the player.
+- `apps/editor/main.cpp`: Launches the editor.
+- `samples/basic_scene/main.cpp`: Launches the sample directly.
 
-The engine uses **`glfwGetFramebufferSize`** at startup and **`glfwSetFramebufferSizeCallback`** on resize to drive `GraphicsDevice::resize` and `Camera::set_aspect_ratio`. That keeps the swapchain, depth buffer, and projection matrix aligned with the actual drawable resolution.
+The host owns the window; Engine owns device and Application. Stop and destroy application content before device shutdown, then destroy the window. Shutdown is idempotent, startup failures roll back, and stopped engines can initialize a fresh session. Callbacks must not re-enter lifecycle methods.
 
-## Local testing
+Current Scene, Material, Mesh, and Camera are prototype utilities retained pending their dedicated replacement issues. The application split does not implement world authoring, a new renderer, physics, or scripting.
 
-Run `./maya_tests` from your build directory in a normal shell with GPU access. Sandboxes that block Metal can cause shader compilation tests to fail.
+## Conventions
 
-## Asset load failures
+- C++20 in core/platform, Objective-C++ confined to the Metal backend.
+- snake_case methods/variables; PascalCase classes.
+- All rendering calls go through GraphicsDevice.
+- Explicit CMake source lists keep runtime, editor, and sample dependencies separate.
+- Native Metal state stays opaque to C++ consumers and uses ARC ownership.
+- Use framebuffer pixel dimensions, not logical window size, for Metal and camera aspect.
+- Runtime cleanup must not throw; application stop must tolerate partial initialization.
 
-If `FileSystem::read_text` cannot resolve a path, stderr includes `[FileSystem]` lines listing search roots and candidate paths. Set **`MAYA_RESOURCES`** to the repository root (or any tree containing `resources/` and `assets/`) when the working directory or executable location does not allow discovery.
+## Files
 
-## Development Conventions
-- **Language:** C++20 for core logic; Objective-C++ (`.mm`) for macOS/Metal specific code.
-- **Naming:** `snake_case` for methods and variables; `PascalCase` for classes.
-- **RHI Pattern:** All rendering calls must go through the `GraphicsDevice` abstraction to ensure cross-platform compatibility.
-- **IDE Support:** 
-  - `CMAKE_EXPORT_COMPILE_COMMANDS` is enabled.
-  - A symbolic link `compile_commands.json -> build/compile_commands.json` exists in the root for tools like `clangd` and Zed.
-  - `.clangd` configuration is provided for enhanced diagnostics.
+- `include/maya/core/application.hpp`: Content lifecycle boundary.
+- `include/maya/core/engine.hpp`: Runtime session owner.
+- `src/maya/platform/desktop_application.cpp`: Desktop loop.
+- `samples/basic_scene/assets/pyramid.obj`: Sample model.
+- `resources/shaders/metal/triangle.metal`: Existing shared demo shader.
+
+FileSystem searches MAYA_RESOURCES, executable parents, and the working directory. A resource root for the sample contains both resources/ and samples/basic_scene/assets/. Failed resolution logs every candidate path.
+
+CMake exports build/compile_commands.json; the root symlink supports clangd.

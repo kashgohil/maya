@@ -1,90 +1,125 @@
 # Maya
 
-Small **C++20** 3D engine on **macOS** with a **Metal** rendering backend behind an RHI (`GraphicsDevice`), **GLFW** for windowing, and **CMake** for builds.
+Maya is being built as a production engine for realistic 3D games, with rendering and physics as its focus. The current code is the first architectural foundation: separate runtime, desktop host, editor, player, and sample targets. World authoring, physics, scripting, and the new renderer are subsequent milestones.
 
-**Platform:** macOS only (Metal + Objective-C++). There is no Vulkan/D3D12 backend yet.
+The current backend is **Metal on macOS**, with **C++20**, **Objective-C++**, **GLFW**, and **CMake**.
 
-## Requirements
+## Build and run
 
-- macOS with Apple Clang (C++20, Objective-C++ for Metal)
-- CMake 3.20+
-- Xcode or Command Line Tools (Metal, Cocoa, QuartzCore)
-
-## Quick start
-
-Clone and build from the repository root:
+Requirements: macOS, Apple Clang/Xcode Command Line Tools, and CMake 3.20+. The initial configure fetches pinned GLFW and Catch2 sources.
 
 ```bash
-git clone <your-repo-url>
-cd maya    # use your clone directory name
-mkdir -p build && cd build
-cmake ..
-cmake --build .
+cmake -S . -B build
+cmake --build build -j 4
+
+./build/maya_player
+./build/maya_editor
+./build/maya_sample
 ```
 
-Run the sample (from `build/` is fine):
+- `maya_player` runs the basic-scene native sample project. Project selection is in its entry point; loading serialized game projects comes later.
+- `maya_editor` opens an empty editor host with an uncaptured cursor. Panels, inspectors, and authoring are not implemented yet.
+- `maya_sample` runs the extracted rotating pyramid/cube demo. It replaces the old `maya` executable.
+- Player/sample controls: WASD, mouse look, Space to ascend, Escape to exit.
+- Window titles show smoothed FPS, frame time, and framebuffer dimensions.
+
+For Release builds, add `-DCMAKE_BUILD_TYPE=Release` to configure. CMake exports `build/compile_commands.json` for clangd.
+
+## Independent targets
+
+| Target | Responsibility | Dependencies |
+| --- | --- | --- |
+| MayaRuntime / Maya::Runtime | Engine lifecycle, existing core utilities, RHI/Metal | Apple graphics frameworks; no GLFW, editor, or sample code |
+| MayaDesktop | Window, event loop, input routing, launch arguments | MayaRuntime, GLFW |
+| MayaBasicScene | Sample meshes, camera, materials, and animation | MayaRuntime |
+| MayaEditor | Editor application boundary | MayaRuntime |
+| maya_player | Standalone player entry point | MayaDesktop, MayaBasicScene |
+| maya_editor | Editor entry point | MayaDesktop, MayaEditor |
+| maya_sample | Explicit sample entry point | MayaDesktop, MayaBasicScene |
+
+All application targets can be disabled independently. Tests are controlled by `BUILD_TESTING`; Catch2 is not fetched when tests are disabled. GLFW is not fetched when all desktop applications are disabled.
+
+Build only the runtime:
 
 ```bash
-./maya
+cmake -S . -B build/runtime-only \
+  -DMAYA_BUILD_EDITOR=OFF -DMAYA_BUILD_PLAYER=OFF \
+  -DMAYA_BUILD_SAMPLES=OFF -DBUILD_TESTING=OFF
+cmake --build build/runtime-only --target MayaRuntime
 ```
 
-Run the unit tests:
+Build the player without editor or test dependencies:
 
 ```bash
-./maya_tests
+cmake -S . -B build/player-only \
+  -DMAYA_BUILD_EDITOR=OFF -DMAYA_BUILD_SAMPLES=OFF -DBUILD_TESTING=OFF
+cmake --build build/player-only --target maya_player
 ```
 
-Metal-related tests expect a normal macOS environment with GPU access. If tests fail in a **sandboxed** terminal, run them locally in Terminal.app or another environment that allows Metal.
+Sources are listed explicitly in CMake so new editor/sample files cannot silently become runtime dependencies.
 
-While the app is running, the **window title** shows a lightweight debug readout: smoothed FPS, last-frame time, framebuffer size, camera position, and indexed draw-call count for the current frame.
+## Application lifecycle
 
-## Build (reference)
+The desktop host owns the native window. `Engine` owns the graphics device and an `Application` for one session. The application owns game/editor content.
+
+1. Create the window, initialize the device, then call `Application::on_start`.
+2. Send framebuffer-pixel dimensions through `Engine::resize`.
+3. The host supplies time and input availability to `Engine::tick`: update, begin frame, render, end frame.
+4. Call `on_stop` and destroy application content while the device is alive.
+5. Shut down the device, retire GPU work, and release its resources before destroying the window.
+
+An initialization failure rolls back acquired state. Once `on_start` has been entered, `on_stop` runs exactly once, even if startup fails or throws. A failed device initialization never starts the application. Frame/resize exceptions terminate the session cleanly and return failure to the host.
+
+Shutdown is idempotent. A stopped or failed engine can start a fresh session; initializing an active engine is rejected. Applications and devices must tolerate destruction before startup, and cleanup must not throw. Lifecycle callbacks must not re-enter the engine. Desktop operations remain on the main thread.
+
+Metal uses an opaque implementation with ARC-owned objects and autorelease pools. Shutdown drains submitted work. Per-resource RHI destruction and per-draw/frame uniform allocation are still separate planned issues; this change does not claim those renderer features are complete.
+
+## Validation
 
 ```bash
-mkdir -p build && cd build
-cmake ..
-cmake --build .
+# CPU unit/lifecycle and CLI tests; no window or GPU initialization
+ctest --test-dir build -L cpu --output-on-failure
+
+# Metal tests, repeated desktop lifecycle tests, and five-frame app smoke tests
+# Requires an interactive macOS session with GPU access; briefly opens windows
+ctest --test-dir build -L gpu --output-on-failure
+
+# Direct CPU suite
+./build/maya_tests '~[rhi]'
+
+# Individual bounded sample run
+./build/maya_sample --smoke 5
 ```
 
-Release build:
+All applications accept `--help` and `--smoke [N]`. N must be a positive integer; omitted N defaults to 120. Smoke mode disables camera input/cursor capture and supplies a fixed 1/60-second update interval. It still uses a real window and Metal. It exits nonzero on startup failure or if the requested frames are not completed. Smoke success verifies lifecycle, not pixel correctness.
+
+Run AddressSanitizer and UndefinedBehaviorSanitizer:
 
 ```bash
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build .
+cmake -S . -B build/sanitized -DCMAKE_BUILD_TYPE=Debug -DMAYA_ENABLE_SANITIZERS=ON
+cmake --build build/sanitized -j 4
+ctest --test-dir build/sanitized -L cpu --output-on-failure
+ctest --test-dir build/sanitized -L gpu --output-on-failure
 ```
 
-IDE integration: the project sets `CMAKE_EXPORT_COMPILE_COMMANDS`; symlink or copy `build/compile_commands.json` to the repo root for `clangd` (see `GEMINI.md`).
+The CPU lifecycle suite injects failures and checks cleanup order, repeated sessions, invalid input, and exception rollback. The desktop suite checks real Metal rollback/reinitialization and overlapping/failed windows.
 
-## Assets and working directory
+If AddressSanitizer hangs before test startup, verify the toolchain with an empty sanitized program. A similar macOS startup hang is tracked in [LLVM #200447](https://github.com/llvm/llvm-project/issues/200447). Run UBSan separately with `-DMAYA_SANITIZERS=undefined`; a UBSan pass is not an ASan pass. Sanitizer findings fail the process, and CTest runs have bounded timeouts.
 
-Runtime files live under the repository:
+## Content discovery
 
-- `resources/` — shaders (e.g. `resources/shaders/metal/triangle.metal`)
-- `assets/` — models and other data (e.g. `assets/models/pyramid.obj`)
+Sample content lives in `samples/basic_scene/`; shared shader sources remain in `resources/shaders/metal/`. The demo model is `samples/basic_scene/assets/pyramid.obj`.
 
-`FileSystem::initialize` (called from `main`) builds a search path from:
+The desktop host initializes `FileSystem` using these search roots:
 
-1. `MAYA_RESOURCES` — optional directory containing `resources/` and `assets/`
-2. Parents of the executable (so `build/maya` finds the repo root)
-3. The current working directory
+1. `MAYA_RESOURCES`, when set.
+2. Parents of the executable.
+3. The working directory.
 
-You can run `./maya` from `build/` without manually setting `MAYA_RESOURCES`.
+Running from the build directory works because its parents include the repository. For binaries copied elsewhere, set `MAYA_RESOURCES=/path/to/maya`, pointing to a tree containing `resources/` and `samples/basic_scene/assets/`. Automatic content cooking/packaging is later work.
 
-Example when installing or copying only the `build/` tree elsewhere:
+Failed file loads print attempted paths. On Retina displays, framebuffer pixel dimensions drive both Metal drawable size and the sample camera aspect ratio.
 
-```bash
-export MAYA_RESOURCES=/path/to/maya
-./maya
-```
+## Tracking
 
-That directory should contain `resources/` and `assets/` as in the repo.
-
-### Troubleshooting
-
-- **Shader or model failed to load:** Check stderr. Failed relative paths print `[FileSystem]` lines listing search roots and each candidate path tried.
-- **Tests pass locally but fail in a sandbox:** Run `./maya_tests` outside the sandbox (Metal shader compilation needs a full macOS GPU stack in practice).
-- **Wrong aspect ratio after resize:** The engine uses GLFW framebuffer size; on Retina, that is the backing-store size in pixels (see `GEMINI.md`).
-
-## Notes
-
-- **Framebuffer vs logical size:** On Retina displays, the GLFW framebuffer size in pixels differs from the window’s logical size. The engine uses framebuffer dimensions for Metal’s drawable and for the camera aspect ratio (see `GEMINI.md`).
+[Foundation issue #989](https://work.rezee.app/kash/issues/989) is part of [the author-save-run milestone](https://work.rezee.app/kash/issues/988). [DOC-58](https://work.rezee.app/kash/docs/58) records the production-engine direction and subsequent milestones.
