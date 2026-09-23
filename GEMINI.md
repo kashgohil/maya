@@ -33,7 +33,7 @@ The host owns the window; Engine owns device and Application. Stop and destroy a
 
 Current Scene, Material, Mesh, and Camera are prototype utilities retained pending their dedicated replacement issues. The application split does not implement world authoring, a new renderer, physics, or scripting.
 
-World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas exist independently of those sample utilities. Structural edits use WorldCommands and explicit commit; never retain a component reference outside a query callback. Hierarchy, asset services, validation metadata, serialization, and renderer integration follow in dependent issues.
+World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas exist independently of those sample utilities. Structural edits use WorldCommands and explicit commit; never retain a component reference outside a query callback. Hierarchy and camera calculations are implemented; transform queries are read-only and edits use validated set_transform/reparent commands. Asset services, validation metadata, serialization, and renderer integration follow in dependent issues. See [spatial APIs and tolerances](docs/spatial.md).
 
 ## Conventions
 

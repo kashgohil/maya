@@ -2,7 +2,7 @@
 
 [Issue #991](https://work.rezee.app/kash/issues/991) implements the identity/storage part of the [architecture contracts](architecture/README.md). `MayaWorld` (`Maya::World`) is a CPU-only C++20 library with no GLFW, renderer, Metal, or editor dependency. `MayaRuntime` links it publicly. Include [world.hpp](../include/maya/world/world.hpp) and [components.hpp](../include/maya/world/components.hpp).
 
-The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample's renderer integration is deferred to #993 and #998; hierarchy/camera calculations are #992, validated properties are #994, and scene serialization is #995. This issue does not add those systems, a physics/script scheduler, or an asset registry.
+The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample's renderer integration is deferred to #993 and #998; [hierarchy/camera calculations](spatial.md) are implemented by #992. Validated properties (#994), serialization (#995), a physics/script scheduler, and an asset registry remain follow-up work.
 
 ## Create and query
 
@@ -42,13 +42,13 @@ std::as_const(world).for_each<maya::TransformComponent, maya::CameraComponent>(
 
 World and each command buffer have one owner thread; they are not internally synchronized. Thread-safe token generation does not make World access thread-safe. World must outlive all callbacks. Component moves/destructors must not re-enter the World or perform fallible lifecycle work; future script activation/teardown is a separate subsystem phase.
 
-Create/destroy/add/remove operations are recorded in `WorldCommands` and take effect only through an explicit `commit` at an application-controlled boundary. A `PendingEntity` addresses an earlier create in the same buffer; it is not a live handle. Buffers are movable and may safely outlive the World, but cannot commit into another lifetime. Success consumes the buffer; attempting to append to a consumed or moved-from buffer throws `std::logic_error`.
+Create/destroy/add/remove, transform edits, and reparent operations are recorded in `WorldCommands` and take effect only through an explicit `commit` at an application-controlled boundary. A `PendingEntity` addresses an earlier create in the same buffer; it is not a live handle. Buffers are movable and may safely outlive the World, but cannot commit into another lifetime. Success consumes the buffer; attempting to append to a consumed or moved-from buffer throws `std::logic_error`.
 
 Commit validates commands in enqueue order. Missing components, duplicate additions/IDs, commands after destruction, stale/foreign handles, and invalid pending targets return a `WorldError` and failing index. No prefix of a rejected batch is applied. Remove followed by add replaces a component. Creating then destroying a pending entity is allowed; its result handle is already invalid when commit returns. Failed buffers retain their staging values and may be discarded or retried after a transient `busy` result.
 
 After validation, commit allocates storage/map nodes before publication. Allocation/construction failures propagate as exceptions while logical world contents remain unchanged (capacity may grow). Components must meet the `Component` concept: unqualified object type with nonthrowing move construction, move assignment, and destruction. This permits packed relocation and a publication phase without allocating or invoking throwing component operations. Fallible value construction/copying happens while staging, before live state changes.
 
-`with`, component iteration, and entity enumeration hold RAII borrow guards. Nested callbacks are allowed; `commit` returns `busy` until every guard exits, including exception unwinding. References are valid only within their callback and must not escape into another system, stored pointer, or job. Component field edits through mutable callbacks are immediate and are **not** transactional or automatically rolled back if the callback throws. Property validation and undo commands arrive in #994/#1000.
+`with`, component iteration, and entity enumeration hold RAII borrow guards. Nested callbacks are allowed; `commit` returns `busy` until every guard exits, including exception unwinding. References are valid only within their callback and must not escape into another system, stored pointer, or job. Transform queries always expose const values; use validated `set_transform` commands. Other component field edits through mutable callbacks are immediate and are **not** transactional or automatically rolled back if the callback throws. Property validation and undo commands arrive in #994/#1000.
 
 ```cpp
 auto removals = world.commands();
@@ -58,7 +58,7 @@ world.for_each<maya::MeshRendererComponent>([&](auto entity, const auto& mesh) {
 const auto removed = world.commit(removals); // after iteration, at the owner's boundary
 ```
 
-No automatic frame/tick commit exists yet. The future scheduler chooses the boundary and merges producer commands in its declared order. This storage transaction covers entity/component operations only; it does not claim rollback of arbitrary script, I/O, or GPU side effects.
+No automatic frame/tick commit exists yet. The future scheduler chooses the boundary and merges producer commands in its declared order. This storage transaction covers entity/component and hierarchy operations; it does not claim rollback of arbitrary script, I/O, or GPU side effects.
 
 ## Storage decision and limits
 
@@ -71,12 +71,12 @@ This small sparse-set implementation keeps storage independent of an external EC
 | Component | Stored data / next integration |
 | --- | --- |
 | `NameComponent` | String value; not identity. |
-| `TransformComponent` | Local translation in metres, quaternion x/y/z/w, positive scale defaulting to one. No parent or derived world matrix yet. |
+| `TransformComponent` | Local translation in metres, quaternion x/y/z/w, positive scale defaulting to one. World owns hierarchy links and derived matrices; see [spatial operations](spatial.md). |
 | `MeshRendererComponent` | Typed mesh/material AssetId references and visibility. References do not load or pin assets; #993 supplies residency/ownership. |
 | `CameraComponent` | Vertical FOV in radians, near/far clip in metres. Aspect belongs to a rendered view; no window/input ownership. |
 | `LightComponent` | Kind, linear RGB, intensity (directional lux, point/spot lumens), local-light range, spot cone full angles in radians, enabled flag. Renderer interpretation follows later. |
 
-Entities start with no implicit components. The five schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle only. Transform/camera numerical validation and hierarchy are #992, shared property validation is #994, and renderer use is #998. Mutable fields are not yet a validated inspector or scripting API.
+Entities start with no implicit components. The five schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle; #992 adds transform validation and validated camera calculations. Shared property validation is #994, and renderer use is #998. Mutable fields are not yet a validated inspector or scripting API.
 
 ## Verification
 
@@ -87,6 +87,6 @@ ctest --test-dir build -L world --output-on-failure
 
 The World tests link only MayaWorld and Catch2, so they need no window/GPU. Coverage includes ID reconstruction, wrong/dead/reused handles, repeated World lifetimes, atomic rejection, pending-buffer ownership, RAII cleanup, mutation exclusion, callback exceptions, multi-component queries, and 10,000 entities across repeated growth/removal/reuse cycles. Use the normal sanitizer CMake options; keep sanitizer results separate from performance measurements.
 
-Validation on 23 September 2026: all application targets built in a fresh Release configuration with no compiler diagnostics. The final World suite passed 13 cases / 80,314 assertions in Release and UBSan. The existing CPU/CLI checks and all five Metal/lifecycle/application smoke checks passed. Clang static analysis of the two new implementation files reported no findings. A separate bounded CPU microbenchmark exercised 1,000/10,000/100,000 entities and 10,000 incremental commits; it is not the versioned renderer/physics benchmark planned in #1004.
+Historical #991 validation on 23 September 2026: all application targets built in a fresh Release configuration with no compiler diagnostics. The final World suite passed 13 cases / 80,314 assertions in Release and UBSan. The existing CPU/CLI checks and all five Metal/lifecycle/application smoke checks passed. Clang static analysis of the two new implementation files reported no findings. A separate bounded CPU microbenchmark exercised 1,000/10,000/100,000 entities and 10,000 incremental commits; it is not the versioned renderer/physics benchmark planned in #1004.
 
 The ASan/UBSan test binary built, but timed out before emitting test output. A newly compiled empty-main ASan/UBSan program also timed out. Both were terminated. ASan validation remains blocked by the local runtime/toolchain startup problem; the UBSan result does not establish an ASan pass.
