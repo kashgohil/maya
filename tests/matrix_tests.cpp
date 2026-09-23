@@ -367,9 +367,7 @@ TEST_CASE("Mat4 look_at", "[math][matrix][camera]") {
         Vec3 up(0.0f, 1.0f, 0.0f);
         
         // Should not crash, though result is undefined
-        Mat4 view = Mat4::look_at(eye, target, up);
-        // Just verify it doesn't crash - result may be garbage
-        CHECK(true);
+        CHECK_NOTHROW(Mat4::look_at(eye, target, up));
     }
 }
 

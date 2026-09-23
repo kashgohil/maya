@@ -230,9 +230,7 @@ TEST_CASE("Camera edge cases", "[core][camera]") {
         Camera cam(60.0f, 16.0f/9.0f, 0.1f, 100.0f);
         cam.set_position(Vec3(0.0f, 0.0f, 0.0f));
         
-        Mat4 view = cam.get_view_matrix();
-        // Should not crash, though view from origin may be degenerate
-        CHECK(true);
+        CHECK_NOTHROW(cam.get_view_matrix());
     }
 
     SECTION("Camera with square aspect ratio") {
@@ -265,19 +263,12 @@ TEST_CASE("Camera edge cases", "[core][camera]") {
         // This would create a degenerate projection
         // Camera constructor doesn't validate this, just test it doesn't crash
         Camera cam(60.0f, 16.0f/9.0f, 1.0f, 1.0f);
-        Mat4 proj = cam.get_projection_matrix();
-        
-        // Should not crash, though projection is degenerate
-        CHECK(true);
+        CHECK_NOTHROW(cam.get_projection_matrix());
     }
 
     SECTION("Camera with zero near plane") {
         Camera cam(60.0f, 16.0f/9.0f, 0.0f, 100.0f);
-        Mat4 proj = cam.get_projection_matrix();
-        
-        // Division by zero in perspective calculation
-        // Just verify it doesn't crash
-        CHECK(true);
+        CHECK_NOTHROW(cam.get_projection_matrix());
     }
 }
 
