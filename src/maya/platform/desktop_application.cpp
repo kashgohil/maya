@@ -3,6 +3,7 @@
 #include "maya/core/file_system.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/platform/window.hpp"
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <iomanip>
@@ -49,8 +50,18 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
         return 1;
     }
     Engine engine;
+    Input::instance().set_services({[&window] { return window.clipboard_text(); },
+                                    [&window](const std::string& text) { window.set_clipboard_text(text); },
+                                    [&window](CursorShape shape) { window.set_cursor_shape(shape); }});
+    const auto publish_metrics = [&window] {
+        const auto [points_width, points_height] = window.window_size();
+        const auto [pixels_width, pixels_height] = window.framebuffer_size();
+        Input::instance().set_window_metrics({float(points_width), float(points_height),
+            uint32_t(std::max(pixels_width, 0)), uint32_t(std::max(pixels_height, 0))});
+    };
+    publish_metrics();
     if (!engine.initialize(GraphicsDevice::create_default(), window.get_native_handle(),
-            std::move(application))) return 1;
+            std::move(application), options.device)) return 1;
 
     bool resize_ok = true;
     window.set_framebuffer_resize_callback([&](int width, int height) {
@@ -59,7 +70,8 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     });
     const auto [width, height] = window.framebuffer_size();
     if (!engine.resize(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) return 1;
-    window.set_cursor_captured(options.capture_cursor && !smoke_frames);
+    auto cursor_captured = options.capture_cursor && !smoke_frames;
+    window.set_cursor_captured(cursor_captured);
 
     auto last_time = std::chrono::steady_clock::now();
     float fps_smooth = 0.0f;
@@ -68,14 +80,21 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     while (!window.should_close()) {
         window.poll_events();
         if (!resize_ok) { result = 1; break; }
-        if (window.should_close() || (!smoke_frames && Input::instance().is_key_pressed(KeyCode::Escape)))
+        if (window.should_close() ||
+            (!smoke_frames && options.escape_closes && Input::instance().is_key_pressed(KeyCode::Escape)))
             break;
+        publish_metrics();
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration<float>(now - last_time).count();
         last_time = now;
         if (!engine.tick(smoke_frames ? 1.0f / 60.0f : elapsed, !smoke_frames)) {
             result = 1;
             break;
+        }
+        if (const auto capture = Input::instance().take_cursor_capture_request();
+            capture && *capture != cursor_captured && !smoke_frames) {
+            cursor_captured = *capture;
+            window.set_cursor_captured(cursor_captured);
         }
         Input::instance().update();
         ++frame_count;

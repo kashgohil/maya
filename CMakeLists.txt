@@ -136,9 +136,29 @@ if(MAYA_BUILD_PLAYER)
 endif()
 
 if(MAYA_BUILD_EDITOR)
-    add_library(MayaEditor STATIC apps/editor/editor_application.cpp)
+    # Dear ImGui is an editor-only dependency: runtime, player, and sample targets never link it.
+    # Only the core sources are built; Maya supplies its own platform and RHI renderer backends.
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.91.9b-docking)
+    FetchContent_MakeAvailable(imgui)
+    add_library(MayaImGui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp)
+    target_include_directories(MayaImGui SYSTEM PUBLIC ${imgui_SOURCE_DIR})
+    target_include_directories(MayaImGui PUBLIC apps/editor/imgui)
+    target_compile_definitions(MayaImGui PUBLIC IMGUI_USER_CONFIG="maya_imgui_config.h")
+
+    add_library(MayaEditor STATIC
+        apps/editor/editor_application.cpp
+        apps/editor/editor_camera.cpp
+        apps/editor/editor_shell.cpp
+        apps/editor/input_router.cpp
+        apps/editor/ui_renderer.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
-    target_link_libraries(MayaEditor PUBLIC MayaRuntime)
+    target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImGui)
     maya_target_options(MayaEditor)
 
     add_executable(maya_editor apps/editor/main.cpp)

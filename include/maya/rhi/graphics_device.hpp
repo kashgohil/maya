@@ -98,8 +98,15 @@ public:
     RhiDiagnostic set_uniform_buffer(uint32_t index, const TransientSlice& slice);
     RhiDiagnostic set_texture(uint32_t index, TextureHandle texture);
     RhiDiagnostic set_sampler(uint32_t index, SamplerHandle sampler);
+    /// Restricts later draws in this pass to a nonempty rectangle inside the pass attachments.
+    /// Every pass starts with the scissor covering its attachments.
+    RhiDiagnostic set_scissor(const ScissorRect& rect);
     RhiDiagnostic draw(uint32_t vertex_count, uint32_t first_vertex = 0, uint32_t instance_count = 1);
     RhiDiagnostic draw_indexed(BufferHandle indices, IndexType type, uint32_t index_count,
+                               size_t offset = 0, uint32_t instance_count = 1);
+    /// Indices from this frame's upload memory; `offset` is relative to the slice and the indices
+    /// must lie inside it.
+    RhiDiagnostic draw_indexed(const TransientSlice& indices, IndexType type, uint32_t index_count,
                                size_t offset = 0, uint32_t instance_count = 1);
     RhiDiagnostic end_render_pass();
     /// Presents an acquired surface and submits. An open pass is closed and reported as wrong_state.
@@ -141,6 +148,8 @@ protected:
     virtual void backend_set_uniform_buffer(uint32_t index, uint32_t slot, size_t offset) = 0;
     virtual void backend_set_texture(uint32_t index, uint32_t slot) = 0;
     virtual void backend_set_sampler(uint32_t index, uint32_t slot) = 0;
+    /// The rectangle is validated against the pass attachments.
+    virtual void backend_set_scissor(const ScissorRect& rect) = 0;
     virtual void backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) = 0;
     virtual void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
                                       uint32_t instance_count) = 0;
@@ -192,6 +201,8 @@ private:
     RhiDiagnostic bind_vertex(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal);
     RhiDiagnostic bind_uniform(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal);
     RhiDiagnostic check_slice(const TransientSlice& slice) const;
+    RhiDiagnostic encode_indexed(BufferHandle indices, IndexType type, uint32_t index_count, size_t offset,
+                                 uint32_t instance_count, const TransientSlice* slice);
     RhiDiagnostic validate_attachment(const TextureHandle& handle, bool depth, uint32_t& width,
                                       uint32_t& height) const;
 
@@ -217,6 +228,8 @@ private:
     std::vector<Format> m_pass_colors;
     Format m_pass_depth = Format::undefined;
     std::vector<TextureHandle> m_pass_attachments;
+    uint32_t m_pass_width = 0;
+    uint32_t m_pass_height = 0;
     bool m_pipeline_set = false;
 };
 

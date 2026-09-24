@@ -371,8 +371,8 @@ RhiResult<PipelineHandle> GraphicsDevice::create_pipeline(const PipelineDesc& de
     if ((desc.depth.test || desc.depth.write) && desc.depth_format == Format::undefined)
         return invalid("depth test/write requires a depth attachment format");
     if (desc.depth.compare > CompareFunction::always || desc.cull > CullMode::back ||
-        desc.front_face > Winding::counter_clockwise)
-        return invalid("unknown compare, cull, or winding value");
+        desc.front_face > Winding::counter_clockwise || desc.blend > BlendMode::alpha)
+        return invalid("unknown compare, cull, winding, or blend value");
     const auto slot = allocate(m_pipelines);
     auto diagnostic = RhiDiagnostic{};
     try {
@@ -569,6 +569,8 @@ RhiDiagnostic GraphicsDevice::begin_render_pass(const RenderPassDesc& desc) {
     m_pass_colors = std::move(colors);
     m_pass_depth = depth_format;
     m_pass_attachments = std::move(attachments);
+    m_pass_width = width;
+    m_pass_height = height;
     m_pipeline_set = false;
     m_state = State::pass;
     return {};
@@ -674,6 +676,19 @@ RhiDiagnostic GraphicsDevice::set_sampler(uint32_t index, SamplerHandle sampler)
     return {};
 }
 
+RhiDiagnostic GraphicsDevice::set_scissor(const ScissorRect& rect) {
+    if (auto state = require_state(State::pass, "set_scissor")) return state;
+    if (rect.width == 0 || rect.height == 0)
+        return fail(RhiError::invalid_usage, "Scissor rectangle must be nonempty; skip draws that would be fully clipped");
+    if (rect.x > m_pass_width || rect.y > m_pass_height || rect.width > m_pass_width - rect.x ||
+        rect.height > m_pass_height - rect.y)
+        return fail(RhiError::out_of_range, "Scissor rectangle " + std::to_string(rect.x) + "," + std::to_string(rect.y) +
+            " " + std::to_string(rect.width) + "x" + std::to_string(rect.height) + " exceeds the " +
+            std::to_string(m_pass_width) + "x" + std::to_string(m_pass_height) + " pass attachments");
+    backend_set_scissor(rect);
+    return {};
+}
+
 RhiDiagnostic GraphicsDevice::draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) {
     if (auto state = require_state(State::pass, "draw")) return state;
     if (!m_pipeline_set) return fail(RhiError::wrong_state, "draw requires set_pipeline in the current pass");
@@ -685,25 +700,42 @@ RhiDiagnostic GraphicsDevice::draw(uint32_t vertex_count, uint32_t first_vertex,
 
 RhiDiagnostic GraphicsDevice::draw_indexed(BufferHandle indices, IndexType type, uint32_t index_count,
                                            size_t offset, uint32_t instance_count) {
+    return encode_indexed(indices, type, index_count, offset, instance_count, nullptr);
+}
+RhiDiagnostic GraphicsDevice::draw_indexed(const TransientSlice& indices, IndexType type, uint32_t index_count,
+                                           size_t offset, uint32_t instance_count) {
+    if (auto state = require_state(State::pass, "draw_indexed")) return state;
+    if (auto error = check_slice(indices)) return error;
+    return encode_indexed(indices.buffer, type, index_count, offset, instance_count, &indices);
+}
+RhiDiagnostic GraphicsDevice::encode_indexed(BufferHandle indices, IndexType type, uint32_t index_count, size_t offset,
+                                             uint32_t instance_count, const TransientSlice* slice) {
     if (auto state = require_state(State::pass, "draw_indexed")) return state;
     if (!m_pipeline_set) return fail(RhiError::wrong_state, "draw_indexed requires set_pipeline in the current pass");
     auto diagnostic = RhiDiagnostic{};
     const auto desc = lookup(m_buffers, indices, "Index buffer", &diagnostic);
     if (!desc) return diagnostic;
-    if (m_buffers.slots[indices.slot].internal)
+    // Upload memory is addressed only through slices, which bound the usable range.
+    auto begin = size_t{0}, size = desc->size;
+    if (slice) {
+        begin = slice->offset;
+        size = slice->size;
+    } else if (m_buffers.slots[indices.slot].internal) {
         return fail(RhiError::invalid_usage, "Frame upload memory cannot be bound as a raw index buffer");
-    if (!has_flag(desc->usage, BufferUsage::index))
+    } else if (!has_flag(desc->usage, BufferUsage::index)) {
         return fail(RhiError::invalid_usage, "Buffer" + quoted(desc->label) + " was not created with index usage");
+    }
     if (type > IndexType::uint32) return fail(RhiError::invalid_usage, "Unknown index type");
     if (index_count == 0 || instance_count == 0)
         return fail(RhiError::invalid_usage, "draw_indexed needs a nonzero index and instance count");
-    if (offset % 4)
-        return fail(RhiError::misaligned, "Index buffer offset " + std::to_string(offset) + " must be a multiple of 4");
+    if ((begin + offset) % 4)
+        return fail(RhiError::misaligned, "Index buffer offset " + std::to_string(begin + offset) + " must be a multiple of 4");
     const auto bytes = static_cast<uint64_t>(index_count) * index_size(type);
-    if (offset > desc->size || bytes > desc->size - offset)
+    if (offset > size || bytes > size - offset)
         return fail(RhiError::out_of_range, std::to_string(index_count) + " indices at offset " + std::to_string(offset) +
-            " exceed index buffer" + quoted(desc->label) + " of size " + std::to_string(desc->size));
-    backend_draw_indexed(indices.slot, type, index_count, offset, instance_count);
+            " exceed " + (slice ? std::string("the upload slice") : "index buffer" + quoted(desc->label)) +
+            " of size " + std::to_string(size));
+    backend_draw_indexed(indices.slot, type, index_count, begin + offset, instance_count);
     return {};
 }
 
@@ -714,6 +746,7 @@ RhiDiagnostic GraphicsDevice::end_render_pass() {
     m_pass_colors.clear();
     m_pass_attachments.clear();
     m_pass_depth = Format::undefined;
+    m_pass_width = m_pass_height = 0;
     m_pipeline_set = false;
     return {};
 }

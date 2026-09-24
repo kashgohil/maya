@@ -14,6 +14,18 @@ namespace maya {
 namespace {
 // GLFW windows and this reference count are confined to the main thread.
 unsigned int window_count = 0;
+
+KeyModifiers modifiers(int mods) {
+    return static_cast<KeyModifiers>(mods & (GLFW_MOD_SHIFT | GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER));
+}
+MouseButton mouse_button(int button) {
+    switch (button) {
+    case GLFW_MOUSE_BUTTON_LEFT: return MouseButton::left;
+    case GLFW_MOUSE_BUTTON_RIGHT: return MouseButton::right;
+    case GLFW_MOUSE_BUTTON_MIDDLE: return MouseButton::middle;
+    default: return MouseButton::other;
+    }
+}
 }
 
 Window::Window(int width, int height, const std::string& title) {
@@ -35,15 +47,28 @@ Window::Window(int width, int height, const std::string& title) {
     // Set this window instance as user pointer for callbacks
     glfwSetWindowUserPointer(m_window, this);
 
-    // Keyboard callback
-    glfwSetKeyCallback(m_window, [](GLFWwindow*, int key, int, int action, int) {
+    // Input callbacks update held state and record ordered events. Repeats are left to consumers.
+    glfwSetKeyCallback(m_window, [](GLFWwindow*, int key, int, int action, int mods) {
         if (action == GLFW_REPEAT) return;
-        Input::instance().set_key_state(static_cast<KeyCode>(key), action == GLFW_PRESS);
+        const auto code = static_cast<KeyCode>(key);
+        Input::instance().set_key_state(code, action == GLFW_PRESS);
+        Input::instance().push_event(KeyEvent{code, action == GLFW_PRESS, modifiers(mods)});
     });
-
-    // Mouse position callback
+    glfwSetCharCallback(m_window, [](GLFWwindow*, unsigned int codepoint) {
+        Input::instance().push_event(TextEvent{codepoint});
+    });
     glfwSetCursorPosCallback(m_window, [](GLFWwindow*, double xpos, double ypos) {
         Input::instance().set_mouse_position(static_cast<float>(xpos), static_cast<float>(ypos));
+        Input::instance().push_event(MouseMoveEvent{static_cast<float>(xpos), static_cast<float>(ypos)});
+    });
+    glfwSetMouseButtonCallback(m_window, [](GLFWwindow*, int button, int action, int mods) {
+        Input::instance().push_event(MouseButtonEvent{mouse_button(button), action == GLFW_PRESS, modifiers(mods)});
+    });
+    glfwSetScrollCallback(m_window, [](GLFWwindow*, double x, double y) {
+        Input::instance().push_event(ScrollEvent{static_cast<float>(x), static_cast<float>(y)});
+    });
+    glfwSetWindowFocusCallback(m_window, [](GLFWwindow*, int focused) {
+        Input::instance().push_event(FocusEvent{focused == GLFW_TRUE});
     });
 
     glfwSetFramebufferSizeCallback(m_window, framebuffer_size_callback);
@@ -75,6 +100,7 @@ Window::~Window() {
         m_framebuffer_resize_callback = {};
         glfwDestroyWindow(m_window);
     }
+    for (auto* cursor : m_cursors) if (cursor) glfwDestroyCursor(cursor);
     if (m_glfw_acquired && --window_count == 0) glfwTerminate();
 }
 
@@ -90,11 +116,37 @@ void* Window::get_native_handle() const {
     return m_window ? glfwGetCocoaWindow(m_window) : nullptr;
 }
 
+std::pair<int, int> Window::window_size() const {
+    int width = 0;
+    int height = 0;
+    if (m_window) glfwGetWindowSize(m_window, &width, &height);
+    return {width, height};
+}
+
+std::string Window::clipboard_text() const {
+    const char* text = m_window ? glfwGetClipboardString(m_window) : nullptr;
+    return text ? text : "";
+}
+
+void Window::set_clipboard_text(const std::string& text) {
+    if (m_window) glfwSetClipboardString(m_window, text.c_str());
+}
+
 std::pair<int, int> Window::framebuffer_size() const {
     int width = 0;
     int height = 0;
     if (m_window) glfwGetFramebufferSize(m_window, &width, &height);
     return {width, height};
+}
+
+void Window::set_cursor_shape(CursorShape shape) {
+    if (!m_window) return;
+    static constexpr int shapes[] = {GLFW_ARROW_CURSOR, GLFW_IBEAM_CURSOR, GLFW_HAND_CURSOR,
+                                     GLFW_HRESIZE_CURSOR, GLFW_VRESIZE_CURSOR};
+    const auto index = static_cast<size_t>(shape);
+    if (index >= m_cursors.size()) return;
+    if (!m_cursors[index]) m_cursors[index] = glfwCreateStandardCursor(shapes[index]);
+    glfwSetCursor(m_window, m_cursors[index]);
 }
 
 void Window::set_cursor_captured(bool captured) {

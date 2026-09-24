@@ -17,7 +17,7 @@ public:
 
     /// Consumes ownership. Failure rolls back; shut down before starting another session.
     bool initialize(std::unique_ptr<GraphicsDevice> device, void* native_window,
-        std::unique_ptr<Application> application);
+        std::unique_ptr<Application> application, const DeviceOptions& options = {});
     bool tick(float delta_time, bool input_enabled = true);
     bool resize(uint32_t width, uint32_t height);
     void shutdown();

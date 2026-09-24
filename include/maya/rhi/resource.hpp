@@ -84,6 +84,9 @@ struct SamplerDesc {
 };
 
 enum class CompareFunction : uint8_t { never, less, less_equal, equal, greater, greater_equal, always };
+/// Color blending for every attachment. `alpha` is source-over with straight (non-premultiplied)
+/// alpha: rgb = src.rgb * src.a + dst.rgb * (1 - src.a), a = src.a + dst.a * (1 - src.a).
+enum class BlendMode : uint8_t { opaque, alpha };
 enum class CullMode : uint8_t { none, front, back };
 enum class Winding : uint8_t { clockwise, counter_clockwise };
 struct DepthState {
@@ -102,6 +105,7 @@ struct PipelineDesc {
     CullMode cull = CullMode::back;
     Winding front_face = Winding::counter_clockwise;
     std::string label;
+    BlendMode blend = BlendMode::opaque;
 };
 
 enum class LoadAction : uint8_t { load, clear, dont_care };
@@ -122,6 +126,13 @@ struct RenderPassDesc {
     std::vector<ColorAttachment> colors;
     std::optional<DepthAttachment> depth;
     std::string label;
+};
+/// Pixels outside the rectangle are not drawn. Framebuffer pixels, origin at the top left.
+struct ScissorRect {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
 };
 enum class IndexType : uint8_t { uint16, uint32 };
 constexpr size_t index_size(IndexType type) noexcept { return type == IndexType::uint16 ? 2 : 4; }

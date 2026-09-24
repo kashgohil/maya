@@ -12,7 +12,7 @@ Engine::~Engine() {
 }
 
 bool Engine::initialize(std::unique_ptr<GraphicsDevice> device, void* native_window,
-    std::unique_ptr<Application> application) {
+    std::unique_ptr<Application> application, const DeviceOptions& options) {
     if (m_device || !device || !application) {
         std::cerr << "[Engine] initialize requires an idle engine, device, and application\n";
         return false;
@@ -20,7 +20,7 @@ bool Engine::initialize(std::unique_ptr<GraphicsDevice> device, void* native_win
     m_device = std::move(device);
     m_application = std::move(application);
     try {
-        if (m_device->initialize(native_window)) {
+        if (m_device->initialize(native_window, options)) {
             m_application_started = true;
             if (m_application->on_start(*m_device)) {
                 m_initialized = true;

@@ -231,8 +231,19 @@ RhiDiagnostic MetalDevice::backend_create_pipeline(uint32_t slot, const Pipeline
         auto* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
         descriptor.vertexFunction = vertex;
         descriptor.fragmentFunction = fragment;
-        for (size_t i = 0; i < desc.color_formats.size(); ++i)
-            descriptor.colorAttachments[i].pixelFormat = pixel_format(desc.color_formats[i]);
+        for (size_t i = 0; i < desc.color_formats.size(); ++i) {
+            auto* attachment = descriptor.colorAttachments[i];
+            attachment.pixelFormat = pixel_format(desc.color_formats[i]);
+            if (desc.blend == BlendMode::alpha) {
+                attachment.blendingEnabled = YES;
+                attachment.rgbBlendOperation = MTLBlendOperationAdd;
+                attachment.alphaBlendOperation = MTLBlendOperationAdd;
+                attachment.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+                attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+                attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
+                attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            }
+        }
         descriptor.depthAttachmentPixelFormat = pixel_format(desc.depth_format);
         if (!desc.label.empty()) descriptor.label = ns_string(desc.label);
         auto pipeline = MetalPipeline{};
@@ -354,6 +365,10 @@ void MetalDevice::backend_set_texture(uint32_t index, uint32_t slot) {
 
 void MetalDevice::backend_set_sampler(uint32_t index, uint32_t slot) {
     [m_impl->encoder setFragmentSamplerState:m_impl->samplers[slot] atIndex:index];
+}
+
+void MetalDevice::backend_set_scissor(const ScissorRect& rect) {
+    [m_impl->encoder setScissorRect:MTLScissorRect{rect.x, rect.y, rect.width, rect.height}];
 }
 
 void MetalDevice::backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) {

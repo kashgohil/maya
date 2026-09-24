@@ -43,6 +43,7 @@ protected:
     void backend_set_uniform_buffer(uint32_t, uint32_t, size_t) override {}
     void backend_set_texture(uint32_t, uint32_t) override {}
     void backend_set_sampler(uint32_t, uint32_t) override {}
+    void backend_set_scissor(const ScissorRect&) override {}
     void backend_draw(uint32_t, uint32_t, uint32_t) override {}
     void backend_draw_indexed(uint32_t, IndexType, uint32_t, size_t, uint32_t) override {}
     void backend_end_pass() override {}
