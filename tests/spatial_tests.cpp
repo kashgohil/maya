@@ -220,6 +220,25 @@ TEST_CASE("Transform validation handles extreme quaternions and rejects invalid 
     world.with<TransformComponent>(entity, [](const auto& local) { CHECK(local.rotation.w == 1); });
 }
 
+TEST_CASE("Rotation normalization is idempotent for saved and reloaded values", "[world][spatial]") {
+    auto random = std::mt19937(995);
+    auto component = std::uniform_real_distribution<float>(-1.0f, 1.0f);
+    for (int i = 0; i < 100000; ++i) {
+        const auto first = validated_transform({{}, {component(random), component(random),
+            component(random), component(random)}, {1,1,1}});
+        if (!first) continue;
+        const auto second = validated_transform(*first);
+        REQUIRE(second);
+        REQUIRE(second->rotation.x == first->rotation.x);
+        REQUIRE(second->rotation.y == first->rotation.y);
+        REQUIRE(second->rotation.z == first->rotation.z);
+        REQUIRE(second->rotation.w == first->rotation.w);
+    }
+    // Within the unit tolerance values are kept exactly; beyond it they are normalized.
+    CHECK(validated_transform({{}, {0,0,0,1.0000002f}, {1,1,1}})->rotation.w == 1.0000002f);
+    CHECK(validated_transform({{}, {0,0,0,1.000002f}, {1,1,1}})->rotation.w == 1.0f);
+}
+
 TEST_CASE("Affine decomposition covers half turns inverse and shear tolerance", "[world][spatial]") {
     for (const auto axis : {math::Vec3{1,0,0}, math::Vec3{0,1,0}, math::Vec3{0,0,1}})
         for (float angle : {0.0f, .3f, math::PI, 4.7f}) {
