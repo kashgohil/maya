@@ -73,7 +73,7 @@ The registry retains one cache lease for each published version. `evict_unused()
 
 Device sessions expose an expiring lifetime guard. Metal invalidates it at shutdown and creates a fresh guard on initialize. Mesh draw/release skips an expired session, and a mesh provider from an old session refuses uploads; leases can safely be destroyed after the device itself. A nonempty old lease still owns its CPU value, but `mesh().valid()` and registry handle resolution fail after device shutdown. Create a new provider/registry for the new device session. Normal Engine teardown still destroys content and registries before the device. GraphicsDevice manages the guard and handle validity for every backend.
 
-Buffers, textures, samplers, and pipelines share the [#996 retirement rules](rhi.md) and session/generation-checked handles. Per-frame allocation and frames-in-flight limits remain #997. `MetalDevice::native_buffer_count()` counts backend-owned buffers, including ones awaiting retirement; it is not native GPU memory usage.
+Buffers, textures, samplers, and pipelines share the [#996 retirement rules](rhi.md) and session/generation-checked handles. Per-frame upload memory and frames-in-flight limits are described with the [graphics device](rhi.md#frame-pacing-and-upload-memory). `MetalDevice::native_buffer_count()` counts backend-owned buffers, including ones awaiting retirement; it is not native GPU memory usage.
 
 ## Integration, cost, and verification
 

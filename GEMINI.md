@@ -42,7 +42,7 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 
 - C++20 in core/platform, Objective-C++ confined to the Metal backend.
 - snake_case methods/variables; PascalCase classes.
-- All rendering calls go through GraphicsDevice: explicit render passes inside Engine's frame, surface acquired only for presentation, and resources destroyed through the device (never assume Metal retains them).
+- All rendering calls go through GraphicsDevice: explicit render passes inside Engine's frame, surface acquired only for presentation, resources destroyed through the device (never assume Metal retains them), and per-draw constants uploaded with `upload_transient` rather than rewritten in a shared buffer.
 - Explicit CMake source lists keep runtime, editor, and sample dependencies separate.
 - Native Metal state stays opaque to C++ consumers and uses ARC ownership.
 - Use framebuffer pixel dimensions, not logical window size, for Metal and camera aspect.

@@ -35,7 +35,7 @@ Handles and descriptors:
 
 | Kind | Descriptor | Notes |
 | --- | --- | --- |
-| `BufferHandle` | size, `vertex`/`index`/`uniform` usage flags, label | CPU-writable shared memory. `write_buffer` is immediate and not synchronized with frames in flight; per-frame allocation is #997. |
+| `BufferHandle` | size, `vertex`/`index`/`uniform` usage flags, label | CPU-writable shared memory. `write_buffer` is immediate and not synchronized with frames in flight; per-frame data belongs in [upload memory](#frame-pacing-and-upload-memory). |
 | `TextureHandle` | width, height, format, `sampled`/`render_target`/`readback` usage, label | 2D, one mip level, GPU-private. Optional tightly packed initial data is uploaded through a staging copy. Depth textures cannot be uploaded or read back. |
 | `SamplerHandle` | min/mag filter, U/V address mode, label | |
 | `PipelineHandle` | Metal source, entry points, ordered color formats, depth format, depth test/write/compare, cull, winding, label | Shaders fetch vertices from bound buffers; there is no fixed-function vertex layout. |
@@ -71,7 +71,7 @@ Metal frame command buffers are created with **unretained references**. Correctn
 
 `CAMetalLayer` owns drawables and can discard them, for example on resize, while a frame is still executing. The frame's completion handler therefore holds the drawable and its texture. Metal API validation caught this during testing: the desktop test aborted in 2 of 3 runs before the fix, and 40 repeated runs passed after it.
 
-Retirement is unbounded by design in this issue. `wait_idle()` drains submitted frames and releases everything retired. Frames-in-flight limits, per-draw uniform allocation, and backpressure are #997. `stats()` reports live resources per kind, pending retirements, and submitted/completed frame serials. `MetalDevice::native_buffer_count()`/`native_texture_count()` count backend-owned objects, including those awaiting retirement.
+`wait_idle()` drains submitted frames and releases everything retired. Because `begin_frame` bounds frames in flight (below), pending retirements are bounded by what callers destroy within that window. `stats()` reports live resources per kind, pending retirements, and submitted/completed frame serials. `MetalDevice::native_buffer_count()`/`native_texture_count()` count backend-owned objects, including those awaiting retirement.
 
 ## Presentation, resize, and shutdown
 
@@ -80,15 +80,54 @@ Retirement is unbounded by design in this issue. `wait_idle()` drains submitted 
 - A missing drawable, a zero-sized surface, or a headless session returns a diagnostic from `acquire_surface`. Callers skip presentation, and offscreen passes and submission continue.
 - `shutdown()` is nonthrowing and idempotent. It ends an open pass, discards an uncommitted frame without presenting, waits for submitted frames, releases every live and retired resource, expires the resource lifetime, and invalidates all handles. `initialize()` starts a new session with fresh handles; a failed backend initialization rolls itself back.
 
-`Mesh`, `Texture`, `Material`, and the legacy `Scene` use this API. `Mesh::draw`, `Texture::bind`, and `Scene::render` return the first diagnostic. `Scene::render` must run inside an open pass. It still rewrites uniform offset 0 for every draw, so every object in a frame reads the last object's constants until #997 adds per-draw allocations.
+`Mesh`, `Texture`, `Material`, and the legacy `Scene` use this API. `Mesh::draw`, `Texture::bind`, and `Scene::render` return the first diagnostic. `Scene::render` must run inside an open pass. It uploads each object's `SceneDrawUniforms` to its own slice of frame upload memory, so objects keep their own transforms and values within a frame.
+
+## Frame pacing and upload memory
+
+[#997](https://work.rezee.app/kash/issues/997) adds `DeviceOptions`, which is passed to `initialize` and fixed for the session:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `frames_in_flight` | 3 (1-8) | Frames the CPU may encode ahead of GPU completion. |
+| `transient_bytes_per_frame` | 4 MiB | Upload memory per frame slot; 0 disables it. |
+
+Frame *n* uses upload slot *n mod frames_in_flight*. `begin_frame` waits until frame *n − frames_in_flight*, the previous user of that slot, has completed. So at most `frames_in_flight − 1` frames are executing when encoding starts, and a slot's memory is never rewritten while the GPU can still read it. Blocking waits are counted in `stats().frame_waits` and `frame_wait_microseconds`; they are reported, not hidden. A backend that cannot wait returns `timeout`; the null backend does this under manual completion. The Metal backend blocks on that frame's command buffer; completion is in commit order on its single queue. The upload buffers are device-owned: `frames_in_flight × transient_bytes_per_frame` bytes of shared memory, excluded from `stats().buffers`.
+
+`upload_transient(data, size, alignment)` copies into the current frame's slot with a bump allocator. Alignment 0 means the 256-byte uniform alignment; smaller powers of two pack vertex data. It returns a `TransientSlice` (buffer, offset, size, frame serial) that binds through `set_uniform_buffer(index, slice)` or `set_vertex_buffer(index, slice)`. Rules:
+
+- Uploads require an open frame. A slice from an earlier frame is rejected as `stale_handle`.
+- The upload buffers cannot be destroyed, written with `write_buffer`, or bound by raw handle (including as an index buffer). Only slices address them.
+- **Exhaustion** returns `out_of_memory` with the requested and used sizes, and increments `transient_failures`. The frame stays valid: callers skip that upload/draw. Memory never grows. `transient_bytes_used` and `transient_high_water` show headroom. `Scene::render` returns the diagnostic, and the basic sample treats it as a frame failure.
+- **Submission failure**: if the backend throws while submitting, nothing reached the GPU. The frame is marked complete immediately, so throttling and retirement cannot stall, and the exception propagates; `Engine` ends the session. A frame that fails on the GPU still completes: its error is reported through `take_gpu_errors()` (logged by `Engine`), and its memory and retirements proceed normally.
+- **Shutdown** drains every submitted frame before releasing upload memory and retired resources. `wait_idle()` does the same without ending the session.
+
+Resources the caller owns remain the caller's responsibility: `write_buffer` into a buffer a submitted frame still reads is a data race. Use upload memory, or double-buffer and destroy through the device.
 
 ## Verification
+
+The #997 additions:
+
+- **CPU**: throttling waits for exactly the slot's previous frame, with timeouts under manual completion and invalid options rejected. Upload alignment, packing, exhaustion, stale slices, and raw-handle protection are covered, and 1,000 frames run with bounded memory. A failed submission completes its frame and retires its resources.
+- **Metal** (pixel readback):
+  - 16 draws in one pass keep 16 distinct uniform values.
+  - Frames encoded ahead of the GPU never see later writes. Five rounds of 12 frames run without waiting, each with 200 filler uploads and 8 checked draws into its own target, and every target is read back afterwards.
+  - Upload exhaustion skips only the overflowing draw.
+  - Two `Scene` objects sharing one mesh keep separate transforms over 30 frames.
+- **Mutation checks**: forcing every upload to offset 0 fails the per-draw, in-flight, overflow, and scene tests. Removing the throttle fails the in-flight test in 3 of 3 runs.
+
+The #996 coverage:
 
 - **CPU**: [rhi_validation_tests.cpp](../tests/rhi_validation_tests.cpp) links only MayaRHI and Catch2. On the null backend it covers every validation class above, stale handles and slot reuse, the encoder state machine, pipeline/pass compatibility, and deferred retirement against controlled completion. It also covers out-of-order completion, emulated surface acquisition/resize/missing drawables, and shutdown with open frames.
 - **Metal**: [rhi_tests.cpp](../tests/rhi_tests.cpp) reads back real rendered pixels. It verifies clear/load/store for color and depth across passes, 256-byte uniform offsets, texture upload and nearest sampling, and error reporting. It also checks 60 frames whose uniform buffer is destroyed while encoding (correct output with unretained command buffers), mid-frame pipeline/texture destruction, and headless and open-frame shutdown.
 - **Desktop**: [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) presents to a real window across three drawable sizes. It ignores zero sizes, skips presentation on some frames, and runs offscreen passes without the drawable. It also retires encoded mesh buffers after the final asset lease is released and shuts down with an acquired surface.
 
-Validation on 24 September 2026:
+#997 validation on 24 September 2026:
+
+- The default and a fresh Release build report no diagnostics from Maya sources. All 17 CTest entries pass, repeated three times, with GPU entries under Metal API validation. 20 more runs each of the Metal and desktop suites all passed, and a 300-frame sample smoke run completed.
+- CPU RHI suite: 13 cases / 7,008 assertions. The Metal/core suite has 102 cases (17 tagged `[rhi]`); desktop has 4 cases. Everything passes under UBSan, and clang static analysis of graphics_device.cpp, scene.cpp, and metal_device.mm reports no findings.
+- A local Release Metal run drew 300 frames × 2,000 per-draw uniform uploads into a 1024² target (GPU-bound): about 2.97 ms/frame with 1 frame in flight, 1.44 ms with 2, and 1.41 ms with 3. The device waited in nearly every frame (349.6 ms total at depth 3), and upload high water was 499 KiB. The default of 3 is kept for headroom; the choice still needs #1004 workloads on target hardware.
+
+#996 validation on 24 September 2026:
 
 - The default and a fresh Release build of all targets report no diagnostics from Maya sources.
 - All 17 CTest entries pass (12 CPU/CLI, 5 GPU/smoke), repeated three times. The GPU entries run with Metal API validation enabled, which the Metal runtime confirms in its log.
