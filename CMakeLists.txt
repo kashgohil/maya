@@ -184,6 +184,13 @@ if(BUILD_TESTING)
     add_test(NAME maya_scene COMMAND maya_scene_tests)
     set_tests_properties(maya_scene PROPERTIES LABELS "cpu;scene" TIMEOUT 60)
 
+    add_executable(maya_renderer_tests tests/renderer_tests.cpp)
+    target_link_libraries(maya_renderer_tests PRIVATE MayaRenderer Catch2::Catch2WithMain)
+    target_include_directories(maya_renderer_tests PRIVATE tests)
+    maya_target_options(maya_renderer_tests)
+    add_test(NAME maya_renderer COMMAND maya_renderer_tests)
+    set_tests_properties(maya_renderer PROPERTIES LABELS "cpu;renderer" TIMEOUT 60)
+
     add_executable(maya_asset_tests tests/asset_tests.cpp)
     target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain)
     target_include_directories(maya_asset_tests PRIVATE tests)
@@ -194,6 +201,7 @@ if(BUILD_TESTING)
     add_executable(maya_tests
         tests/math_tests.cpp
         tests/rhi_tests.cpp
+        tests/renderer_gpu_tests.cpp
         tests/camera_tests.cpp
         tests/vector_tests.cpp
         tests/matrix_tests.cpp
@@ -220,6 +228,15 @@ if(BUILD_TESTING)
     if(TARGET MayaDesktop)
         add_executable(maya_desktop_tests tests/desktop_lifecycle_tests.cpp)
         target_link_libraries(maya_desktop_tests PRIVATE MayaDesktop Catch2::Catch2WithMain)
+        # Drive the real player and editor applications when they are built.
+        if(TARGET MayaBasicScene)
+            target_link_libraries(maya_desktop_tests PRIVATE MayaBasicScene)
+            target_compile_definitions(maya_desktop_tests PRIVATE MAYA_TEST_BASIC_SCENE=1)
+        endif()
+        if(TARGET MayaEditor)
+            target_link_libraries(maya_desktop_tests PRIVATE MayaEditor)
+            target_compile_definitions(maya_desktop_tests PRIVATE MAYA_TEST_EDITOR=1)
+        endif()
         maya_target_options(maya_desktop_tests)
         add_test(NAME maya_desktop_lifecycle COMMAND maya_desktop_tests)
         set_tests_properties(maya_desktop_lifecycle PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE

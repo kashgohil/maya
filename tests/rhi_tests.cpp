@@ -2,8 +2,6 @@
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/file_system.hpp"
-#include "maya/core/primitives.hpp"
-#include "maya/core/scene.hpp"
 #include <array>
 #include <cstring>
 #include <string>
@@ -401,37 +399,5 @@ TEST_CASE("Metal upload exhaustion skips draws without corrupting the frame", "[
     const auto pixels = read(device, color);
     for (int band = 0; band < 4; ++band) CHECK(pixel(pixels, size, band * 8 + 2, size / 2) == green);
     CHECK(pixel(pixels, size, 4 * 8 + 2, size / 2) == Pixel{0, 0, 0, 255});
-    CHECK(device.take_gpu_errors().empty());
-}
-
-TEST_CASE("Metal scene objects sharing a mesh keep their own transforms", "[rhi]") {
-    MetalDevice device;
-    REQUIRE(device.initialize(nullptr));
-    const auto source = FileSystem::read_text("resources/shaders/metal/triangle.metal");
-    REQUIRE_FALSE(source.empty());
-    auto desc = PipelineDesc{source, "vertexMain", "fragmentUnlit", {Format::rgba8_unorm}, Format::undefined, {},
-        CullMode::back, Winding::counter_clockwise, "unlit"};
-    const auto pipeline = device.create_pipeline(desc);
-    INFO(pipeline.diagnostic.message);
-    REQUIRE(pipeline);
-    Scene scene;
-    const auto* cube = scene.add_mesh(make_color_cube(device, 0.25f));
-    for (const auto x : {-0.5f, 0.5f})
-        scene.objects().push_back({cube, Material{pipeline.handle, nullptr, {}}, math::Mat4::translate({x, 0.0f, 0.5f})});
-    constexpr uint32_t size = 64;
-    const auto color = color_target(device, size);
-    for (int frame = 0; frame < 30; ++frame) {
-        REQUIRE_FALSE(device.begin_frame());
-        REQUIRE_FALSE(device.begin_render_pass({{{color, LoadAction::clear, StoreAction::store, {0, 0, 0, 1}}}, {}, "scene"}));
-        REQUIRE_FALSE(scene.render(device, math::Mat4::identity(), DirectionalLighting::default_sun(), {0, 0, 3}));
-        REQUIRE_FALSE(device.end_render_pass());
-        REQUIRE_FALSE(device.end_frame());
-    }
-    const auto pixels = read(device, color);
-    const auto lit = [](Pixel value) { return value[0] + value[1] + value[2] > 0; };
-    CHECK(lit(pixel(pixels, size, 16, 32)));  // left cube
-    CHECK(lit(pixel(pixels, size, 48, 32)));  // right cube
-    CHECK_FALSE(lit(pixel(pixels, size, 32, 32))); // gap between them
-    CHECK(device.stats().transient_high_water == device.limits().uniform_offset_alignment + sizeof(SceneDrawUniforms));
     CHECK(device.take_gpu_errors().empty());
 }

@@ -4,6 +4,12 @@
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/file_system.hpp"
+#if MAYA_TEST_BASIC_SCENE
+#include "basic_scene.hpp"
+#endif
+#if MAYA_TEST_EDITOR
+#include "editor_application.hpp"
+#endif
 
 namespace {
 class FailingApplication final : public maya::Application {
@@ -151,4 +157,31 @@ TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease 
     }
     CHECK(device.take_gpu_errors().empty());
     device.shutdown(); // drains submitted work before destroying the device
+}
+
+TEST_CASE("Player and editor render their offscreen views through window resizes", "[desktop][renderer]") {
+    auto applications = std::vector<std::pair<const char*, std::unique_ptr<maya::Application>(*)()>>{};
+#if MAYA_TEST_BASIC_SCENE
+    applications.emplace_back("player", &maya::samples::create_basic_scene);
+#endif
+#if MAYA_TEST_EDITOR
+    applications.emplace_back("editor", &maya::editor::create_editor_application);
+#endif
+    if (applications.empty()) SKIP("Player and editor targets are not built");
+    for (const auto& [name, create] : applications) {
+        INFO(name);
+        maya::Window window(320, 240, "Maya view resize test");
+        REQUIRE(window.get_native_handle());
+        maya::Engine engine;
+        REQUIRE(engine.initialize(std::make_unique<maya::MetalDevice>(), window.get_native_handle(), create()));
+        // Each size reallocates the view once; zero sizes (minimized) are ignored.
+        for (const auto [width, height] : {std::pair{320u, 240u}, {640u, 200u}, {0u, 0u}, {90u, 300u}, {1u, 1u}}) {
+            REQUIRE(engine.resize(width, height));
+            for (int frame = 0; frame < 5; ++frame) {
+                window.poll_events();
+                REQUIRE(engine.tick(1.0f / 60.0f, false));
+            }
+        }
+        engine.shutdown();
+    }
 }
