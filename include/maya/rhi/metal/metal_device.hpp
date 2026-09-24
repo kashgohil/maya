@@ -15,6 +15,8 @@ public:
     /// Native objects currently owned by the backend, including ones awaiting retirement.
     size_t native_buffer_count() const noexcept;
     size_t native_texture_count() const noexcept;
+    /// The window layer's pixels per point (its contentsScale), or 0 for a headless session.
+    double surface_scale() const noexcept;
 
 protected:
     bool backend_initialize(void* native_window, RhiLimits& limits, Format& surface_format) override;

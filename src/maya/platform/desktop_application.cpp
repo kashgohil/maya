@@ -74,6 +74,7 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     window.set_cursor_captured(cursor_captured);
 
     auto last_time = std::chrono::steady_clock::now();
+    auto last_title = last_time;
     float fps_smooth = 0.0f;
     uint32_t frame_count = 0;
     int result = 0;
@@ -102,6 +103,12 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
             const auto fps = 1.0f / elapsed;
             fps_smooth = fps_smooth == 0.0f ? fps : fps_smooth * 0.92f + fps * 0.08f;
         }
+        // Refresh the title a few times a second; per-frame updates make it flicker.
+        if (now - last_title < std::chrono::milliseconds(250) && frame_count > 1) {
+            if (smoke_frames && frame_count >= *smoke_frames) break;
+            continue;
+        }
+        last_title = now;
         const auto [fb_width, fb_height] = window.framebuffer_size();
         std::ostringstream title;
         title << options.title << " | " << std::fixed << std::setprecision(1)

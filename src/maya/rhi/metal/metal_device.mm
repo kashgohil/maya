@@ -127,6 +127,10 @@ bool MetalDevice::backend_initialize(void* native_window, RhiLimits& limits, For
             m_impl->view.wantsLayer = YES;
             const auto bounds = m_impl->view.bounds;
             const auto scale = window.backingScaleFactor;
+            // A layer attached by hand is not scaled by AppKit: without this, a Retina display shows
+            // the drawable as 1x content, softened and blocky.
+            m_impl->layer.contentsScale = scale;
+            m_impl->layer.opaque = YES;
             m_impl->layer.drawableSize = CGSizeMake(bounds.size.width * scale, bounds.size.height * scale);
             surface_format = Format::bgra8_unorm;
         }
@@ -152,7 +156,14 @@ void MetalDevice::backend_shutdown() noexcept {
 }
 
 void MetalDevice::backend_resize(uint32_t width, uint32_t height) {
-    if (m_impl->layer) m_impl->layer.drawableSize = CGSizeMake(width, height);
+    if (!m_impl->layer) return;
+    // Framebuffer size changes include moving to a display with another scale.
+    if (auto* window = m_impl->view.window) m_impl->layer.contentsScale = window.backingScaleFactor;
+    m_impl->layer.drawableSize = CGSizeMake(width, height);
+}
+
+double MetalDevice::surface_scale() const noexcept {
+    return m_impl->layer ? m_impl->layer.contentsScale : 0.0;
 }
 
 RhiDiagnostic MetalDevice::backend_create_buffer(uint32_t slot, const BufferDesc& desc, const void* data) {
