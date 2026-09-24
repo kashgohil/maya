@@ -21,7 +21,7 @@ const auto resolved = assets.resolve(handle); // validates owner, slot, generati
 first.lease.value().mesh().draw(); // existing renderer adapter; lease must cover encoding
 ```
 
-`AssetLease<T>` owns a shared immutable loaded version and is copyable. Its `value()` reference must not outlive the lease; reading an empty lease throws `logic_error`. A lease can be held in a native component or renderer-owned cache. Destroying an entity/World releases any leases it owns; its plain MeshRendererComponent references alone have no residency effect. Future extraction (#998) will acquire and retain the assets needed by rendering submissions.
+`AssetLease<T>` owns a shared immutable loaded version and is copyable. Its `value()` reference must not outlive the lease; reading an empty lease throws `logic_error`. A lease can be held in a native component or renderer-owned cache. Destroying an entity/World releases any leases it owns; its plain MeshRendererComponent references alone have no residency effect. [Render extraction](renderer.md#render-snapshots) acquires the meshes a frame draws and keeps their leases in the snapshot until it is released.
 
 `AssetHandle<T>` is non-owning and contains a registry lifetime token, slot, and version generation. A replaced/evicted/unavailable version or a foreign registry fails resolution. A successful reload publishes a fresh generation. Existing leases still own their previous version, even though their old handle no longer resolves through the registry. Registry tokens and runtime handles are not serialized. Registry slots are append-only for its lifetime; there is no unregister or slot-reuse API yet.
 
@@ -77,7 +77,7 @@ Buffers, textures, samplers, and pipelines share the [#996 retirement rules](rhi
 
 ## Integration, cost, and verification
 
-The [basic scene catalog](../samples/basic_scene/assets/catalog.maya) gives the sample pyramid a persistent ID. The sample resolves that catalog through the application FileSystem, then loads it through a project-rooted registry. The legacy Scene accepts a mesh lease and retains it through rendering/teardown; procedural sample meshes continue to own their allocations directly. World render extraction and material-factor rendering remain #998.
+The [basic scene catalog](../samples/basic_scene/assets/catalog.maya) gives the sample's pyramid and cube meshes and four material files persistent IDs. The sample resolves that catalog through the application FileSystem, loads it through a project-rooted registry, and opens `basic.scene`, whose mesh renderers reference those IDs. Since #998, [render extraction](renderer.md) acquires the meshes and materials each frame and shades with the material factors.
 
 Registry ID lookup is average O(1); source loading happens once per resident version. Lease acquire/copy increments a shared ownership count. Registration canonicalizes paths and performs filesystem checks. `evict_unused()` and metadata export are O(catalog size), and catalog metadata is retained for the registry lifetime. These choices need profiling against production asset counts; the correctness tests do not promise game capacity.
 

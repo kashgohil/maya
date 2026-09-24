@@ -77,9 +77,9 @@ The editor today is the window that work will land in. It opens. It has Maya's i
 
 Three programs build from this repository.
 
-**Player.** The program a finished game grows out of. It opens the first sample: a lit, textured model and a solid companion, under a directional sun, with a free camera. It does not load a saved project yet. Project selection is still in its entry point.
+**Player.** The program a finished game grows out of. It opens the sample's saved scene: a pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly freely. The view renders offscreen and is then presented in the window. It cannot choose a different project yet. Project selection is still in its entry point.
 
-**Editor.** An empty editing window, cursor free, ready for the tools above. Nothing in the scene can be authored from it yet.
+**Editor.** An editing window with the cursor free. Its viewport shows the sample scene from an editor camera and leaves room for panels. Nothing can be authored from it yet.
 
 **Sample.** The same scene as the player, kept as a sample, so the demo can stay a demo while the player becomes a game.
 
@@ -112,7 +112,7 @@ cmake --build build -j 4
 
 ### Where the files are
 
-Shaders live in `resources/shaders/metal/`. The sample model is `samples/basic_scene/assets/pyramid.obj`.
+Shaders live in `resources/shaders/metal/`. The sample's catalog, scene, meshes, and materials are in `samples/basic_scene/assets/`.
 
 Maya searches in this order:
 
@@ -127,6 +127,7 @@ A build made inside the repository finds its content, because a parent of the ex
 | Target | What it is |
 | --- | --- |
 | MayaRHI | The graphics device API: validation, handles, resource retirement, and a CPU-only test device. |
+| MayaRenderer | Turns a world into images: extraction, camera views, offscreen targets, and presentation. |
 | MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
 | MayaDesktop | The window, input, and launch loop. |
 | MayaBasicScene | The sample scene. |

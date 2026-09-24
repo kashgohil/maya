@@ -76,11 +76,11 @@ Metal frame command buffers are created with **unretained references**. Correctn
 ## Presentation, resize, and shutdown
 
 - `acquire_surface()` may be called once per frame outside a pass; later calls return the same target. The surface texture is transient and valid only until `end_frame`. It cannot be destroyed, sampled, or read back. It has the drawable's pixel size.
-- `resize(width, height)` sets the drawable size in framebuffer pixels. Zero sizes (minimized windows) are ignored, and the new size applies at the next acquisition. Applications own their depth and offscreen targets and recreate them when the acquired size changes; see the [basic scene](../samples/basic_scene/basic_scene.cpp).
+- `resize(width, height)` sets the drawable size in framebuffer pixels. Zero sizes (minimized windows) are ignored, and the new size applies at the next acquisition. Applications own their depth and offscreen targets and recreate them when the acquired size changes; [RenderTarget](renderer.md#views-and-targets) does this for renderer views.
 - A missing drawable, a zero-sized surface, or a headless session returns a diagnostic from `acquire_surface`. Callers skip presentation, and offscreen passes and submission continue.
 - `shutdown()` is nonthrowing and idempotent. It ends an open pass, discards an uncommitted frame without presenting, waits for submitted frames, releases every live and retired resource, expires the resource lifetime, and invalidates all handles. `initialize()` starts a new session with fresh handles; a failed backend initialization rolls itself back.
 
-`Mesh`, `Texture`, `Material`, and the legacy `Scene` use this API. `Mesh::draw`, `Texture::bind`, and `Scene::render` return the first diagnostic. `Scene::render` must run inside an open pass. It uploads each object's `SceneDrawUniforms` to its own slice of frame upload memory, so objects keep their own transforms and values within a frame.
+`Mesh`, `Texture`, and the [renderer](renderer.md) use this API. `Mesh::draw` and `Texture::bind` return the first diagnostic. `Renderer::render` opens and closes its own pass. It uploads each instance's constants to its own slice of frame upload memory, so instances keep their own transforms and values within a frame.
 
 ## Frame pacing and upload memory
 
@@ -97,7 +97,7 @@ Frame *n* uses upload slot *n mod frames_in_flight*. `begin_frame` waits until f
 
 - Uploads require an open frame. A slice from an earlier frame is rejected as `stale_handle`.
 - The upload buffers cannot be destroyed, written with `write_buffer`, or bound by raw handle (including as an index buffer). Only slices address them.
-- **Exhaustion** returns `out_of_memory` with the requested and used sizes, and increments `transient_failures`. The frame stays valid: callers skip that upload/draw. Memory never grows. `transient_bytes_used` and `transient_high_water` show headroom. `Scene::render` returns the diagnostic, and the basic sample treats it as a frame failure.
+- **Exhaustion** returns `out_of_memory` with the requested and used sizes, and increments `transient_failures`. The frame stays valid: callers skip that upload/draw. Memory never grows. `transient_bytes_used` and `transient_high_water` show headroom. `Renderer::render` returns the diagnostic after closing its pass, and the basic sample treats it as a frame failure.
 - **Submission failure**: if the backend throws while submitting, nothing reached the GPU. The frame is marked complete immediately, so throttling and retirement cannot stall, and the exception propagates; `Engine` ends the session. A frame that fails on the GPU still completes: its error is reported through `take_gpu_errors()` (logged by `Engine`), and its memory and retirements proceed normally.
 - **Shutdown** drains every submitted frame before releasing upload memory and retired resources. `wait_idle()` does the same without ending the session.
 

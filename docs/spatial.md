@@ -66,7 +66,7 @@ Spatial math expects affine matrices with an exact bottom row (0,0,0,1). `local_
 
 Camera calculations reject nonfinite data, FOV outside (0, π), aspect ≤ 0, near ≤ 0, far ≤ near, scale/shear/reflection, or unrepresentable matrices. Camera field edits remain mutable pending #994; validation runs whenever camera matrices are requested. The view is the inverse rigid pose. Projection maps view-space -near to depth 0 and -far to 1; the camera looks along local -Z. A zero-size viewport should skip its camera/render calculation.
 
-Input controllers are producers of local transform commands. They do not own camera matrices, capture a window, or change camera projection through these APIs. The old `maya::Camera` remains the legacy sample's degree-based free-flight input adapter until renderer/sample migration in #998; new World camera data is independent of it. Editor navigation, input-controller redesign, render extraction, normal inverse-transpose handling, and physics restrictions belong to their respective follow-ups.
+Input controllers are producers of local transform commands. They do not own camera matrices, capture a window, or change camera projection through these APIs. The old `maya::Camera` remains the sample's degree-based free-flight input adapter. Since #998 it only produces a pose, which the sample writes to the camera entity's transform; [views](renderer.md#views-and-targets) come from World camera data. [Render extraction](renderer.md#lighting-and-materials) handles normal inverse-transpose. Editor navigation, input-controller redesign, and physics restrictions belong to their respective follow-ups.
 
 ## Storage and cost
 

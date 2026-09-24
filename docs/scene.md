@@ -20,7 +20,7 @@ active_world = std::move(opened.world); // replace only after a complete load
 
 `capture_scene` copies schema components and hierarchy from a World into a detached `SceneDocument`. `validate_scene` checks a document. `instantiate_scene` validates it, then builds a **new** World in one command commit. `read_scene`/`write_scene` work on text or streams; `load_scene_file`, `open_scene_file`, and `save_scene_file` add file handling. Each function reports failure as a list of `SceneDiagnostic` values. Returned documents and Worlds are empty or null unless the whole operation succeeded.
 
-A World cannot be moved, so the caller keeps the active scene behind an owner such as `std::unique_ptr<World>` and replaces it only after `open_scene_file` succeeds. Loading never modifies an existing World. Asset leases are unaffected: loading creates plain `AssetRef` values and neither loads nor pins assets. Residency is acquired later by consumers such as render extraction (#998).
+A World cannot be moved, so the caller keeps the active scene behind an owner such as `std::unique_ptr<World>` and replaces it only after `open_scene_file` succeeds. Loading never modifies an existing World. Asset leases are unaffected: loading creates plain `AssetRef` values and neither loads nor pins assets. Residency is acquired later by consumers such as [render extraction](renderer.md).
 
 ## File format, version 1
 

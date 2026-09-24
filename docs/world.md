@@ -2,7 +2,7 @@
 
 [Issue #991](https://work.rezee.app/kash/issues/991) implements the identity/storage part of the [architecture contracts](architecture/README.md). `MayaWorld` (`Maya::World`) is a CPU-only C++20 library with no GLFW, renderer, Metal, or editor dependency. `MayaRuntime` links it publicly. Include [world.hpp](../include/maya/world/world.hpp) and [components.hpp](../include/maya/world/components.hpp).
 
-The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample loads its mesh through the [#993 asset registry](assets.md); World render extraction remains #998. [Hierarchy/camera calculations](spatial.md) are implemented by #992. [Shared property metadata and validated edits](properties.md) are implemented by #994. [Scene persistence](scene.md) is implemented by #995. A physics/script scheduler remains follow-up work.
+The legacy `Scene` drawing helper was removed by #998. The sample now opens a [scene file](scene.md) into a World and draws it through [render extraction](renderer.md), loading assets through the [#993 asset registry](assets.md). [Hierarchy/camera calculations](spatial.md) are implemented by #992. [Shared property metadata and validated edits](properties.md) are implemented by #994. [Scene persistence](scene.md) is implemented by #995. A physics/script scheduler remains follow-up work.
 
 ## Create and query
 
@@ -78,7 +78,7 @@ This small sparse-set implementation keeps storage independent of an external EC
 | `CameraComponent` | Vertical FOV in radians, near/far clip in metres. Aspect belongs to a rendered view; no window/input ownership. |
 | `LightComponent` | Kind, linear RGB, intensity (directional lux, point/spot lumens), local-light range, spot cone full angles in radians, enabled flag. Renderer interpretation follows later. |
 
-Entities start with no implicit components. The five schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle; #992 adds transform validation and validated camera calculations. Shared property validation is #994, and renderer use is #998. Mutable fields are not yet a validated inspector or scripting API.
+Entities start with no implicit components. The five schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle; #992 adds transform validation and validated camera calculations. Shared property validation is #994, and the [renderer](renderer.md) reads mesh renderers, cameras, and directional lights since #998. Mutable fields are not yet a validated inspector or scripting API.
 
 ## Verification
 

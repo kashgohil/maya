@@ -24,25 +24,27 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 - `MayaWorld` / `Maya::World`: CPU-only entity identity, packed component storage, and atomic structural command batches. No RHI, window, or editor dependency. See [docs/world.md](docs/world.md) for APIs and scoped-borrow rules.
 - `MayaScene` / `Maya::Scene`: Versioned scene files, detached scene documents, validated loading into a new World, and atomic saves. Links only MayaWorld; asset references are checked through `asset_property_context(registry)`. See [docs/scene.md](docs/scene.md).
 - `MayaRHI` / `Maya::RHI`: GraphicsDevice validation, per-session handles, deferred retirement, and `NullGraphicsDevice` for CPU tests. The Metal backend lives in MayaRuntime. See [docs/rhi.md](docs/rhi.md).
+- `MayaRenderer` / `Maya::Renderer`: Render snapshot extraction from a World, camera views, offscreen color/depth targets, the lit pass, and presentation into a window or panel. Reads Worlds; never edits them. See [docs/renderer.md](docs/renderer.md).
 - `MayaRuntime`: Engine session lifecycle, existing core utilities, and graphics backend. No editor, sample, GLFW, or desktop-loop dependency.
 - `MayaDesktop`: Window ownership, event loop, input, framebuffer resize, and CLI launch handling.
-- `MayaEditor`: Editor-only application factory. Initially an empty host; authoring UI comes later.
-- `MayaBasicScene`: Demo content and animation, owned by the sample project.
+- `MayaEditor`: Editor-only application factory. Shows the sample scene in an offscreen viewport from a tool-state camera; authoring UI comes later.
+- `MayaBasicScene`: Opens the sample project's scene file, drives its camera and animation through World commands, and renders it through the renderer.
 - `apps/player/main.cpp`: Selects the initial native sample project for the player.
 - `apps/editor/main.cpp`: Launches the editor.
 - `samples/basic_scene/main.cpp`: Launches the sample directly.
 
 The host owns the window; Engine owns device and Application. Stop and destroy application content before device shutdown, then destroy the window. Shutdown is idempotent, startup failures roll back, and stopped engines can initialize a fresh session. Callbacks must not re-enter lifecycle methods.
 
-Current Scene, Material, Mesh, and Camera are prototype utilities retained pending their dedicated replacement issues. The application split does not implement world authoring, a new renderer, physics, or scripting.
+Mesh, Texture, and the fly-camera `Camera` controller are prototype utilities retained pending their dedicated replacement issues; the legacy Scene and Material were removed by #998. World authoring, physics, and scripting are not implemented yet.
 
-World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas exist independently of those sample utilities. Structural edits use WorldCommands and explicit commit; never retain a component reference outside a query callback. Hierarchy and camera calculations are implemented; transform queries are read-only and edits use validated set_transform/reparent commands. Asset registry/residency services are implemented by #993. Shared [property metadata and validated edits](docs/properties.md) are implemented by #994; use this boundary for authoring/import/script values. Native non-transform component writes remain trusted. [Scene save/load](docs/scene.md) is implemented by #995: load into a separate World and replace the active one only on success. World renderer integration follows in dependent issues. See [spatial APIs and tolerances](docs/spatial.md).
+World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas exist independently of those sample utilities. Structural edits use WorldCommands and explicit commit; never retain a component reference outside a query callback. Hierarchy and camera calculations are implemented; transform queries are read-only and edits use validated set_transform/reparent commands. Asset registry/residency services are implemented by #993. Shared [property metadata and validated edits](docs/properties.md) are implemented by #994; use this boundary for authoring/import/script values. Native non-transform component writes remain trusted. [Scene save/load](docs/scene.md) is implemented by #995: load into a separate World and replace the active one only on success. The [renderer](docs/renderer.md) (#998) extracts immutable snapshots from a World and renders camera views into offscreen targets; applications never issue draws from World data themselves. See [spatial APIs and tolerances](docs/spatial.md).
 
 ## Conventions
 
 - C++20 in core/platform, Objective-C++ confined to the Metal backend.
 - snake_case methods/variables; PascalCase classes.
 - All rendering calls go through GraphicsDevice: explicit render passes inside Engine's frame, surface acquired only for presentation, resources destroyed through the device (never assume Metal retains them), and per-draw constants uploaded with `upload_transient` rather than rewritten in a shared buffer.
+- Keep GPU struct layouts in `include/maya/renderer/shader_constants.hpp` and `include/maya/rhi/vertex.hpp` in step with the shader; Metal `float3` is 16 bytes, `packed_float3` is 12.
 - Explicit CMake source lists keep runtime, editor, and sample dependencies separate.
 - Native Metal state stays opaque to C++ consumers and uses ARC ownership.
 - Use framebuffer pixel dimensions, not logical window size, for Metal and camera aspect.
@@ -53,8 +55,8 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 - `include/maya/core/application.hpp`: Content lifecycle boundary.
 - `include/maya/core/engine.hpp`: Runtime session owner.
 - `src/maya/platform/desktop_application.cpp`: Desktop loop.
-- `samples/basic_scene/assets/pyramid.obj`: Sample model.
-- `resources/shaders/metal/triangle.metal`: Existing shared demo shader.
+- `samples/basic_scene/assets/`: Sample catalog, `basic.scene`, meshes, and material files.
+- `resources/shaders/metal/renderer.metal`: Lit pass and view presentation shaders.
 
 FileSystem searches MAYA_RESOURCES, executable parents, and the working directory. A resource root for the sample contains both resources/ and samples/basic_scene/assets/. Failed resolution logs every candidate path.
 
