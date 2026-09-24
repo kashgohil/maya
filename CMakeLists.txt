@@ -69,18 +69,26 @@ add_library(Maya::Scene ALIAS MayaScene)
 target_link_libraries(MayaScene PUBLIC MayaWorld)
 maya_target_options(MayaScene)
 
+# Render extraction, views, offscreen targets, and passes. Reads Worlds; never owns or edits them.
+add_library(MayaRenderer STATIC
+    src/maya/renderer/render_snapshot.cpp
+    src/maya/renderer/render_target.cpp
+    src/maya/renderer/renderer.cpp)
+add_library(Maya::Renderer ALIAS MayaRenderer)
+target_link_libraries(MayaRenderer PUBLIC MayaWorld MayaAssets MayaRHI)
+maya_target_options(MayaRenderer)
+
 add_library(MayaRuntime STATIC
     src/maya/core/engine.cpp
     src/maya/core/camera.cpp
     src/maya/core/file_system.cpp
     src/maya/core/model_loader_legacy.cpp
     src/maya/core/primitives.cpp
-    src/maya/core/scene.cpp
     src/maya/rhi/metal/metal_device.mm
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 

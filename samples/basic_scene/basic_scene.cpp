@@ -1,39 +1,30 @@
 #include "basic_scene.hpp"
+#include "maya/assets/property_context.hpp"
 #include "maya/core/camera.hpp"
 #include "maya/core/file_system.hpp"
-#include "maya/core/mesh.hpp"
-#include "maya/assets/registry.hpp"
+#include "maya/renderer/renderer.hpp"
+#include "maya/scene/scene_io.hpp"
 #include <fstream>
-#include "maya/core/primitives.hpp"
-#include "maya/core/scene.hpp"
-#include "maya/core/texture.hpp"
 #include <iostream>
 #include <stdexcept>
 
 namespace maya::samples {
 namespace {
 
+constexpr auto camera_id = EntityId{0x6d617961, 0x100};
+constexpr auto pyramid_id = EntityId{0x6d617961, 0x200};
+
+/// Loads assets/basic.scene and runs it through the shared renderer: the World is extracted into a
+/// snapshot, the camera entity's view renders offscreen, and the view is presented to the window.
 class BasicScene final : public Application {
 public:
     bool on_start(GraphicsDevice& device) override {
-        m_camera = std::make_unique<Camera>(60.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
-        m_camera->set_position({0.0f, 0.0f, 3.0f});
-        const auto source = FileSystem::read_text("resources/shaders/metal/triangle.metal");
-        if (source.empty()) return false;
         if (device.surface_format() == Format::undefined) {
             std::cerr << "[BasicScene] requires a presentable surface\n";
             return false;
         }
-        auto pipeline = PipelineDesc{source, "vertexMain", "fragmentMain", {device.surface_format()},
-            Format::depth32_float, {true, true, CompareFunction::less}, CullMode::back,
-            Winding::counter_clockwise, "textured mesh"};
-        const auto textured = device.create_pipeline(pipeline);
-        pipeline.fragment_entry = "fragmentUnlit";
-        pipeline.label = "unlit mesh";
-        const auto unlit = device.create_pipeline(pipeline);
-        for (const auto* created : {&textured, &unlit})
-            if (!*created) { std::cerr << created->diagnostic.message << '\n'; return false; }
-
+        auto shader = FileSystem::read_text("resources/shaders/metal/renderer.metal");
+        if (shader.empty()) return false;
         const auto catalog_path = FileSystem::resolve("samples/basic_scene/assets/catalog.maya");
         if (!catalog_path) return false;
         auto catalog_file = std::ifstream(*catalog_path);
@@ -45,75 +36,80 @@ public:
             const auto error = m_assets->register_asset(record);
             if (error) { std::cerr << error.message << '\n'; return false; }
         }
-        auto pyramid = m_assets->acquire(AssetRef<MeshAsset>{{0x6d617961,1}});
-        if (!pyramid) std::cerr << pyramid.diagnostic.message << '\n';
-        auto cube = make_color_cube(device, 0.35f, {1.0f, 1.0f, 1.0f});
-        if (!pyramid || !cube) return false;
-        const uint32_t checkerboard[] = {0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF};
-        m_texture = std::make_unique<Texture>(device, checkerboard, 2, 2, "checkerboard");
-        const auto sampler = device.create_sampler({});
-        for (const auto* error : {&m_texture->error(), &sampler.diagnostic})
-            if (*error) { std::cerr << error->message << '\n'; return false; }
-        m_scene.add_object(std::move(pyramid.lease), Material{textured.handle, m_texture.get(), sampler.handle});
-        m_scene.add_object(std::move(cube), Material{unlit.handle, nullptr, {}});
-        std::cerr << "[BasicScene] loaded pyramid and cube\n";
+        auto opened = open_scene_file(catalog_path->parent_path() / "basic.scene", asset_property_context(*m_assets));
+        for (const auto& problem : opened.diagnostics) std::cerr << problem.message << '\n';
+        if (!opened) return false;
+        m_world = std::move(opened.world);
+        const auto camera = m_world->find(camera_id);
+        const auto pyramid = m_world->find(pyramid_id);
+        if (!camera || !pyramid) { std::cerr << "[BasicScene] scene lacks its camera or pyramid\n"; return false; }
+        m_camera = *camera;
+        m_pyramid = *pyramid;
+        m_world->with<TransformComponent>(m_pyramid, [&](const TransformComponent& value) { m_pyramid_pose = value; });
+
+        // The fly controller is input state; it drives the camera entity's transform.
+        m_controller = std::make_unique<Camera>(60.0f, 16.0f / 9.0f, 0.1f, 100.0f);
+        m_world->with<TransformComponent>(m_camera, [&](const TransformComponent& value) {
+            m_controller->set_position(value.translation);
+        });
+        m_renderer = std::make_unique<Renderer>(device, std::move(shader));
+        m_view = std::make_unique<RenderTarget>(device, RenderTargetDesc{Format::rgba8_unorm, false, "player view"});
+        std::cerr << "[BasicScene] loaded " << m_world->size() << " entities\n";
         return true;
     }
 
     void on_update(float delta_time, bool input_enabled) override {
-        if (input_enabled) m_camera->update(delta_time);
+        if (input_enabled) m_controller->update(delta_time);
         m_rotation += 0.5f * delta_time;
-        auto& objects = m_scene.objects();
-        objects[0].model_matrix = math::Mat4::rotate_z(m_rotation)
-            * math::Mat4::rotate_x(m_rotation * 0.5f);
-        objects[1].model_matrix = math::Mat4::translate({-1.35f, 0.0f, 0.0f})
-            * math::Mat4::rotate_y(m_rotation * 0.35f);
+        auto commands = m_world->commands();
+        auto pyramid = m_pyramid_pose;
+        pyramid.rotation = math::Quat::from_axis_angle({0.0f, 1.0f, 0.0f}, m_rotation);
+        commands.set_transform(m_pyramid, pyramid);
+        if (const auto pose = inverse_affine(m_controller->get_view_matrix()))
+            if (const auto transform = decompose_transform(*pose)) commands.set_transform(m_camera, *transform);
+        if (const auto result = m_world->commit(commands); !result)
+            throw std::runtime_error("[BasicScene] animation commit failed");
     }
 
     void on_render(GraphicsDevice& device) override {
         const auto surface = device.acquire_surface();
-        if (!surface) return; // no drawable or zero-sized window: skip presentation this frame
+        if (!surface) return; // no drawable or zero-sized window: skip the view this frame
         const auto& target = surface.target;
-        const auto* depth = device.describe(m_depth);
-        if (!depth || depth->width != target.width || depth->height != target.height) {
-            device.destroy(m_depth); // retired after frames that use it complete
-            auto created = device.create_texture({target.width, target.height, Format::depth32_float,
-                TextureUsage::render_target, "scene depth"});
-            if (!created) throw std::runtime_error(created.diagnostic.message);
-            m_depth = created.handle;
+        if (auto error = m_view->resize(target.width, target.height)) throw std::runtime_error(error.message);
+        const auto view = extract_render_view(*m_world, m_camera, target.width, target.height);
+        if (!view) throw std::runtime_error("[BasicScene] the camera entity has no valid view");
+        const auto snapshot = extract_render_snapshot(*m_world, *m_assets);
+        if (snapshot.diagnostics.size() != m_reported) { // report changes, not every frame
+            for (const auto& problem : snapshot.diagnostics) std::cerr << "[BasicScene] " << problem.message << '\n';
+            m_reported = snapshot.diagnostics.size();
         }
-        auto pass = RenderPassDesc{};
-        pass.colors.push_back({target.texture, LoadAction::clear, StoreAction::store, {0.1, 0.1, 0.1, 1.0}});
-        pass.depth = DepthAttachment{m_depth, LoadAction::clear, StoreAction::dont_care, 1.0};
-        pass.label = "basic scene";
-        if (auto error = device.begin_render_pass(pass)) throw std::runtime_error(error.message);
-        auto error = m_scene.render(device, m_camera->get_view_projection_matrix(),
-            DirectionalLighting::default_sun(), m_camera->get_position());
-        device.end_render_pass();
-        if (error) throw std::runtime_error(error.message);
-    }
-
-    void on_resize(uint32_t width, uint32_t height) override {
-        m_camera->set_aspect_ratio(static_cast<float>(width) / static_cast<float>(height));
+        if (auto error = m_renderer->render(snapshot, *view, *m_view)) throw std::runtime_error(error.message);
+        if (auto error = m_renderer->present(*m_view, target.texture, {0, 0, target.width, target.height}))
+            throw std::runtime_error(error.message);
     }
 
     void on_stop() noexcept override {
-        m_scene = Scene{};
+        // Device shutdown releases anything still pending after these owners are gone.
+        m_renderer.reset();
+        m_view.reset();
+        m_world.reset();
         m_assets.reset();
-        m_texture.reset();
-        m_camera.reset();
-        // Device shutdown releases the remaining pipelines, sampler, and depth target.
-        m_depth = {};
+        m_controller.reset();
         m_rotation = 0.0f;
+        m_reported = 0;
     }
 
 private:
     std::unique_ptr<AssetRegistry> m_assets;
-    Scene m_scene;
-    std::unique_ptr<Camera> m_camera;
-    std::unique_ptr<Texture> m_texture;
-    TextureHandle m_depth;
+    std::unique_ptr<World> m_world;
+    std::unique_ptr<Renderer> m_renderer;
+    std::unique_ptr<RenderTarget> m_view;
+    std::unique_ptr<Camera> m_controller;
+    EntityHandle m_camera;
+    EntityHandle m_pyramid;
+    TransformComponent m_pyramid_pose;
     float m_rotation = 0.0f;
+    size_t m_reported = 0;
 };
 
 } // namespace

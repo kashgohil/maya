@@ -1,0 +1,83 @@
+maya-scene 1
+
+entity 6d617961 100
+  component maya.name 1
+    value "Camera"
+  component maya.transform 1
+    translation 0 0.4 4
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.camera 1
+    vertical_fov 1.0471976
+    near_clip 0.1
+    far_clip 1000
+end
+
+entity 6d617961 101
+  component maya.name 1
+    value "Sun"
+  component maya.transform 1
+    translation 0 3 0
+    rotation -0.5161719 0.2429044 0 0.82131857
+    scale 1 1 1
+  component maya.light 1
+    kind directional
+    color 1 1 1
+    intensity 1
+    range 10
+    inner_cone 0.5235988
+    outer_cone 0.7853982
+    enabled true
+end
+
+entity 6d617961 200
+  component maya.name 1
+    value "Pyramid"
+  component maya.transform 1
+    translation 0 -0.5 0
+    rotation 0 0 0 1
+    scale 0.6 0.6 0.6
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 201
+  component maya.name 1
+    value "Red cube"
+  component maya.transform 1
+    translation -1.6 -0.15 0
+    rotation 0 0.14943814 0 0.9887711
+    scale 0.7 0.7 0.7
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 202
+  component maya.name 1
+    value "Blue cube"
+  component maya.transform 1
+    translation 1.6 -0.15 0
+    rotation 0 -0.24740396 0 0.9689124
+    scale 0.7 0.7 0.7
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 203
+  component maya.name 1
+    value "Ground"
+  component maya.transform 1
+    translation 0 -0.6 0
+    rotation 0 0 0 1
+    scale 6 0.1 6
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 13
+    visible true
+end

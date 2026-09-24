@@ -1,2 +1,7 @@
 maya-assets 1
 mesh 6d617961 1 "pyramid.obj"
+mesh 6d617961 2 "cube.obj"
+material 6d617961 10 "materials/amber.material"
+material 6d617961 11 "materials/red.material"
+material 6d617961 12 "materials/blue_metal.material"
+material 6d617961 13 "materials/ground.material"
