@@ -45,7 +45,7 @@ All spatial commands share WorldCommands' enqueue order, scoped-borrow exclusion
 
 The [runtime contracts](architecture/runtime-world-contracts.md) remain authoritative: metres, radians, right-handed +X right/+Y up/-Z forward, column-major matrices and column vectors. Local = T × R × S; world = parent world × local. Full affine world matrices retain inherited shear, with no per-frame TRS decomposition.
 
-Adding or setting a transform validates finite translation/rotation/scale, strictly positive scale, and a representable nonsingular local matrix/inverse. Finite nonzero quaternions are normalized using double intermediates, including very small and very large magnitudes; zero/nonfinite quaternions fail. No value is clamped into range. Authored invalid data returns `invalid_transform`.
+Adding or setting a transform validates finite translation/rotation/scale, strictly positive scale, and a representable nonsingular local matrix/inverse. Finite nonzero quaternions are normalized using double intermediates, including very small and very large magnitudes; zero/nonfinite quaternions fail. Quaternions already within `quaternion_unit_tolerance` of unit length are kept bit-exact, so revalidation is idempotent and [saved scenes](scene.md) do not drift. No value is clamped into range. Authored invalid data returns `invalid_transform`.
 
 `world_matrix(entity)` returns a matrix copy or nullopt for a missing/invalid transform or a derived pose whose matrix/inverse cannot be represented. Finite local values can still overflow or become numerically degenerate when composed through a hierarchy. Such a derived pose is cached as invalid and propagates invalidity to descendants; a subsequent local edit can restore it. Rendering/extraction must skip/report invalid poses, never reuse a previous matrix. Keep-world reparenting rejects an invalid required pose. There is no approved maximum world extent or promise that arbitrary finite float inputs compose successfully.
 
@@ -55,6 +55,7 @@ Named numerical rules in `spatial.hpp`:
 | --- | --- |
 | `spatial_tolerance` | 1e-5: dimensionless bound on pairwise normalized basis dot products; per-column TRS reconstruction error relative to column length; absolute deviation of a scale from one for a camera pose. |
 | `spatial_singularity_tolerance` | 1e-8: reject when abs(linear determinant) ≤ tolerance × product of basis-column lengths. This measures angular degeneracy independently of overall scale. |
+| `quaternion_unit_tolerance` | 4e-7: a rotation whose length differs from one by at most this is kept unchanged. Float-normalized quaternions are well inside it; renormalizing them again could change the last bit (added by #995). |
 | Float representability | Double intermediate results must fit finite float storage. An inverse outside that range is rejected. No absolute scale clamp is imposed. |
 
 Spatial math expects affine matrices with an exact bottom row (0,0,0,1). `local_matrix` composes already-validated TRS; call `validated_transform` before using arbitrary external data. `inverse_affine`, `compose_affine`, and `decompose_transform` return optional results. Float storage still limits precision near extreme magnitudes. Small errors inside the named tolerances are accepted as rounding, not as support for authored camera scale/shear.

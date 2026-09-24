@@ -48,7 +48,7 @@ The detached API lets a future scene loader validate an entire unpublished scene
 
 | Data | Accepted values and normalization |
 | --- | --- |
-| Name | Owned string, including empty; future file codecs must validate their own text encoding. |
+| Name | Owned string, including empty. The [scene codec](scene.md) additionally requires valid UTF-8. |
 | Translation | Finite metres; local matrix and inverse must remain representable. |
 | Rotation | Finite nonzero quaternion; normalized with the same helper used by World transform commands. |
 | Scale | Finite, strictly positive per axis, plus existing [spatial numerical limits](spatial.md). No reflection or zero scale. |
@@ -64,7 +64,7 @@ Pass `asset_property_context(registry)` when editing components with nonempty re
 
 ## Persistence and schema evolution
 
-All five schemas start at version 1. The scene codec itself is #995; these rules define its input contract:
+All five schemas start at version 1. The [#995 scene codec](scene.md) follows these rules: it persists stable names only, writes every property, and rejects unknown/duplicate/newer data before publication.
 
 - Persist component identity/version and property identity using the stable IDs or names above. Choose one canonical representation in the codec, and reject conflicting ID/name pairs if both are supplied. Never serialize object memory or variant ordinals.
 - Encode floats/vectors as finite scalar values, quaternion as normalized `(x,y,z,w)`, boolean as boolean, string as text, and light kind using the stable choice names. Asset properties encode only the 128-bit persistent ID (zero/unassigned explicitly), never a path, lease, pointer, registry token, or runtime handle.
@@ -86,4 +86,4 @@ The CPU-only `maya_property_tests` covers discovery/defaults, stable lookup, typ
 - A bounded Release CPU microbenchmark exercised 1,000 / 10,000 / 100,000 detached camera edit/read pairs and edits across equally sized Worlds. At 100,000, one local run took about 2.49 ms for detached operations and 24.86 ms for individual World publications. Setup was outside the timed regions. These are local checks, not representative game workloads or #1004 capacity evidence.
 - All 38 local documentation links across the changed guides resolve; whitespace and diff checks pass.
 
-Schema/property lookup is a bounded scan of five components and at most seven properties. Editing validates the complete small component; duplicate detection is quadratic in the edit count (at most seven distinct supported fields). World publication uses existing transaction staging; it is an authoring/validation boundary, not a per-frame simulation interface. No production scene-capacity claim follows from these tests. Asset graph editing, material asset factor schemas, custom script components, the inspector, file codecs, and render extraction remain separate work.
+Schema/property lookup is a bounded scan of five components and at most seven properties. Editing validates the complete small component; duplicate detection is quadratic in the edit count (at most seven distinct supported fields). World publication uses existing transaction staging; it is an authoring/validation boundary, not a per-frame simulation interface. No production scene-capacity claim follows from these tests. Asset graph editing, material asset factor schemas, custom script components, the inspector, and render extraction remain separate work.

@@ -12,7 +12,7 @@ These are implementation contracts for the next issues, ready for review. They d
 
 ## Current implementation and migration
 
-The source audit below is against commit `0b5eb8e`. Subsequent implementation is recorded separately: [#991 World storage](../world.md) adds World, typed asset-reference values, and the MayaWorld target; [#992 spatial operations](../spatial.md) adds validated local transforms, hierarchy transactions, derived world matrices, and independent camera calculations. [#993 assets](../assets.md) adds a project registry, typed version handles, shared residency leases, and mesh buffer release. [#994 properties](../properties.md) adds shared schemas, typed access, validation, and atomic component edits. RenderSnapshot and the other future services remain contracts rather than existing APIs.
+The source audit below is against commit `0b5eb8e`. Subsequent implementation is recorded separately: [#991 World storage](../world.md) adds World, typed asset-reference values, and the MayaWorld target; [#992 spatial operations](../spatial.md) adds validated local transforms, hierarchy transactions, derived world matrices, and independent camera calculations. [#993 assets](../assets.md) adds a project registry, typed version handles, shared residency leases, and mesh buffer release. [#994 properties](../properties.md) adds shared schemas, typed access, validation, and atomic component edits. [#995 scene persistence](../scene.md) adds the versioned scene format, validated loading into a separate World, and atomic file saves. RenderSnapshot and the other future services remain contracts rather than existing APIs.
 
 | Evidence in the repository | Current behavior | Next implementation boundary |
 | --- | --- | --- |

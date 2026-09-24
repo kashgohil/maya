@@ -2,7 +2,7 @@
 
 [Issue #991](https://work.rezee.app/kash/issues/991) implements the identity/storage part of the [architecture contracts](architecture/README.md). `MayaWorld` (`Maya::World`) is a CPU-only C++20 library with no GLFW, renderer, Metal, or editor dependency. `MayaRuntime` links it publicly. Include [world.hpp](../include/maya/world/world.hpp) and [components.hpp](../include/maya/world/components.hpp).
 
-The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample loads its mesh through the [#993 asset registry](assets.md); World render extraction remains #998. [Hierarchy/camera calculations](spatial.md) are implemented by #992. [Shared property metadata and validated edits](properties.md) are implemented by #994. Serialization (#995) and a physics/script scheduler remain follow-up work.
+The existing `Scene` remains a legacy sample drawing helper. It is not the new world model. The sample loads its mesh through the [#993 asset registry](assets.md); World render extraction remains #998. [Hierarchy/camera calculations](spatial.md) are implemented by #992. [Shared property metadata and validated edits](properties.md) are implemented by #994. [Scene persistence](scene.md) is implemented by #995. A physics/script scheduler remains follow-up work.
 
 ## Create and query
 
@@ -32,7 +32,7 @@ std::as_const(world).for_each<maya::TransformComponent, maya::CameraComponent>(
 
 ## Identity and ownership
 
-- `EntityId` and `AssetId` are distinct 128-bit value types with `high`/`low` words. Zero is invalid. Generated IDs use a randomly seeded per-thread generator; uniqueness is still validated at commit. These are not cryptographic capabilities. File encoding remains #995's responsibility; do not serialize C++ object memory.
+- `EntityId` and `AssetId` are distinct 128-bit value types with `high`/`low` words. Zero is invalid. Generated IDs use a randomly seeded per-thread generator; uniqueness is still validated at commit. These are not cryptographic capabilities. The [scene format](scene.md) encodes them as two hexadecimal words; never serialize C++ object memory.
 - Loading/reconstruction supplies the saved EntityId to `create(id)`. Duplicate live or staged IDs reject the batch. An ID destroyed in an earlier batch may be restored; destroying and recreating the same ID in one batch is rejected.
 - `EntityHandle` contains a 64-bit World lifetime token, a 32-bit slot, and a 64-bit generation. Resolution checks all three plus slot liveness. Deletion invalidates the handle before component cleanup. Reuse increments generation; exhausted generations retire the slot, and exhausted lifetime tokens throw rather than wrap.
 - Worlds are noncopyable/nonmovable and use fresh process-lifetime tokens even at a reused memory address. Reconstructing the same persistent IDs in another World does not revive old handles. World tokens, generations, pool order, and RTTI type keys are never persistent identifiers.
