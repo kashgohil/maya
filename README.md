@@ -71,7 +71,7 @@ A view of the scene. A way to select something and move, turn, or scale it. An i
 
 A new zone should be something one person can author and revise without editing the engine in C++.
 
-The editor today is the window that work will land in. It has a hierarchy, a viewport, an inspector, an asset list, and a diagnostics panel, docked and resizable. Nothing can be edited yet. It is already a separate program from the player, so the game you give to someone else is only the game.
+The editor today is the window that work will land in. It has a hierarchy, a viewport, an inspector, an asset list, and a diagnostics panel, docked and resizable. The scene's structure can be edited and undone; properties and saving are next. It is already a separate program from the player, so the game you give to someone else is only the game.
 
 ## What you can run today
 
@@ -79,7 +79,7 @@ Three programs build from this repository.
 
 **Player.** The program a finished game grows out of. It opens the sample's saved scene: a pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly freely. The view renders offscreen and is then presented in the window. It cannot choose a different project yet. Project selection is still in its entry point.
 
-**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Nothing can be authored from it yet.
+**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them, and undo or redo any of it with ⌘Z and ⇧⌘Z. Editing properties and saving come next.
 
 **Sample.** The same scene as the player, kept as a sample, so the demo can stay a demo while the player becomes a game.
 
