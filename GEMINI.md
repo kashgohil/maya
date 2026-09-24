@@ -26,8 +26,9 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 - `MayaRHI` / `Maya::RHI`: GraphicsDevice validation, per-session handles, deferred retirement, and `NullGraphicsDevice` for CPU tests. The Metal backend lives in MayaRuntime. See [docs/rhi.md](docs/rhi.md).
 - `MayaRenderer` / `Maya::Renderer`: Render snapshot extraction from a World, camera views, offscreen color/depth targets, the lit pass, and presentation into a window or panel. Reads Worlds; never edits them. See [docs/renderer.md](docs/renderer.md).
 - `MayaRuntime`: Engine session lifecycle, existing core utilities, and graphics backend. No editor, sample, GLFW, or desktop-loop dependency.
-- `MayaDesktop`: Window ownership, event loop, input, framebuffer resize, and CLI launch handling.
-- `MayaEditor`: Editor-only application factory. Shows the sample scene in an offscreen viewport from a tool-state camera; authoring UI comes later.
+- `MayaDesktop`: Window ownership, event loop, input events and window metrics, cursor capture, clipboard and cursor services, framebuffer resize, and CLI launch handling.
+- `MayaEditor`: Editor shell on Dear ImGui (`MayaImGui`, editor-only): docked hierarchy/viewport/inspector/assets/diagnostics panels, an editor camera, and UI/viewport input routing. See [docs/editor.md](docs/editor.md). Authoring comes later.
+- `MayaImGui`: Dear ImGui core sources, fetched only with `MAYA_BUILD_EDITOR`. Runtime, desktop, player, and sample must never link it; the `*_no_editor_ui` CTest checks enforce this.
 - `MayaBasicScene`: Opens the sample project's scene file, drives its camera and animation through World commands, and renders it through the renderer.
 - `apps/player/main.cpp`: Selects the initial native sample project for the player.
 - `apps/editor/main.cpp`: Launches the editor.
@@ -47,7 +48,8 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 - Keep GPU struct layouts in `include/maya/renderer/shader_constants.hpp` and `include/maya/rhi/vertex.hpp` in step with the shader; Metal `float3` is 16 bytes, `packed_float3` is 12.
 - Explicit CMake source lists keep runtime, editor, and sample dependencies separate.
 - Native Metal state stays opaque to C++ consumers and uses ARC ownership.
-- Use framebuffer pixel dimensions, not logical window size, for Metal and camera aspect.
+- Use framebuffer pixel dimensions, not logical window size, for Metal and camera aspect. Input positions and UI layout are in points; convert with `WindowMetrics::scale()`.
+- Editor input goes through `InputRouter`; never read held keys from the `Input` singleton in editor tools, or typing will leak into them.
 - Runtime cleanup must not throw; application stop must tolerate partial initialization.
 
 ## Files
@@ -57,6 +59,8 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 - `src/maya/platform/desktop_application.cpp`: Desktop loop.
 - `samples/basic_scene/assets/`: Sample catalog, `basic.scene`, meshes, and material files.
 - `resources/shaders/metal/renderer.metal`: Lit pass and view presentation shaders.
+- `resources/shaders/metal/editor_ui.metal`: Editor UI (Dear ImGui) shader.
+- `apps/editor/`: Editor shell, UI renderer, input router, and editor camera.
 
 FileSystem searches MAYA_RESOURCES, executable parents, and the working directory. A resource root for the sample contains both resources/ and samples/basic_scene/assets/. Failed resolution logs every candidate path.
 

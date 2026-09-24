@@ -29,7 +29,7 @@ if (auto error = renderer.render(snapshot, *view, view_target)) { /* report */ }
 if (auto error = renderer.present(view_target, surface.target.texture, {0, 0, width, height})) { /* report */ }
 ```
 
-The [basic scene](../samples/basic_scene/basic_scene.cpp) and the [editor](../apps/editor/editor_application.cpp) use exactly this path. The player and sample render the scene's camera entity at the window's size. The editor renders the same kind of World with its own camera, which is tool state rather than an entity. It uses a viewport that covers three quarters of the window's width, leaving a column for the inspector that #999 will add. Until project open/save lands in #1002, the editor opens the sample project's `basic.scene` for viewing.
+The [basic scene](../samples/basic_scene/basic_scene.cpp) uses exactly this path. The player and sample render the scene's camera entity at the window's size. The [editor](editor.md) renders the same kind of World with its own camera, which is tool state rather than an entity, into a target sized to its viewport panel. Its UI then draws that target as an image instead of calling `present`.
 
 ## Render snapshots
 
@@ -70,7 +70,7 @@ A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatri
 
 `Renderer::render(snapshot, view, target)` runs inside a frame with no pass open. It uploads one `ViewConstants` block, opens a pass that clears the target's color to the view's clear color and its depth to 1, and binds the lit pipeline. Then, for each instance, it uploads that instance's `DrawConstants` to its own slice of frame upload memory and draws the shared mesh. It checks that the view size matches the target, that the target is live, and that every instance refers to a mesh the snapshot holds. It returns the first device error, such as exhausted upload memory. The remaining instances are skipped, the pass is still closed, and the frame can still end.
 
-`Renderer::present(target, destination, area, background)` opens a pass on `destination`, clears it to `background`, and draws the target's color texture scaled into `area`. The area is a `PixelRect` in the destination's pixels, with its origin at the top left. The destination is usually the acquired window surface, but any render-target texture works. The player presents to the whole surface. The editor presents to its viewport rectangle. When the area and the view have the same size, presentation copies the view's pixels exactly (bilinear sampling at texel centers).
+`Renderer::present(target, destination, area, background)` opens a pass on `destination`, clears it to `background`, and draws the target's color texture scaled into `area`. The area is a `PixelRect` in the destination's pixels, with its origin at the top left. The destination is usually the acquired window surface, but any render-target texture works. The player presents to the whole surface; the same call can present into any rectangle, such as a panel. When the area and the view have the same size, presentation copies the view's pixels exactly (bilinear sampling at texel centers).
 
 Pipelines are created on first use for each target format (lit, with `depth32_float`, back-face culling, and counter-clockwise front faces) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles and recreates what it needs. `stats()` counts views, draws, and presents.
 

@@ -29,6 +29,8 @@ if (surface) {
 }
 ```
 
+Within a pass, `set_scissor(rect)` (#999) restricts later draws to a nonempty rectangle inside the attachments, in pixels from the top left. Each pass starts unclipped. `draw_indexed` can also read indices from a [frame upload slice](#frame-pacing-and-upload-memory), with the offset relative to the slice. The editor's UI draws this way.
+
 A frame runs `begin_frame` → any number of render passes → `end_frame`. `end_frame` presents an acquired surface and submits. Offscreen passes target any texture created with `render_target` usage and never touch the drawable. The same frame can render offscreen targets and present, only render offscreen, or only present. `Engine::tick` calls `begin_frame`/`end_frame` around `Application::on_render`, and treats a failure from either as a frame failure. GPU execution errors reported by completed frames are logged through `take_gpu_errors()`.
 
 Handles and descriptors:
@@ -38,7 +40,7 @@ Handles and descriptors:
 | `BufferHandle` | size, `vertex`/`index`/`uniform` usage flags, label | CPU-writable shared memory. `write_buffer` is immediate and not synchronized with frames in flight; per-frame data belongs in [upload memory](#frame-pacing-and-upload-memory). |
 | `TextureHandle` | width, height, format, `sampled`/`render_target`/`readback` usage, label | 2D, one mip level, GPU-private. Optional tightly packed initial data is uploaded through a staging copy. Depth textures cannot be uploaded or read back. |
 | `SamplerHandle` | min/mag filter, U/V address mode, label | |
-| `PipelineHandle` | Metal source, entry points, ordered color formats, depth format, depth test/write/compare, cull, winding, label | Shaders fetch vertices from bound buffers; there is no fixed-function vertex layout. |
+| `PipelineHandle` | Metal source, entry points, ordered color formats, depth format, depth test/write/compare, cull, winding, label, blend | Shaders fetch vertices from bound buffers; there is no fixed-function vertex layout. `BlendMode::alpha` (#999) is straight-alpha source-over on every color attachment; the default is opaque. |
 
 Formats are `rgba8_unorm`, `rgba8_srgb`, `bgra8_unorm`, `bgra8_srgb`, `rgba16_float`, and `depth32_float`. The Metal surface is `bgra8_unorm`; the linear/HDR color pipeline is later rendering work.
 

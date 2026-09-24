@@ -71,7 +71,7 @@ A view of the scene. A way to select something and move, turn, or scale it. An i
 
 A new zone should be something one person can author and revise without editing the engine in C++.
 
-The editor today is the window that work will land in. It opens. It has Maya's icon. The panels are still ahead. It is already a separate program from the player, so the game you give to someone else is only the game.
+The editor today is the window that work will land in. It has a hierarchy, a viewport, an inspector, an asset list, and a diagnostics panel, docked and resizable. Nothing can be edited yet. It is already a separate program from the player, so the game you give to someone else is only the game.
 
 ## What you can run today
 
@@ -79,11 +79,11 @@ Three programs build from this repository.
 
 **Player.** The program a finished game grows out of. It opens the sample's saved scene: a pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly freely. The view renders offscreen and is then presented in the window. It cannot choose a different project yet. Project selection is still in its entry point.
 
-**Editor.** An editing window with the cursor free. Its viewport shows the sample scene from an editor camera and leaves room for panels. Nothing can be authored from it yet.
+**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Nothing can be authored from it yet.
 
 **Sample.** The same scene as the player, kept as a sample, so the demo can stay a demo while the player becomes a game.
 
-You look with the mouse and move with WASD. Space rises. Escape closes the window. The title bar carries a smoothed frame rate, the frame time, and the size of the view in pixels.
+In the player and the sample, you look with the mouse and move with WASD. Space rises. Escape closes the window; in the editor, Escape only stops flying. The title bar carries a smoothed frame rate, the frame time, and the size of the view in pixels.
 
 The scene is small on purpose. It is the loop the rest of the engine has to survive: open a window, draw frames, shut down cleanly, and be willing to do it again.
 
@@ -108,7 +108,7 @@ cmake --build build -j 4
 ./build/maya_sample
 ```
 
-`maya_player` and `maya_sample` capture the mouse. `maya_editor` does not. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
+`maya_player` and `maya_sample` capture the mouse. `maya_editor` captures it only while you fly. The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
 ### Where the files are
 
@@ -131,7 +131,7 @@ A build made inside the repository finds its content, because a parent of the ex
 | MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
 | MayaDesktop | The window, input, and launch loop. |
 | MayaBasicScene | The sample scene. |
-| MayaEditor | The editor's application boundary. |
+| MayaEditor | The editor: panels, viewport, and input routing, on Dear ImGui. |
 | maya_player | The player. |
 | maya_editor | The editor. |
 | maya_sample | The sample. |
