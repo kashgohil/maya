@@ -157,6 +157,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/editor_shell.cpp
         apps/editor/editor_theme.cpp
         apps/editor/input_router.cpp
+        apps/editor/scene_editor.cpp
         apps/editor/ui_renderer.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
     target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImGui)

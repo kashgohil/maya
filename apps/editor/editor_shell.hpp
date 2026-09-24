@@ -3,6 +3,7 @@
 #include "editor_camera.hpp"
 #include "editor_theme.hpp"
 #include "input_router.hpp"
+#include "scene_editor.hpp"
 #include "ui_renderer.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
@@ -36,11 +37,17 @@ PixelSize viewport_pixels(float width_points, float height_points, float scale) 
 
 /// Where the last frame placed interactive elements, in window points. Empty when not shown.
 struct EditorLayout {
+    struct Row { EntityId id; ImVec2 min, max; };
     ImVec2 viewport_min{0, 0}, viewport_max{0, 0};
     ImVec2 camera_speed_min{0, 0}, camera_speed_max{0, 0};
+    std::vector<Row> hierarchy_rows; // visible hierarchy rows, top to bottom
+    const Row* row(EntityId id) const {
+        for (const auto& row : hierarchy_rows) if (row.id == id) return &row;
+        return nullptr;
+    }
 };
 
-enum class DiagnosticSource { scene, viewport, renderer, gpu, ui };
+enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit };
 struct DiagnosticEntry {
     DiagnosticSource source;
     std::string message;
@@ -70,8 +77,8 @@ public:
     EditorShell(const EditorShell&) = delete;
     EditorShell& operator=(const EditorShell&) = delete;
 
-    /// Opens a project catalog and scene for viewing. Problems go to the diagnostics panel; the
-    /// previous scene stays open on failure. Returns whether the scene opened.
+    /// Opens a project catalog and scene for editing, with fresh history and selection. Problems go
+    /// to the diagnostics panel; the previous scene stays open on failure. Returns whether it opened.
     bool open_scene(const std::filesystem::path& catalog, const std::filesystem::path& scene);
 
     /// Routes this frame's input and builds the UI. A zero-sized (minimized) window skips the frame.
@@ -94,6 +101,9 @@ public:
     const DiagnosticLog& diagnostics() const noexcept { return m_log; }
     const UiRenderer& ui_renderer() const noexcept { return m_ui; }
     const RenderSnapshotStats& extraction() const noexcept { return m_extraction; }
+    /// The open scene's editing session, or null when no scene is open.
+    SceneEditor* scene() noexcept { return m_scene.get(); }
+    std::optional<EntityId> renaming() const noexcept { return m_renaming; }
     uint64_t frames() const noexcept { return m_frame; }
     /// For inspection in tests; make it current only between frames.
     ImGuiContext* context() const noexcept { return m_context; }
@@ -103,6 +113,11 @@ private:
     void rebuild_fonts(float scale);
     void build_dock_layout(unsigned int dockspace);
     void draw_hierarchy();
+    void draw_hierarchy_row(EntityId id);
+    void draw_create_menu(std::optional<EntityId> parent);
+    void handle_shortcuts();
+    void report(const EditResult& result, const std::string& action);
+    void start_rename(EntityId id);
     void draw_viewport();
     void draw_inspector();
     void draw_assets();
@@ -122,7 +137,10 @@ private:
     RenderTarget m_viewport;
     ImTextureID m_viewport_texture = 0;
     std::unique_ptr<AssetRegistry> m_assets;
-    std::unique_ptr<World> m_world;
+    std::unique_ptr<SceneEditor> m_scene;
+    std::optional<EntityId> m_renaming;
+    char m_rename_buffer[256] = {};
+    bool m_rename_focus = false;
     std::filesystem::path m_scene_path;
     EditorCamera m_camera;
     InputRouter m_router;

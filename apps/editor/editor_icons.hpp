@@ -23,7 +23,14 @@ inline constexpr const char* check_circle = "\xEE\x86\x84"; // U+E184 ready
 inline constexpr const char* arrows_move = "\xEE\x82\xA4"; // U+E0A4 flying
 inline constexpr const char* mouse_right = "\xEE\x8C\xB6"; // U+E336 right mouse button
 inline constexpr const char* mouse_scroll = "\xEE\x8C\xB2"; // U+E332 mouse wheel
+inline constexpr const char* plus = "\xEE\x8F\x94"; // U+E3D4 create
+inline constexpr const char* copy = "\xEE\x87\x8A"; // U+E1CA duplicate
+inline constexpr const char* trash = "\xEE\x92\xA6"; // U+E4A6 delete
+inline constexpr const char* pencil = "\xEE\x8E\xB4"; // U+E3B4 rename
+inline constexpr const char* undo = "\xEE\x82\x8A"; // U+E08A undo
+inline constexpr const char* redo = "\xEE\x82\x8C"; // U+E08C redo
+inline constexpr const char* unparent = "\xEE\x81\x8C"; // U+E04C move to root
 
 /// Glyph ranges for the atlas: each icon codepoint, then a terminating zero.
-inline constexpr ImWchar ranges[] = {0xE000, 0xE000, 0xE0A4, 0xE0A4, 0xE184, 0xE184, 0xE18C, 0xE18C, 0xE1DA, 0xE1DA, 0xE230, 0xE230, 0xE25A, 0xE25A, 0xE2CE, 0xE2CE, 0xE332, 0xE332, 0xE336, 0xE336, 0xE434, 0xE434, 0xE472, 0xE472, 0xE4DA, 0xE4DA, 0xE4E0, 0xE4E0, 0xE4F8, 0xE4F8, 0xE602, 0xE602, 0xE67C, 0xE67C, 0xED0A, 0xED0A, 0};
+inline constexpr ImWchar ranges[] = {0xE000, 0xE000, 0xE04C, 0xE04C, 0xE08A, 0xE08A, 0xE08C, 0xE08C, 0xE0A4, 0xE0A4, 0xE184, 0xE184, 0xE18C, 0xE18C, 0xE1CA, 0xE1CA, 0xE1DA, 0xE1DA, 0xE230, 0xE230, 0xE25A, 0xE25A, 0xE2CE, 0xE2CE, 0xE332, 0xE332, 0xE336, 0xE336, 0xE3B4, 0xE3B4, 0xE3D4, 0xE3D4, 0xE434, 0xE434, 0xE472, 0xE472, 0xE4A6, 0xE4A6, 0xE4DA, 0xE4DA, 0xE4E0, 0xE4E0, 0xE4F8, 0xE4F8, 0xE602, 0xE602, 0xE67C, 0xE67C, 0xED0A, 0xED0A, 0};
 } // namespace maya::editor::icon

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -109,6 +110,7 @@ const char* source_name(DiagnosticSource source) {
     case DiagnosticSource::renderer: return "renderer";
     case DiagnosticSource::gpu: return "gpu";
     case DiagnosticSource::ui: return "ui";
+    case DiagnosticSource::edit: return "edit";
     }
     return "?";
 }
@@ -202,11 +204,12 @@ bool EditorShell::open_scene(const std::filesystem::path& catalog_path, const st
     auto opened = open_scene_file(scene_path, asset_property_context(*assets));
     for (const auto& problem : opened.diagnostics) m_log.add(DiagnosticSource::scene, problem.message, m_frame);
     if (!opened) return false;
-    m_world = std::move(opened.world);
+    m_scene = std::make_unique<SceneEditor>(std::move(opened.world)); // history starts empty
     m_assets = std::move(assets);
     m_scene_path = scene_path;
+    m_renaming.reset();
     m_log.add(DiagnosticSource::scene, "Opened " + scene_path.filename().string() + " (" +
-        std::to_string(m_world->size()) + " entities)", m_frame);
+        std::to_string(m_scene->world().size()) + " entities)", m_frame);
     return true;
 }
 
@@ -337,6 +340,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_inspector();
     draw_assets();
     draw_diagnostics();
+    handle_shortcuts();
     theme::decorate_tabs(panel_titles, IM_ARRAYSIZE(panel_titles)); // after every tab bar is drawn
     ImGui::Render();
     // io.WantTextInput describes the previous frame; this is whether a text field is active now.
@@ -394,11 +398,36 @@ void EditorShell::draw_top_bar() {
         ImGui::TextUnformatted("/");
         ImGui::PopStyleColor();
         ImGui::SameLine(0.0f, 14.0f);
-        if (m_world) {
+        if (m_scene) {
             icon_text(icon::file, theme::color::muted, 6.0f);
             ImGui::TextUnformatted(m_scene_path.filename().string().c_str());
-            ImGui::SameLine(0.0f, 10.0f);
-            theme::pill(m_fonts, "read-only", theme::color::muted, theme::color::surface);
+            if (m_scene->dirty()) {
+                ImGui::SameLine(0.0f, 10.0f);
+                theme::pill(m_fonts, "modified", theme::color::warning, theme::color::rgb(0xF5B454, 28));
+            }
+            // Undo and redo, labelled with the action they will reverse or repeat.
+            ImGui::SameLine(0.0f, 18.0f);
+            const auto history_button = [&](const char* glyph, const char* id, bool enabled, const std::string& tip) {
+                ImGui::PushStyleColor(ImGuiCol_Button, 0u);
+                ImGui::PushStyleColor(ImGuiCol_Text, enabled ? theme::color::muted : theme::color::faint);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6.0f, 3.0f});
+                ImGui::PushID(id);
+                ImGui::BeginDisabled(!enabled);
+                const auto pressed = ImGui::Button(glyph);
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip.c_str());
+                ImGui::PopID();
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor(2);
+                return pressed;
+            };
+            if (history_button(icon::undo, "undo", m_scene->can_undo(),
+                               m_scene->can_undo() ? "Undo " + m_scene->undo_label() + "   \xE2\x8C\x98Z" : "Nothing to undo"))
+                report(m_scene->undo(), "Undo");
+            ImGui::SameLine(0.0f, 2.0f);
+            if (history_button(icon::redo, "redo", m_scene->can_redo(),
+                               m_scene->can_redo() ? "Redo " + m_scene->redo_label() + "   \xE2\x87\xA7\xE2\x8C\x98Z" : "Nothing to redo"))
+                report(m_scene->redo(), "Redo");
         } else {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
             ImGui::TextUnformatted("No scene open");
@@ -461,52 +490,197 @@ void EditorShell::draw_status_bar() {
     ImGui::PopStyleVar();
 }
 
+void EditorShell::report(const EditResult& result, const std::string& action) {
+    if (!result && result.error != "Nothing to change")
+        m_log.add(DiagnosticSource::edit, action + " failed: " + result.error, m_frame);
+}
+
+void EditorShell::start_rename(EntityId id) {
+    if (!m_scene || !m_scene->record(id)) return;
+    m_renaming = id;
+    std::snprintf(m_rename_buffer, sizeof(m_rename_buffer), "%s", m_scene->display_name(id).c_str());
+    m_rename_focus = true;
+}
+
+void EditorShell::draw_create_menu(std::optional<EntityId> parent) {
+    const auto create = [&](const char* name, std::vector<ComponentValue> extra) {
+        const auto result = m_scene->create(name, parent, std::move(extra));
+        report(result, std::string("Create ") + name);
+        if (result) start_rename(*m_scene->primary());
+    };
+    if (ImGui::MenuItem((std::string(icon::circle_dashed) + "  Empty").c_str())) create("Entity", {});
+    if (ImGui::MenuItem((std::string(icon::video_camera) + "  Camera").c_str())) create("Camera", {CameraComponent{}});
+    if (ImGui::MenuItem((std::string(icon::sun) + "  Directional light").c_str())) create("Light", {LightComponent{}});
+}
+
+void EditorShell::draw_hierarchy_row(EntityId id) {
+    auto& scene = *m_scene;
+    const auto* record = scene.record(id);
+    if (!record) return;
+    const auto has = [&](ComponentId component) {
+        return std::ranges::any_of(record->components, [&](const ComponentValue& v) { return component_id(v) == component; });
+    };
+    // An icon marks what the entity is: camera, light, mesh, or other.
+    const auto camera = has(ComponentId::camera), light = has(ComponentId::light), mesh = has(ComponentId::mesh_renderer);
+    const auto* glyph = camera ? icon::video_camera : light ? icon::sun : mesh ? icon::cube : icon::circle_dashed;
+    const auto tone = camera ? theme::color::accent : light ? theme::color::warning
+        : mesh ? theme::color::rgb(0xA3A7B0) : theme::color::faint;
+    const auto& children = scene.children(id);
+    auto flags = ImGuiTreeNodeFlags{ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_DefaultOpen |
+                                    ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_OpenOnArrow};
+    if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (scene.selected(id)) flags |= ImGuiTreeNodeFlags_Selected;
+    ImGui::PushID(static_cast<int>(id.low ^ (id.high << 7)));
+    const auto opened = ImGui::TreeNodeEx("entity", flags, "%s", "");
+    const auto row_min = ImGui::GetItemRectMin(), row_max = ImGui::GetItemRectMax();
+    m_layout.hierarchy_rows.push_back({id, row_min, row_max});
+    const auto& io = ImGui::GetIO();
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
+        scene.select(id, io.KeyCtrl ? SelectMode::toggle : io.KeyShift ? SelectMode::add : SelectMode::replace);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
+        start_rename(id);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && !scene.selected(id)) scene.select(id);
+
+    // Drag onto a row's upper or lower quarter to place before or after it; onto its middle to parent.
+    if (ImGui::BeginDragDropSource()) {
+        ImGui::SetDragDropPayload("MAYA_ENTITY", &id, sizeof(id));
+        icon_text(glyph, tone);
+        ImGui::TextUnformatted(scene.display_name(id).c_str());
+        ImGui::EndDragDropSource();
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        const auto height = row_max.y - row_min.y;
+        const auto y = io.MousePos.y - row_min.y;
+        const auto placement = y < height * 0.25f ? Placement::before : y > height * 0.75f ? Placement::after : Placement::inside;
+        auto* draw = ImGui::GetWindowDrawList();
+        if (placement == Placement::inside) draw->AddRect(row_min, row_max, theme::color::accent, 4.0f);
+        else {
+            const auto line = placement == Placement::before ? row_min.y : row_max.y;
+            draw->AddLine({row_min.x + 8.0f, line}, {row_max.x - 4.0f, line}, theme::color::accent, 2.0f);
+        }
+        if (const auto* payload = ImGui::AcceptDragDropPayload("MAYA_ENTITY", ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+            auto moved = EntityId{};
+            std::memcpy(&moved, payload->Data, sizeof(moved));
+            if (moved != id) report(scene.move(moved, id, placement), "Move " + scene.display_name(moved));
+        }
+        ImGui::EndDragDropTarget();
+    }
+    if (ImGui::BeginPopupContextItem("row")) {
+        if (ImGui::MenuItem((std::string(icon::pencil) + "  Rename").c_str(), "F2")) start_rename(id);
+        if (ImGui::MenuItem((std::string(icon::copy) + "  Duplicate").c_str(), "\xE2\x8C\x98" "D"))
+            report(scene.duplicate_selection(), "Duplicate");
+        if (ImGui::MenuItem((std::string(icon::unparent) + "  Move to root").c_str(), nullptr, false, record->parent.has_value()))
+            report(scene.move(id, std::nullopt), "Move " + scene.display_name(id));
+        if (has(ComponentId::transform) && ImGui::BeginMenu((std::string(icon::plus) + "  Create child").c_str())) {
+            draw_create_menu(id);
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem((std::string(icon::trash) + "  Delete").c_str(), "\xE2\x8C\xAB"))
+            report(scene.delete_selection(), "Delete");
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine(0.0f, 0.0f);
+    icon_text(glyph, tone);
+    if (m_renaming == id) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (m_rename_focus) {
+            ImGui::SetKeyboardFocusHere();
+            m_rename_focus = false;
+        }
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {4.0f, 1.0f});
+        const auto entered = ImGui::InputText("##rename", m_rename_buffer, sizeof(m_rename_buffer),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        ImGui::PopStyleVar();
+        if (entered || ImGui::IsItemDeactivatedAfterEdit()) report(scene.rename(id, m_rename_buffer), "Rename");
+        if (ImGui::IsItemDeactivated() || entered) m_renaming.reset();
+    } else {
+        ImGui::TextUnformatted(scene.display_name(id).c_str());
+    }
+    if (opened) {
+        for (const auto child : std::vector<EntityId>(children)) draw_hierarchy_row(child);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
+
 void EditorShell::draw_hierarchy() {
     const auto open = begin_panel(hierarchy_title);
-    if (open && !m_world) {
+    m_layout.hierarchy_rows.clear();
+    if (open && !m_scene) {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
         ImGui::TextWrapped("No scene is open.");
         ImGui::PopStyleColor();
     }
-    if (open && m_world) {
-        auto& world = *m_world;
-        auto roots = std::vector<std::pair<EntityId, EntityHandle>>{};
-        world.for_each_entity([&](EntityHandle entity) {
-            if (!world.parent(entity)) roots.emplace_back(*world.persistent_id(entity), entity);
-        });
-        std::ranges::sort(roots, {}, &std::pair<EntityId, EntityHandle>::first);
-        theme::caption(m_fonts, "SCENE", std::to_string(world.size()).c_str());
-        const auto draw = [&](const auto& self, EntityHandle entity) -> void {
-            const auto id = *world.persistent_id(entity);
-            auto label = id_text(id.high, id.low);
-            world.with<NameComponent>(entity, [&](const NameComponent& name) { label = name.value; });
-            // An icon marks what the entity is: camera, light, mesh, or other.
-            const auto camera = world.has<CameraComponent>(entity), light = world.has<LightComponent>(entity);
-            const auto mesh = world.has<MeshRendererComponent>(entity);
-            const auto* glyph = camera ? icon::video_camera : light ? icon::sun : mesh ? icon::cube : icon::circle_dashed;
-            const auto tone = camera ? theme::color::accent : light ? theme::color::warning
-                : mesh ? theme::color::rgb(0xA3A7B0) : theme::color::faint;
-            const auto children = world.children(entity);
-            auto flags = ImGuiTreeNodeFlags{ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_DefaultOpen |
-                                            ImGuiTreeNodeFlags_FramePadding};
-            if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
-            ImGui::PushID(static_cast<int>(id.low ^ (id.high << 7)));
-            const auto opened = ImGui::TreeNodeEx("entity", flags, "%s", "");
-            ImGui::SameLine(0.0f, 0.0f);
-            icon_text(glyph, tone);
-            ImGui::TextUnformatted(label.c_str());
-            if (opened) {
-                for (const auto child : children) self(self, child);
-                ImGui::TreePop();
+    if (open && m_scene) {
+        auto& scene = *m_scene;
+        // Header: caption and entity count, with a create button on the right.
+        ImGui::PushFont(m_fonts.caption);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("SCENE  %zu", scene.world().size());
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
+        ImGui::PushStyleColor(ImGuiCol_Button, 0u);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {5.0f, 3.0f});
+        if (ImGui::Button(icon::plus)) ImGui::OpenPopup("create");
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create an entity");
+        if (ImGui::BeginPopup("create")) {
+            const auto primary = scene.primary();
+            draw_create_menu(std::nullopt);
+            if (primary && ImGui::BeginMenu(("Child of " + scene.display_name(*primary)).c_str())) {
+                draw_create_menu(primary);
+                ImGui::EndMenu();
             }
-            ImGui::PopID();
-        };
+            ImGui::EndPopup();
+        }
+
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6.0f, 4.0f});
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {6.0f, 2.0f});
-        for (const auto& [id, entity] : roots) draw(draw, entity);
-        ImGui::PopStyleVar(2);
+        ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, 14.0f);
+        for (const auto id : std::vector<EntityId>(scene.roots())) draw_hierarchy_row(id);
+        ImGui::PopStyleVar(3);
+
+        // The empty space below the rows: click to clear the selection, drop to move to the root.
+        const auto space = ImGui::GetContentRegionAvail();
+        ImGui::InvisibleButton("##empty", {std::max(space.x, 1.0f), std::max(space.y, 24.0f)});
+        if (ImGui::IsItemClicked()) scene.clear_selection();
+        if (ImGui::BeginDragDropTarget()) {
+            if (const auto* payload = ImGui::AcceptDragDropPayload("MAYA_ENTITY")) {
+                auto moved = EntityId{};
+                std::memcpy(&moved, payload->Data, sizeof(moved));
+                report(scene.move(moved, std::nullopt), "Move " + scene.display_name(moved));
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (ImGui::BeginPopupContextItem("empty")) {
+            draw_create_menu(std::nullopt);
+            ImGui::EndPopup();
+        }
+        // Keys that act on the selection while the hierarchy has focus.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && !m_renaming) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false))
+                report(scene.delete_selection(), "Delete");
+            if ((ImGui::IsKeyPressed(ImGuiKey_F2, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) && scene.primary())
+                start_rename(*scene.primary());
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scene.clear_selection();
+        }
     }
     ImGui::End();
+}
+
+void EditorShell::handle_shortcuts() {
+    if (!m_scene || ImGui::GetIO().WantTextInput || m_renaming) return;
+    constexpr auto global = ImGuiInputFlags_RouteGlobal;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, global)) report(m_scene->undo(), "Undo");
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, global) || ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, global))
+        report(m_scene->redo(), "Redo");
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_D, global)) report(m_scene->duplicate_selection(), "Duplicate");
 }
 
 void EditorShell::draw_viewport() {
@@ -518,7 +692,7 @@ void EditorShell::draw_viewport() {
     auto request = PixelSize{};
     // An appearing window (first frame, or a tab just shown) has no final size yet: skip it rather
     // than allocate a target for a size that is about to change.
-    if (open && m_world && !ImGui::IsWindowAppearing()) {
+    if (open && m_scene && !ImGui::IsWindowAppearing()) {
         const auto available = ImGui::GetContentRegionAvail();
         const auto scale = ImGui::GetIO().DisplayFramebufferScale.x;
         request = viewport_pixels(available.x, available.y, scale);
@@ -543,7 +717,7 @@ void EditorShell::draw_viewport() {
     } else if (open) {
         ImGui::SetCursorPos({16.0f, 14.0f});
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-        ImGui::TextUnformatted(m_world ? "" : "No scene is open. Details are in Diagnostics.");
+        ImGui::TextUnformatted(m_scene ? "" : "No scene is open. Details are in Diagnostics.");
         ImGui::PopStyleColor();
     }
     ImGui::End();
@@ -573,13 +747,32 @@ void EditorShell::draw_inspector() {
             theme::end_properties();
         }
         ImGui::Dummy({0.0f, 10.0f});
-        theme::caption(m_fonts, "SELECTION");
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-        ImGui::TextWrapped("Nothing selected.");
-        ImGui::PopStyleColor();
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
-        ImGui::TextWrapped("Entity properties will appear here.");
-        ImGui::PopStyleColor();
+        const auto& selection = m_scene ? m_scene->selection() : std::vector<EntityId>{};
+        theme::caption(m_fonts, "SELECTION", selection.size() > 1 ? (std::to_string(selection.size()) + " selected").c_str() : nullptr);
+        if (selection.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+            ImGui::TextWrapped("Nothing selected.");
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextWrapped("Select an entity in the hierarchy.");
+            ImGui::PopStyleColor();
+        } else {
+            const auto primary = *m_scene->primary();
+            ImGui::PushFont(m_fonts.strong);
+            ImGui::TextUnformatted(m_scene->display_name(primary).c_str());
+            ImGui::PopFont();
+            theme::mono_text(m_fonts, id_text(primary.high, primary.low).c_str(), true);
+            ImGui::Dummy({0.0f, 2.0f});
+            for (const auto& value : m_scene->record(primary)->components) {
+                const auto label = std::string(component_schema(component_id(value))->label);
+                theme::pill(m_fonts, label.c_str(), theme::color::muted, theme::color::surface);
+                ImGui::SameLine(0.0f, 6.0f);
+            }
+            ImGui::NewLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextWrapped("Property editing arrives with the inspector.");
+            ImGui::PopStyleColor();
+        }
     }
     ImGui::End();
 }
@@ -691,7 +884,7 @@ void EditorShell::draw_diagnostics() {
 void EditorShell::render_viewport() {
     m_ui.set_texture(m_viewport_texture, {});
     m_viewport_error = false;
-    if (!m_world || m_viewport_request.empty()) return;
+    if (!m_scene || m_viewport_request.empty()) return;
     const auto allocations = m_viewport.allocations();
     if (auto error = m_viewport.resize(m_viewport_request.width, m_viewport_request.height)) {
         m_viewport_error = true;
@@ -706,7 +899,7 @@ void EditorShell::render_viewport() {
         m_log.add(DiagnosticSource::viewport, "The editor camera has no valid view", m_frame);
         return;
     }
-    const auto snapshot = extract_render_snapshot(*m_world, *m_assets);
+    const auto snapshot = extract_render_snapshot(m_scene->world(), *m_assets);
     m_extraction = snapshot.stats;
     m_frame_problems = snapshot.diagnostics;
     if (auto error = m_renderer.render(snapshot, *view, m_viewport)) {
