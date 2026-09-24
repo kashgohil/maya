@@ -25,8 +25,8 @@ void apply(ImGuiStyle& style) {
     style.PopupBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
     style.TabBorderSize = 0.0f;
-    style.TabBarBorderSize = 1.0f;
-    style.TabBarOverlineSize = 2.0f;
+    style.TabBarBorderSize = 0.0f; // decorate_tabs draws the separator and the selected underline
+    style.TabBarOverlineSize = 0.0f;
     style.DockingSeparatorSize = 1.0f;
     style.WindowRounding = 0.0f;
     style.ChildRounding = 6.0f;
@@ -50,7 +50,7 @@ void apply(ImGuiStyle& style) {
     c[ImGuiCol_FrameBg] = v(color::surface);
     c[ImGuiCol_FrameBgHovered] = v(color::hover);
     c[ImGuiCol_FrameBgActive] = v(color::active);
-    c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_TitleBgCollapsed] = v(color::background);
+    c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_TitleBgCollapsed] = v(color::panel);
     c[ImGuiCol_MenuBarBg] = v(color::background);
     c[ImGuiCol_ScrollbarBg] = v(0, 0.0f);
     c[ImGuiCol_ScrollbarGrab] = v(color::rgb(0x2A2C32));
@@ -71,13 +71,14 @@ void apply(ImGuiStyle& style) {
     c[ImGuiCol_ResizeGrip] = v(0, 0.0f);
     c[ImGuiCol_ResizeGripHovered] = v(color::accent, 0.6f);
     c[ImGuiCol_ResizeGripActive] = v(color::accent);
-    c[ImGuiCol_Tab] = v(color::background);
-    c[ImGuiCol_TabHovered] = v(color::hover);
+    // Tabs are flat: no fill except a soft hover; the strip shares the panel color.
+    c[ImGuiCol_Tab] = v(color::panel, 0.0f);
+    c[ImGuiCol_TabHovered] = v(color::rgb(0xFFFFFF), 0.04f);
     c[ImGuiCol_TabSelected] = v(color::panel);
-    c[ImGuiCol_TabSelectedOverline] = v(color::accent);
-    c[ImGuiCol_TabDimmed] = v(color::background);
+    c[ImGuiCol_TabSelectedOverline] = v(color::accent, 0.0f);
+    c[ImGuiCol_TabDimmed] = v(color::panel, 0.0f);
     c[ImGuiCol_TabDimmedSelected] = v(color::panel);
-    c[ImGuiCol_TabDimmedSelectedOverline] = v(color::faint, 0.0f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = v(color::accent, 0.0f);
     c[ImGuiCol_DockingPreview] = v(color::accent, 0.35f);
     c[ImGuiCol_DockingEmptyBg] = v(color::background);
     c[ImGuiCol_TableHeaderBg] = v(color::panel);
@@ -89,6 +90,35 @@ void apply(ImGuiStyle& style) {
     c[ImGuiCol_DragDropTarget] = v(color::accent);
     c[ImGuiCol_NavCursor] = v(color::accent);
     c[ImGuiCol_ModalWindowDimBg] = v(color::background, 0.6f);
+}
+
+void decorate_tabs(const char* const* window_names, int count) {
+    auto seen = ImVector<ImGuiDockNode*>{};
+    for (int i = 0; i < count; ++i) {
+        auto* window = ImGui::FindWindowByName(window_names[i]);
+        if (!window || !window->DockIsActive || !window->DockNode) continue;
+        auto* node = window->DockNode;
+        auto* bar = node->TabBar;
+        if (!bar || !node->HostWindow || node->IsHiddenTabBar() || node->IsNoTabBar()) continue;
+        auto* draw = node->HostWindow->DrawList;
+        const auto bottom = bar->BarRect.Max.y;
+        if (!seen.contains(node)) {
+            seen.push_back(node);
+            draw->AddLine({node->Pos.x, bottom - 0.5f}, {node->Pos.x + node->Size.x, bottom - 0.5f}, color::border);
+        }
+        if (bar->VisibleTabId != window->TabId) continue;
+        // ImGui draws every tab label in the muted text color; repaint the visible tab's label brightly.
+        const auto rect = window->DC.DockTabItemRect;
+        draw->AddRectFilled(rect.Min, {rect.Max.x, bottom - 1.0f}, color::panel);
+        const char* end = ImGui::FindRenderedTextEnd(window->Name);
+        draw->PushClipRect(rect.Min, {rect.Max.x - bar->FramePadding.x * 0.5f, rect.Max.y}, true);
+        draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {rect.Min.x + bar->FramePadding.x, rect.Min.y + bar->FramePadding.y},
+                      color::text, window->Name, end);
+        draw->PopClipRect();
+        const auto focused = (bar->Flags & ImGuiTabBarFlags_IsFocused) != 0;
+        draw->AddRectFilled({rect.Min.x + 8.0f, bottom - 2.0f}, {rect.Max.x - 8.0f, bottom},
+                            focused ? color::accent : color::rgb(0x3A3C43), 1.0f);
+    }
 }
 
 void caption(const Fonts& fonts, const char* text, const char* detail) {

@@ -30,6 +30,20 @@ const std::string inspector_title = std::string(icon::sliders) + "  Inspector###
 const std::string assets_title = std::string(icon::folder) + "  Assets###Assets";
 const std::string diagnostics_title = std::string(icon::pulse) + "  Diagnostics###Diagnostics";
 
+const char* const panel_titles[] = {hierarchy_title.c_str(), viewport_title.c_str(), inspector_title.c_str(),
+                                    assets_title.c_str(), diagnostics_title.c_str()};
+
+/// Begins a docked panel with the tab padding, so its reserved title height matches its tab bar, and
+/// muted text: ImGui may draw the node's tab bar here (see theme::decorate_tabs).
+bool begin_panel(const std::string& title, ImGuiWindowFlags flags = 0) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, theme::tab_padding);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+    const auto open = ImGui::Begin(title.c_str(), nullptr, flags);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    return open;
+}
+
 /// Draws an icon in a color, then continues on the same line.
 void icon_text(const char* glyph, ImU32 color, float spacing = 8.0f) {
     ImGui::PushStyleColor(ImGuiCol_Text, color);
@@ -312,12 +326,18 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_status_bar();
     const auto dockspace = ImGui::GetID("EditorDockSpace");
     if (!m_layout_built) build_dock_layout(dockspace);
+    // Tab bars are drawn here: taller tabs, labels muted until decorate_tabs brightens the visible ones.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, theme::tab_padding);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
     ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(), ImGuiDockNodeFlags_NoWindowMenuButton);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
     draw_hierarchy();
     draw_viewport();
     draw_inspector();
     draw_assets();
     draw_diagnostics();
+    theme::decorate_tabs(panel_titles, IM_ARRAYSIZE(panel_titles)); // after every tab bar is drawn
     ImGui::Render();
     // io.WantTextInput describes the previous frame; this is whether a text field is active now.
     m_ui_wants_text = ImGui::GetCurrentContext()->WantTextInputNextFrame == 1;
@@ -442,7 +462,7 @@ void EditorShell::draw_status_bar() {
 }
 
 void EditorShell::draw_hierarchy() {
-    const auto open = ImGui::Begin(hierarchy_title.c_str());
+    const auto open = begin_panel(hierarchy_title);
     if (open && !m_world) {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
         ImGui::TextWrapped("No scene is open.");
@@ -491,7 +511,7 @@ void EditorShell::draw_hierarchy() {
 
 void EditorShell::draw_viewport() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0.0f, 0.0f});
-    const auto open = ImGui::Begin(viewport_title.c_str(), nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const auto open = begin_panel(viewport_title, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     m_viewport_hovered = false;
     m_layout.viewport_min = m_layout.viewport_max = {0, 0};
@@ -533,7 +553,7 @@ void EditorShell::draw_viewport() {
 }
 
 void EditorShell::draw_inspector() {
-    if (ImGui::Begin(inspector_title.c_str())) {
+    if (begin_panel(inspector_title)) {
         theme::caption(m_fonts, "EDITOR CAMERA");
         if (theme::begin_properties("camera")) {
             theme::property("Position");
@@ -565,7 +585,7 @@ void EditorShell::draw_inspector() {
 }
 
 void EditorShell::draw_assets() {
-    if (ImGui::Begin(assets_title.c_str()) && m_assets) {
+    if (begin_panel(assets_title) && m_assets) {
         const auto records = m_assets->records();
         theme::caption(m_fonts, "PROJECT", std::to_string(records.size()).c_str());
         constexpr auto flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX;
@@ -605,7 +625,7 @@ void EditorShell::draw_assets() {
 }
 
 void EditorShell::draw_diagnostics() {
-    if (ImGui::Begin(diagnostics_title.c_str())) {
+    if (begin_panel(diagnostics_title)) {
         const auto& io = ImGui::GetIO();
         m_stats_age += io.DeltaTime;
         if (m_stats_age >= 0.25f) {

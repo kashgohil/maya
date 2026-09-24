@@ -36,7 +36,16 @@ inline constexpr float body_size = 14.0f;
 inline constexpr float caption_size = 11.0f;
 inline constexpr float mono_size = 12.5f;
 
+/// Padding of panel tabs. Apply it while the dock space draws tab bars and while each docked panel
+/// begins, so the panel's reserved title height matches its tab bar.
+inline constexpr ImVec2 tab_padding{12.0f, 8.0f};
+
 void apply(ImGuiStyle& style);
+/// Restyles the tabs of the named docked windows after ImGui has drawn them: a hairline under each
+/// tab strip, and the visible tab's label brightened with a short underline (accent when focused).
+/// ImGui draws a node's tab bar either in DockSpace or in a docked window's Begin, so push muted
+/// ImGuiCol_Text and tab_padding around both, and call this after every panel has begun.
+void decorate_tabs(const char* const* window_names, int count);
 
 /// Small uppercase heading in the caption font, with optional right-aligned muted detail.
 void caption(const Fonts& fonts, const char* text, const char* detail = nullptr);
