@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 
 using namespace maya;
 using namespace maya::editor;
@@ -35,8 +36,14 @@ TEST_CASE("Metal editor draws docked panels and the scene viewport at Retina sca
     MetalDevice device;
     REQUIRE(device.initialize(nullptr, {3, size_t{16} << 20}));
     {
+        const auto read = [](const char* relative) {
+            auto file = std::ifstream(*FileSystem::resolve(relative), std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(file), {});
+        };
         auto shell = EditorShell(device, FileSystem::read_text("resources/shaders/metal/renderer.metal"),
-                                 FileSystem::read_text("resources/shaders/metal/editor_ui.metal"));
+                                 FileSystem::read_text("resources/shaders/metal/editor_ui.metal"), {},
+                                 {read("resources/fonts/Inter-Regular.ttf"), read("resources/fonts/Inter-SemiBold.ttf"),
+                                  read("resources/fonts/GeistMono-Regular.ttf"), read("resources/fonts/Phosphor-Light.ttf")});
         const auto catalog = FileSystem::resolve("samples/basic_scene/assets/catalog.maya");
         REQUIRE(catalog);
         REQUIRE(shell.open_scene(*catalog, catalog->parent_path() / "basic.scene"));

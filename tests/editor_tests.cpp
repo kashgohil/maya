@@ -5,7 +5,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <imgui_internal.h>
 #include <cmath>
+#include <fstream>
 #include <functional>
+#include <iterator>
 
 using namespace maya;
 using namespace maya::editor;
@@ -259,7 +261,7 @@ TEST_CASE("The dock layout leaves room for panels and the viewport matches its p
     CHECK(request.height < harness.metrics.framebuffer_height);
     const auto docked = harness.with_context([] {
         auto names = std::vector<std::string>{};
-        for (const auto* name : {"Hierarchy", "Viewport", "Inspector", "Assets", "Diagnostics"}) {
+        for (const auto* name : {"###Hierarchy", "###Viewport", "###Inspector", "###Assets", "###Diagnostics"}) {
             const auto* window = ImGui::FindWindowByName(name);
             if (window && window->DockIsActive) names.emplace_back(name);
         }
@@ -400,6 +402,43 @@ TEST_CASE("UI drawing is clipped to the window and samples the viewport texture"
     CHECK(ui->color_formats == std::vector<Format>{Format::bgra8_unorm});
     CHECK(harness.shell.ui_renderer().stats().missing_textures == 0);
     CHECK(harness.shell.extraction().mesh_renderers == 4);
+}
+
+EditorFonts read_fonts() {
+    const auto read = [](const char* relative) {
+        const auto path = FileSystem::resolve(relative);
+        REQUIRE(path);
+        auto file = std::ifstream(*path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    return {read("resources/fonts/Inter-Regular.ttf"), read("resources/fonts/Inter-SemiBold.ttf"),
+            read("resources/fonts/GeistMono-Regular.ttf"), read("resources/fonts/Phosphor-Light.ttf")};
+}
+
+TEST_CASE("The editor loads Inter and Geist Mono and falls back to the built-in font", "[editor]") {
+    const auto fonts = read_fonts();
+    REQUIRE(fonts.regular.size() > 1000);
+    const auto broken = EditorFonts{"not a font", fonts.semibold, std::string(300, 'x'), "not icons"};
+    for (const auto& [data, failures] : {std::pair{fonts, size_t{0}}, {broken, size_t{3}}}) {
+        EditorDevice device;
+        EditorShell shell(device, "renderer source", "ui source", {}, data);
+        shell.update(1.0f / 60.0f, {}, {1280, 720, 2560, 1440});
+        CHECK(std::ranges::count_if(shell.diagnostics().entries(), [](const DiagnosticEntry& entry) {
+            return entry.message.find("could not be loaded") != std::string::npos;
+        }) == long(failures));
+        auto* previous = ImGui::GetCurrentContext();
+        ImGui::SetCurrentContext(shell.context());
+        const auto& atlas = *ImGui::GetIO().Fonts;
+        REQUIRE(atlas.Fonts.Size == 4); // body, strong, caption, mono
+        // Rasterized at twice the point size for a 2x display; the built-in font is 13 px.
+        CHECK(atlas.Fonts[0]->FontSize == (failures ? 26.0f : 28.0f));
+        CHECK(atlas.Fonts[2]->FontSize == 22.0f); // 11 pt captions
+        CHECK(ImGui::GetIO().FontGlobalScale == 0.5f);
+        // Icons are merged into the body font only when the icon font loaded.
+        const auto* folder = atlas.Fonts[0]->FindGlyphNoFallback(0xE25A);
+        CHECK((folder != nullptr) == (failures == 0));
+        ImGui::SetCurrentContext(previous);
+    }
 }
 
 TEST_CASE("Renderer, resource, and scene problems appear in diagnostics without stopping the editor", "[editor]") {

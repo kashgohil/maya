@@ -88,6 +88,10 @@ TEST_CASE("Surface presentation follows resizes and is independent of offscreen 
     for (int session = 0; session < 2; ++session) {
         REQUIRE(device.initialize(window.get_native_handle()));
         REQUIRE(device.surface_format() == maya::Format::bgra8_unorm);
+        // The layer shows its drawable at the display's density (2 on Retina), not as 1x content.
+        const auto [points_width, points_height] = window.window_size();
+        CHECK(device.surface_scale() == double(window.framebuffer_size().first) / double(points_width));
+        CHECK(device.surface_scale() >= 1.0);
         const auto pipeline = surface_pipeline(device);
         const auto offscreen = device.create_texture({64, 64, maya::Format::bgra8_unorm,
             maya::TextureUsage::render_target, "offscreen"});
