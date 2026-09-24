@@ -2,6 +2,7 @@
 #include <cmath>
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <utility>
 
 namespace maya {
@@ -42,9 +43,10 @@ bool Engine::tick(float delta_time, bool input_enabled) {
     if (!m_initialized || !std::isfinite(delta_time) || delta_time < 0.0f) return false;
     try {
         m_application->on_update(delta_time, input_enabled);
-        m_device->begin_frame();
+        if (auto error = m_device->begin_frame()) throw std::runtime_error(error.message);
         m_application->on_render(*m_device);
-        m_device->end_frame();
+        if (auto error = m_device->end_frame()) throw std::runtime_error(error.message);
+        for (const auto& error : m_device->take_gpu_errors()) std::cerr << "[Engine] GPU: " << error.message << '\n';
         return true;
     } catch (const std::exception& error) {
         std::cerr << "[Engine] frame: " << error.what() << '\n';

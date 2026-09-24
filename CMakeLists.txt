@@ -44,13 +44,21 @@ add_library(Maya::World ALIAS MayaWorld)
 target_include_directories(MayaWorld PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaWorld)
 
+# CPU-side graphics API: handle tables, validation, deferred retirement, and a null backend.
+add_library(MayaRHI STATIC
+    src/maya/rhi/graphics_device.cpp
+    src/maya/rhi/null_device.cpp)
+add_library(Maya::RHI ALIAS MayaRHI)
+target_include_directories(MayaRHI PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+maya_target_options(MayaRHI)
+
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/property_context.cpp
     src/maya/assets/file_provider.cpp
     src/maya/core/model_loader.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
-target_link_libraries(MayaAssets PUBLIC MayaWorld)
+target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI)
 maya_target_options(MayaAssets)
 
 # Scene persistence depends only on World data and a caller-supplied asset-reference resolver.
@@ -72,7 +80,7 @@ add_library(MayaRuntime STATIC
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PUBLIC MayaWorld MayaAssets MayaScene PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 

@@ -1,11 +1,12 @@
 #include "maya/rhi/metal/metal_device.hpp"
-#include <string>
-#include <map>
+#include <algorithm>
 #include <cstring>
+#include <string>
+#include <vector>
+#import <AppKit/NSView.h>
+#import <AppKit/NSWindow.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
-#import <AppKit/NSWindow.h>
-#import <AppKit/NSView.h>
 
 namespace maya {
 
@@ -13,23 +14,83 @@ std::unique_ptr<GraphicsDevice> GraphicsDevice::create_default() {
     return std::make_unique<MetalDevice>();
 }
 
+namespace {
+MTLPixelFormat pixel_format(Format format) {
+    switch (format) {
+    case Format::rgba8_unorm: return MTLPixelFormatRGBA8Unorm;
+    case Format::rgba8_srgb: return MTLPixelFormatRGBA8Unorm_sRGB;
+    case Format::bgra8_unorm: return MTLPixelFormatBGRA8Unorm;
+    case Format::bgra8_srgb: return MTLPixelFormatBGRA8Unorm_sRGB;
+    case Format::rgba16_float: return MTLPixelFormatRGBA16Float;
+    case Format::depth32_float: return MTLPixelFormatDepth32Float;
+    case Format::undefined: break;
+    }
+    return MTLPixelFormatInvalid;
+}
+MTLLoadAction load_action(LoadAction action) {
+    switch (action) {
+    case LoadAction::load: return MTLLoadActionLoad;
+    case LoadAction::clear: return MTLLoadActionClear;
+    case LoadAction::dont_care: break;
+    }
+    return MTLLoadActionDontCare;
+}
+MTLStoreAction store_action(StoreAction action) {
+    return action == StoreAction::store ? MTLStoreActionStore : MTLStoreActionDontCare;
+}
+MTLCompareFunction compare_function(CompareFunction compare) {
+    switch (compare) {
+    case CompareFunction::never: return MTLCompareFunctionNever;
+    case CompareFunction::less: return MTLCompareFunctionLess;
+    case CompareFunction::less_equal: return MTLCompareFunctionLessEqual;
+    case CompareFunction::equal: return MTLCompareFunctionEqual;
+    case CompareFunction::greater: return MTLCompareFunctionGreater;
+    case CompareFunction::greater_equal: return MTLCompareFunctionGreaterEqual;
+    case CompareFunction::always: break;
+    }
+    return MTLCompareFunctionAlways;
+}
+MTLSamplerAddressMode address_mode(AddressMode mode) {
+    switch (mode) {
+    case AddressMode::repeat: return MTLSamplerAddressModeRepeat;
+    case AddressMode::clamp_to_edge: return MTLSamplerAddressModeClampToEdge;
+    case AddressMode::mirror_repeat: break;
+    }
+    return MTLSamplerAddressModeMirrorRepeat;
+}
+NSString* ns_string(const std::string& text) { return [NSString stringWithUTF8String:text.c_str()]; }
+std::string error_text(NSError* error) {
+    const char* text = error ? error.localizedDescription.UTF8String : nullptr;
+    return text ? text : "unknown error";
+}
+template<class T> void store(std::vector<T>& values, uint32_t slot, T value) {
+    if (values.size() <= slot) values.resize(size_t{slot} + 1);
+    values[slot] = value;
+}
+} // namespace
+
+struct MetalPipeline {
+    id<MTLRenderPipelineState> state = nil;
+    id<MTLDepthStencilState> depth = nil;
+    MTLCullMode cull = MTLCullModeBack;
+    MTLWinding winding = MTLWindingCounterClockwise;
+};
+
 struct MetalDevice::Impl {
     id<MTLDevice> device = nil;
-    id<MTLCommandQueue> command_queue = nil;
+    id<MTLCommandQueue> queue = nil;
     CAMetalLayer* layer = nil;
     NSView* view = nil;
-    id<MTLCommandBuffer> current_command_buffer = nil;
+    id<MTLCommandBuffer> frame = nil;
     id<MTLCommandBuffer> last_submission = nil;
-    id<MTLRenderCommandEncoder> current_encoder = nil;
-    id<CAMetalDrawable> current_drawable = nil;
-    std::map<uint32_t, id<MTLRenderPipelineState>> pipeline_states;
-    std::map<uint32_t, id<MTLBuffer>> buffers;
-    std::map<uint32_t, id<MTLTexture>> textures;
-    id<MTLSamplerState> sampler_state = nil;
-    id<MTLTexture> depth_texture = nil;
-    id<MTLDepthStencilState> depth_stencil_state = nil;
-    uint32_t next_pipeline_handle = 1;
-    uint32_t next_handle = 1;
+    id<MTLRenderCommandEncoder> encoder = nil;
+    id<CAMetalDrawable> drawable = nil;
+    std::vector<id<MTLBuffer>> buffers;
+    std::vector<id<MTLTexture>> textures;
+    std::vector<id<MTLSamplerState>> samplers;
+    std::vector<MetalPipeline> pipelines;
+    // Keeps the most recent transfer ordered before later frames and alive for wait_idle.
+    id<MTLCommandBuffer> last_transfer = nil;
 };
 
 MetalDevice::MetalDevice() : m_impl(std::make_unique<Impl>()) {}
@@ -38,309 +99,318 @@ MetalDevice::~MetalDevice() {
     shutdown();
 }
 
-bool MetalDevice::initialize(void* native_window_handle) {
-    shutdown();
-    begin_resource_lifetime();
+size_t MetalDevice::native_buffer_count() const noexcept {
+    return static_cast<size_t>(std::ranges::count_if(m_impl->buffers, [](id<MTLBuffer> value) { return value != nil; }));
+}
+size_t MetalDevice::native_texture_count() const noexcept {
+    return static_cast<size_t>(std::ranges::count_if(m_impl->textures, [](id<MTLTexture> value) { return value != nil; }));
+}
+
+bool MetalDevice::backend_initialize(void* native_window, RhiLimits& limits, Format& surface_format) {
     @autoreleasepool {
         m_impl->device = MTLCreateSystemDefaultDevice();
         if (!m_impl->device) return false;
-
-        m_impl->command_queue = [m_impl->device newCommandQueue];
-        if (!m_impl->command_queue) { shutdown(); return false; }
-
-        if (native_window_handle) {
-            NSWindow* window = (__bridge NSWindow*)native_window_handle;
+        m_impl->queue = [m_impl->device newCommandQueue];
+        if (!m_impl->queue) return false;
+        m_impl->queue.label = @"Maya queue";
+        limits.max_buffer_size = std::min<size_t>(m_impl->device.maxBufferLength, limits.max_buffer_size);
+        if (native_window) {
+            NSWindow* window = (__bridge NSWindow*)native_window;
             m_impl->view = window.contentView;
             m_impl->layer = [CAMetalLayer layer];
             m_impl->layer.device = m_impl->device;
             m_impl->layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-
-            window.contentView.layer = m_impl->layer;
-            window.contentView.wantsLayer = YES;
-
-            // Set drawable size explicitly
-            NSRect frame = window.contentView.bounds;
-            CGFloat scale = window.backingScaleFactor;
-            m_impl->layer.drawableSize = CGSizeMake(frame.size.width * scale, frame.size.height * scale);
-
-            // Create Depth Texture
-            MTLTextureDescriptor* depthDescriptor = [MTLTextureDescriptor
-                texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                             width:m_impl->layer.drawableSize.width
-                                            height:m_impl->layer.drawableSize.height
-                                         mipmapped:NO];
-            depthDescriptor.usage = MTLTextureUsageRenderTarget;
-            depthDescriptor.storageMode = MTLStorageModePrivate;
-            m_impl->depth_texture = [m_impl->device newTextureWithDescriptor:depthDescriptor];
-
-            // Create Depth Stencil State
-            MTLDepthStencilDescriptor* depthStencilDescriptor = [[MTLDepthStencilDescriptor alloc] init];
-            depthStencilDescriptor.depthCompareFunction = MTLCompareFunctionLess;
-            depthStencilDescriptor.depthWriteEnabled = YES;
-            m_impl->depth_stencil_state = [m_impl->device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
-            if (!m_impl->depth_texture || !m_impl->depth_stencil_state) { shutdown(); return false; }
+            m_impl->layer.framebufferOnly = YES;
+            m_impl->view.layer = m_impl->layer;
+            m_impl->view.wantsLayer = YES;
+            const auto bounds = m_impl->view.bounds;
+            const auto scale = window.backingScaleFactor;
+            m_impl->layer.drawableSize = CGSizeMake(bounds.size.width * scale, bounds.size.height * scale);
+            surface_format = Format::bgra8_unorm;
         }
-
         return true;
     }
 }
 
-void MetalDevice::shutdown() {
-    invalidate_resource_lifetime();
+void MetalDevice::backend_shutdown() noexcept {
     @autoreleasepool {
-        // Finish a partially encoded frame, then drain this queue before releasing resources.
-        end_frame();
-        [m_impl->last_submission waitUntilCompleted];
-        m_impl->last_submission = nil;
         m_impl->buffers.clear();
         m_impl->textures.clear();
-        m_impl->pipeline_states.clear();
-        m_impl->depth_texture = nil;
-        m_impl->depth_stencil_state = nil;
-        m_impl->sampler_state = nil;
-        if (m_impl->layer && m_impl->view.layer == m_impl->layer)
-            m_impl->view.layer = nil;
+        m_impl->samplers.clear();
+        m_impl->pipelines.clear();
+        m_impl->last_submission = nil;
+        m_impl->last_transfer = nil;
+        if (m_impl->layer && m_impl->view.layer == m_impl->layer) m_impl->view.layer = nil;
         m_impl->view = nil;
         m_impl->layer = nil;
-        m_impl->command_queue = nil;
+        m_impl->queue = nil;
         m_impl->device = nil;
     }
 }
 
-void MetalDevice::resize(uint32_t width, uint32_t height) {
+void MetalDevice::backend_resize(uint32_t width, uint32_t height) {
+    if (m_impl->layer) m_impl->layer.drawableSize = CGSizeMake(width, height);
+}
+
+RhiDiagnostic MetalDevice::backend_create_buffer(uint32_t slot, const BufferDesc& desc, const void* data) {
     @autoreleasepool {
-        if (!m_impl->layer || width == 0 || height == 0) {
-            return;
-        }
-
-        m_impl->layer.drawableSize = CGSizeMake(width, height);
-
-        MTLTextureDescriptor* depthDescriptor = [MTLTextureDescriptor
-            texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                         width:width
-                                        height:height
-                                     mipmapped:NO];
-        depthDescriptor.usage = MTLTextureUsageRenderTarget;
-        depthDescriptor.storageMode = MTLStorageModePrivate;
-        m_impl->depth_texture = [m_impl->device newTextureWithDescriptor:depthDescriptor];
+        id<MTLBuffer> buffer = data
+            ? [m_impl->device newBufferWithBytes:data length:desc.size options:MTLResourceStorageModeShared]
+            : [m_impl->device newBufferWithLength:desc.size options:MTLResourceStorageModeShared];
+        if (!buffer) return {RhiError::out_of_memory, "Metal could not allocate a " + std::to_string(desc.size) + "-byte buffer"};
+        if (!data) std::memset(buffer.contents, 0, desc.size);
+        if (!desc.label.empty()) buffer.label = ns_string(desc.label);
+        store(m_impl->buffers, slot, buffer);
+        return {};
     }
 }
 
-PipelineHandle MetalDevice::create_pipeline(const std::string& shader_source,
-    const std::string& vertex_entry,
-    const std::string& fragment_entry) {
+RhiDiagnostic MetalDevice::backend_create_texture(uint32_t slot, const TextureDesc& desc, const void* data) {
     @autoreleasepool {
+        auto* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixel_format(desc.format)
+                                                                              width:desc.width
+                                                                             height:desc.height
+                                                                          mipmapped:NO];
+        descriptor.storageMode = MTLStorageModePrivate;
+        descriptor.usage = MTLTextureUsageUnknown;
+        if (has_flag(desc.usage, TextureUsage::sampled)) descriptor.usage |= MTLTextureUsageShaderRead;
+        if (has_flag(desc.usage, TextureUsage::render_target)) descriptor.usage |= MTLTextureUsageRenderTarget;
+        id<MTLTexture> texture = [m_impl->device newTextureWithDescriptor:descriptor];
+        if (!texture) return {RhiError::out_of_memory, "Metal could not allocate a " + std::to_string(desc.width) + "x" +
+            std::to_string(desc.height) + " " + format_name(desc.format) + " texture"};
+        if (!desc.label.empty()) texture.label = ns_string(desc.label);
+        if (data) {
+            // Private textures are filled through a staging copy ordered before later frames.
+            const auto row = size_t{desc.width} * bytes_per_pixel(desc.format);
+            id<MTLBuffer> staging = [m_impl->device newBufferWithBytes:data length:row * desc.height
+                                                               options:MTLResourceStorageModeShared];
+            id<MTLCommandBuffer> upload = [m_impl->queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
+            if (!staging || !upload || !blit) return {RhiError::out_of_memory, "Metal could not stage texture data"};
+            [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:row sourceBytesPerImage:row * desc.height
+                      sourceSize:MTLSizeMake(desc.width, desc.height, 1) toTexture:texture destinationSlice:0
+                destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+            upload.label = @"Maya texture upload";
+            [upload commit];
+            m_impl->last_transfer = upload;
+        }
+        store(m_impl->textures, slot, texture);
+        return {};
+    }
+}
+
+RhiDiagnostic MetalDevice::backend_create_sampler(uint32_t slot, const SamplerDesc& desc) {
+    @autoreleasepool {
+        auto* descriptor = [[MTLSamplerDescriptor alloc] init];
+        descriptor.minFilter = desc.min_filter == Filter::linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        descriptor.magFilter = desc.mag_filter == Filter::linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        descriptor.sAddressMode = address_mode(desc.address_u);
+        descriptor.tAddressMode = address_mode(desc.address_v);
+        if (!desc.label.empty()) descriptor.label = ns_string(desc.label);
+        id<MTLSamplerState> sampler = [m_impl->device newSamplerStateWithDescriptor:descriptor];
+        if (!sampler) return {RhiError::out_of_memory, "Metal could not create a sampler"};
+        store(m_impl->samplers, slot, sampler);
+        return {};
+    }
+}
+
+RhiDiagnostic MetalDevice::backend_create_pipeline(uint32_t slot, const PipelineDesc& desc) {
+    @autoreleasepool {
+        const auto name = desc.label.empty() ? std::string("Pipeline") : "Pipeline '" + desc.label + "'";
         NSError* error = nil;
-        NSString* source = [NSString stringWithUTF8String:shader_source.c_str()];
-        id<MTLLibrary> library = [m_impl->device newLibraryWithSource:source options:nil error:&error];
-
-        if (!library) {
-            NSLog(@"Failed to create library: %@", error);
-            return {INVALID_HANDLE};
-        }
-
-        NSString* vertexName = [NSString stringWithUTF8String:vertex_entry.c_str()];
-        NSString* fragmentName = [NSString stringWithUTF8String:fragment_entry.c_str()];
-        id<MTLFunction> vertexFunction = [library newFunctionWithName:vertexName];
-        id<MTLFunction> fragmentFunction = [library newFunctionWithName:fragmentName];
-
-        if (!vertexFunction || !fragmentFunction) {
-            NSLog(@"Failed to create library: missing vertex or fragment function");
-            return {INVALID_HANDLE};
-        }
-
-        MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
-        pipelineDescriptor.vertexFunction = vertexFunction;
-        pipelineDescriptor.fragmentFunction = fragmentFunction;
-        MTLPixelFormat color_format = m_impl->layer ? m_impl->layer.pixelFormat : MTLPixelFormatBGRA8Unorm;
-        pipelineDescriptor.colorAttachments[0].pixelFormat = color_format;
-        pipelineDescriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-
-        id<MTLRenderPipelineState> m_pipeline_state = [m_impl->device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
-
-        if (!m_pipeline_state) {
-            NSLog(@"Failed to create pipeline state: %@", error);
-            return {INVALID_HANDLE};
-        }
-
-        uint32_t handle = m_impl->next_pipeline_handle++;
-        m_impl->pipeline_states[handle] = m_pipeline_state;
-        return {handle};
+        id<MTLLibrary> library = [m_impl->device newLibraryWithSource:ns_string(desc.shader_source) options:nil error:&error];
+        if (!library) return {RhiError::shader_compilation, name + ": shader compilation failed: " + error_text(error)};
+        id<MTLFunction> vertex = [library newFunctionWithName:ns_string(desc.vertex_entry)];
+        id<MTLFunction> fragment = [library newFunctionWithName:ns_string(desc.fragment_entry)];
+        if (!vertex) return {RhiError::invalid_descriptor, name + ": vertex entry point '" + desc.vertex_entry + "' was not found"};
+        if (!fragment) return {RhiError::invalid_descriptor, name + ": fragment entry point '" + desc.fragment_entry + "' was not found"};
+        auto* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        descriptor.vertexFunction = vertex;
+        descriptor.fragmentFunction = fragment;
+        for (size_t i = 0; i < desc.color_formats.size(); ++i)
+            descriptor.colorAttachments[i].pixelFormat = pixel_format(desc.color_formats[i]);
+        descriptor.depthAttachmentPixelFormat = pixel_format(desc.depth_format);
+        if (!desc.label.empty()) descriptor.label = ns_string(desc.label);
+        auto pipeline = MetalPipeline{};
+        pipeline.state = [m_impl->device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        if (!pipeline.state) return {RhiError::invalid_descriptor, name + ": Metal rejected the pipeline: " + error_text(error)};
+        auto* depth = [[MTLDepthStencilDescriptor alloc] init];
+        depth.depthCompareFunction = desc.depth.test ? compare_function(desc.depth.compare) : MTLCompareFunctionAlways;
+        depth.depthWriteEnabled = desc.depth.write;
+        pipeline.depth = [m_impl->device newDepthStencilStateWithDescriptor:depth];
+        if (!pipeline.depth) return {RhiError::out_of_memory, name + ": Metal could not create depth state"};
+        pipeline.cull = desc.cull == CullMode::none ? MTLCullModeNone : desc.cull == CullMode::front ? MTLCullModeFront : MTLCullModeBack;
+        pipeline.winding = desc.front_face == Winding::clockwise ? MTLWindingClockwise : MTLWindingCounterClockwise;
+        store(m_impl->pipelines, slot, pipeline);
+        return {};
     }
 }
 
-void MetalDevice::bind_pipeline(PipelineHandle handle) {
-    if (!m_impl->current_encoder) {
-        return;
-    }
-    auto it = m_impl->pipeline_states.find(handle.handle);
-    if (it != m_impl->pipeline_states.end()) {
-        [m_impl->current_encoder setRenderPipelineState:it->second];
-    }
-}
-
-namespace {
-    template<typename HandleType>
-    HandleType create_buffer_helper(id<MTLDevice> device, std::map<uint32_t, id<MTLBuffer>>& buffers,
-                                    uint32_t& next_handle, const void* data, size_t size) {
-        id<MTLBuffer> buffer = [device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
-        if (buffer) {
-            uint32_t handle = next_handle++;
-            buffers[handle] = buffer;
-            return {handle};
-        }
-        return {INVALID_HANDLE};
+void MetalDevice::backend_release(ResourceKind kind, uint32_t slot) noexcept {
+    switch (kind) {
+    case ResourceKind::buffer: if (slot < m_impl->buffers.size()) m_impl->buffers[slot] = nil; break;
+    case ResourceKind::texture: if (slot < m_impl->textures.size()) m_impl->textures[slot] = nil; break;
+    case ResourceKind::sampler: if (slot < m_impl->samplers.size()) m_impl->samplers[slot] = nil; break;
+    case ResourceKind::pipeline: if (slot < m_impl->pipelines.size()) m_impl->pipelines[slot] = {}; break;
     }
 }
 
-VertexBufferHandle MetalDevice::create_vertex_buffer(const void* data, size_t size) {
-    return create_buffer_helper<VertexBufferHandle>(m_impl->device, m_impl->buffers, m_impl->next_handle, data, size);
+void MetalDevice::backend_write_buffer(uint32_t slot, size_t offset, const void* data, size_t size) noexcept {
+    std::memcpy(static_cast<std::byte*>(m_impl->buffers[slot].contents) + offset, data, size);
 }
 
-IndexBufferHandle MetalDevice::create_index_buffer(const void* data, size_t size) {
-    return create_buffer_helper<IndexBufferHandle>(m_impl->device, m_impl->buffers, m_impl->next_handle, data, size);
-}
-
-void MetalDevice::release_vertex_buffer(VertexBufferHandle handle) noexcept {
-    // commandBuffer (not commandBufferWithUnretainedReferences) keeps encoded buffers alive.
-    m_impl->buffers.erase(handle.handle);
-}
-
-void MetalDevice::release_index_buffer(IndexBufferHandle handle) noexcept {
-    m_impl->buffers.erase(handle.handle);
-}
-
-size_t MetalDevice::resident_buffer_count() const noexcept { return m_impl->buffers.size(); }
-
-UniformBufferHandle MetalDevice::create_uniform_buffer(size_t size) {
-    id<MTLBuffer> buffer = [m_impl->device newBufferWithLength:size options:MTLResourceStorageModeShared];
-    if (buffer) {
-        uint32_t handle = m_impl->next_handle++;
-        m_impl->buffers[handle] = buffer;
-        return {handle};
-    }
-    return {INVALID_HANDLE};
-}
-
-void MetalDevice::update_uniform_buffer(UniformBufferHandle handle, const void* data, size_t size) {
-    auto it = m_impl->buffers.find(handle.handle);
-    if (it != m_impl->buffers.end() && data && size <= it->second.length) {
-        memcpy(it->second.contents, data, size);
-    }
-}
-
-TextureHandle MetalDevice::create_texture(const void* data, uint32_t width, uint32_t height) {
+RhiDiagnostic MetalDevice::backend_read_texture(uint32_t slot, const TextureDesc& desc, std::vector<std::byte>& pixels) {
     @autoreleasepool {
-        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor
-            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                         width:width
-                                        height:height
-                                     mipmapped:NO];
-
-        id<MTLTexture> texture = [m_impl->device newTextureWithDescriptor:textureDescriptor];
-        if (!texture) return {INVALID_HANDLE};
-
-        MTLRegion region = {{0, 0, 0}, {width, height, 1}};
-        [texture replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:4 * width];
-
-        if (!m_impl->sampler_state) {
-            MTLSamplerDescriptor* samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
-            samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
-            samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
-            samplerDescriptor.sAddressMode = MTLSamplerAddressModeRepeat;
-            samplerDescriptor.tAddressMode = MTLSamplerAddressModeRepeat;
-            m_impl->sampler_state = [m_impl->device newSamplerStateWithDescriptor:samplerDescriptor];
-        }
-
-        uint32_t handle = m_impl->next_handle++;
-        m_impl->textures[handle] = texture;
-        return {handle};
+        const auto row = size_t{desc.width} * bytes_per_pixel(desc.format);
+        id<MTLBuffer> staging = [m_impl->device newBufferWithLength:row * desc.height options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> copy = [m_impl->queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [copy blitCommandEncoder];
+        if (!staging || !copy || !blit) return {RhiError::out_of_memory, "Metal could not allocate readback storage"};
+        [blit copyFromTexture:m_impl->textures[slot] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(desc.width, desc.height, 1) toBuffer:staging destinationOffset:0
+          destinationBytesPerRow:row destinationBytesPerImage:row * desc.height];
+        [blit endEncoding];
+        copy.label = @"Maya texture readback";
+        [copy commit];
+        [copy waitUntilCompleted];
+        if (copy.status != MTLCommandBufferStatusCompleted)
+            return {RhiError::gpu_failure, "Texture readback failed: " + error_text(copy.error)};
+        const auto* bytes = static_cast<const std::byte*>(staging.contents);
+        pixels.assign(bytes, bytes + row * desc.height);
+        return {};
     }
 }
 
-void MetalDevice::begin_frame() {
-    @autoreleasepool {
-        m_impl->current_command_buffer = [m_impl->command_queue commandBuffer];
+RhiDiagnostic MetalDevice::backend_begin_frame() {
+    // Resources are not retained by frame command buffers; deferred retirement owns their lifetime.
+    m_impl->frame = [m_impl->queue commandBufferWithUnretainedReferences];
+    if (!m_impl->frame) return {RhiError::device_unavailable, "Metal could not create a frame command buffer"};
+    m_impl->frame.label = @"Maya frame";
+    return {};
+}
 
+GraphicsDevice::BackendSurface MetalDevice::backend_acquire_surface(uint32_t slot) {
+    @autoreleasepool {
+        const auto size = m_impl->layer.drawableSize;
+        if (size.width < 1 || size.height < 1)
+            return {0, 0, {RhiError::surface_unavailable, "Surface has zero size; skip presentation this frame"}};
         id<CAMetalDrawable> drawable = [m_impl->layer nextDrawable];
-        if (!drawable) return;
-
-        MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
-        passDescriptor.colorAttachments[0].texture = drawable.texture;
-        passDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-        passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.1, 1.0);
-        passDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-
-        passDescriptor.depthAttachment.texture = m_impl->depth_texture;
-        passDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
-        passDescriptor.depthAttachment.clearDepth = 1.0;
-        passDescriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
-
-        m_impl->current_encoder = [m_impl->current_command_buffer renderCommandEncoderWithDescriptor:passDescriptor];
-        [m_impl->current_encoder setDepthStencilState:m_impl->depth_stencil_state];
-        [m_impl->current_encoder setCullMode:MTLCullModeBack];
-        [m_impl->current_encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-
-        // Store drawable to present it later
-        m_impl->current_drawable = drawable;
-
-        if (m_impl->sampler_state) {
-            [m_impl->current_encoder setFragmentSamplerState:m_impl->sampler_state atIndex:0];
-        }
+        if (!drawable)
+            return {0, 0, {RhiError::surface_unavailable, "No drawable was available within the timeout; skip presentation this frame"}};
+        m_impl->drawable = drawable;
+        store(m_impl->textures, slot, drawable.texture);
+        return {static_cast<uint32_t>(drawable.texture.width), static_cast<uint32_t>(drawable.texture.height), {}};
     }
 }
 
-void MetalDevice::bind_vertex_buffer(VertexBufferHandle handle, uint32_t slot) {
-    auto it = m_impl->buffers.find(handle.handle);
-    if (it != m_impl->buffers.end()) {
-        [m_impl->current_encoder setVertexBuffer:it->second offset:0 atIndex:slot];
-    }
-}
-
-void MetalDevice::bind_uniform_buffer(UniformBufferHandle handle, uint32_t slot) {
-    auto it = m_impl->buffers.find(handle.handle);
-    if (it == m_impl->buffers.end() || !m_impl->current_encoder) {
-        return;
-    }
-    id<MTLBuffer> buf = it->second;
-    [m_impl->current_encoder setVertexBuffer:buf offset:0 atIndex:slot];
-    [m_impl->current_encoder setFragmentBuffer:buf offset:0 atIndex:slot];
-}
-
-void MetalDevice::bind_texture(TextureHandle handle, uint32_t slot) {
-    auto it = m_impl->textures.find(handle.handle);
-    if (it != m_impl->textures.end()) {
-        [m_impl->current_encoder setFragmentTexture:it->second atIndex:slot];
-    }
-}
-
-void MetalDevice::draw_indexed(IndexBufferHandle handle, uint32_t index_count) {
-    auto it = m_impl->buffers.find(handle.handle);
-    if (it != m_impl->buffers.end()) {
-        [m_impl->current_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                           indexCount:index_count
-                            indexType:MTLIndexTypeUInt32
-                          indexBuffer:it->second
-                    indexBufferOffset:0];
-    }
-}
-
-void MetalDevice::end_frame() {
+RhiDiagnostic MetalDevice::backend_begin_pass(const RenderPassDesc& desc) {
     @autoreleasepool {
-        if (m_impl->current_encoder) {
-            [m_impl->current_encoder endEncoding];
-            m_impl->current_encoder = nil;
+        auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        for (size_t i = 0; i < desc.colors.size(); ++i) {
+            const auto& color = desc.colors[i];
+            pass.colorAttachments[i].texture = m_impl->textures[color.texture.slot];
+            pass.colorAttachments[i].loadAction = load_action(color.load);
+            pass.colorAttachments[i].storeAction = store_action(color.store);
+            pass.colorAttachments[i].clearColor = MTLClearColorMake(color.clear_color[0], color.clear_color[1],
+                                                                    color.clear_color[2], color.clear_color[3]);
         }
-        if (m_impl->current_command_buffer) {
-            if (m_impl->current_drawable) {
-                [m_impl->current_command_buffer presentDrawable:m_impl->current_drawable];
-                m_impl->current_drawable = nil;
-            }
-            m_impl->last_submission = m_impl->current_command_buffer;
-            [m_impl->current_command_buffer commit];
-            m_impl->current_command_buffer = nil;
+        if (desc.depth) {
+            pass.depthAttachment.texture = m_impl->textures[desc.depth->texture.slot];
+            pass.depthAttachment.loadAction = load_action(desc.depth->load);
+            pass.depthAttachment.storeAction = store_action(desc.depth->store);
+            pass.depthAttachment.clearDepth = desc.depth->clear_depth;
         }
+        m_impl->encoder = [m_impl->frame renderCommandEncoderWithDescriptor:pass];
+        if (!m_impl->encoder) return {RhiError::device_unavailable, "Metal could not begin the render pass"};
+        if (!desc.label.empty()) m_impl->encoder.label = ns_string(desc.label);
+        return {};
     }
+}
+
+void MetalDevice::backend_set_pipeline(uint32_t slot) {
+    const auto& pipeline = m_impl->pipelines[slot];
+    [m_impl->encoder setRenderPipelineState:pipeline.state];
+    [m_impl->encoder setDepthStencilState:pipeline.depth];
+    [m_impl->encoder setCullMode:pipeline.cull];
+    [m_impl->encoder setFrontFacingWinding:pipeline.winding];
+}
+
+void MetalDevice::backend_set_vertex_buffer(uint32_t index, uint32_t slot, size_t offset) {
+    [m_impl->encoder setVertexBuffer:m_impl->buffers[slot] offset:offset atIndex:index];
+}
+
+void MetalDevice::backend_set_uniform_buffer(uint32_t index, uint32_t slot, size_t offset) {
+    [m_impl->encoder setVertexBuffer:m_impl->buffers[slot] offset:offset atIndex:index];
+    [m_impl->encoder setFragmentBuffer:m_impl->buffers[slot] offset:offset atIndex:index];
+}
+
+void MetalDevice::backend_set_texture(uint32_t index, uint32_t slot) {
+    [m_impl->encoder setFragmentTexture:m_impl->textures[slot] atIndex:index];
+}
+
+void MetalDevice::backend_set_sampler(uint32_t index, uint32_t slot) {
+    [m_impl->encoder setFragmentSamplerState:m_impl->samplers[slot] atIndex:index];
+}
+
+void MetalDevice::backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) {
+    [m_impl->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:first_vertex vertexCount:vertex_count
+                      instanceCount:instance_count];
+}
+
+void MetalDevice::backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
+                                       uint32_t instance_count) {
+    [m_impl->encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:index_count
+                                 indexType:type == IndexType::uint16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
+                               indexBuffer:m_impl->buffers[slot] indexBufferOffset:offset instanceCount:instance_count];
+}
+
+void MetalDevice::backend_end_pass() {
+    [m_impl->encoder endEncoding];
+    m_impl->encoder = nil;
+}
+
+void MetalDevice::backend_submit(uint64_t serial, bool present) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> frame = m_impl->frame;
+        m_impl->frame = nil;
+        // The layer owns drawables and may discard them (e.g. on resize) while this frame runs.
+        // The frame does not retain resources, so the completion handler keeps them alive.
+        id<CAMetalDrawable> drawable = m_impl->drawable;
+        id<MTLTexture> drawable_texture = drawable.texture;
+        m_impl->drawable = nil;
+        if (present && drawable) [frame presentDrawable:drawable];
+        // The callback may run after this device is destroyed; it only touches shared completion state.
+        auto state = completion();
+        [frame addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+            (void)drawable;
+            (void)drawable_texture;
+            if (buffer.status == MTLCommandBufferStatusError)
+                state->report("Frame " + std::to_string(serial) + " failed on the GPU: " + error_text(buffer.error));
+            state->complete(serial);
+        }];
+        [frame commit];
+        m_impl->last_submission = frame;
+    }
+}
+
+void MetalDevice::backend_abandon_frame() noexcept {
+    if (m_impl->encoder) {
+        [m_impl->encoder endEncoding];
+        m_impl->encoder = nil;
+    }
+    m_impl->frame = nil; // never committed, so the GPU never reads its resources
+    m_impl->drawable = nil;
+}
+
+void MetalDevice::backend_wait_idle() noexcept {
+    // A queue executes command buffers in commit order, so the last one bounds all earlier work.
+    [m_impl->last_submission waitUntilCompleted];
+    [m_impl->last_transfer waitUntilCompleted];
+}
+
+void MetalDevice::backend_release_surface(uint32_t slot) noexcept {
+    if (slot < m_impl->textures.size()) m_impl->textures[slot] = nil;
 }
 
 } // namespace maya
