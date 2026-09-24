@@ -601,3 +601,57 @@ TEST_CASE("A failed submission completes its frame and still retires resources",
     CHECK(device.waited.empty());
     CHECK(device.stats().pending_retirements == 0);
 }
+
+TEST_CASE("Scissor rectangles must be nonempty and inside the pass attachments", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    const auto color = target(device, 16);
+    const auto pipe = pipeline(device);
+    CHECK(code(device.set_scissor({0, 0, 4, 4})) == RhiError::wrong_state);
+    open(device, color, pipe);
+    CHECK_FALSE(device.set_scissor({0, 0, 16, 16}));
+    CHECK_FALSE(device.set_scissor({15, 15, 1, 1}));
+    CHECK(code(device.set_scissor({0, 0, 0, 4})) == RhiError::invalid_usage);
+    CHECK(code(device.set_scissor({0, 0, 4, 0})) == RhiError::invalid_usage);
+    CHECK(code(device.set_scissor({12, 0, 5, 4})) == RhiError::out_of_range);
+    CHECK(code(device.set_scissor({0, 17, 1, 1})) == RhiError::out_of_range);
+    CHECK(code(device.set_scissor({std::numeric_limits<uint32_t>::max(), 0, 2, 2})) == RhiError::out_of_range);
+    REQUIRE_FALSE(device.end_render_pass());
+    CHECK(code(device.set_scissor({0, 0, 4, 4})) == RhiError::wrong_state);
+    REQUIRE_FALSE(device.end_frame());
+}
+
+TEST_CASE("Blend modes are validated with the rest of the pipeline", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    auto desc = pipeline_desc();
+    desc.blend = BlendMode::alpha;
+    CHECK(device.create_pipeline(desc));
+    desc.blend = static_cast<BlendMode>(7);
+    CHECK(code(device.create_pipeline(desc)) == RhiError::invalid_descriptor);
+}
+
+TEST_CASE("Indexed draws can read indices from this frame's upload slices only", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    const auto color = target(device);
+    const auto pipe = pipeline(device);
+    open(device, color, pipe);
+    const uint32_t indices[] = {0, 1, 2, 2, 1, 3};
+    const auto slice = device.upload_transient(indices, sizeof(indices), 4);
+    REQUIRE(slice);
+    CHECK_FALSE(device.draw_indexed(slice.slice, IndexType::uint32, 6));
+    CHECK_FALSE(device.draw_indexed(slice.slice, IndexType::uint32, 3, 12));
+    CHECK_FALSE(device.draw_indexed(slice.slice, IndexType::uint16, 12));
+    CHECK(code(device.draw_indexed(slice.slice, IndexType::uint32, 7)) == RhiError::out_of_range); // past the slice
+    CHECK(code(device.draw_indexed(slice.slice, IndexType::uint32, 1, 24)) == RhiError::out_of_range);
+    CHECK(code(device.draw_indexed(slice.slice, IndexType::uint32, 1, 2)) == RhiError::misaligned);
+    CHECK(code(device.draw_indexed(slice.slice, IndexType::uint32, 0)) == RhiError::invalid_usage);
+    CHECK(code(device.draw_indexed(slice.slice.buffer, IndexType::uint32, 3)) == RhiError::invalid_usage); // raw handle
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    open(device, color, pipe);
+    CHECK(code(device.draw_indexed(slice.slice, IndexType::uint32, 3)) == RhiError::stale_handle); // an earlier frame
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+}

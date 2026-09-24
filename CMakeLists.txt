@@ -245,6 +245,17 @@ if(BUILD_TESTING)
     set(MAYA_GPU_TEST_ENVIRONMENT "MTL_DEBUG_LAYER=1")
     set_tests_properties(maya_rhi PROPERTIES LABELS "gpu" TIMEOUT 60 ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
 
+    if(TARGET MayaEditor)
+        add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp)
+        target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain)
+        maya_target_options(maya_editor_tests)
+        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]")
+        set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 60)
+        add_test(NAME maya_editor_gpu COMMAND maya_editor_tests "[gpu]")
+        set_tests_properties(maya_editor_gpu PROPERTIES LABELS "gpu;editor" TIMEOUT 60
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+    endif()
+
     if(TARGET MayaDesktop)
         add_executable(maya_desktop_tests tests/desktop_lifecycle_tests.cpp)
         target_link_libraries(maya_desktop_tests PRIVATE MayaDesktop Catch2::Catch2WithMain)
@@ -261,6 +272,19 @@ if(BUILD_TESTING)
         add_test(NAME maya_desktop_lifecycle COMMAND maya_desktop_tests)
         set_tests_properties(maya_desktop_lifecycle PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+    endif()
+
+    # Runtime targets must stay free of the editor UI framework. The editor itself is the positive
+    # control that proves the check detects it.
+    foreach(target MayaRuntime MayaRenderer MayaDesktop maya_player maya_sample maya_editor)
+        if(TARGET ${target})
+            add_test(NAME ${target}_no_editor_ui COMMAND ${CMAKE_COMMAND}
+                -DBINARY=$<TARGET_FILE:${target}> -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_no_editor_ui.cmake)
+            set_tests_properties(${target}_no_editor_ui PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
+        endif()
+    endforeach()
+    if(TARGET maya_editor)
+        set_tests_properties(maya_editor_no_editor_ui PROPERTIES WILL_FAIL TRUE)
     endif()
 
     foreach(app maya_player maya_editor maya_sample)

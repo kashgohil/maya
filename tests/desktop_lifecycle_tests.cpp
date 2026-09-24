@@ -4,6 +4,8 @@
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/file_system.hpp"
+#include "maya/platform/input.hpp"
+#include <algorithm>
 #if MAYA_TEST_BASIC_SCENE
 #include "basic_scene.hpp"
 #endif
@@ -179,9 +181,15 @@ TEST_CASE("Player and editor render their offscreen views through window resizes
             REQUIRE(engine.resize(width, height));
             for (int frame = 0; frame < 5; ++frame) {
                 window.poll_events();
+                // As the desktop host does: publish window metrics, tick, then clear the frame's events.
+                const auto [points_width, points_height] = window.window_size();
+                const auto scale = float(window.framebuffer_size().first) / float(std::max(points_width, 1));
+                maya::Input::instance().set_window_metrics({float(width) / scale, float(height) / scale, width, height});
                 REQUIRE(engine.tick(1.0f / 60.0f, false));
+                maya::Input::instance().update();
             }
         }
+        maya::Input::instance().reset();
         engine.shutdown();
     }
 }

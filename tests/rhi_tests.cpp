@@ -401,3 +401,40 @@ TEST_CASE("Metal upload exhaustion skips draws without corrupting the frame", "[
     CHECK(pixel(pixels, size, 4 * 8 + 2, size / 2) == Pixel{0, 0, 0, 255});
     CHECK(device.take_gpu_errors().empty());
 }
+
+TEST_CASE("Metal scissors, alpha blending, and indices from upload memory", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr));
+    constexpr uint32_t size = 32;
+    const auto color = color_target(device, size);
+    // Full-screen quad colored by its per-draw parameters; indices come from upload memory.
+    auto desc = PipelineDesc{rectangle_shader, "vertexMain", "fragmentMain", {Format::rgba8_unorm}, Format::undefined,
+        {}, CullMode::none, Winding::counter_clockwise, "blended rectangle", BlendMode::alpha};
+    const auto blended = device.create_pipeline(desc);
+    INFO(blended.diagnostic.message);
+    REQUIRE(blended);
+    const uint32_t indices[] = {0, 1, 2, 3, 4, 5};
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(device.begin_render_pass({{{color, LoadAction::clear, StoreAction::store, {0, 0, 1, 1}}}, {}, "blend"}));
+    REQUIRE_FALSE(device.set_pipeline(blended.handle));
+    const auto index_slice = device.upload_transient(indices, sizeof(indices), 4);
+    REQUIRE(index_slice);
+    // Half-transparent red over the blue clear, only in the left half.
+    const auto red_half = Params{{1, 0, 0, 0.5f}, 0.5f, -1.0f, 1.0f, 0.0f};
+    const auto uploaded = device.upload_transient(&red_half, sizeof(red_half));
+    REQUIRE(uploaded);
+    REQUIRE_FALSE(device.set_uniform_buffer(1, uploaded.slice));
+    REQUIRE_FALSE(device.set_scissor({0, 0, size / 2, size}));
+    REQUIRE_FALSE(device.draw_indexed(index_slice.slice, IndexType::uint32, 6));
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    const auto pixels = read(device, color);
+    const auto left = pixel(pixels, size, 4, 16), right = pixel(pixels, size, 28, 16);
+    INFO(int(left[0]) << " " << int(left[1]) << " " << int(left[2]) << " " << int(left[3]));
+    CHECK(std::abs(int(left[0]) - 128) <= 1); // 0.5 * red + 0.5 * blue
+    CHECK(left[1] == 0);
+    CHECK(std::abs(int(left[2]) - 128) <= 1);
+    CHECK(left[3] == 255); // alpha: 0.5 + 1 * (1 - 0.5)
+    CHECK(right == blue); // outside the scissor
+    CHECK(device.take_gpu_errors().empty());
+}
