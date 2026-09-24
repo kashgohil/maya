@@ -23,6 +23,7 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 - `MayaAssets` / `Maya::Assets`: Project catalog, typed asset handles, shared version leases, and the initial OBJ/material providers. See [docs/assets.md](docs/assets.md) for loading and GPU ownership boundaries.
 - `MayaWorld` / `Maya::World`: CPU-only entity identity, packed component storage, and atomic structural command batches. No RHI, window, or editor dependency. See [docs/world.md](docs/world.md) for APIs and scoped-borrow rules.
 - `MayaScene` / `Maya::Scene`: Versioned scene files, detached scene documents, validated loading into a new World, and atomic saves. Links only MayaWorld; asset references are checked through `asset_property_context(registry)`. See [docs/scene.md](docs/scene.md).
+- `MayaRHI` / `Maya::RHI`: GraphicsDevice validation, per-session handles, deferred retirement, and `NullGraphicsDevice` for CPU tests. The Metal backend lives in MayaRuntime. See [docs/rhi.md](docs/rhi.md).
 - `MayaRuntime`: Engine session lifecycle, existing core utilities, and graphics backend. No editor, sample, GLFW, or desktop-loop dependency.
 - `MayaDesktop`: Window ownership, event loop, input, framebuffer resize, and CLI launch handling.
 - `MayaEditor`: Editor-only application factory. Initially an empty host; authoring UI comes later.
@@ -41,7 +42,7 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 
 - C++20 in core/platform, Objective-C++ confined to the Metal backend.
 - snake_case methods/variables; PascalCase classes.
-- All rendering calls go through GraphicsDevice.
+- All rendering calls go through GraphicsDevice: explicit render passes inside Engine's frame, surface acquired only for presentation, and resources destroyed through the device (never assume Metal retains them).
 - Explicit CMake source lists keep runtime, editor, and sample dependencies separate.
 - Native Metal state stays opaque to C++ consumers and uses ARC ownership.
 - Use framebuffer pixel dimensions, not logical window size, for Metal and camera aspect.

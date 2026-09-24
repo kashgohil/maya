@@ -126,6 +126,7 @@ A build made inside the repository finds its content, because a parent of the ex
 
 | Target | What it is |
 | --- | --- |
+| MayaRHI | The graphics device API: validation, handles, resource retirement, and a CPU-only test device. |
 | MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
 | MayaDesktop | The window, input, and launch loop. |
 | MayaBasicScene | The sample scene. |
@@ -158,7 +159,7 @@ ctest --test-dir build -L cpu --output-on-failure
 ctest --test-dir build -L gpu --output-on-failure
 ```
 
-CPU tests never open a window. GPU tests need a Mac session with a display, and they open one briefly. Each program accepts `--help` and `--smoke N`. N is a positive frame count, and it defaults to 120 when omitted. Smoke mode still uses a real window and Metal, steps at a fixed 1/60 of a second, ignores the camera, and exits with a failure if those frames do not complete. It checks the session, not the pixels.
+CPU tests never open a window. GPU tests need a Mac session with a display, and they open one briefly. Each program accepts `--help` and `--smoke N`. N is a positive frame count, and it defaults to 120 when omitted. Smoke mode still uses a real window and Metal, steps at a fixed 1/60 of a second, ignores the camera, and exits with a failure if those frames do not complete. It checks the session, not the pixels. GPU tests run with Metal API validation, and the device tests read rendered pixels back.
 
 Sanitizers, in their own build directory:
 
