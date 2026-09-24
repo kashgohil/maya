@@ -1,4 +1,5 @@
 #include "maya/assets/registry.hpp"
+#include "maya/rhi/null_device.hpp"
 #include "maya/world/world.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -11,36 +12,50 @@ namespace {
 using namespace maya;
 struct Counters {
     size_t uploads=0, releases=0, draws=0;
-    std::unordered_set<uint32_t> application, submitted;
+    std::unordered_set<uint32_t> application; // native buffers owned by the backend
 };
-class CountingDevice final : public GraphicsDevice {
+/// Null backend that counts buffer uploads/releases. Frames complete only when told to.
+class CountingDevice final : public NullGraphicsDevice {
 public:
     std::shared_ptr<Counters> counts = std::make_shared<Counters>();
     bool fail_index=false, throw_index=false;
+    CountingDevice() : NullGraphicsDevice({false,0,0,true}) { REQUIRE(initialize(nullptr)); }
     ~CountingDevice() override { shutdown(); }
-    bool initialize(void*) override { begin_resource_lifetime(); return true; }
-    void shutdown() override { invalidate_resource_lifetime(); counts->application.clear(); counts->submitted.clear(); }
-    void begin_frame() override {}
-    void end_frame() override {}
-    PipelineHandle create_pipeline(const std::string&,const std::string&,const std::string&) override { return {1}; }
-    VertexBufferHandle create_vertex_buffer(const void*,size_t) override { return {allocate()}; }
-    IndexBufferHandle create_index_buffer(const void*,size_t) override {
-        if (throw_index) throw std::runtime_error("injected index upload failure");
-        return {fail_index ? 0 : allocate()};
+    /// Begin a frame with an offscreen pass and pipeline so meshes can encode draws.
+    void open_pass() {
+        if (!m_target.valid() || !describe(m_target)) {
+            m_target=create_texture({4,4,Format::rgba8_unorm,TextureUsage::render_target,"target"}).handle;
+            auto pipeline=PipelineDesc{}; pipeline.shader_source="test"; pipeline.color_formats={Format::rgba8_unorm};
+            m_pipeline=create_pipeline(pipeline).handle;
+        }
+        REQUIRE_FALSE(begin_frame());
+        auto pass=RenderPassDesc{}; pass.colors.push_back({m_target});
+        REQUIRE_FALSE(begin_render_pass(pass)); REQUIRE_FALSE(set_pipeline(m_pipeline));
     }
-    void release_vertex_buffer(VertexBufferHandle handle) noexcept override { release(handle.handle); }
-    void release_index_buffer(IndexBufferHandle handle) noexcept override { release(handle.handle); }
-    UniformBufferHandle create_uniform_buffer(size_t) override { return {allocate()}; }
-    void update_uniform_buffer(UniformBufferHandle,const void*,size_t) override {}
-    TextureHandle create_texture(const void*,uint32_t,uint32_t) override { return {1}; }
-    void bind_vertex_buffer(VertexBufferHandle handle,uint32_t) override { counts->submitted.insert(handle.handle); }
-    void bind_uniform_buffer(UniformBufferHandle,uint32_t) override {}
-    void bind_texture(TextureHandle,uint32_t) override {}
-    void draw_indexed(IndexBufferHandle handle,uint32_t) override { counts->submitted.insert(handle.handle); ++counts->draws; }
+    uint64_t close_frame() {
+        REQUIRE_FALSE(end_render_pass()); REQUIRE_FALSE(end_frame());
+        return stats().submitted_frames;
+    }
+protected:
+    RhiDiagnostic backend_create_buffer(uint32_t slot,const BufferDesc& desc,const void* data) override {
+        if (has_flag(desc.usage,BufferUsage::index)) {
+            if (throw_index) throw std::runtime_error("injected index upload failure");
+            if (fail_index) return {RhiError::out_of_memory,"injected index upload failure"};
+        }
+        counts->application.insert(slot); ++counts->uploads;
+        return NullGraphicsDevice::backend_create_buffer(slot,desc,data);
+    }
+    void backend_release(ResourceKind kind,uint32_t slot) noexcept override {
+        if (kind==ResourceKind::buffer && counts->application.erase(slot)) ++counts->releases;
+        NullGraphicsDevice::backend_release(kind,slot);
+    }
+    void backend_draw_indexed(uint32_t slot,IndexType type,uint32_t count,size_t offset,uint32_t instances) override {
+        ++counts->draws;
+        NullGraphicsDevice::backend_draw_indexed(slot,type,count,offset,instances);
+    }
 private:
-    uint32_t next=1;
-    uint32_t allocate() { const auto value=next++; counts->application.insert(value); ++counts->uploads; return value; }
-    void release(uint32_t handle) noexcept { if (counts->application.erase(handle)) ++counts->releases; }
+    TextureHandle m_target;
+    PipelineHandle m_pipeline;
 };
 struct ProviderCounters {
     size_t meshes=0, materials=0;
@@ -289,13 +304,14 @@ TEST_CASE("Leases survive registry teardown and release safely after device dest
             lease=registry.acquire(mesh_ref).lease; REQUIRE(lease);
         }
         CHECK(lease.value().mesh().valid()); CHECK(counts->application.size() == 2);
-        lease.value().mesh().draw(); CHECK(counts->submitted.size() == 2);
-        // Device destruction expires the guard even when a caller omitted explicit shutdown.
+        device.open_pass();
+        CHECK_FALSE(lease.value().mesh().draw()); CHECK(counts->draws == 1);
+        // Device destruction abandons the frame and expires the guard even without explicit shutdown.
     }
     CHECK_FALSE(lease.value().mesh().valid());
-    CHECK(counts->application.empty()); CHECK(counts->submitted.empty());
-    lease.value().mesh().draw(); CHECK(counts->draws == 1);
-    lease={}; CHECK(counts->releases == 0); // no virtual call through a dead device
+    CHECK(counts->application.empty()); CHECK(counts->releases == 2); // released by device shutdown
+    CHECK(lease.value().mesh().draw().code == RhiError::stale_handle); CHECK(counts->draws == 1);
+    lease={}; CHECK(counts->releases == 2); // no call through a dead device
 }
 
 TEST_CASE("Final CPU release and submitted GPU retention have separate ownership", "[assets]") {
@@ -304,13 +320,19 @@ TEST_CASE("Final CPU release and submitted GPU retention have separate ownership
         AssetRegistry registry(project.root,std::make_unique<FileAssetProvider>(device));
         REQUIRE_FALSE(registry.register_asset(mesh_ref,"triangle.obj"));
         auto mesh=registry.acquire(mesh_ref); REQUIRE(mesh);
-        mesh.lease.value().mesh().draw();
+        device.open_pass();
+        CHECK_FALSE(mesh.lease.value().mesh().draw());
         mesh={}; CHECK(registry.evict_unused() == 1);
-        CHECK(device.counts->application.empty());
-        CHECK(device.counts->submitted.size() == 2);
+        // Handles are revoked at once, but the encoding frame still owns the native buffers.
+        CHECK(device.stats().buffers == 0);
+        CHECK(device.stats().pending_retirements == 2);
+        CHECK(device.counts->application.size() == 2);
     }
-    device.counts->submitted.clear(); // simulated command completion retires final GPU ownership
-    CHECK(device.counts->submitted.empty());
+    const auto frame=device.close_frame();
+    CHECK(device.counts->application.size() == 2); // submitted, not yet complete
+    device.complete_through(frame); REQUIRE_FALSE(device.begin_frame()); // retirement runs at frame boundaries
+    CHECK(device.counts->application.empty()); CHECK(device.stats().pending_retirements == 0);
+    REQUIRE_FALSE(device.end_frame());
 }
 
 TEST_CASE("Device session changes invalidate old mesh resources and providers", "[assets]") {

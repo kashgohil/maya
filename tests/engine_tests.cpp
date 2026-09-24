@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/engine.hpp"
+#include "maya/rhi/null_device.hpp"
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -19,33 +20,34 @@ struct Session {
     bool input_enabled = true;
 };
 
-class LifecycleDevice final : public maya::GraphicsDevice {
+class LifecycleDevice final : public maya::NullGraphicsDevice {
 public:
     explicit LifecycleDevice(Session& session) : m_session(session) {}
-    ~LifecycleDevice() override { m_session.events.push_back("device.destroy"); }
-    bool initialize(void*) override {
+    ~LifecycleDevice() override {
+        shutdown();
+        m_session.events.push_back("device.destroy");
+    }
+protected:
+    bool backend_initialize(void* window, maya::RhiLimits& limits, maya::Format& format) override {
         m_session.events.push_back("device.start");
         m_session.alive = true; // Represents a resource acquired before a possible failure.
         if (m_session.device_throws) throw std::runtime_error("device failure");
-        return m_session.device_success;
+        return m_session.device_success && NullGraphicsDevice::backend_initialize(window, limits, format);
     }
-    void shutdown() override {
+    void backend_shutdown() noexcept override {
         m_session.events.push_back("device.stop");
         m_session.alive = false;
+        NullGraphicsDevice::backend_shutdown();
     }
-    void resize(uint32_t, uint32_t) override { m_session.events.push_back("device.resize"); }
-    void begin_frame() override { m_session.events.push_back("frame.begin"); }
-    void end_frame() override { m_session.events.push_back("frame.end"); }
-    maya::PipelineHandle create_pipeline(const std::string&, const std::string&, const std::string&) override { return {1}; }
-    maya::VertexBufferHandle create_vertex_buffer(const void*, size_t) override { return {1}; }
-    maya::IndexBufferHandle create_index_buffer(const void*, size_t) override { return {1}; }
-    maya::UniformBufferHandle create_uniform_buffer(size_t) override { return {1}; }
-    void update_uniform_buffer(maya::UniformBufferHandle, const void*, size_t) override {}
-    maya::TextureHandle create_texture(const void*, uint32_t, uint32_t) override { return {1}; }
-    void bind_vertex_buffer(maya::VertexBufferHandle, uint32_t) override {}
-    void bind_uniform_buffer(maya::UniformBufferHandle, uint32_t) override {}
-    void bind_texture(maya::TextureHandle, uint32_t) override {}
-    void draw_indexed(maya::IndexBufferHandle, uint32_t) override {}
+    void backend_resize(uint32_t, uint32_t) override { m_session.events.push_back("device.resize"); }
+    maya::RhiDiagnostic backend_begin_frame() override {
+        m_session.events.push_back("frame.begin");
+        return {};
+    }
+    void backend_submit(uint64_t serial, bool present) override {
+        m_session.events.push_back("frame.end");
+        NullGraphicsDevice::backend_submit(serial, present);
+    }
 private:
     Session& m_session;
 };
@@ -112,8 +114,9 @@ TEST_CASE("Engine rolls back device failure without starting content", "[core][e
     CHECK_FALSE(engine.is_initialized());
     CHECK_FALSE(engine.tick(0.1f));
     engine.shutdown();
+    // A failed device initialization rolls itself back before the unstarted content is destroyed.
     CHECK(session.events == std::vector<std::string>{
-        "device.start", "app.destroy.live", "device.stop", "device.destroy"});
+        "device.start", "device.stop", "app.destroy.dead", "device.destroy"});
 }
 
 TEST_CASE("Engine stops partially started content exactly once", "[core][engine]") {

@@ -10,10 +10,32 @@ class FailingApplication final : public maya::Application {
 public:
     bool on_start(maya::GraphicsDevice& device) override {
         // Acquire a real GPU resource before failing to exercise rollback.
-        device.create_uniform_buffer(256);
+        REQUIRE(device.create_buffer({256, maya::BufferUsage::uniform, "rollback"}));
         return false;
     }
 };
+
+constexpr auto triangle_shader = R"(
+    #include <metal_stdlib>
+    using namespace metal;
+    vertex float4 vertexMain(uint id [[vertex_id]]) {
+        const float2 positions[3] = {float2(-.5,-.5),float2(.5,-.5),float2(0,.5)};
+        return float4(positions[id%3],0.5,1);
+    }
+    fragment float4 fragmentMain() { return float4(1,0,1,1); }
+)";
+
+maya::PipelineHandle surface_pipeline(maya::GraphicsDevice& device) {
+    auto created = device.create_pipeline({triangle_shader, "vertexMain", "fragmentMain",
+        {device.surface_format()}, maya::Format::undefined, {}, maya::CullMode::none,
+        maya::Winding::counter_clockwise, "surface triangle"});
+    INFO(created.diagnostic.message);
+    REQUIRE(created);
+    return created.handle;
+}
+maya::RenderPassDesc surface_pass(maya::TextureHandle texture) {
+    return {{{texture, maya::LoadAction::clear, maya::StoreAction::store, {0.1, 0.1, 0.1, 1.0}}}, {}, "surface"};
+}
 }
 
 TEST_CASE("Desktop sessions survive partial startup and repeated shutdown", "[desktop]") {
@@ -51,6 +73,55 @@ TEST_CASE("Failed and overlapping windows do not invalidate surviving windows", 
     }
 }
 
+TEST_CASE("Surface presentation follows resizes and is independent of offscreen passes", "[desktop]") {
+    maya::Window window(320, 240, "Maya surface test");
+    REQUIRE(window.get_native_handle());
+    maya::MetalDevice device;
+    for (int session = 0; session < 2; ++session) {
+        REQUIRE(device.initialize(window.get_native_handle()));
+        REQUIRE(device.surface_format() == maya::Format::bgra8_unorm);
+        const auto pipeline = surface_pipeline(device);
+        const auto offscreen = device.create_texture({64, 64, maya::Format::bgra8_unorm,
+            maya::TextureUsage::render_target, "offscreen"});
+        REQUIRE(offscreen);
+        for (const auto [width, height] : {std::pair{320u, 240u}, {200u, 100u}, {640u, 480u}}) {
+            device.resize(width, height);
+            device.resize(0, 0); // minimized/zero-sized notifications are ignored
+            for (int frame = 0; frame < 10; ++frame) {
+                window.poll_events();
+                REQUIRE_FALSE(device.begin_frame());
+                // Offscreen work never depends on acquiring the drawable.
+                REQUIRE_FALSE(device.begin_render_pass(surface_pass(offscreen.handle)));
+                REQUIRE_FALSE(device.set_pipeline(pipeline));
+                REQUIRE_FALSE(device.draw(3));
+                REQUIRE_FALSE(device.end_render_pass());
+                if (frame % 3 != 2) { // some frames skip presentation entirely
+                    const auto surface = device.acquire_surface();
+                    INFO(surface.diagnostic.message);
+                    REQUIRE(surface);
+                    CHECK(surface.target.width == width);
+                    CHECK(surface.target.height == height);
+                    REQUIRE_FALSE(device.begin_render_pass(surface_pass(surface.target.texture)));
+                    REQUIRE_FALSE(device.set_pipeline(pipeline));
+                    REQUIRE_FALSE(device.draw(3));
+                    REQUIRE_FALSE(device.end_render_pass());
+                }
+                REQUIRE_FALSE(device.end_frame());
+            }
+        }
+        device.wait_idle();
+        CHECK(device.take_gpu_errors().empty());
+        CHECK(device.stats().completed_frames == 30);
+        // Shut down with an acquired, unpresented surface and an open pass.
+        REQUIRE_FALSE(device.begin_frame());
+        const auto surface = device.acquire_surface();
+        REQUIRE(surface);
+        REQUIRE_FALSE(device.begin_render_pass(surface_pass(surface.target.texture)));
+        device.shutdown();
+        CHECK(device.native_texture_count() == 0);
+    }
+}
+
 TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease is released", "[desktop][assets]") {
     maya::Window window(320,240,"Maya asset retirement test");
     REQUIRE(window.get_native_handle());
@@ -61,23 +132,22 @@ TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease 
     maya::AssetRegistry registry(source->parent_path(),std::make_unique<maya::FileAssetProvider>(device));
     const auto reference=maya::AssetRef<maya::MeshAsset>{{0x6d617961,1}};
     REQUIRE_FALSE(registry.register_asset(reference,"pyramid.obj"));
-    const auto pipeline=device.create_pipeline(R"(
-        #include <metal_stdlib>
-        using namespace metal;
-        vertex float4 vertexMain(uint id [[vertex_id]]) {
-            const float2 positions[3] = {float2(-.5,-.5),float2(.5,-.5),float2(0,.5)};
-            return float4(positions[id%3],0.5,1);
-        }
-        fragment float4 fragmentMain() { return float4(1,0,1,1); }
-    )");
-    REQUIRE(pipeline.handle != maya::INVALID_HANDLE);
+    const auto pipeline=surface_pipeline(device);
     for (int frame=0;frame<3;++frame) {
         auto asset=registry.acquire(reference); REQUIRE(asset);
-        device.begin_frame(); device.bind_pipeline(pipeline);
-        asset.lease.value().mesh().draw();
+        REQUIRE_FALSE(device.begin_frame());
+        const auto surface=device.acquire_surface(); REQUIRE(surface);
+        REQUIRE_FALSE(device.begin_render_pass(surface_pass(surface.target.texture)));
+        REQUIRE_FALSE(device.set_pipeline(pipeline));
+        REQUIRE_FALSE(asset.lease.value().mesh().draw());
         asset={}; CHECK(registry.evict_unused() == 1);
-        CHECK(device.resident_buffer_count() == 0); // encoded Metal work still owns native resources
-        device.end_frame();
+        CHECK(device.stats().buffers == 0); // handles revoked
+        CHECK(device.native_buffer_count() == 2); // the encoding frame still owns the native buffers
+        REQUIRE_FALSE(device.end_render_pass());
+        REQUIRE_FALSE(device.end_frame());
+        device.wait_idle();
+        CHECK(device.native_buffer_count() == 0);
     }
+    CHECK(device.take_gpu_errors().empty());
     device.shutdown(); // drains submitted work before destroying the device
 }

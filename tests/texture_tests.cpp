@@ -1,49 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/texture.hpp"
-#include "maya/rhi/graphics_device.hpp"
+#include "support/recording_device.hpp"
 
 using namespace maya;
 
 // Mock GraphicsDevice for testing
-class MockGraphicsDeviceForTexture : public GraphicsDevice {
-public:
-    bool initialize(void*) override { return true; }
-    void shutdown() override {}
-    void begin_frame() override {}
-    void end_frame() override {}
-    PipelineHandle create_pipeline(const std::string&, const std::string&, const std::string&) override {
-        return {next_pipeline++};
-    }
-    VertexBufferHandle create_vertex_buffer(const void*, size_t) override { return {1}; }
-    IndexBufferHandle create_index_buffer(const void*, size_t) override { return {2}; }
-    UniformBufferHandle create_uniform_buffer(size_t) override { return {3}; }
-    void update_uniform_buffer(UniformBufferHandle, const void*, size_t) override {}
-    
-    TextureHandle create_texture(const void* data, uint32_t w, uint32_t h) override {
-        last_texture_data = data;
-        last_texture_width = w;
-        last_texture_height = h;
-        return {next_handle++};
-    }
-    
-    void bind_vertex_buffer(VertexBufferHandle, uint32_t) override {}
-    void bind_uniform_buffer(UniformBufferHandle, uint32_t) override {}
-    
-    void bind_texture(TextureHandle, uint32_t slot) override {
-        last_bind_slot = slot;
-    }
-    
-    void draw_indexed(IndexBufferHandle, uint32_t) override {}
-    
-    const void* last_texture_data = nullptr;
-    uint32_t last_texture_width = 0;
-    uint32_t last_texture_height = 0;
-    uint32_t last_bind_slot = 0;
-    
-private:
-    uint32_t next_handle = 1;
-    uint32_t next_pipeline = 1;
-};
+using MockGraphicsDeviceForTexture = maya::test::RecordingDevice;
 
 // =============================================================================
 // Texture Construction Tests
@@ -173,9 +135,11 @@ TEST_CASE("Texture edge cases", "[core][texture]") {
     SECTION("Zero dimensions") {
         uint32_t pixel = 0xFF00FF00;
         
-        // Should handle gracefully
+        // Rejected by descriptor validation before reaching the backend
         Texture texture(device, &pixel, 0, 0);
-        
+
+        CHECK_FALSE(texture.valid());
+        CHECK(texture.error().code == RhiError::invalid_descriptor);
         CHECK(device.last_texture_width == 0);
         CHECK(device.last_texture_height == 0);
     }

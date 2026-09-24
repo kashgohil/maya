@@ -3,33 +3,11 @@
 #include <fstream>
 #include <filesystem>
 #include "maya/core/model_loader.hpp"
-#include "maya/rhi/graphics_device.hpp"
+#include "support/recording_device.hpp"
 
 using namespace maya;
 
-// Mock GraphicsDevice for testing
-class MockGraphicsDevice : public GraphicsDevice {
-public:
-    bool initialize(void*) override { return true; }
-    void shutdown() override {}
-    void begin_frame() override {}
-    void end_frame() override {}
-    PipelineHandle create_pipeline(const std::string&, const std::string&, const std::string&) override {
-        return {next_pipeline++};
-    }
-    VertexBufferHandle create_vertex_buffer(const void*, size_t) override { return {1}; }
-    IndexBufferHandle create_index_buffer(const void*, size_t) override { return {2}; }
-    UniformBufferHandle create_uniform_buffer(size_t) override { return {3}; }
-    void update_uniform_buffer(UniformBufferHandle, const void*, size_t) override {}
-    TextureHandle create_texture(const void*, uint32_t, uint32_t) override { return {4}; }
-    void bind_vertex_buffer(VertexBufferHandle, uint32_t) override {}
-    void bind_uniform_buffer(UniformBufferHandle, uint32_t) override {}
-    void bind_texture(TextureHandle, uint32_t) override {}
-    void draw_indexed(IndexBufferHandle, uint32_t) override {}
-
-private:
-    uint32_t next_pipeline = 1;
-};
+using MockGraphicsDevice = maya::test::RecordingDevice;
 
 // Helper to create temp OBJ files
 class TempObjFile {
