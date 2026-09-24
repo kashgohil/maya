@@ -41,7 +41,8 @@ public:
     GraphicsDevice& operator=(const GraphicsDevice&) = delete;
 
     /// Starts a new session; any previous session is shut down first. Null window = headless.
-    bool initialize(void* native_window_handle);
+    /// Invalid options (frames_in_flight outside 1-8, oversized upload memory) fail initialization.
+    bool initialize(void* native_window_handle, const DeviceOptions& options = {});
     /// Idempotent and nonthrowing. Abandons an open frame, waits for submitted work, releases every
     /// resource, and invalidates all handles and the resource lifetime. The native window must be alive.
     void shutdown() noexcept;
@@ -55,6 +56,7 @@ public:
     /// Presentable surface format, or undefined for a headless session.
     Format surface_format() const noexcept { return m_surface_format; }
     const RhiLimits& limits() const noexcept { return m_limits; }
+    const DeviceOptions& options() const noexcept { return m_options; }
     RhiStats stats() const noexcept;
 
     RhiResult<BufferHandle> create_buffer(const BufferDesc& desc, const void* initial_data = nullptr);
@@ -62,8 +64,13 @@ public:
     RhiResult<TextureHandle> create_texture(const TextureDesc& desc, const void* initial_data = nullptr);
     RhiResult<SamplerHandle> create_sampler(const SamplerDesc& desc);
     RhiResult<PipelineHandle> create_pipeline(const PipelineDesc& desc);
-    /// Immediate CPU write. Callers must not overwrite ranges still read by submitted frames (#997).
+    /// Immediate CPU write into a buffer the caller owns. The caller must not overwrite ranges that a
+    /// submitted frame still reads; per-frame data belongs in upload_transient instead.
     RhiDiagnostic write_buffer(BufferHandle buffer, size_t offset, const void* data, size_t size);
+    /// Copies data into this frame's upload memory, which the GPU no longer reads from any earlier
+    /// frame. Alignment 0 means limits().uniform_offset_alignment. Exhaustion returns out_of_memory
+    /// and leaves the frame usable; the memory is recycled once this frame completes.
+    TransientResult upload_transient(const void* data, size_t size, size_t alignment = 0);
     /// Synchronous copy of a readback-usage texture, outside a frame. Waits for earlier GPU work.
     RhiDiagnostic read_texture(TextureHandle texture, std::vector<std::byte>& pixels);
     const BufferDesc* describe(BufferHandle buffer) const noexcept;
@@ -76,6 +83,7 @@ public:
     bool destroy(SamplerHandle handle) noexcept;
     bool destroy(PipelineHandle handle) noexcept;
 
+    /// Waits (reported in stats) until at most frames_in_flight - 1 frames are still executing.
     RhiDiagnostic begin_frame();
     /// At most one surface per frame; repeated calls return the same target. A missing drawable,
     /// zero-sized or headless surface returns a diagnostic; offscreen passes still work.
@@ -84,8 +92,10 @@ public:
     RhiDiagnostic set_pipeline(PipelineHandle pipeline);
     /// Buffer indices share one table with uniform buffers. Vertex buffers bind to the vertex stage.
     RhiDiagnostic set_vertex_buffer(uint32_t index, BufferHandle buffer, size_t offset = 0);
+    RhiDiagnostic set_vertex_buffer(uint32_t index, const TransientSlice& slice);
     /// Binds to vertex and fragment stages. Offset must be a multiple of limits().uniform_offset_alignment.
     RhiDiagnostic set_uniform_buffer(uint32_t index, BufferHandle buffer, size_t offset = 0);
+    RhiDiagnostic set_uniform_buffer(uint32_t index, const TransientSlice& slice);
     RhiDiagnostic set_texture(uint32_t index, TextureHandle texture);
     RhiDiagnostic set_sampler(uint32_t index, SamplerHandle sampler);
     RhiDiagnostic draw(uint32_t vertex_count, uint32_t first_vertex = 0, uint32_t instance_count = 1);
@@ -142,6 +152,9 @@ protected:
     virtual void backend_abandon_frame() noexcept = 0;
     /// Block until every submitted frame has finished executing.
     virtual void backend_wait_idle() noexcept = 0;
+    /// Block until frame `serial` has finished (so have all earlier frames). Return false if the
+    /// backend cannot wait for it, which begin_frame reports as a timeout.
+    virtual bool backend_wait_frame(uint64_t serial) noexcept = 0;
     /// Release the transient surface texture bound to `slot` at the end of a frame.
     virtual void backend_release_surface(uint32_t slot) noexcept = 0;
 
@@ -152,6 +165,7 @@ private:
         Desc desc{};
         uint32_t generation = 1;
         bool live = false;
+        bool internal = false; // device-owned; not destroyable or directly bindable by callers
     };
     template<class Desc> struct Table {
         std::vector<Slot<Desc>> slots;
@@ -175,11 +189,15 @@ private:
     void collect_retired() noexcept;
     void release_slot(ResourceKind kind, uint32_t slot) noexcept;
     RhiDiagnostic require_state(State state, const char* operation) const;
+    RhiDiagnostic bind_vertex(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal);
+    RhiDiagnostic bind_uniform(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal);
+    RhiDiagnostic check_slice(const TransientSlice& slice) const;
     RhiDiagnostic validate_attachment(const TextureHandle& handle, bool depth, uint32_t& width,
                                       uint32_t& height) const;
 
     uint64_t m_session = 0;
     State m_state = State::idle;
+    DeviceOptions m_options{};
     RhiLimits m_limits{};
     Format m_surface_format = Format::undefined;
     Table<BufferDesc> m_buffers;
@@ -188,6 +206,9 @@ private:
     Table<PipelineDesc> m_pipelines;
     std::vector<Retirement> m_retirements;
     uint64_t m_submitted = 0;
+    std::vector<BufferHandle> m_transient; // one upload buffer per frame slot
+    size_t m_transient_used = 0;
+    RhiStats m_counters{}; // wait and upload counters; resource counts are computed in stats()
     std::shared_ptr<RhiCompletion> m_completion = std::make_shared<RhiCompletion>();
     std::shared_ptr<const GraphicsResourceLifetime> m_resource_lifetime;
 

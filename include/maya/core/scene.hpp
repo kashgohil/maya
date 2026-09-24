@@ -35,12 +35,11 @@ public:
 
     uint32_t drawable_count() const { return static_cast<uint32_t>(m_objects.size()); }
 
-    /// Inside an open render pass: binds pipeline, uniforms, optional texture, and draws every object.
-    /// Every draw rewrites offset 0 of `uniform_buffer`; per-draw allocation is #997.
-    /// Returns the first device error, leaving later objects undrawn.
-    RhiDiagnostic render(GraphicsDevice& device, BufferHandle uniform_buffer,
-        const math::Mat4& view_projection, const DirectionalLighting& lighting,
-        const math::Vec3& camera_position_world) const;
+    /// Inside an open render pass: uploads each object's uniforms to its own slice of the frame's
+    /// upload memory, then binds pipeline, uniforms, optional texture, and draws.
+    /// Returns the first device error (including upload exhaustion), leaving later objects undrawn.
+    RhiDiagnostic render(GraphicsDevice& device, const math::Mat4& view_projection,
+        const DirectionalLighting& lighting, const math::Vec3& camera_position_world) const;
 
 private:
     std::vector<std::unique_ptr<Mesh>> m_mesh_storage;

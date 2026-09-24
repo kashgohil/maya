@@ -59,7 +59,7 @@ enum class TextureUsage : uint32_t { none = 0, sampled = 1 << 0, render_target =
 constexpr TextureUsage operator|(TextureUsage a, TextureUsage b) noexcept { return flags_or(a, b); }
 
 /// CPU-writable buffer. write_buffer is immediate and unsynchronized with in-flight GPU reads;
-/// per-frame allocation is #997.
+/// per-frame data belongs in GraphicsDevice::upload_transient.
 struct BufferDesc {
     size_t size = 0;
     BufferUsage usage = BufferUsage::none;
@@ -129,7 +129,7 @@ constexpr size_t index_size(IndexType type) noexcept { return type == IndexType:
 enum class RhiError {
     none, device_unavailable, invalid_descriptor, unsupported, out_of_memory, stale_handle,
     wrong_state, invalid_usage, out_of_range, misaligned, incompatible_pipeline,
-    shader_compilation, surface_unavailable, gpu_failure
+    shader_compilation, surface_unavailable, gpu_failure, timeout
 };
 struct RhiDiagnostic {
     RhiError code = RhiError::none;
@@ -156,6 +156,26 @@ struct SurfaceResult {
     explicit operator bool() const noexcept { return target.texture.valid(); }
 };
 
+/// Per-session frame policy, fixed at initialize.
+struct DeviceOptions {
+    /// Frames the CPU may encode ahead of GPU completion (1-8). begin_frame waits beyond this.
+    uint32_t frames_in_flight = 3;
+    /// Upload memory per frame slot for per-draw constants and dynamic data; 0 disables it.
+    size_t transient_bytes_per_frame = size_t{4} << 20;
+};
+/// A range of one frame's upload memory. Valid for binding only during the frame that produced it.
+struct TransientSlice {
+    BufferHandle buffer;
+    size_t offset = 0;
+    size_t size = 0;
+    uint64_t frame = 0;
+};
+struct TransientResult {
+    TransientSlice slice;
+    RhiDiagnostic diagnostic;
+    explicit operator bool() const noexcept { return slice.size != 0; }
+};
+
 struct RhiLimits {
     uint32_t max_texture_dimension = 16384;
     uint32_t max_color_attachments = 8;
@@ -167,13 +187,18 @@ struct RhiLimits {
     size_t vertex_offset_alignment = 4;
 };
 struct RhiStats {
-    size_t buffers = 0;
+    size_t buffers = 0; // excludes the device's own per-frame upload buffers
     size_t textures = 0; // excludes the transient surface texture
     size_t samplers = 0;
     size_t pipelines = 0;
     size_t pending_retirements = 0; // destroyed, waiting for GPU completion
     uint64_t submitted_frames = 0;
     uint64_t completed_frames = 0;
+    uint64_t frame_waits = 0; // begin_frame calls that blocked on GPU completion
+    uint64_t frame_wait_microseconds = 0;
+    size_t transient_bytes_used = 0; // in the current or most recent frame
+    size_t transient_high_water = 0;
+    uint64_t transient_failures = 0; // uploads rejected because a frame's memory was exhausted
 };
 
 } // namespace maya

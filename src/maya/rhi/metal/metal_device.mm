@@ -1,6 +1,7 @@
 #include "maya/rhi/metal/metal_device.hpp"
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 #import <AppKit/NSView.h>
@@ -83,6 +84,7 @@ struct MetalDevice::Impl {
     NSView* view = nil;
     id<MTLCommandBuffer> frame = nil;
     id<MTLCommandBuffer> last_submission = nil;
+    std::deque<std::pair<uint64_t, id<MTLCommandBuffer>>> in_flight; // bounded by frames_in_flight
     id<MTLRenderCommandEncoder> encoder = nil;
     id<CAMetalDrawable> drawable = nil;
     std::vector<id<MTLBuffer>> buffers;
@@ -139,6 +141,7 @@ void MetalDevice::backend_shutdown() noexcept {
         m_impl->samplers.clear();
         m_impl->pipelines.clear();
         m_impl->last_submission = nil;
+        m_impl->in_flight.clear();
         m_impl->last_transfer = nil;
         if (m_impl->layer && m_impl->view.layer == m_impl->layer) m_impl->view.layer = nil;
         m_impl->view = nil;
@@ -391,7 +394,21 @@ void MetalDevice::backend_submit(uint64_t serial, bool present) {
         }];
         [frame commit];
         m_impl->last_submission = frame;
+        const auto completed = state->completed.load(std::memory_order_acquire);
+        while (!m_impl->in_flight.empty() && m_impl->in_flight.front().first <= completed) m_impl->in_flight.pop_front();
+        m_impl->in_flight.emplace_back(serial, frame);
     }
+}
+
+bool MetalDevice::backend_wait_frame(uint64_t serial) noexcept {
+    // Frames complete in commit order on one queue, so waiting for `serial` covers earlier frames.
+    for (const auto& [submitted, buffer] : m_impl->in_flight)
+        if (submitted == serial) {
+            [buffer waitUntilCompleted];
+            break;
+        }
+    while (!m_impl->in_flight.empty() && m_impl->in_flight.front().first <= serial) m_impl->in_flight.pop_front();
+    return true;
 }
 
 void MetalDevice::backend_abandon_frame() noexcept {
@@ -407,6 +424,7 @@ void MetalDevice::backend_wait_idle() noexcept {
     // A queue executes command buffers in commit order, so the last one bounds all earlier work.
     [m_impl->last_submission waitUntilCompleted];
     [m_impl->last_transfer waitUntilCompleted];
+    m_impl->in_flight.clear();
 }
 
 void MetalDevice::backend_release_surface(uint32_t slot) noexcept {

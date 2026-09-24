@@ -22,9 +22,8 @@ void Scene::add_object(AssetLease<MeshAsset> mesh, Material material) {
     m_objects.push_back(SceneObject{&value, material, math::Mat4::identity()});
 }
 
-RhiDiagnostic Scene::render(GraphicsDevice& device, BufferHandle uniform_buffer,
-    const math::Mat4& view_projection, const DirectionalLighting& lighting,
-    const math::Vec3& camera_position_world) const {
+RhiDiagnostic Scene::render(GraphicsDevice& device, const math::Mat4& view_projection,
+    const DirectionalLighting& lighting, const math::Vec3& camera_position_world) const {
     for (const SceneObject& obj : m_objects) {
         if (!obj.mesh) {
             continue;
@@ -38,9 +37,10 @@ RhiDiagnostic Scene::render(GraphicsDevice& device, BufferHandle uniform_buffer,
         uniforms.camera_position_world = math::Vec4(camera_position_world, 0.0f);
         uniforms.specular_rgb_shininess =
             math::Vec4(lighting.specular, lighting.shininess);
-        if (auto error = device.write_buffer(uniform_buffer, 0, &uniforms, sizeof(SceneDrawUniforms))) return error;
+        const auto uploaded = device.upload_transient(&uniforms, sizeof(SceneDrawUniforms));
+        if (!uploaded) return uploaded.diagnostic;
         if (auto error = device.set_pipeline(obj.material.pipeline)) return error;
-        if (auto error = device.set_uniform_buffer(1, uniform_buffer)) return error;
+        if (auto error = device.set_uniform_buffer(1, uploaded.slice)) return error;
         if (obj.material.texture) {
             if (auto error = obj.material.texture->bind(0)) return error;
             if (auto error = device.set_sampler(0, obj.material.sampler)) return error;

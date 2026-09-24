@@ -52,10 +52,8 @@ public:
         const uint32_t checkerboard[] = {0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF};
         m_texture = std::make_unique<Texture>(device, checkerboard, 2, 2, "checkerboard");
         const auto sampler = device.create_sampler({});
-        const auto uniforms = device.create_buffer({sizeof(SceneDrawUniforms), BufferUsage::uniform, "scene uniforms"});
-        for (const auto* error : {&m_texture->error(), &sampler.diagnostic, &uniforms.diagnostic})
+        for (const auto* error : {&m_texture->error(), &sampler.diagnostic})
             if (*error) { std::cerr << error->message << '\n'; return false; }
-        m_uniform_buffer = uniforms.handle;
         m_scene.add_object(std::move(pyramid.lease), Material{textured.handle, m_texture.get(), sampler.handle});
         m_scene.add_object(std::move(cube), Material{unlit.handle, nullptr, {}});
         std::cerr << "[BasicScene] loaded pyramid and cube\n";
@@ -89,7 +87,7 @@ public:
         pass.depth = DepthAttachment{m_depth, LoadAction::clear, StoreAction::dont_care, 1.0};
         pass.label = "basic scene";
         if (auto error = device.begin_render_pass(pass)) throw std::runtime_error(error.message);
-        auto error = m_scene.render(device, m_uniform_buffer, m_camera->get_view_projection_matrix(),
+        auto error = m_scene.render(device, m_camera->get_view_projection_matrix(),
             DirectionalLighting::default_sun(), m_camera->get_position());
         device.end_render_pass();
         if (error) throw std::runtime_error(error.message);
@@ -104,8 +102,7 @@ public:
         m_assets.reset();
         m_texture.reset();
         m_camera.reset();
-        // Device shutdown releases the remaining pipelines, sampler, uniform buffer, and depth target.
-        m_uniform_buffer = {};
+        // Device shutdown releases the remaining pipelines, sampler, and depth target.
         m_depth = {};
         m_rotation = 0.0f;
     }
@@ -115,7 +112,6 @@ private:
     Scene m_scene;
     std::unique_ptr<Camera> m_camera;
     std::unique_ptr<Texture> m_texture;
-    BufferHandle m_uniform_buffer;
     TextureHandle m_depth;
     float m_rotation = 0.0f;
 };

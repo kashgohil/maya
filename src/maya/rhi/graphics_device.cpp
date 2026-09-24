@@ -1,5 +1,7 @@
 #include "maya/rhi/graphics_device.hpp"
 #include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cmath>
 
 namespace maya {
@@ -64,15 +66,34 @@ void RhiCompletion::report(std::string message) noexcept {
     }
 }
 
-bool GraphicsDevice::initialize(void* native_window_handle) {
+bool GraphicsDevice::initialize(void* native_window_handle, const DeviceOptions& options) {
     shutdown();
+    if (options.frames_in_flight < 1 || options.frames_in_flight > 8) return false;
+    m_options = options;
     m_completion = std::make_shared<RhiCompletion>();
     m_limits = {};
+    m_counters = {};
     m_surface_format = Format::undefined;
     m_session = g_next_session.fetch_add(1);
     m_resource_lifetime = std::make_shared<const GraphicsResourceLifetime>();
     try {
-        if (backend_initialize(native_window_handle, m_limits, m_surface_format)) return true;
+        if (backend_initialize(native_window_handle, m_limits, m_surface_format) &&
+            options.transient_bytes_per_frame <= m_limits.max_buffer_size) {
+            // One upload buffer per frame slot; a slot is reused only after its previous frame completes.
+            for (uint32_t frame = 0; frame < options.frames_in_flight && options.transient_bytes_per_frame; ++frame) {
+                auto created = create_buffer({options.transient_bytes_per_frame,
+                    BufferUsage::vertex | BufferUsage::index | BufferUsage::uniform,
+                    "frame upload " + std::to_string(frame)});
+                if (!created) {
+                    shutdown();
+                    return false;
+                }
+                m_buffers.slots[created.handle.slot].internal = true;
+                --m_buffers.live;
+                m_transient.push_back(created.handle);
+            }
+            return true;
+        }
     } catch (...) {
         shutdown();
         throw;
@@ -111,6 +132,8 @@ void GraphicsDevice::shutdown() noexcept {
     backend_shutdown();
     m_session = 0;
     m_submitted = 0;
+    m_transient.clear();
+    m_transient_used = 0;
     m_surface_format = Format::undefined;
     m_pass_colors.clear();
     m_pass_attachments.clear();
@@ -124,7 +147,7 @@ void GraphicsDevice::resize(uint32_t width, uint32_t height) {
 }
 
 RhiStats GraphicsDevice::stats() const noexcept {
-    auto result = RhiStats{};
+    auto result = m_counters;
     result.buffers = m_buffers.live;
     result.textures = m_textures.live;
     result.samplers = m_samplers.live;
@@ -148,6 +171,7 @@ template<class Desc> uint32_t GraphicsDevice::allocate(Table<Desc>& table) {
 template<class Desc> void GraphicsDevice::free_slot(Table<Desc>& table, uint32_t slot) noexcept {
     auto& entry = table.slots[slot];
     entry.live = false;
+    entry.internal = false;
     entry.desc = {};
     // An exhausted generation retires the slot instead of wrapping into an old handle's identity.
     if (entry.generation == std::numeric_limits<uint32_t>::max()) return;
@@ -177,7 +201,7 @@ const Desc* GraphicsDevice::lookup(const Table<Desc>& table, RhiHandle<Tag> hand
 
 template<class Desc, class Tag>
 bool GraphicsDevice::retire(Table<Desc>& table, ResourceKind kind, RhiHandle<Tag> handle) noexcept {
-    if (!lookup(table, handle, "", nullptr)) return false;
+    if (!lookup(table, handle, "", nullptr) || table.slots[handle.slot].internal) return false;
     if (kind == ResourceKind::texture && m_surface && m_surface->texture == TextureHandle{handle.session, handle.slot, handle.generation})
         return false;
     // Revoke the handle immediately; the slot is reused only after native release.
@@ -209,6 +233,7 @@ void GraphicsDevice::release_slot(ResourceKind kind, uint32_t slot) noexcept {
     const auto recycle = [slot](auto& table) {
         auto& entry = table.slots[slot];
         entry.desc = {};
+        entry.internal = false;
         // retire() already advanced the generation; 0 marks a permanently retired slot.
         if (entry.generation == 0) return;
         try {
@@ -371,6 +396,8 @@ RhiDiagnostic GraphicsDevice::write_buffer(BufferHandle buffer, size_t offset, c
     auto diagnostic = RhiDiagnostic{};
     const auto desc = lookup(m_buffers, buffer, "Buffer", &diagnostic);
     if (!desc) return diagnostic;
+    if (m_buffers.slots[buffer.slot].internal)
+        return fail(RhiError::invalid_usage, "Frame upload memory is written through upload_transient");
     if (size == 0) return {};
     if (!data) return fail(RhiError::invalid_usage, "write_buffer needs data for a nonzero size");
     if (offset > desc->size || size > desc->size - offset)
@@ -400,10 +427,62 @@ RhiDiagnostic GraphicsDevice::require_state(State state, const char* operation) 
 
 RhiDiagnostic GraphicsDevice::begin_frame() {
     if (auto state = require_state(State::idle, "begin_frame")) return state;
+    // Frame `next` reuses the upload slot of frame `next - frames_in_flight`, which must be complete.
+    const auto next = m_submitted + 1;
+    if (next > m_options.frames_in_flight) {
+        const auto required = next - m_options.frames_in_flight;
+        if (m_completion->completed.load(std::memory_order_acquire) < required) {
+            const auto start = std::chrono::steady_clock::now();
+            if (!backend_wait_frame(required))
+                return fail(RhiError::timeout, "Frame " + std::to_string(required) + " has not completed; " +
+                    std::to_string(m_options.frames_in_flight) + " frames are already in flight");
+            m_completion->complete_through(required);
+            ++m_counters.frame_waits;
+            m_counters.frame_wait_microseconds += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+        }
+    }
     collect_retired();
     if (auto diagnostic = backend_begin_frame()) return diagnostic;
     m_state = State::frame;
     m_pipeline_set = false;
+    m_transient_used = 0;
+    m_counters.transient_bytes_used = 0;
+    return {};
+}
+
+TransientResult GraphicsDevice::upload_transient(const void* data, size_t size, size_t alignment) {
+    if (m_session == 0) return {{}, fail(RhiError::device_unavailable, "upload_transient: device is not initialized")};
+    if (m_state == State::idle) return {{}, fail(RhiError::wrong_state, "upload_transient must be called inside a frame")};
+    if (m_transient.empty())
+        return {{}, fail(RhiError::unsupported, "Frame upload memory is disabled (transient_bytes_per_frame is 0)")};
+    if (size == 0 || !data) return {{}, fail(RhiError::invalid_usage, "upload_transient needs data and a nonzero size")};
+    if (alignment == 0) alignment = m_limits.uniform_offset_alignment;
+    if (!std::has_single_bit(alignment) || alignment > m_limits.uniform_offset_alignment)
+        return {{}, fail(RhiError::misaligned, "Upload alignment " + std::to_string(alignment) +
+            " must be a power of two no larger than " + std::to_string(m_limits.uniform_offset_alignment))};
+    const auto capacity = m_options.transient_bytes_per_frame;
+    const auto offset = (m_transient_used + alignment - 1) & ~(alignment - 1);
+    if (offset > capacity || size > capacity - offset) {
+        ++m_counters.transient_failures;
+        return {{}, fail(RhiError::out_of_memory, "Frame upload memory exhausted: " + std::to_string(size) +
+            " bytes requested with " + std::to_string(m_transient_used) + " of " + std::to_string(capacity) +
+            " used; skip this upload or raise DeviceOptions::transient_bytes_per_frame")};
+    }
+    const auto serial = m_submitted + 1;
+    const auto buffer = m_transient[serial % m_transient.size()];
+    backend_write_buffer(buffer.slot, offset, data, size);
+    m_transient_used = offset + size;
+    m_counters.transient_bytes_used = m_transient_used;
+    m_counters.transient_high_water = std::max(m_counters.transient_high_water, m_transient_used);
+    return {{buffer, offset, size, serial}, {}};
+}
+
+RhiDiagnostic GraphicsDevice::check_slice(const TransientSlice& slice) const {
+    if (slice.size == 0) return fail(RhiError::invalid_usage, "Empty transient slice");
+    if (m_state == State::idle || slice.frame != m_submitted + 1)
+        return fail(RhiError::stale_handle, "Transient slice from frame " + std::to_string(slice.frame) +
+            " cannot be bound in frame " + std::to_string(m_submitted + 1) + "; upload it again this frame");
     return {};
 }
 
@@ -510,6 +589,13 @@ RhiDiagnostic GraphicsDevice::set_pipeline(PipelineHandle pipeline) {
 }
 
 RhiDiagnostic GraphicsDevice::set_vertex_buffer(uint32_t index, BufferHandle buffer, size_t offset) {
+    return bind_vertex(index, buffer, offset, false);
+}
+RhiDiagnostic GraphicsDevice::set_vertex_buffer(uint32_t index, const TransientSlice& slice) {
+    if (auto error = check_slice(slice)) return error;
+    return bind_vertex(index, slice.buffer, slice.offset, true);
+}
+RhiDiagnostic GraphicsDevice::bind_vertex(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal) {
     if (auto state = require_state(State::pass, "set_vertex_buffer")) return state;
     if (index >= m_limits.max_buffer_slots)
         return fail(RhiError::out_of_range, "Buffer index " + std::to_string(index) + " exceeds the limit of " +
@@ -517,6 +603,8 @@ RhiDiagnostic GraphicsDevice::set_vertex_buffer(uint32_t index, BufferHandle buf
     auto diagnostic = RhiDiagnostic{};
     const auto desc = lookup(m_buffers, buffer, "Vertex buffer", &diagnostic);
     if (!desc) return diagnostic;
+    if (m_buffers.slots[buffer.slot].internal && !allow_internal)
+        return fail(RhiError::invalid_usage, "Frame upload memory is bound through its TransientSlice");
     if (!has_flag(desc->usage, BufferUsage::vertex))
         return fail(RhiError::invalid_usage, "Buffer" + quoted(desc->label) + " was not created with vertex usage");
     if (offset >= desc->size)
@@ -530,6 +618,13 @@ RhiDiagnostic GraphicsDevice::set_vertex_buffer(uint32_t index, BufferHandle buf
 }
 
 RhiDiagnostic GraphicsDevice::set_uniform_buffer(uint32_t index, BufferHandle buffer, size_t offset) {
+    return bind_uniform(index, buffer, offset, false);
+}
+RhiDiagnostic GraphicsDevice::set_uniform_buffer(uint32_t index, const TransientSlice& slice) {
+    if (auto error = check_slice(slice)) return error;
+    return bind_uniform(index, slice.buffer, slice.offset, true);
+}
+RhiDiagnostic GraphicsDevice::bind_uniform(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal) {
     if (auto state = require_state(State::pass, "set_uniform_buffer")) return state;
     if (index >= m_limits.max_buffer_slots)
         return fail(RhiError::out_of_range, "Buffer index " + std::to_string(index) + " exceeds the limit of " +
@@ -537,6 +632,8 @@ RhiDiagnostic GraphicsDevice::set_uniform_buffer(uint32_t index, BufferHandle bu
     auto diagnostic = RhiDiagnostic{};
     const auto desc = lookup(m_buffers, buffer, "Uniform buffer", &diagnostic);
     if (!desc) return diagnostic;
+    if (m_buffers.slots[buffer.slot].internal && !allow_internal)
+        return fail(RhiError::invalid_usage, "Frame upload memory is bound through its TransientSlice");
     if (!has_flag(desc->usage, BufferUsage::uniform))
         return fail(RhiError::invalid_usage, "Buffer" + quoted(desc->label) + " was not created with uniform usage");
     if (offset >= desc->size)
@@ -593,6 +690,8 @@ RhiDiagnostic GraphicsDevice::draw_indexed(BufferHandle indices, IndexType type,
     auto diagnostic = RhiDiagnostic{};
     const auto desc = lookup(m_buffers, indices, "Index buffer", &diagnostic);
     if (!desc) return diagnostic;
+    if (m_buffers.slots[indices.slot].internal)
+        return fail(RhiError::invalid_usage, "Frame upload memory cannot be bound as a raw index buffer");
     if (!has_flag(desc->usage, BufferUsage::index))
         return fail(RhiError::invalid_usage, "Buffer" + quoted(desc->label) + " was not created with index usage");
     if (type > IndexType::uint32) return fail(RhiError::invalid_usage, "Unknown index type");
@@ -637,6 +736,8 @@ RhiDiagnostic GraphicsDevice::end_frame() {
     try {
         backend_submit(++m_submitted, surface.has_value());
     } catch (...) {
+        // Nothing reached the GPU: mark the frame complete so throttling and retirement cannot stall.
+        m_completion->complete(m_submitted);
         release_surface();
         throw;
     }

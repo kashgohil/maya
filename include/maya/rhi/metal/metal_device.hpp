@@ -42,6 +42,7 @@ protected:
     void backend_submit(uint64_t serial, bool present) override;
     void backend_abandon_frame() noexcept override;
     void backend_wait_idle() noexcept override;
+    bool backend_wait_frame(uint64_t serial) noexcept override;
     void backend_release_surface(uint32_t slot) noexcept override;
 
 private:

@@ -49,6 +49,10 @@ protected:
     void backend_submit(uint64_t serial, bool present) override;
     void backend_abandon_frame() noexcept override {}
     void backend_wait_idle() noexcept override { completion()->complete_through(m_last_submitted); }
+    /// Automatic completion never blocks; manual completion cannot wait and reports a timeout.
+    bool backend_wait_frame(uint64_t serial) noexcept override {
+        return !m_options.manual_completion || completion()->completed.load() >= serial;
+    }
     void backend_release_surface(uint32_t) noexcept override {}
 
 private:
