@@ -7,6 +7,9 @@ namespace maya {
 // Dimensionless tolerances for orthogonality, rigid poses and TRS reconstruction.
 inline constexpr float spatial_tolerance = 1.0e-5f;
 inline constexpr double spatial_singularity_tolerance = 1.0e-8;
+// Rotations this close to unit length are kept bit-exact, so revalidation (e.g. save/load) is
+// idempotent. Float-normalized quaternions deviate by well under 1e-7.
+inline constexpr double quaternion_unit_tolerance = 4.0e-7;
 
 /// Validates finite TRS and normalizes any finite, nonzero quaternion.
 std::optional<TransformComponent> validated_transform(TransformComponent value) noexcept;

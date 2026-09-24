@@ -53,6 +53,14 @@ add_library(Maya::Assets ALIAS MayaAssets)
 target_link_libraries(MayaAssets PUBLIC MayaWorld)
 maya_target_options(MayaAssets)
 
+# Scene persistence depends only on World data and a caller-supplied asset-reference resolver.
+add_library(MayaScene STATIC
+    src/maya/scene/scene_document.cpp
+    src/maya/scene/scene_codec.cpp)
+add_library(Maya::Scene ALIAS MayaScene)
+target_link_libraries(MayaScene PUBLIC MayaWorld)
+maya_target_options(MayaScene)
+
 add_library(MayaRuntime STATIC
     src/maya/core/engine.cpp
     src/maya/core/camera.cpp
@@ -64,7 +72,7 @@ add_library(MayaRuntime STATIC
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PUBLIC MayaWorld MayaAssets PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaWorld MayaAssets MayaScene PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 

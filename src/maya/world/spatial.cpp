@@ -42,8 +42,9 @@ std::optional<TransformComponent> validated_transform(TransformComponent v) noex
     const auto length = std::hypot(std::hypot(double(q.x), double(q.y)),
                                    std::hypot(double(q.z), double(q.w)));
     if (!std::isfinite(length) || length == 0) return std::nullopt;
-    v.rotation = {float(q.x / length), float(q.y / length),
-                  float(q.z / length), float(q.w / length)};
+    if (std::abs(length - 1.0) > quaternion_unit_tolerance)
+        v.rotation = {float(q.x / length), float(q.y / length),
+                      float(q.z / length), float(q.w / length)};
     if (!inverse_affine(local_matrix(v))) return std::nullopt;
     return v;
 }
