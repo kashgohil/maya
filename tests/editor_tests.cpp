@@ -496,3 +496,152 @@ TEST_CASE("Renderer, resource, and scene problems appear in diagnostics without 
         CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::ui, "upload memory exhausted"));
     }
 }
+
+namespace {
+/// A full click: move there in one frame, press in the next, release in the one after.
+void press(Harness& harness, ImVec2 at, MouseButton button = MouseButton::left) {
+    harness.frame({MouseMoveEvent{at.x, at.y}});
+    harness.frame({MouseButtonEvent{button, true, KeyModifiers::none}});
+    harness.frame({MouseButtonEvent{button, false, KeyModifiers::none}});
+}
+ImVec2 row_center(Harness& harness, EntityId id) {
+    const auto* row = harness.shell.layout().row(id);
+    REQUIRE(row);
+    return {row->min.x + 60.0f, (row->min.y + row->max.y) / 2.0f};
+}
+void chord(Harness& harness, std::initializer_list<KeyCode> modifiers, KeyCode key) {
+    auto mods = KeyModifiers::none;
+    for (const auto modifier : modifiers) {
+        const auto flag = modifier == KeyCode::LeftSuper ? KeyModifiers::super : KeyModifiers::shift;
+        mods = static_cast<KeyModifiers>(static_cast<uint8_t>(mods) | static_cast<uint8_t>(flag));
+        harness.frame({KeyEvent{modifier, true, mods}});
+    }
+    harness.frame({KeyEvent{key, true, mods}});
+    harness.frame({KeyEvent{key, false, mods}});
+    for (const auto modifier : modifiers) harness.frame({KeyEvent{modifier, false, KeyModifiers::none}});
+}
+EntityId find_named(SceneEditor& scene, const std::string& name) {
+    for (const auto& [id, record] : capture_state(scene.world()).entities)
+        if (scene.display_name(id) == name) return id;
+    FAIL("no entity named " << name);
+    return {};
+}
+} // namespace
+
+TEST_CASE("The hierarchy shows the scene in order and selects rows with the mouse", "[editor][hierarchy]") {
+    Harness harness;
+    harness.frames(3);
+    auto& scene = *harness.shell.scene();
+    const auto& rows = harness.shell.layout().hierarchy_rows;
+    REQUIRE(rows.size() == scene.world().size());
+    for (size_t i = 0; i < scene.roots().size(); ++i) CHECK(rows[i].id == scene.roots()[i]); // flat sample scene
+    const auto pyramid = find_named(scene, "Pyramid"), sun = find_named(scene, "Sun");
+    press(harness, row_center(harness, pyramid));
+    CHECK(scene.selection() == std::vector{pyramid});
+    harness.frame({KeyEvent{KeyCode::LeftSuper, true, KeyModifiers::super}});
+    press(harness, row_center(harness, sun));
+    harness.frame({KeyEvent{KeyCode::LeftSuper, false, KeyModifiers::none}});
+    CHECK(scene.selection() == std::vector{pyramid, sun}); // command-click adds
+    press(harness, {row_center(harness, sun).x, rows.back().max.y + 40.0f}); // empty space clears
+    CHECK(scene.selection().empty());
+}
+
+TEST_CASE("Delete removes the selected subtree; command-Z brings it back with its selection", "[editor][hierarchy]") {
+    Harness harness;
+    harness.frames(3);
+    auto& scene = *harness.shell.scene();
+    const auto ground = find_named(scene, "Ground");
+    const auto entities = scene.world().size();
+    press(harness, row_center(harness, ground));
+    harness.frame(key(KeyCode::Backspace, true));
+    harness.frame(key(KeyCode::Backspace, false));
+    CHECK_FALSE(scene.world().find(ground));
+    CHECK(scene.world().size() == entities - 1);
+    CHECK(scene.selection().empty());
+    CHECK(scene.dirty());
+    harness.frames(1);
+    CHECK_FALSE(harness.shell.layout().row(ground));
+    chord(harness, {KeyCode::LeftSuper}, KeyCode::Z);
+    CHECK(scene.world().find(ground));
+    CHECK(scene.selection() == std::vector{ground});
+    CHECK_FALSE(scene.dirty());
+    chord(harness, {KeyCode::LeftSuper, KeyCode::LeftShift}, KeyCode::Z);
+    CHECK_FALSE(scene.world().find(ground));
+    CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::edit, "failed") == false);
+}
+
+TEST_CASE("Inline renaming takes the keyboard; Backspace edits the name, not the scene", "[editor][hierarchy]") {
+    Harness harness;
+    harness.frames(3);
+    auto& scene = *harness.shell.scene();
+    const auto sun = find_named(scene, "Sun");
+    const auto at = row_center(harness, sun);
+    press(harness, at);
+    harness.frame({MouseButtonEvent{MouseButton::left, true, KeyModifiers::none}}); // second click: double-click
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
+    harness.frames(1);
+    REQUIRE(harness.shell.renaming() == sun);
+    REQUIRE(harness.shell.ui_wants_text());
+    for (int i = 0; i < 3; ++i) { // the whole name is selected; Backspace edits text only
+        harness.frame(key(KeyCode::Backspace, true));
+        harness.frame(key(KeyCode::Backspace, false));
+    }
+    for (const auto c : std::string("Lamp")) harness.frame({TextEvent{uint32_t(c)}});
+    harness.frame(key(KeyCode::Enter, true));
+    harness.frame(key(KeyCode::Enter, false));
+    CHECK(scene.world().find(sun));
+    CHECK(scene.display_name(sun) == "Lamp");
+    CHECK_FALSE(harness.shell.renaming());
+    CHECK(scene.undo_label() == "Rename");
+    // Undo shortcuts do nothing while a text field has the keyboard.
+    click(harness, {harness.shell.layout().camera_speed_min.x + 6.0f,
+                    (harness.shell.layout().camera_speed_min.y + harness.shell.layout().camera_speed_max.y) / 2.0f});
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
+    REQUIRE(harness.shell.ui_wants_text());
+    chord(harness, {KeyCode::LeftSuper}, KeyCode::Z);
+    CHECK(scene.display_name(sun) == "Lamp");
+}
+
+TEST_CASE("Dragging a row onto another reparents it and keeps its world pose", "[editor][hierarchy]") {
+    Harness harness;
+    harness.frames(3);
+    auto& scene = *harness.shell.scene();
+    const auto red = find_named(scene, "Red cube"), ground = find_named(scene, "Ground");
+    const auto pose = *scene.world().world_matrix(*scene.world().find(red));
+    const auto from = row_center(harness, red), to = row_center(harness, ground);
+    harness.frame({MouseMoveEvent{from.x, from.y}});
+    harness.frame({MouseButtonEvent{MouseButton::left, true, KeyModifiers::none}});
+    for (int step = 1; step <= 8; ++step) { // drag past the threshold, over several frames
+        const auto t = float(step) / 8.0f;
+        harness.frame({MouseMoveEvent{from.x + 4.0f * t, from.y + (to.y - from.y) * t}});
+    }
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
+    harness.frames(1);
+    REQUIRE(scene.record(red));
+    CHECK(scene.record(red)->parent == ground);
+    const auto moved = *scene.world().world_matrix(*scene.world().find(red));
+    for (int i = 0; i < 16; ++i) CHECK(moved.elements[i] == Approx(pose.elements[i]).margin(1e-4));
+    CHECK(scene.undo_label() == "Move Red cube");
+}
+
+TEST_CASE("Opening a scene replaces the editing session: history and selection start empty", "[editor][hierarchy]") {
+    Harness harness;
+    harness.frames(3);
+    auto* first = harness.shell.scene();
+    first->select(first->roots().front());
+    REQUIRE(first->delete_selection());
+    REQUIRE(first->can_undo());
+    const auto catalog = FileSystem::resolve("samples/basic_scene/assets/catalog.maya");
+    REQUIRE(harness.shell.open_scene(*catalog, catalog->parent_path() / "basic.scene"));
+    harness.frames(2);
+    auto* second = harness.shell.scene();
+    CHECK_FALSE(second->can_undo());
+    CHECK(second->selection().empty());
+    CHECK_FALSE(second->dirty());
+    CHECK(second->world().size() == 6);
+    // A failed open keeps the current session.
+    REQUIRE(second->create("Kept"));
+    CHECK_FALSE(harness.shell.open_scene("/nonexistent/catalog.maya", "/nonexistent/basic.scene"));
+    CHECK(harness.shell.scene() == second);
+    CHECK(second->can_undo());
+}

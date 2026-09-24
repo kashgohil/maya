@@ -248,7 +248,7 @@ if(BUILD_TESTING)
     set_tests_properties(maya_rhi PROPERTIES LABELS "gpu" TIMEOUT 60 ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
 
     if(TARGET MayaEditor)
-        add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp)
+        add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp)
         target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain)
         maya_target_options(maya_editor_tests)
         add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]")
