@@ -2,6 +2,8 @@
 #include "editor_shell.hpp"
 #include "maya/core/file_system.hpp"
 #include "maya/platform/input.hpp"
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 namespace maya::editor {
@@ -15,7 +17,11 @@ public:
         auto ui_shader = FileSystem::read_text("resources/shaders/metal/editor_ui.metal");
         if (renderer_shader.empty() || ui_shader.empty()) return false;
         m_shell = std::make_unique<EditorShell>(device, std::move(renderer_shader), std::move(ui_shader),
-                                                Input::instance().services());
+                                                Input::instance().services(),
+                                                EditorFonts{read_file("resources/fonts/Inter-Regular.ttf"),
+                                                            read_file("resources/fonts/Inter-SemiBold.ttf"),
+                                                            read_file("resources/fonts/GeistMono-Regular.ttf"),
+                                                            read_file("resources/fonts/Phosphor-Light.ttf")});
         // An editor without content still starts; the diagnostics panel explains what is missing.
         if (const auto catalog = FileSystem::resolve("samples/basic_scene/assets/catalog.maya"))
             m_shell->open_scene(*catalog, catalog->parent_path() / "basic.scene");
@@ -41,6 +47,12 @@ public:
     }
 
 private:
+    static std::string read_file(const std::string& relative) {
+        const auto path = FileSystem::resolve(relative);
+        auto file = path ? std::ifstream(*path, std::ios::binary) : std::ifstream{};
+        return file ? std::string(std::istreambuf_iterator<char>(file), {}) : std::string{};
+    }
+
     std::unique_ptr<EditorShell> m_shell;
 };
 

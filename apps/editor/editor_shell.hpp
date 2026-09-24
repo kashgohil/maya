@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_camera.hpp"
+#include "editor_theme.hpp"
 #include "input_router.hpp"
 #include "ui_renderer.hpp"
 #include "maya/platform/input.hpp"
@@ -14,6 +15,14 @@
 struct ImGuiContext;
 
 namespace maya::editor {
+
+/// TrueType data for the editor's typefaces. Any empty or unreadable entry uses ImGui's built-in font.
+struct EditorFonts {
+    std::string regular; // resources/fonts/Inter-Regular.ttf
+    std::string semibold; // resources/fonts/Inter-SemiBold.ttf
+    std::string mono; // resources/fonts/GeistMono-Regular.ttf
+    std::string icons; // resources/fonts/Phosphor-Light.ttf, merged into the regular and semibold fonts
+};
 
 /// Framebuffer pixel size of a view.
 struct PixelSize {
@@ -56,7 +65,7 @@ private:
 class EditorShell {
 public:
     EditorShell(GraphicsDevice& device, std::string renderer_shader, std::string ui_shader,
-                PlatformServices services = {});
+                PlatformServices services = {}, EditorFonts fonts = {});
     ~EditorShell();
     EditorShell(const EditorShell&) = delete;
     EditorShell& operator=(const EditorShell&) = delete;
@@ -98,11 +107,15 @@ private:
     void draw_inspector();
     void draw_assets();
     void draw_diagnostics();
+    void draw_top_bar();
+    void draw_status_bar();
     void render_viewport();
 
     GraphicsDevice& m_device;
     PlatformServices m_services;
     std::string m_clipboard; // storage for ImGui's clipboard reads
+    EditorFonts m_font_data; // the atlas borrows this data
+    theme::Fonts m_fonts;
     ImGuiContext* m_context = nullptr;
     Renderer m_renderer;
     UiRenderer m_ui;
@@ -120,6 +133,8 @@ private:
     RenderSnapshotStats m_extraction{};
     PixelSize m_viewport_request{};
     float m_font_scale = 0.0f;
+    RhiStats m_shown_stats{}; // refreshed a few times a second so the numbers stay readable
+    float m_stats_age = 1.0f;
     int m_cursor = -1; // last ImGuiMouseCursor sent to the host
     bool m_layout_built = false;
     bool m_frame_ready = false;
