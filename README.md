@@ -112,7 +112,7 @@ cmake --build build -j 4
 
 ### Where the files are
 
-Shaders live in `resources/shaders/metal/`. The sample's catalog, scene, meshes, and materials are in `samples/basic_scene/assets/`.
+Shaders live in `resources/shaders/metal/`; the editor's fonts (Inter and Geist Mono, SIL Open Font License) and icons (Phosphor, MIT) live in `resources/fonts/`. The sample's catalog, scene, meshes, and materials are in `samples/basic_scene/assets/`.
 
 Maya searches in this order:
 

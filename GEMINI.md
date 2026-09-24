@@ -60,6 +60,7 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 - `samples/basic_scene/assets/`: Sample catalog, `basic.scene`, meshes, and material files.
 - `resources/shaders/metal/renderer.metal`: Lit pass and view presentation shaders.
 - `resources/shaders/metal/editor_ui.metal`: Editor UI (Dear ImGui) shader.
+- `resources/fonts/`: Inter and Geist Mono (SIL OFL) and Phosphor Light icons (MIT), licenses alongside, for the editor UI. Add icons as named constants in `apps/editor/editor_icons.hpp` so they enter the font atlas. Use the palette and helpers in `apps/editor/editor_theme.hpp` for new editor UI instead of raw ImGui colors.
 - `apps/editor/`: Editor shell, UI renderer, input router, and editor camera.
 
 FileSystem searches MAYA_RESOURCES, executable parents, and the working directory. A resource root for the sample contains both resources/ and samples/basic_scene/assets/. Failed resolution logs every candidate path.

@@ -11,6 +11,18 @@ The editor uses [Dear ImGui](https://github.com/ocornut/imgui), the candidate na
 
 [maya_imgui_config.h](../apps/editor/imgui/maya_imgui_config.h) selects 32-bit indices, so every index offset meets the RHI's 4-byte alignment and one draw list addresses all its vertices without per-command vertex offsets. It also removes obsolete ImGui APIs. `imgui.ini` is disabled: the layout is rebuilt at startup until project settings exist to store it.
 
+## Look and type
+
+[editor_theme.cpp](../apps/editor/editor_theme.cpp) defines the editor's visual language:
+
+- **Palette:** a neutral near-black palette. Surfaces step up in lightness from chrome, to panels, to fields; borders are hairlines. Color is reserved for state: a single cool accent for focus, selection, and the active tab's overline; green, amber, and red for ready, warning, and problems.
+- **Type:** [Inter](https://github.com/rsms/inter) is the UI face: Regular at 14 pt for text, SemiBold for emphasis and for 11 pt uppercase section captions. [Geist Mono](https://github.com/vercel/geist-font) is used for numbers, IDs, and paths. Both are under the SIL Open Font License and ship in [resources/fonts](../resources/fonts) with their licenses. Fonts are rasterized at the display scale, so text is sharp on Retina displays. Missing or invalid font data falls back to ImGui's built-in font with a diagnostic.
+- **Icons:** [Phosphor Icons](https://phosphoricons.com), Light weight (MIT), chosen over the widely used Lucide set for a less generic look. Its thin, even strokes match Inter. The font ships as `resources/fonts/Phosphor-Light.ttf` and is merged into the text fonts, so labels can mix text and icons. Only the glyphs named in [editor_icons.hpp](../apps/editor/editor_icons.hpp) enter the font atlas; add a constant and its codepoint there to use another icon. Icons mark panel tabs, entity types (camera, light, mesh), asset kinds, log severity, the status bar state, and the viewport's navigation hint. Without the icon font, panels show text only and Diagnostics notes it.
+- **Shape:** 6 pt rounding on fields and tabs, generous padding, no window menu buttons or title bars, and a 2 pt accent overline on the selected tab.
+- **Layout:** a 40 pt top bar with the Maya mark, the open scene, and frame time; a 26 pt status bar with state (ready, flying, or the number of problems), object count, and viewport size; and docked panels between them. Property grids put muted labels on the left and full-width controls on the right. Icons mark entity types in the hierarchy; dots mark load state in the asset list.
+
+Numbers that change every frame are sampled four times a second in the Diagnostics panel. The desktop host likewise refreshes the window title four times a second, so neither flickers.
+
 ## Structure
 
 | Piece | Responsibility |
@@ -19,18 +31,20 @@ The editor uses [Dear ImGui](https://github.com/ocornut/imgui), the candidate na
 | [EditorShell](../apps/editor/editor_shell.hpp) | Owns the ImGui context, the panels, the viewport's `RenderTarget`, the renderer, the opened World and registry, and the diagnostics log. `update` routes input and builds the UI; `render` draws the viewport, then the UI. |
 | [InputRouter](../apps/editor/input_router.hpp) | Sends each event to exactly one owner, the UI or the camera; see [input routing](#input-routing). |
 | [EditorCamera](../apps/editor/editor_camera.hpp) | Free-flight camera that is tool state, not a World entity: position, yaw, pitch, `CameraComponent`, and speed. |
+| [editor_theme](../apps/editor/editor_theme.hpp) | Palette, style, fonts, and small shared widgets: captions, status dots, pills, and property rows. |
+| [editor_icons](../apps/editor/editor_icons.hpp) | Named Phosphor icon glyphs and the atlas glyph ranges. |
 | [UiRenderer](../apps/editor/ui_renderer.hpp) | Uploads ImGui vertices and indices to frame upload memory, turns clip rectangles into scissor rectangles, and maps texture IDs to device textures (font atlas and viewport). |
 
 `update` runs in `Application::on_update` and `render` in `on_render`, so the UI is laid out, including the viewport's size, before the viewport renders. The viewport's image then shows the scene rendered in the same frame.
 
 ## Panels and layout
 
-On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets and Diagnostics as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. The mouse cursor changes over splitters and text fields.
+On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets and Diagnostics as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. Each panel's title carries an icon; the part after `###` in its name (for example `###Viewport`) is its stable ID for layout and tests. The mouse cursor changes over splitters and text fields.
 
-- **Hierarchy:** the opened World's entities by name (or ID), in hierarchy order. Selection is #1000.
-- **Viewport:** the scene from the editor camera, with a hint about the navigation controls.
-- **Inspector:** the editor camera's position, speed (a text field), and vertical field of view. Entity properties are #1001.
-- **Assets:** catalog records with kind, ID, path, and load state; hovering a failed entry shows its error.
+- **Hierarchy:** the opened World's entities by name (or ID), in hierarchy order, each marked by type. Selection is #1000.
+- **Viewport:** the scene from the editor camera, with a small hint about the navigation controls.
+- **Inspector:** the editor camera's position, speed, and vertical field of view (text fields). Entity properties are #1001.
+- **Assets:** catalog entries by file name, with kind and load state; hovering shows the path and ID, or a failed entry's error.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 
 Until project open/save lands in #1002, the editor opens the sample project's `basic.scene` read-only. If the sample cannot be found, it starts with empty panels, and the diagnostics panel explains why.
@@ -67,6 +81,7 @@ These additions to the desktop host are generic, not editor-specific:
 - `Input::request_cursor_capture(bool)` asks the host to capture or release the cursor after the tick. Smoke runs ignore it.
 - `PlatformServices` provides clipboard access and cursor shapes without a window-library dependency. ImGui's clipboard and cursor use them.
 - `KeyCode` names the keys the editor needs; values are GLFW key codes.
+- The Metal layer's `contentsScale` follows the window's backing scale, and it is updated whenever the framebuffer size changes. Before this, a Retina display showed every frame as 1× content, soft and blocky. `MetalDevice::surface_scale()` reports it, and a desktop test checks it against the window.
 - `DesktopOptions::escape_closes` and `DesktopOptions::device` (passed to `Engine::initialize`). The editor reserves 16 MiB of upload memory per frame for UI geometry and scene constants.
 
 ## Rendering the UI
@@ -109,7 +124,6 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 
 - Layout, window placement, and editor camera state are not saved between runs.
 - No IME composition, gamepad or keyboard navigation of the UI, or multiple OS windows (ImGui multi-viewports).
-- The default font is ImGui's bitmap ProggyClean. It is rasterized at the display scale, but it is not a production UI font.
 - The cursor-shape service covers arrow, text, hand, and horizontal/vertical resize. GLFW 3.3 has no diagonal or "not allowed" cursors.
 
 ## Tests

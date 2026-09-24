@@ -78,6 +78,7 @@ Metal frame command buffers are created with **unretained references**. Correctn
 ## Presentation, resize, and shutdown
 
 - `acquire_surface()` may be called once per frame outside a pass; later calls return the same target. The surface texture is transient and valid only until `end_frame`. It cannot be destroyed, sampled, or read back. It has the drawable's pixel size.
+- The window layer's scale (`contentsScale`) matches the window's backing scale and is updated on resize, so Retina displays show drawables at full density; `MetalDevice::surface_scale()` reports it.
 - `resize(width, height)` sets the drawable size in framebuffer pixels. Zero sizes (minimized windows) are ignored, and the new size applies at the next acquisition. Applications own their depth and offscreen targets and recreate them when the acquired size changes; [RenderTarget](renderer.md#views-and-targets) does this for renderer views.
 - A missing drawable, a zero-sized surface, or a headless session returns a diagnostic from `acquire_surface`. Callers skip presentation, and offscreen passes and submission continue.
 - `shutdown()` is nonthrowing and idempotent. It ends an open pass, discards an uncommitted frame without presenting, waits for submitted frames, releases every live and retired resource, expires the resource lifetime, and invalidates all handles. `initialize()` starts a new session with fresh handles; a failed backend initialization rolls itself back.
