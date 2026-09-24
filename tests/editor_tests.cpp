@@ -268,6 +268,19 @@ TEST_CASE("The dock layout leaves room for panels and the viewport matches its p
         return names;
     });
     CHECK(docked.size() == 5);
+    // Tabs are taller than other frames; each panel reserves exactly its tab bar's height, so panel
+    // content never overlaps the tabs.
+    const auto mismatched = harness.with_context([] {
+        auto count = 0;
+        for (const auto* name : {"###Hierarchy", "###Viewport", "###Inspector", "###Assets", "###Diagnostics"}) {
+            const auto* window = ImGui::FindWindowByName(name);
+            if (!window || !window->DockNode || !window->DockNode->TabBar) { ++count; continue; }
+            const auto expected = ImGui::GetFontSize() + theme::tab_padding.y * 2.0f;
+            if (window->TitleBarHeight != expected || window->DockNode->TabBar->BarRect.GetHeight() != expected) ++count;
+        }
+        return count;
+    });
+    CHECK(mismatched == 0);
     // One texel per framebuffer pixel: the image in points times the scale is the target size.
     const auto& layout = harness.shell.layout();
     CHECK((layout.viewport_max.x - layout.viewport_min.x) * 2.0f == Approx(float(request.width)));
