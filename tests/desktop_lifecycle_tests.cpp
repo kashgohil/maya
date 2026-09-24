@@ -133,6 +133,7 @@ TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease 
     const auto reference=maya::AssetRef<maya::MeshAsset>{{0x6d617961,1}};
     REQUIRE_FALSE(registry.register_asset(reference,"pyramid.obj"));
     const auto pipeline=surface_pipeline(device);
+    const auto baseline=device.native_buffer_count(); // per-frame upload buffers
     for (int frame=0;frame<3;++frame) {
         auto asset=registry.acquire(reference); REQUIRE(asset);
         REQUIRE_FALSE(device.begin_frame());
@@ -142,11 +143,11 @@ TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease 
         REQUIRE_FALSE(asset.lease.value().mesh().draw());
         asset={}; CHECK(registry.evict_unused() == 1);
         CHECK(device.stats().buffers == 0); // handles revoked
-        CHECK(device.native_buffer_count() == 2); // the encoding frame still owns the native buffers
+        CHECK(device.native_buffer_count() == baseline + 2); // the encoding frame still owns the native buffers
         REQUIRE_FALSE(device.end_render_pass());
         REQUIRE_FALSE(device.end_frame());
         device.wait_idle();
-        CHECK(device.native_buffer_count() == 0);
+        CHECK(device.native_buffer_count() == baseline);
     }
     CHECK(device.take_gpu_errors().empty());
     device.shutdown(); // drains submitted work before destroying the device

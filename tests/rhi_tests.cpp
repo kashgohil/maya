@@ -2,6 +2,8 @@
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/file_system.hpp"
+#include "maya/core/primitives.hpp"
+#include "maya/core/scene.hpp"
 #include <array>
 #include <cstring>
 #include <string>
@@ -70,6 +72,23 @@ BufferHandle params_buffer(GraphicsDevice& device, std::initializer_list<Params>
         offset += stride;
     }
     return created.handle;
+}
+/// Draws `bands` vertical stripes, each with its own per-draw uniform slice and color.
+void draw_bands(GraphicsDevice& device, PipelineHandle pipeline, int bands, auto color_of) {
+    REQUIRE_FALSE(device.set_pipeline(pipeline));
+    for (int band = 0; band < bands; ++band) {
+        const auto left = -1.0f + 2.0f * float(band) / float(bands);
+        const auto params = Params{color_of(band), 0.5f, left, left + 2.0f / float(bands), 0.0f};
+        const auto uploaded = device.upload_transient(&params, sizeof(params));
+        REQUIRE(uploaded);
+        REQUIRE_FALSE(device.set_uniform_buffer(1, uploaded.slice));
+        REQUIRE_FALSE(device.draw(6));
+    }
+}
+Pixel to_pixel(const std::array<float, 4>& color) {
+    auto value = Pixel{};
+    for (size_t i = 0; i < 4; ++i) value[i] = static_cast<uint8_t>(color[i] * 255.0f + 0.5f);
+    return value;
 }
 void draw_rectangle(GraphicsDevice& device, PipelineHandle pipeline, BufferHandle params, size_t offset) {
     REQUIRE_FALSE(device.set_pipeline(pipeline));
@@ -267,19 +286,152 @@ TEST_CASE("Metal asset sharing and buffer retirement survive repeated sessions",
     const auto reference = AssetRef<MeshAsset>{{0x6d617961,1}};
     for (int session=0; session<3; ++session) {
         REQUIRE(device.initialize(nullptr));
+        const auto baseline=device.native_buffer_count(); // per-frame upload buffers
         AssetRegistry registry(source->parent_path(),std::make_unique<FileAssetProvider>(device));
         REQUIRE_FALSE(registry.register_asset(reference,"pyramid.obj"));
         auto first=registry.acquire(reference), second=registry.acquire(reference);
         REQUIRE(first); REQUIRE(second);
         CHECK(&first.lease.value() == &second.lease.value());
-        CHECK(device.native_buffer_count() == 2);
+        CHECK(device.native_buffer_count() == baseline + 2);
         first={}; CHECK(registry.evict_unused() == 0);
         second={}; CHECK(registry.evict_unused() == 1);
-        CHECK(device.native_buffer_count() == 0); // no frame in flight: released immediately
+        CHECK(device.native_buffer_count() == baseline); // no frame in flight: released immediately
         auto held=registry.acquire(reference); REQUIRE(held);
         device.shutdown();
         CHECK(device.native_buffer_count() == 0);
         CHECK_FALSE(held.lease.value().mesh().valid());
         CHECK_FALSE(registry.resolve(held.lease.handle()));
     }
+}
+
+TEST_CASE("Metal per-draw uniforms keep distinct values within a frame", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr));
+    constexpr int bands = 16;
+    constexpr uint32_t size = 64;
+    const auto color = color_target(device, size);
+    const auto pipeline = rectangle_pipeline(device, Format::undefined);
+    const auto color_of = [](int band) { return std::array<float, 4>{band / 15.0f, 1.0f - band / 15.0f, (band % 3) / 2.0f, 1}; };
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(device.begin_render_pass({{{color}}, {}, "bands"}));
+    draw_bands(device, pipeline, bands, color_of);
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    CHECK(device.stats().transient_bytes_used == (bands - 1) * device.limits().uniform_offset_alignment + sizeof(Params));
+    const auto pixels = read(device, color);
+    for (int band = 0; band < bands; ++band) {
+        INFO("band " << band);
+        CHECK(pixel(pixels, size, band * (size / bands) + 1, size / 2) == to_pixel(color_of(band)));
+    }
+}
+
+TEST_CASE("Metal frames encoded ahead of the GPU never see later CPU writes", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr, {3, size_t{1} << 20}));
+    constexpr int targets = 12, bands = 8, rounds = 5;
+    constexpr uint32_t size = 32;
+    auto colors = std::vector<TextureHandle>{};
+    for (int i = 0; i < targets; ++i) colors.push_back(color_target(device, size));
+    const auto pipeline = rectangle_pipeline(device, Format::undefined);
+    const auto color_of = [](int round, int target, int band) {
+        return std::array<float, 4>{float((round * 7 + target * 3 + band) % 16) / 15.0f,
+            float((target + band * 5) % 16) / 15.0f, float((round + band) % 4) / 3.0f, 1};
+    };
+    for (int round = 0; round < rounds; ++round) {
+        // Every frame rewrites upload memory without waiting; each renders its own target.
+        for (int target = 0; target < targets; ++target) {
+            REQUIRE_FALSE(device.begin_frame());
+            const auto stats = device.stats();
+            CHECK(stats.submitted_frames - stats.completed_frames < 3);
+            REQUIRE_FALSE(device.begin_render_pass({{{colors[target]}}, {}, "ahead"}));
+            // Extra uploads stress the allocator between the draws that are checked.
+            const std::byte filler[192]{};
+            for (int i = 0; i < 200; ++i) REQUIRE(device.upload_transient(filler, sizeof(filler)));
+            draw_bands(device, pipeline, bands, [&](int band) { return color_of(round, target, band); });
+            REQUIRE_FALSE(device.end_render_pass());
+            REQUIRE_FALSE(device.end_frame());
+        }
+        for (int target = 0; target < targets; ++target) {
+            const auto pixels = read(device, colors[target]);
+            for (int band = 0; band < bands; ++band) {
+                INFO("round " << round << " target " << target << " band " << band);
+                CHECK(pixel(pixels, size, band * (size / bands) + 1, size / 2) == to_pixel(color_of(round, target, band)));
+            }
+        }
+    }
+    INFO("waits " << device.stats().frame_waits << " (" << device.stats().frame_wait_microseconds << " us)");
+    CHECK(device.stats().submitted_frames == targets * rounds);
+    CHECK(device.take_gpu_errors().empty());
+    // Shutdown with frames still in flight drains them before releasing memory.
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(device.begin_render_pass({{{colors[0]}}, {}, "final"}));
+    draw_bands(device, pipeline, bands, [&](int band) { return color_of(0, 0, band); });
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    device.shutdown();
+    CHECK(device.native_buffer_count() == 0);
+}
+
+TEST_CASE("Metal upload exhaustion skips draws without corrupting the frame", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr, {3, 1024})); // room for four 256-byte constant slices
+    constexpr uint32_t size = 40;
+    const auto color = color_target(device, size);
+    const auto pipeline = rectangle_pipeline(device, Format::undefined);
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(device.begin_render_pass({{{color, LoadAction::clear, StoreAction::store, {0, 0, 0, 1}}}, {}, "overflow"}));
+    REQUIRE_FALSE(device.set_pipeline(pipeline));
+    int drawn = 0;
+    for (int band = 0; band < 5; ++band) {
+        const auto left = -1.0f + 0.4f * float(band);
+        const auto params = Params{{0, 1, 0, 1}, 0.5f, left, left + 0.4f, 0.0f};
+        const auto uploaded = device.upload_transient(&params, sizeof(params));
+        if (!uploaded) {
+            CHECK(uploaded.diagnostic.code == RhiError::out_of_memory);
+            continue; // defined behavior: this draw is skipped, the frame continues
+        }
+        REQUIRE_FALSE(device.set_uniform_buffer(1, uploaded.slice));
+        REQUIRE_FALSE(device.draw(6));
+        ++drawn;
+    }
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    CHECK(drawn == 4);
+    CHECK(device.stats().transient_failures == 1);
+    const auto pixels = read(device, color);
+    for (int band = 0; band < 4; ++band) CHECK(pixel(pixels, size, band * 8 + 2, size / 2) == green);
+    CHECK(pixel(pixels, size, 4 * 8 + 2, size / 2) == Pixel{0, 0, 0, 255});
+    CHECK(device.take_gpu_errors().empty());
+}
+
+TEST_CASE("Metal scene objects sharing a mesh keep their own transforms", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr));
+    const auto source = FileSystem::read_text("resources/shaders/metal/triangle.metal");
+    REQUIRE_FALSE(source.empty());
+    auto desc = PipelineDesc{source, "vertexMain", "fragmentUnlit", {Format::rgba8_unorm}, Format::undefined, {},
+        CullMode::back, Winding::counter_clockwise, "unlit"};
+    const auto pipeline = device.create_pipeline(desc);
+    INFO(pipeline.diagnostic.message);
+    REQUIRE(pipeline);
+    Scene scene;
+    const auto* cube = scene.add_mesh(make_color_cube(device, 0.25f));
+    for (const auto x : {-0.5f, 0.5f})
+        scene.objects().push_back({cube, Material{pipeline.handle, nullptr, {}}, math::Mat4::translate({x, 0.0f, 0.5f})});
+    constexpr uint32_t size = 64;
+    const auto color = color_target(device, size);
+    for (int frame = 0; frame < 30; ++frame) {
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(device.begin_render_pass({{{color, LoadAction::clear, StoreAction::store, {0, 0, 0, 1}}}, {}, "scene"}));
+        REQUIRE_FALSE(scene.render(device, math::Mat4::identity(), DirectionalLighting::default_sun(), {0, 0, 3}));
+        REQUIRE_FALSE(device.end_render_pass());
+        REQUIRE_FALSE(device.end_frame());
+    }
+    const auto pixels = read(device, color);
+    const auto lit = [](Pixel value) { return value[0] + value[1] + value[2] > 0; };
+    CHECK(lit(pixel(pixels, size, 16, 32)));  // left cube
+    CHECK(lit(pixel(pixels, size, 48, 32)));  // right cube
+    CHECK_FALSE(lit(pixel(pixels, size, 32, 32))); // gap between them
+    CHECK(device.stats().transient_high_water == device.limits().uniform_offset_alignment + sizeof(SceneDrawUniforms));
+    CHECK(device.take_gpu_errors().empty());
 }

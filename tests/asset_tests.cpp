@@ -19,7 +19,8 @@ class CountingDevice final : public NullGraphicsDevice {
 public:
     std::shared_ptr<Counters> counts = std::make_shared<Counters>();
     bool fail_index=false, throw_index=false;
-    CountingDevice() : NullGraphicsDevice({false,0,0,true}) { REQUIRE(initialize(nullptr)); }
+    // No per-frame upload memory, so buffer counts reflect only the assets under test.
+    CountingDevice() : NullGraphicsDevice({false,0,0,true}) { REQUIRE(initialize(nullptr,{3,0})); }
     ~CountingDevice() override { shutdown(); }
     /// Begin a frame with an offscreen pass and pipeline so meshes can encode draws.
     void open_pass() {
@@ -340,7 +341,7 @@ TEST_CASE("Device session changes invalidate old mesh resources and providers", 
     AssetRegistry registry(project.root,std::make_unique<FileAssetProvider>(device));
     REQUIRE_FALSE(registry.register_asset(mesh_ref,"triangle.obj"));
     auto mesh=registry.acquire(mesh_ref); REQUIRE(mesh);
-    device.shutdown(); REQUIRE(device.initialize(nullptr));
+    device.shutdown(); REQUIRE(device.initialize(nullptr,{3,0}));
     CHECK_FALSE(mesh.lease.value().mesh().valid()); CHECK_FALSE(registry.resolve(mesh.lease.handle()));
     CHECK(registry.reload(mesh_ref).diagnostic.code == AssetError::device_unavailable);
     mesh={}; registry.evict_unused(); CHECK(device.counts->application.empty());

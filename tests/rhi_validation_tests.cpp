@@ -1,6 +1,7 @@
 #include "maya/rhi/null_device.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <stdexcept>
 
 using namespace maya;
 
@@ -52,6 +53,7 @@ TEST_CASE("Descriptors are validated before reaching the backend", "[rhi-api]") 
     NullGraphicsDevice device;
     CHECK(code(device.create_buffer({64, BufferUsage::vertex, "invalid"})) == RhiError::device_unavailable);
     REQUIRE(device.initialize(nullptr));
+    const auto baseline = device.native_resources(); // the device's own per-frame upload buffers
     const auto limit = device.limits();
     CHECK(code(device.create_buffer({0, BufferUsage::vertex, "invalid"})) == RhiError::invalid_descriptor);
     CHECK(code(device.create_buffer({limit.max_buffer_size + 1, BufferUsage::vertex, "invalid"})) == RhiError::invalid_descriptor);
@@ -87,7 +89,7 @@ TEST_CASE("Descriptors are validated before reaching the backend", "[rhi-api]") 
     CHECK(missing_depth.diagnostic.message.find("depth") != std::string::npos);
     broken.depth_format = color_format;
     CHECK(code(device.create_pipeline(broken)) == RhiError::invalid_descriptor);
-    CHECK(device.native_resources() == 1); // only the one valid pipeline reached the backend
+    CHECK(device.native_resources() == baseline + 1); // only the one valid pipeline reached the backend
 }
 
 TEST_CASE("Handles reject null, destroyed, reused, and foreign-session resources", "[rhi-api]") {
@@ -449,4 +451,153 @@ TEST_CASE("Shutdown abandons open frames and releases every resource", "[rhi-api
     REQUIRE(device.acquire_surface());
     device.shutdown(); // with an acquired, unpresented surface
     CHECK(device.presented_frames() == 0);
+}
+
+namespace {
+/// Manual-completion device whose frame waits "block" by completing the requested frame.
+class BlockingDevice final : public NullGraphicsDevice {
+public:
+    BlockingDevice() : NullGraphicsDevice({false, 0, 0, true}) {}
+    ~BlockingDevice() override { shutdown(); }
+    std::vector<uint64_t> waited;
+    bool fail_submit = false;
+protected:
+    bool backend_wait_frame(uint64_t serial) noexcept override {
+        waited.push_back(serial);
+        complete_through(serial);
+        return true;
+    }
+    void backend_submit(uint64_t serial, bool present) override {
+        if (fail_submit) throw std::runtime_error("injected submission failure");
+        NullGraphicsDevice::backend_submit(serial, present);
+    }
+};
+void empty_frame(GraphicsDevice& device) {
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(device.end_frame());
+}
+} // namespace
+
+TEST_CASE("Frames in flight are bounded, and waits are reported", "[rhi-api]") {
+    NullGraphicsDevice invalid;
+    CHECK_FALSE(invalid.initialize(nullptr, {0, 1024}));
+    CHECK_FALSE(invalid.initialize(nullptr, {9, 1024}));
+    CHECK_FALSE(invalid.initialize(nullptr, {3, invalid.limits().max_buffer_size + 1}));
+    CHECK_FALSE(invalid.initialized());
+
+    // A backend that cannot wait reports a timeout instead of reusing a busy frame slot.
+    NullGraphicsDevice manual({false, 0, 0, true});
+    REQUIRE(manual.initialize(nullptr, {2, 1024}));
+    empty_frame(manual);
+    empty_frame(manual);
+    const auto blocked = manual.begin_frame();
+    CHECK(blocked.code == RhiError::timeout);
+    CHECK(blocked.message.find("Frame 1 has not completed") != std::string::npos);
+    manual.complete_through(1);
+    empty_frame(manual);
+    CHECK(manual.begin_frame().code == RhiError::timeout);
+    manual.complete_through(3);
+    empty_frame(manual);
+
+    // A blocking backend waits for exactly the frame that last used the slot.
+    BlockingDevice device;
+    REQUIRE(device.initialize(nullptr, {3, 1024}));
+    for (int frame = 0; frame < 10; ++frame) {
+        empty_frame(device);
+        const auto stats = device.stats();
+        CHECK(stats.submitted_frames - stats.completed_frames <= 3);
+    }
+    CHECK(device.waited == std::vector<uint64_t>{1, 2, 3, 4, 5, 6, 7});
+    CHECK(device.stats().frame_waits == 7);
+    CHECK(device.options().frames_in_flight == 3);
+}
+
+TEST_CASE("Upload memory is per frame, aligned, bounded, and recycled after completion", "[rhi-api]") {
+    NullGraphicsDevice device({false, 0, 0, true});
+    REQUIRE(device.initialize(nullptr, {2, 1024}));
+    const auto baseline = device.native_resources();
+    CHECK(baseline == 2);
+    CHECK(device.stats().buffers == 0);
+    const std::byte data[1024]{};
+    CHECK(device.upload_transient(data, 16).diagnostic.code == RhiError::wrong_state);
+
+    const auto color = target(device);
+    open(device, color, pipeline(device));
+    const auto first = device.upload_transient(data, 16);
+    REQUIRE(first);
+    CHECK(first.slice.offset == 0);
+    CHECK(first.slice.frame == 1);
+    const auto second = device.upload_transient(data, 16);
+    CHECK(second.slice.offset == 256);
+    const auto packed = device.upload_transient(data, 8, 4);
+    CHECK(packed.slice.offset == 272);
+    CHECK(device.upload_transient(data, 4, 3).diagnostic.code == RhiError::misaligned);
+    CHECK(device.upload_transient(data, 4, 512).diagnostic.code == RhiError::misaligned);
+    CHECK(device.upload_transient(nullptr, 4).diagnostic.code == RhiError::invalid_usage);
+    CHECK(device.upload_transient(data, 0).diagnostic.code == RhiError::invalid_usage);
+    const auto overflow = device.upload_transient(data, 1024);
+    CHECK(overflow.diagnostic.code == RhiError::out_of_memory);
+    CHECK(overflow.diagnostic.message.find("transient_bytes_per_frame") != std::string::npos);
+    CHECK(device.stats().transient_failures == 1);
+    CHECK(device.upload_transient(data, 64)); // the frame remains usable after exhaustion
+    CHECK(device.stats().transient_bytes_used == 576);
+
+    // Slices bind as uniforms or vertices; the raw upload buffer is not directly usable.
+    CHECK_FALSE(device.set_uniform_buffer(1, first.slice));
+    CHECK_FALSE(device.set_vertex_buffer(0, packed.slice));
+    CHECK(device.set_uniform_buffer(1, packed.slice).code == RhiError::misaligned);
+    CHECK(device.set_uniform_buffer(1, first.slice.buffer, 0).code == RhiError::invalid_usage);
+    CHECK(device.draw_indexed(first.slice.buffer, IndexType::uint32, 3).code == RhiError::invalid_usage);
+    CHECK(device.write_buffer(first.slice.buffer, 0, data, 4).code == RhiError::invalid_usage);
+    CHECK_FALSE(device.destroy(first.slice.buffer));
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+
+    // The next frame uses the other slot; the old slice cannot be bound.
+    REQUIRE_FALSE(device.begin_frame());
+    const auto next = device.upload_transient(data, 16);
+    CHECK(next.slice.buffer != first.slice.buffer);
+    CHECK(next.slice.offset == 0);
+    REQUIRE_FALSE(device.begin_render_pass(color_pass(color)));
+    CHECK(device.set_uniform_buffer(1, first.slice).code == RhiError::stale_handle);
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+
+    // Frame 3 reuses frame 1's slot only after frame 1 completes.
+    CHECK(device.begin_frame().code == RhiError::timeout);
+    device.complete_through(1);
+    REQUIRE_FALSE(device.begin_frame());
+    CHECK(device.upload_transient(data, 16).slice.buffer == first.slice.buffer);
+    REQUIRE_FALSE(device.end_frame());
+
+    // Memory stays bounded across many frames.
+    for (int frame = 0; frame < 1000; ++frame) {
+        device.complete_through(device.stats().submitted_frames);
+        REQUIRE_FALSE(device.begin_frame());
+        for (int draw = 0; draw < 3; ++draw) REQUIRE(device.upload_transient(data, 200));
+        REQUIRE_FALSE(device.end_frame());
+    }
+    CHECK(device.native_resources() == baseline + 2); // two upload buffers plus the target and pipeline
+    CHECK(device.stats().transient_high_water <= 1024);
+
+    NullGraphicsDevice disabled;
+    REQUIRE(disabled.initialize(nullptr, {3, 0}));
+    REQUIRE_FALSE(disabled.begin_frame());
+    CHECK(disabled.upload_transient(data, 16).diagnostic.code == RhiError::unsupported);
+    REQUIRE_FALSE(disabled.end_frame());
+}
+
+TEST_CASE("A failed submission completes its frame and still retires resources", "[rhi-api]") {
+    BlockingDevice device;
+    REQUIRE(device.initialize(nullptr, {1, 1024}));
+    const auto doomed = buffer(device, BufferUsage::vertex);
+    REQUIRE_FALSE(device.begin_frame());
+    CHECK(device.destroy(doomed));
+    device.fail_submit = true;
+    CHECK_THROWS_AS(device.end_frame(), std::runtime_error);
+    device.fail_submit = false;
+    CHECK(device.stats().completed_frames == device.stats().submitted_frames);
+    empty_frame(device); // no wait on the failed frame: it never reached the GPU
+    CHECK(device.waited.empty());
+    CHECK(device.stats().pending_retirements == 0);
 }
