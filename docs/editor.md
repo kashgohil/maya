@@ -35,6 +35,7 @@ Numbers that change every frame are sampled four times a second in the Diagnosti
 | [editor_theme](../apps/editor/editor_theme.hpp) | Palette, style, fonts, and small shared widgets: captions, status dots, pills, and property rows. |
 | [editor_icons](../apps/editor/editor_icons.hpp) | Named Phosphor icon glyphs and the atlas glyph ranges. |
 | [SceneEditor](../apps/editor/scene_editor.hpp) | The open scene's World, atomic edits, undo/redo history, selection, and unsaved-changes state ([scene editing](editing.md)). |
+| [inspector.cpp](../apps/editor/inspector.cpp), [viewport_tools.cpp](../apps/editor/viewport_tools.cpp), [picking](../apps/editor/picking.hpp) | Schema-driven Inspector; gizmo, picking, icons, outlines, and tool bar ([inspector, gizmos, and picking](inspector.md)). |
 | [UiRenderer](../apps/editor/ui_renderer.hpp) | Uploads ImGui vertices and indices to frame upload memory, turns clip rectangles into scissor rectangles, and maps texture IDs to device textures (font atlas and viewport). |
 
 `update` runs in `Application::on_update` and `render` in `on_render`, so the UI is laid out, including the viewport's size, before the viewport renders. The viewport's image then shows the scene rendered in the same frame.
@@ -44,8 +45,8 @@ Numbers that change every frame are sampled four times a second in the Diagnosti
 On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets and Diagnostics as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. Each panel's title carries an icon; the part after `###` in its name (for example `###Viewport`) is its stable ID for layout and tests. The mouse cursor changes over splitters and text fields.
 
 - **Hierarchy:** the scene's entities in display order, each marked by type. Select, rename, create, duplicate, delete, and drag to reparent or reorder, all undoable; see [scene editing](editing.md).
-- **Viewport:** the scene from the editor camera, with a small hint about the navigation controls.
-- **Inspector:** the editor camera's position, speed, and vertical field of view (text fields), and the selection's name, ID, and components. Property editing is #1001.
+- **Viewport:** the scene from the editor camera, with a tool bar for gizmo modes, the transform gizmo, camera and light icons, selection outlines, click-to-select, and a small hint about the controls; see [inspector, gizmos, and picking](inspector.md).
+- **Inspector:** the selection's name and components, with controls generated from the property schemas, plus the editor camera's settings; see [inspector, gizmos, and picking](inspector.md).
 - **Assets:** catalog entries by file name, with kind and load state; hovering shows the path and ID, or a failed entry's error.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 

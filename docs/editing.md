@@ -11,7 +11,8 @@
 | `duplicate_selection()` | Copies each selected subtree with new EntityIds. Selected entities inside another selected subtree are copied once, with their ancestor. Parent references inside the copy are remapped, and children keep their order. Each copy goes right after its original; the root copy is named `Name (1)`, `Name (2)`, and so on, using the first free number. The copies become the selection. |
 | `delete_selection()` | Deletes each selected subtree and clears the selection. |
 | `move(id, target, placement)` | Moves an entity inside, before, or after `target`, or to the end of the roots. The world pose is kept: the new local transform is the inverse of the new parent's world matrix times the entity's world matrix. |
-| `set_component(id, value)` | Replaces a whole validated component value, for the inspector in #1001. |
+| `set_component(id, value)` | Replaces or adds a whole validated component value, from the [Inspector or a gizmo](inspector.md). |
+| `remove_component(id, component)` | Removes a component. A transform cannot be removed while the entity has a parent or children. |
 
 Rejected edits change nothing, record nothing, and return the reason: a missing entity, or a parent without a transform. Moves reject cycles (under itself or a descendant) and entities without transforms. They also reject a pose the new parent cannot represent, such as a rotated child under a rotated, nonuniformly scaled parent, which would need shear. An edit that changes nothing, such as renaming to the same name, is not recorded. Values go through the same schema validation as scene files and inspectors.
 
@@ -29,7 +30,7 @@ Each step stores the before and after records (parent and schema components) of 
 
 Because history holds persistent IDs and values, never runtime handles, undo and redo stay valid across deletion and recreation. An entity deleted and restored by undo comes back with the same ID, and so does a copy removed by undo and restored by redo. After applying, the editor reads back just the touched entities, since the World may normalize values such as quaternions. Its mirror of the scene therefore always matches the World.
 
-- **Groups.** `begin_group(label)` / `end_group()` merge every edit in between into one step. For each entity or child list, the step keeps the first "before" and the latest "after". Groups nest, and only the outermost records. Continuous drags and slider edits in #1001 will use this so that one drag is one undo step. Undo and redo are unavailable while a group is open.
+- **Groups.** `begin_group(label)` / `end_group()` merge every edit in between into one step. For each entity or child list, the step keeps the first "before" and the latest "after". Groups nest, and only the outermost records. The [Inspector and gizmos](inspector.md) use this so that one drag, slider move, or text entry is one undo step. Undo and redo are unavailable while a group is open.
 - **Limit.** At most 256 steps; the oldest are dropped.
 - **Unsaved changes.** `dirty()` is true when the history position differs from the one at the last open or `mark_saved()`. Undoing back to the saved position makes the scene clean again. Editing after an undo discards the redo steps. If the saved position was among them, the scene stays dirty until the next save. The top bar shows a "modified" tag.
 - **Selection.** Each step records the selection before and after it, so undo restores what was selected. The selection never holds a missing entity: every edit, undo, and redo prunes it.
@@ -59,7 +60,7 @@ The Hierarchy lists the scene in display order, each entity marked by type:
 - **Keys:** while the Hierarchy has focus, Delete or Backspace deletes the selection.
 - **Shortcuts:** anywhere in the editor, ⌘Z undoes, ⇧⌘Z or ⌘Y redoes, and ⌘D duplicates. They are ignored while a text field has the keyboard, so Backspace and ⌘Z in a name field edit the text, not the scene. The undo and redo buttons in the top bar show what they will undo or redo.
 
-The Inspector shows the primary selection's name, ID, and components. Failed edits appear in Diagnostics under "edit". Picking in the viewport, selection highlighting, and property editing are #1001; saving is #1002.
+The [Inspector, gizmos, and viewport picking](inspector.md) (#1001) edit the selection through the same history. Failed edits appear in Diagnostics under "edit". Saving is #1002.
 
 ## Tests
 
