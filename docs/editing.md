@@ -11,12 +11,12 @@
 | `duplicate_selection()` | Copies each selected subtree with new EntityIds. Selected entities inside another selected subtree are copied once, with their ancestor. Parent references inside the copy are remapped, and children keep their order. Each copy goes right after its original; the root copy is named `Name (1)`, `Name (2)`, and so on, using the first free number. The copies become the selection. |
 | `delete_selection()` | Deletes each selected subtree and clears the selection. |
 | `move(id, target, placement)` | Moves an entity inside, before, or after `target`, or to the end of the roots. The world pose is kept: the new local transform is the inverse of the new parent's world matrix times the entity's world matrix. |
-| `set_component(id, value)` | Replaces or adds a whole validated component value, from the [Inspector or a gizmo](inspector.md). |
+| `set_component(id, value)` | Replaces or adds a whole validated component value, from the [Inspector or a gizmo](inspector.md). Asset references are checked against the catalog given to `set_validation_context`; without one, only empty references are accepted. |
 | `remove_component(id, component)` | Removes a component. A transform cannot be removed while the entity has a parent or children. |
 
 Rejected edits change nothing, record nothing, and return the reason: a missing entity, or a parent without a transform. Moves reject cycles (under itself or a descendant) and entities without transforms. They also reject a pose the new parent cannot represent, such as a rotated child under a rotated, nonuniformly scaled parent, which would need shear. An edit that changes nothing, such as renaming to the same name, is not recorded. Values go through the same schema validation as scene files and inspectors.
 
-Root order is editor state: the World has no order for roots, and scene files order roots by EntityId. The editor keeps roots in the order they were created or moved, starting from the file's order. It is not yet saved; #1002 decides whether scene files record it. Sibling order under a parent is World state and is saved.
+Root order is editor state: the World has no order for roots. The editor keeps roots in the order they were created or moved, starting from the file's order, and since #1002 saves them in that order (`document()`; see [scene files](projects.md#scene-files)). Sibling order under a parent is World state and is saved.
 
 ## History
 
@@ -60,7 +60,7 @@ The Hierarchy lists the scene in display order, each entity marked by type:
 - **Keys:** while the Hierarchy has focus, Delete or Backspace deletes the selection.
 - **Shortcuts:** anywhere in the editor, ⌘Z undoes, ⇧⌘Z or ⌘Y redoes, and ⌘D duplicates. They are ignored while a text field has the keyboard, so Backspace and ⌘Z in a name field edit the text, not the scene. The undo and redo buttons in the top bar show what they will undo or redo.
 
-The [Inspector, gizmos, and viewport picking](inspector.md) (#1001) edit the selection through the same history. Failed edits appear in Diagnostics under "edit". Saving is #1002.
+The [Inspector, gizmos, and viewport picking](inspector.md) (#1001) edit the selection through the same history, and so do [asset placement and assignment](projects.md#the-assets-panel) (#1002). Failed edits appear in Diagnostics under "edit". Saving, and the prompt before unsaved changes would be lost, are described in [projects and scene files](projects.md).
 
 ## Tests
 

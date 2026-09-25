@@ -61,7 +61,7 @@ The format is line-based UTF-8 text, so it diffs and merges well and is consiste
 | Light kind | Stable choice name: `directional`, `point`, or `spot`. |
 | Asset reference | `none` when unassigned, otherwise the persistent AssetId words. Never a path, lease, handle, or registry token. |
 
-Writing is canonical. Roots are ordered by EntityId, each followed depth-first by its descendants. Components are ordered by ComponentId and properties by schema order. Entity order also records sibling order: children appear in their parent's child order, and loading reproduces that order. Saving, reopening, and saving again produces byte-identical output. When reading, blank lines, `#` comment lines, tabs, and CRLF line endings are accepted. Comments and formatting are not preserved on the next save.
+Writing keeps the document's entity order. `capture_scene` orders roots by EntityId, since the World has no root order, and follows each root depth-first by its descendants. The editor writes roots in its hierarchy order instead, and reads them back in file order ([#1002](projects.md#scene-files)). Components are ordered by ComponentId and properties by schema order. Entity order also records sibling order: children appear in their parent's child order, and loading reproduces that order. Saving, reopening, and saving again produces byte-identical output. When reading, blank lines, `#` comment lines, tabs, and CRLF line endings are accepted. Comments and formatting are not preserved on the next save.
 
 Only persistent data is written: entity IDs, parent IDs, and the [schema](properties.md) properties. World tokens, slots, generations, pointers, derived matrices, asset leases/handles, GPU resources, and source paths never appear. Other native component types, such as components holding asset leases, are runtime state and are not saved. A scene can therefore be saved from any World lifetime and loaded into another.
 
@@ -98,7 +98,7 @@ An asset absent from the catalog is an error, so a scene never loads with an unk
 
 The initial format is `maya-scene 1` and all five component schemas are version 1. Newer format or component versions are rejected with `unsupported_version` before any World is built. No migrations exist yet: a component version older than the schema would be rejected with the missing migration named, and version 0 is malformed.
 
-When a schema changes, [its version increments](properties.md#persistence-and-schema-evolution) and a migration keyed by component and source version is added where the parser checks component versions. A migration rewrites the raw property list into the current shape. The result is then validated through the same schema APIs, so a failed migration produces diagnostics and publishes nothing. Loading an older file never rewrites it. The next explicit save writes current versions, and editors should confirm or back up before overwriting an older file (#1002). Unknown data is rejected, not dropped; a preservation mode would need to be designed explicitly.
+When a schema changes, [its version increments](properties.md#persistence-and-schema-evolution) and a migration keyed by component and source version is added where the parser checks component versions. A migration rewrites the raw property list into the current shape. The result is then validated through the same schema APIs, so a failed migration produces diagnostics and publishes nothing. Loading an older file never rewrites it. The next explicit save writes current versions, and editors should confirm or back up before overwriting an older file. No older version exists yet; the #1002 editor writes a scene only on an explicit Save. Unknown data is rejected, not dropped; a preservation mode would need to be designed explicitly.
 
 ## Numerical stability
 
@@ -106,7 +106,7 @@ Save/reopen preserves float values exactly. [Transform validation](spatial.md) n
 
 ## Threading, cost, and limits
 
-Capture, validation, and instantiation follow the World's single-owner-thread rule. Call `capture_scene` outside World callbacks and commits. Resolvers must be read-only. File I/O is synchronous and reads the whole file into memory; there is no size cap, streaming, or cell partitioning yet. Prefab instances, cross-scene references, undo integration, and editor dirty-state handling (#1000/#1002) are separate work.
+Capture, validation, and instantiation follow the World's single-owner-thread rule. Call `capture_scene` outside World callbacks and commits. Resolvers must be read-only. File I/O is synchronous and reads the whole file into memory; there is no size cap, streaming, or cell partitioning yet. Prefab instances and cross-scene references are separate work. Undo and unsaved-changes handling live in the editor ([editing](editing.md), [projects](projects.md)).
 
 A bounded Release CPU run on the development machine gave these timings. Each entity has a name, transform, and mesh renderer, grouped under parents of ten:
 

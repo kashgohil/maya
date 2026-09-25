@@ -21,11 +21,11 @@ Each property's control comes from its schema descriptor:
 | quaternion | Euler angles in degrees, rotation = Rz·Ry·Rx. They are kept stable during a drag so they do not jump at ±180°, and gimbal lock is handled. |
 | boolean | Checkbox. |
 | light kind | Menu of the schema's choices. |
-| mesh / material reference | Menu of catalog assets of that kind, plus None. A reference to an asset missing from the catalog shows as "Missing" in amber. |
+| mesh / material reference | Menu of catalog assets of that kind, plus None. An asset of that kind dragged from the [Assets panel](projects.md#the-assets-panel) can be dropped on it. A reference to an asset missing from the catalog shows as "Missing" in amber; an asset that failed to load shows in red, with the reason as a tooltip. |
 
 A light shows only the properties its kind uses: range for point and spot lights, cone angles for spot lights. Descriptions appear as tooltips. The editor camera's settings sit below the selection's components.
 
-**Validation.** Every edit runs `edit_properties` with the project's asset context. A rejected value leaves the component unchanged, and the reason appears in red under the entity's name. Examples are a near clip beyond the far clip, a nonpositive scale, or an asset of the wrong kind. The same happens for World rejections such as a transform the hierarchy cannot represent.
+**Validation.** Every edit runs `edit_properties` with the project's asset context, and SceneEditor checks the result against the same catalog (a fix in #1002: before it, choosing any asset was refused). A rejected value leaves the component unchanged, and the reason appears in red under the entity's name. Examples are a near clip beyond the far clip, a nonpositive scale, or an asset of the wrong kind. The same happens for World rejections such as a transform the hierarchy cannot represent.
 
 **One step per interaction.** Activating a control (starting a drag or clicking into a field) opens an [undo group](editing.md#history). Every change it makes applies immediately, so the viewport updates live, and deactivating it closes the group as one step labelled "Edit ⟨component⟩". A group left open by a control that disappeared mid-drag is closed at the end of the frame. **Typing** into a drag field (⌘-click or double-click it) applies only when entry ends (Enter or clicking away), never per keystroke. A half-typed number such as "9" on the way to "900" therefore never becomes an edit.
 

@@ -79,7 +79,7 @@ Buffers, textures, samplers, and pipelines share the [#996 retirement rules](rhi
 
 ## Integration, cost, and verification
 
-The [basic scene catalog](../samples/basic_scene/assets/catalog.maya) gives the sample's pyramid and cube meshes and four material files persistent IDs. The sample resolves that catalog through the application FileSystem, loads it through a project-rooted registry, and opens `basic.scene`, whose mesh renderers reference those IDs. Since #998, [render extraction](renderer.md) acquires the meshes and materials each frame and shades with the material factors.
+The [basic scene catalog](../samples/basic_scene/assets/catalog.maya) gives the sample's pyramid and cube meshes and four material files persistent IDs. The sample resolves that catalog through the application FileSystem, loads it through a project-rooted registry, and opens `basic.scene`, whose mesh renderers reference those IDs. Since #1002, a [project file](projects.md#projects) names a project's content root and catalog; the editor opens projects through it, rooting the registry at the content root, and never uses the FileSystem search roots for project content. Since #998, [render extraction](renderer.md) acquires the meshes and materials each frame and shades with the material factors.
 
 Registry ID lookup is average O(1); source loading happens once per resident version. Lease acquire/copy increments a shared ownership count. Registration canonicalizes paths and performs filesystem checks. `evict_unused()` and metadata export are O(catalog size), and catalog metadata is retained for the registry lifetime. These choices need profiling against production asset counts; the correctness tests do not promise game capacity.
 

@@ -47,10 +47,10 @@ On its first frame the shell docks the panels: Hierarchy on the left, Inspector 
 - **Hierarchy:** the scene's entities in display order, each marked by type. Select, rename, create, duplicate, delete, and drag to reparent or reorder, all undoable; see [scene editing](editing.md).
 - **Viewport:** the scene from the editor camera, with a tool bar for gizmo modes, the transform gizmo, camera and light icons, selection outlines, click-to-select, and a small hint about the controls; see [inspector, gizmos, and picking](inspector.md).
 - **Inspector:** the selection's name and components, with controls generated from the property schemas, plus the editor camera's settings; see [inspector, gizmos, and picking](inspector.md).
-- **Assets:** catalog entries by file name, with kind and load state; hovering shows the path and ID, or a failed entry's error.
+- **Assets:** the project's scenes, meshes, and materials, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 
-Until project open/save lands in #1002, the editor opens the sample project's `basic.scene` and edits it in memory only; nothing is written back. If the sample cannot be found, it starts with empty panels, and the diagnostics panel explains why.
+The top bar shows the project and the open scene; the scene's name opens a menu to open, create, and save scenes. `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
 
 ## Viewport size and display scale
 
@@ -110,7 +110,8 @@ The Diagnostics panel shows the current state:
 
 It also lists this frame's extraction problems, such as missing meshes and materials, and a log. The log records:
 
-- scene and catalog load errors;
+- projects, catalogs, and scenes opened, saved, or refused, with the reasons;
+- asset reloads;
 - viewport target failures and reallocations;
 - renderer errors, for example a pipeline that fails to compile;
 - GPU errors taken from the device, also written to stderr;
@@ -126,6 +127,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 ## Limitations
 
 - Layout, window placement, and editor camera state are not saved between runs.
+- Dialogs are drawn in the editor window; there are no native open or save panels.
 - No IME composition, gamepad or keyboard navigation of the UI, or multiple OS windows (ImGui multi-viewports).
 - The cursor-shape service covers arrow, text, hand, and horizontal/vertical resize. GLFW 3.3 has no diagonal or "not allowed" cursors.
 

@@ -71,7 +71,7 @@ A view of the scene. A way to select something and move, turn, or scale it. An i
 
 A new zone should be something one person can author and revise without editing the engine in C++.
 
-The editor today is the window that work will land in. It has a hierarchy, a viewport, an inspector, an asset list, and a diagnostics panel, docked and resizable. The scene can be edited, with gizmos, an inspector, and undo; saving is next. It is already a separate program from the player, so the game you give to someone else is only the game.
+The editor today is the window that work will land in. It has a hierarchy, a viewport, an inspector, an asset browser, and a diagnostics panel, docked and resizable. It opens a project, and its scenes can be built from the project's meshes and materials, edited with gizmos, an inspector, and undo, and saved. It is already a separate program from the player, so the game you give to someone else is only the game.
 
 ## What you can run today
 
@@ -79,7 +79,7 @@ Three programs build from this repository.
 
 **Player.** The program a finished game grows out of. It opens the sample's saved scene: a pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly freely. The view renders offscreen and is then presented in the window. It cannot choose a different project yet. Project selection is still in its entry point.
 
-**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Click an object to select it; move, rotate, or scale it with the gizmo (W, E, R); and edit its properties, lights, camera, mesh, and material in the inspector. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them. Undo or redo any of it with ⌘Z and ⇧⌘Z. Saving comes next.
+**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Click an object to select it; move, rotate, or scale it with the gizmo (W, E, R); and edit its properties, lights, camera, mesh, and material in the inspector. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them. Drag a mesh from the Assets panel into the viewport to place it, and a material onto an object to paint it. Undo or redo any of it with ⌘Z and ⇧⌘Z. Save with ⌘S, or start a new scene with ⌘N; the editor asks before unsaved changes would be lost.
 
 **Sample.** The same scene as the player, kept as a sample, so the demo can stay a demo while the player becomes a game.
 
@@ -108,11 +108,16 @@ cmake --build build -j 4
 ./build/maya_sample
 ```
 
-`maya_player` and `maya_sample` capture the mouse. `maya_editor` captures it only while you fly. The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
+`maya_player` and `maya_sample` capture the mouse. `maya_editor` captures it only while you fly. Give the editor a project to open, as a `project.maya` file or its folder; without one it opens the sample project:
+
+```bash
+./build/maya_editor samples/basic_scene
+```
+ The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
 ### Where the files are
 
-Shaders live in `resources/shaders/metal/`; the editor's fonts (Inter and Geist Mono, SIL Open Font License) and icons (Phosphor, MIT) live in `resources/fonts/`. The sample's catalog, scene, meshes, and materials are in `samples/basic_scene/assets/`.
+Shaders live in `resources/shaders/metal/`; the editor's fonts (Inter and Geist Mono, SIL Open Font License) and icons (Phosphor, MIT) live in `resources/fonts/`. The sample project is `samples/basic_scene/project.maya`; its catalog, scene, meshes, and materials are in `samples/basic_scene/assets/`. A project can be copied or moved anywhere; its file names its content folder ([projects](docs/projects.md)).
 
 Maya searches in this order:
 
