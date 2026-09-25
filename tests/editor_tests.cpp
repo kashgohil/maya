@@ -645,3 +645,204 @@ TEST_CASE("Opening a scene replaces the editing session: history and selection s
     CHECK(harness.shell.scene() == second);
     CHECK(second->can_undo());
 }
+
+namespace {
+/// Screen position (points) of a world point in the editor viewport, from the shell's own camera.
+ImVec2 on_screen(Harness& harness, const math::Vec3& point) {
+    const auto& layout = harness.shell.layout();
+    const auto request = harness.shell.viewport_request();
+    const auto view = make_render_view(harness.shell.camera().camera, harness.shell.camera().pose(), request.width, request.height);
+    REQUIRE(view);
+    const auto clip = view->matrices.view_projection * math::Vec4(point, 1.0f);
+    return {layout.viewport_min.x + (clip.x / clip.w * 0.5f + 0.5f) * (layout.viewport_max.x - layout.viewport_min.x),
+            layout.viewport_min.y + (0.5f - clip.y / clip.w * 0.5f) * (layout.viewport_max.y - layout.viewport_min.y)};
+}
+TransformComponent transform_of(SceneEditor& scene, EntityId id) {
+    auto value = read_component(scene.world(), *scene.world().find(id), ComponentId::transform);
+    REQUIRE(value);
+    return std::get<TransformComponent>(*value);
+}
+/// Presses at `from`, moves to `to` over several frames, and releases.
+void drag(Harness& harness, ImVec2 from, ImVec2 to, int steps = 10) {
+    harness.frame({MouseMoveEvent{from.x, from.y}});
+    harness.frame({MouseButtonEvent{MouseButton::left, true, KeyModifiers::none}});
+    for (int step = 1; step <= steps; ++step) {
+        const auto t = float(step) / float(steps);
+        harness.frame({MouseMoveEvent{from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t}});
+    }
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
+}
+} // namespace
+
+TEST_CASE("Clicking the viewport picks the nearest object and steps through overlapping ones", "[editor][tools]") {
+    Harness harness;
+    harness.shell.camera() = EditorCamera::looking_at({0.0f, 2.5f, 7.0f}, {0.0f, 0.0f, 0.0f});
+    harness.frames(3);
+    auto& scene = *harness.shell.scene();
+    const auto pyramid = find_named(scene, "Pyramid"), ground = find_named(scene, "Ground");
+    // A point on the pyramid's left, clear of the gizmo that appears at its origin once selected;
+    // the ground lies behind it.
+    const auto center = on_screen(harness, {-0.3f, 0.05f, 0.0f});
+    press(harness, center);
+    CHECK(scene.selection() == std::vector{pyramid});
+    harness.frames(1);
+    CHECK(harness.shell.layout().row(pyramid)); // the hierarchy shows the picked entity
+    press(harness, center);
+    CHECK(scene.selection() == std::vector{ground}); // the same spot again: the next object behind
+    press(harness, center);
+    CHECK(scene.selection() == std::vector{pyramid});
+    // Command-click adds; clicking empty sky clears.
+    harness.frame({KeyEvent{KeyCode::LeftSuper, true, KeyModifiers::super}});
+    press(harness, on_screen(harness, {1.6f, -0.15f, 0.0f})); // the blue cube
+    harness.frame({KeyEvent{KeyCode::LeftSuper, false, KeyModifiers::none}});
+    CHECK(scene.selection().size() == 2);
+    press(harness, {center.x, harness.shell.layout().viewport_min.y + 60.0f});
+    CHECK(scene.selection().empty());
+    // Camera and light icons are clickable.
+    REQUIRE_FALSE(harness.shell.layout().icons.empty());
+    const auto [icon_entity, icon_at] = harness.shell.layout().icons.front();
+    press(harness, icon_at);
+    CHECK(scene.selection() == std::vector{icon_entity});
+}
+
+TEST_CASE("Inspector drags are one undo step; invalid values are refused with a reason", "[editor][tools]") {
+    Harness harness;
+    harness.frames(2);
+    auto& scene = *harness.shell.scene();
+    const auto pyramid = find_named(scene, "Pyramid");
+    scene.select(pyramid);
+    harness.frames(2);
+    const auto history = scene.history_size();
+    const auto before = transform_of(scene, pyramid);
+    const auto* field = harness.shell.layout().field("transform.translation.x");
+    REQUIRE(field);
+    const auto from = ImVec2{(field->min.x + field->max.x) / 2, (field->min.y + field->max.y) / 2};
+    drag(harness, from, {from.x + 120.0f, from.y}, 20); // twenty frames of changes
+    const auto after = transform_of(scene, pyramid);
+    CHECK(after.translation.x > before.translation.x + 0.2f);
+    CHECK(after.translation.y == before.translation.y);
+    CHECK(scene.history_size() == history + 1);
+    CHECK(scene.undo_label() == "Edit Transform");
+    REQUIRE(scene.undo());
+    CHECK(transform_of(scene, pyramid).translation.x == before.translation.x);
+
+    // A camera whose near clip would pass its far clip is refused, and the reason is shown.
+    const auto camera = find_named(scene, "Camera");
+    scene.select(camera);
+    harness.frames(2);
+    const auto* near_field = harness.shell.layout().field("camera.near_clip");
+    REQUIRE(near_field);
+    const auto near = ImVec2{(near_field->min.x + near_field->max.x) / 2, (near_field->min.y + near_field->max.y) / 2};
+    harness.frame({MouseMoveEvent{near.x, near.y}});
+    harness.frame({KeyEvent{KeyCode::LeftSuper, true, KeyModifiers::super}}); // command-click types a value
+    harness.frame({MouseButtonEvent{MouseButton::left, true, KeyModifiers::super}});
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::super}});
+    harness.frame({KeyEvent{KeyCode::LeftSuper, false, KeyModifiers::none}});
+    REQUIRE(harness.shell.ui_wants_text());
+    harness.frame({KeyEvent{KeyCode::LeftSuper, true, KeyModifiers::super}});
+    harness.frame(key(KeyCode::A, true)); // select all
+    harness.frame(key(KeyCode::A, false));
+    harness.frame({KeyEvent{KeyCode::LeftSuper, false, KeyModifiers::none}});
+    for (const auto c : std::string("99999")) harness.frame({TextEvent{uint32_t(c)}});
+    harness.frame(key(KeyCode::Enter, true));
+    harness.frame(key(KeyCode::Enter, false));
+    const auto value = std::get<CameraComponent>(*read_component(scene.world(), *scene.world().find(camera), ComponentId::camera));
+    CHECK(value.near_clip == Approx(0.1f));
+    CHECK(harness.shell.edit_error().find("clip") != std::string::npos);
+}
+
+TEST_CASE("Gizmo drags move along an axis as one undo step and respect the hierarchy", "[editor][tools]") {
+    Harness harness;
+    harness.shell.camera() = EditorCamera::looking_at({0.0f, 2.0f, 5.0f}, {0.0f, 0.0f, 0.0f});
+    harness.frames(2);
+    auto& scene = *harness.shell.scene();
+    const auto pyramid = find_named(scene, "Pyramid");
+    scene.select(pyramid);
+    harness.frames(2);
+    REQUIRE(harness.shell.layout().gizmo_origin);
+    const auto origin = *harness.shell.layout().gizmo_origin;
+    const auto world = *scene.world().world_matrix(*scene.world().find(pyramid));
+    const auto tip = on_screen(harness, {world.at(0, 3) + 1.0f, world.at(1, 3), world.at(2, 3)});
+    auto direction = ImVec2{tip.x - origin.x, tip.y - origin.y};
+    const auto length = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+    direction = {direction.x / length, direction.y / length};
+    // Find the X handle along its screen direction.
+    auto grab = std::optional<ImVec2>{};
+    for (float distance = 20.0f; distance < 200.0f && !grab; distance += 4.0f) {
+        const auto at = ImVec2{origin.x + direction.x * distance, origin.y + direction.y * distance};
+        harness.frame({MouseMoveEvent{at.x, at.y}});
+        harness.frame();
+        if (harness.shell.gizmo_hovered()) grab = at;
+    }
+    REQUIRE(grab);
+    const auto before = transform_of(scene, pyramid);
+    const auto history = scene.history_size();
+    drag(harness, *grab, {grab->x + direction.x * 60.0f, grab->y + direction.y * 60.0f});
+    const auto after = transform_of(scene, pyramid);
+    CHECK(after.translation.x > before.translation.x + 0.05f);
+    CHECK(after.translation.y == Approx(before.translation.y).margin(1e-4));
+    CHECK(after.translation.z == Approx(before.translation.z).margin(1e-4));
+    CHECK(scene.history_size() == history + 1);
+    CHECK(scene.undo_label() == "Move Pyramid");
+    CHECK_FALSE(harness.shell.gizmo_active());
+    REQUIRE(scene.undo());
+    CHECK(transform_of(scene, pyramid).translation.x == before.translation.x);
+}
+
+TEST_CASE("Gizmo matrices become validated local transforms under their parents", "[editor][tools]") {
+    Harness harness;
+    harness.frames(2);
+    auto& scene = *harness.shell.scene();
+    // A parent rotated about Z with nonuniform scale, and an unrotated child.
+    REQUIRE(scene.create("Parent"));
+    const auto parent = *scene.primary();
+    REQUIRE(scene.set_component(parent, TransformComponent{{1, 0, 0}, math::Quat::from_axis_angle({0, 0, 1}, 0.6f), {1, 3, 1}}));
+    REQUIRE(scene.create("Child", parent));
+    const auto child = *scene.primary();
+    const auto world = *scene.world().world_matrix(*scene.world().find(child));
+    // Moving in world space is fine: the translation maps back into the parent.
+    auto moved = world;
+    moved.at(0, 3) += 2.0f;
+    REQUIRE(harness.shell.apply_world_matrix(child, moved));
+    const auto result = *scene.world().world_matrix(*scene.world().find(child));
+    CHECK(result.at(0, 3) == Approx(world.at(0, 3) + 2.0f).margin(1e-4));
+    CHECK(result.at(1, 3) == Approx(world.at(1, 3)).margin(1e-4));
+    // Rotating it in world space would need shear from this parent: refused, nothing changes.
+    const auto history = scene.history_size();
+    const auto sheared = math::Quat::from_axis_angle({1, 0, 0}, 0.7f).to_mat4() * result;
+    CHECK_FALSE(harness.shell.apply_world_matrix(child, sheared));
+    CHECK(harness.shell.edit_error().find("shear") != std::string::npos);
+    CHECK(scene.history_size() == history);
+}
+
+TEST_CASE("Tool keys act only over the viewport and never while typing", "[editor][tools]") {
+    Harness harness;
+    harness.frames(2);
+    const auto& layout = harness.shell.layout();
+    const auto center = ImVec2{(layout.viewport_min.x + layout.viewport_max.x) / 2, (layout.viewport_min.y + layout.viewport_max.y) / 2};
+    harness.frame({MouseMoveEvent{center.x, center.y}});
+    harness.frame(key(KeyCode::E, true, 'e'));
+    harness.frame(key(KeyCode::E, false));
+    CHECK(harness.shell.gizmo_operation() == GizmoOperation::rotate);
+    harness.frame(key(KeyCode::R, true, 'r'));
+    harness.frame(key(KeyCode::R, false));
+    CHECK(harness.shell.gizmo_operation() == GizmoOperation::scale);
+    harness.frame(key(KeyCode::X, true, 'x'));
+    harness.frame(key(KeyCode::X, false));
+    CHECK(harness.shell.gizmo_local());
+    // Over the hierarchy, W does nothing.
+    const auto* row = layout.hierarchy_rows.empty() ? nullptr : &layout.hierarchy_rows.front();
+    REQUIRE(row);
+    harness.frame({MouseMoveEvent{row->min.x + 40.0f, row->min.y + 5.0f}});
+    harness.frame(key(KeyCode::W, true, 'w'));
+    harness.frame(key(KeyCode::W, false));
+    CHECK(harness.shell.gizmo_operation() == GizmoOperation::scale);
+    // While typing in a field, even with the pointer over the viewport, W is text.
+    click(harness, {layout.camera_speed_min.x + 6.0f, (layout.camera_speed_min.y + layout.camera_speed_max.y) / 2.0f});
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
+    REQUIRE(harness.shell.ui_wants_text());
+    harness.frame({MouseMoveEvent{center.x, center.y}});
+    harness.frame(key(KeyCode::W, true, 'w'));
+    harness.frame(key(KeyCode::W, false));
+    CHECK(harness.shell.gizmo_operation() == GizmoOperation::scale);
+}

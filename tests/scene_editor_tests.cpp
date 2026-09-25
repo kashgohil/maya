@@ -318,3 +318,28 @@ TEST_CASE("Random edit sequences undo and redo exactly", "[editor][history]") {
         check_consistent(editor);
     }
 }
+
+TEST_CASE("Components can be added and removed as undoable steps", "[editor][history]") {
+    auto ids = std::vector<EntityId>{};
+    auto editor = SceneEditor(scene({{"Parent", {}}, {"Child", 0}, {"Loose", {}}}, &ids));
+    REQUIRE(editor.set_component(ids[2], CameraComponent{}));
+    CHECK(editor.undo_label() == "Edit Camera");
+    CHECK(editor.world().has<CameraComponent>(*editor.world().find(ids[2])));
+    REQUIRE(editor.remove_component(ids[2], ComponentId::camera));
+    CHECK(editor.undo_label() == "Remove Camera");
+    CHECK_FALSE(editor.world().has<CameraComponent>(*editor.world().find(ids[2])));
+    CHECK_FALSE(editor.remove_component(ids[2], ComponentId::camera)); // not there any more
+    // A transform in a hierarchy cannot go; a loose entity's can, and undo restores it.
+    CHECK_FALSE(editor.remove_component(ids[0], ComponentId::transform));
+    CHECK_FALSE(editor.remove_component(ids[1], ComponentId::transform));
+    REQUIRE(editor.remove_component(ids[2], ComponentId::transform));
+    CHECK_FALSE(editor.world().has<TransformComponent>(*editor.world().find(ids[2])));
+    REQUIRE(editor.undo());
+    REQUIRE(editor.undo());
+    CHECK(editor.world().has<CameraComponent>(*editor.world().find(ids[2])));
+    CHECK(editor.world().has<TransformComponent>(*editor.world().find(ids[2])));
+    // Invalid values are rejected by schema validation before reaching the World.
+    CHECK_FALSE(editor.set_component(ids[2], CameraComponent{1.0f, 5.0f, 1.0f})); // far must exceed near
+    CHECK_FALSE(editor.set_component(ids[0], TransformComponent{{}, {}, {-1.0f, 1.0f, 1.0f}}));
+    check_consistent(editor);
+}

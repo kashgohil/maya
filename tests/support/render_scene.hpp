@@ -58,7 +58,8 @@ public:
         if (found == m_meshes.end()) return {{}, {AssetError::invalid_data, "no inline mesh " + path.string()}};
         auto mesh = std::make_unique<Mesh>(m_device, found->second.vertices, found->second.indices);
         if (!mesh->valid()) return {{}, {AssetError::device_unavailable, "mesh upload failed"}};
-        return {std::make_shared<const MeshAsset>(std::move(mesh)), {}};
+        return {std::make_shared<const MeshAsset>(std::move(mesh),
+                    MeshGeometry::from(found->second.vertices, found->second.indices)), {}};
     }
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override {
         ++*m_loads;
