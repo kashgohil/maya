@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/engine.hpp"
 #include "maya/rhi/null_device.hpp"
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,8 @@ struct Session {
     bool application_throws = false;
     bool render_throws = false;
     bool resize_throws = false;
+    bool allow_close = true;
+    bool close_throws = false;
     bool alive = false;
     bool input_enabled = true;
 };
@@ -74,6 +77,11 @@ public:
     void on_resize(uint32_t, uint32_t) override {
         m_session.events.push_back("app.resize");
         if (m_session.resize_throws) throw std::runtime_error("resize failure");
+    }
+    bool on_close_requested() override {
+        m_session.events.push_back("app.close");
+        if (m_session.close_throws) throw std::runtime_error("close failure");
+        return m_session.allow_close;
     }
     void on_stop() noexcept override {
         m_session.events.push_back(m_session.alive ? "app.stop.live" : "app.stop.dead");
@@ -193,4 +201,25 @@ TEST_CASE("Engine handles idle calls and invalid frame input", "[core][engine]")
     CHECK_FALSE(engine.tick(std::numeric_limits<float>::quiet_NaN()));
     CHECK(engine.resize(0, 0));
     CHECK(session.events == events);
+}
+
+TEST_CASE("Engine asks the application before the window closes", "[core][engine]") {
+    Session session;
+    maya::Engine engine;
+    CHECK(engine.request_close()); // nothing running, nothing to ask
+    CHECK(session.events.empty());
+    REQUIRE(start(engine, session));
+    session.allow_close = false; // e.g. unsaved changes to ask about
+    CHECK_FALSE(engine.request_close());
+    CHECK(engine.is_initialized());
+    session.allow_close = true;
+    CHECK(engine.request_close());
+    // An application that fails to answer does not keep the window open.
+    session.allow_close = false;
+    session.close_throws = true;
+    CHECK(engine.request_close());
+    CHECK(std::ranges::count(session.events, std::string("app.close")) == 3);
+    engine.shutdown();
+    CHECK(engine.request_close());
+    CHECK(std::ranges::count(session.events, std::string("app.close")) == 3);
 }

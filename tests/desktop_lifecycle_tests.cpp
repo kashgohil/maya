@@ -78,6 +78,12 @@ TEST_CASE("Failed and overlapping windows do not invalidate surviving windows", 
         CHECK(first.get_native_handle() != nullptr);
         CHECK_FALSE(first.should_close());
         CHECK(first.framebuffer_size().first > 0);
+        // A close request can be withdrawn (an application asking about unsaved changes) and repeated.
+        first.set_should_close(true);
+        CHECK(first.should_close());
+        first.set_should_close(false);
+        first.poll_events();
+        CHECK_FALSE(first.should_close());
     }
 }
 
@@ -171,7 +177,7 @@ TEST_CASE("Player and editor render their offscreen views through window resizes
     applications.emplace_back("player", &maya::samples::create_basic_scene);
 #endif
 #if MAYA_TEST_EDITOR
-    applications.emplace_back("editor", &maya::editor::create_editor_application);
+    applications.emplace_back("editor", [] { return maya::editor::create_editor_application(); });
 #endif
     if (applications.empty()) SKIP("Player and editor targets are not built");
     for (const auto& [name, create] : applications) {

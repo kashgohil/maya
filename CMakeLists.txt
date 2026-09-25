@@ -227,7 +227,7 @@ if(BUILD_TESTING)
     add_test(NAME maya_renderer COMMAND maya_renderer_tests)
     set_tests_properties(maya_renderer PROPERTIES LABELS "cpu;renderer" TIMEOUT 60)
 
-    add_executable(maya_asset_tests tests/asset_tests.cpp)
+    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp)
     target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain)
     target_include_directories(maya_asset_tests PRIVATE tests)
     maya_target_options(maya_asset_tests)
@@ -263,7 +263,7 @@ if(BUILD_TESTING)
 
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
-            tests/picking_tests.cpp)
+            tests/picking_tests.cpp tests/editor_project_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain)
         maya_target_options(maya_editor_tests)

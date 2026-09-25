@@ -343,3 +343,39 @@ TEST_CASE("Components can be added and removed as undoable steps", "[editor][his
     CHECK_FALSE(editor.set_component(ids[0], TransformComponent{{}, {}, {-1.0f, 1.0f, 1.0f}}));
     check_consistent(editor);
 }
+
+TEST_CASE("Root order comes from the scene file and is written back when saving", "[editor][history]") {
+    auto ids = std::vector<EntityId>{};
+    // Roots A, B, C (ascending IDs) with a child under B; the file lists them C, A, B.
+    auto editor = SceneEditor(scene({{"A", {}}, {"B", {}}, {"C", {}}, {"B child", 1}}, &ids), {ids[2], ids[0], ids[1]});
+    CHECK(editor.roots() == std::vector{ids[2], ids[0], ids[1]});
+    // Roots missing from the given order follow by ID; unknown IDs are ignored.
+    CHECK(SceneEditor(scene({{"A", {}}, {"B", {}}, {"C", {}}}), {ids[1], EntityId{0xdead, 1}}).roots() ==
+          std::vector{ids[1], ids[0], ids[2]});
+
+    REQUIRE(editor.move(ids[0], ids[2], Placement::before));
+    CHECK(editor.roots() == std::vector{ids[0], ids[2], ids[1]});
+    // The document lists roots in display order, each followed by its descendants.
+    const auto document = editor.document();
+    auto order = std::vector<EntityId>{};
+    for (const auto& entity : document.entities) order.push_back(entity.id);
+    CHECK(order == std::vector{ids[0], ids[2], ids[1], ids[3]});
+    CHECK(document.entities[3].parent == ids[1]);
+    // Its text keeps that order, and reading it back gives the same roots and the same text.
+    auto first = std::ostringstream{};
+    REQUIRE(write_scene(first, document, {}).empty());
+    auto input = std::istringstream(first.str());
+    auto read = read_scene(input, {});
+    REQUIRE(read);
+    auto roots = std::vector<EntityId>{};
+    for (const auto& entity : read.document.entities) if (!entity.parent) roots.push_back(entity.id);
+    auto built = instantiate_scene(read.document, {});
+    REQUIRE(built);
+    auto reopened = SceneEditor(std::move(built.world), roots);
+    CHECK(reopened.roots() == editor.roots());
+    auto second = std::ostringstream{};
+    REQUIRE(write_scene(second, reopened.document(), {}).empty());
+    CHECK(second.str() == first.str());
+    // The document matches the World exactly apart from root order.
+    CHECK(text(reopened.world()) == text(editor.world()));
+}

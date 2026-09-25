@@ -44,9 +44,9 @@ TEST_CASE("Metal editor draws docked panels and the scene viewport at Retina sca
                                  FileSystem::read_text("resources/shaders/metal/editor_ui.metal"), {},
                                  {read("resources/fonts/Inter-Regular.ttf"), read("resources/fonts/Inter-SemiBold.ttf"),
                                   read("resources/fonts/GeistMono-Regular.ttf"), read("resources/fonts/Phosphor-Light.ttf")});
-        const auto catalog = FileSystem::resolve("samples/basic_scene/assets/catalog.maya");
-        REQUIRE(catalog);
-        REQUIRE(shell.open_scene(*catalog, catalog->parent_path() / "basic.scene"));
+        const auto project = FileSystem::resolve("samples/basic_scene/project.maya");
+        REQUIRE(project);
+        REQUIRE(shell.open_project(*project));
 
         auto metrics = WindowMetrics{800, 500, 1600, 1000};
         auto window = TextureHandle{};
