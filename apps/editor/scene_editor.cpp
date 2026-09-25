@@ -43,7 +43,7 @@ void put_component(EntityRecord& record, ComponentValue value) {
     }
 }
 
-void remove_component(WorldCommands& commands, EntityTarget target, ComponentId id) {
+void remove_command(WorldCommands& commands, EntityTarget target, ComponentId id) {
     switch (id) {
     case ComponentId::name: commands.remove<NameComponent>(target); break;
     case ComponentId::transform: commands.remove<TransformComponent>(target); break;
@@ -270,7 +270,7 @@ EditResult SceneEditor::apply(const SceneChange& change, bool forward) {
                     else commands.add(*handle, std::move(component));
                 }, *wanted);
             } else if (now) {
-                remove_component(commands, *handle, schema.id);
+                remove_command(commands, *handle, schema.id);
             }
         }
     }
@@ -441,6 +441,19 @@ EditResult SceneEditor::set_component(EntityId id, ComponentValue value) {
     auto change = ChangeBuilder(m_state);
     change.set(id, std::move(edited));
     return commit(label, change.take(), m_selection);
+}
+
+EditResult SceneEditor::remove_component(EntityId id, ComponentId component) {
+    const auto* entity = record(id);
+    if (!entity) return {false, "The entity no longer exists"};
+    if (!find_component(*entity, component)) return {false, "The entity has no such component"};
+    if (component == ComponentId::transform && (entity->parent || !m_state.children_of(id).empty()))
+        return {false, "Detach this entity and its children before removing its transform"};
+    auto edited = *entity;
+    std::erase_if(edited.components, [&](const ComponentValue& value) { return component_id(value) == component; });
+    auto change = ChangeBuilder(m_state);
+    change.set(id, std::move(edited));
+    return commit(std::string("Remove ") + std::string(component_schema(component)->label), change.take(), m_selection);
 }
 
 EditResult SceneEditor::duplicate_selection() {

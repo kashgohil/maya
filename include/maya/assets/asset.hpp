@@ -22,12 +22,16 @@ struct AssetDiagnostic {
 
 class MeshAsset {
 public:
-    explicit MeshAsset(std::unique_ptr<Mesh> mesh) : m_mesh(std::move(mesh)) {
+    /// `geometry` is an optional CPU copy of the triangles; without it the mesh cannot be picked.
+    explicit MeshAsset(std::unique_ptr<Mesh> mesh, MeshGeometry geometry = {})
+        : m_mesh(std::move(mesh)), m_geometry(std::move(geometry)) {
         if (!m_mesh || !m_mesh->valid()) throw std::invalid_argument("MeshAsset requires a valid mesh");
     }
     const Mesh& mesh() const noexcept { return *m_mesh; }
+    const MeshGeometry& geometry() const noexcept { return m_geometry; }
 private:
     std::unique_ptr<Mesh> m_mesh;
+    MeshGeometry m_geometry;
 };
 /// Initial material factors, interpreted by the future renderer; linear base color.
 struct MaterialAsset {

@@ -34,7 +34,7 @@ bool parse_index(std::string_view text, size_t positions, size_t uvs, size_t nor
 
 ModelLoadResult ModelLoader::load_obj_checked(GraphicsDevice& device, const std::string& path) {
     auto file = std::ifstream(path);
-    if (!file) return {{}, "Cannot open OBJ: " + path};
+    if (!file) return {{}, "Cannot open OBJ: " + path, {}};
     std::vector<math::Vec3> positions, normals;
     std::vector<math::Vec2> uvs;
     std::vector<Vertex> vertices;
@@ -43,7 +43,7 @@ ModelLoadResult ModelLoader::load_obj_checked(GraphicsDevice& device, const std:
     std::string line;
     size_t line_number = 0;
     const auto fail = [&](const std::string& why) -> ModelLoadResult {
-        return {{}, path + ":" + std::to_string(line_number) + ": " + why};
+        return {{}, path + ":" + std::to_string(line_number) + ": " + why, {}};
     };
     while (std::getline(file,line)) {
         ++line_number;
@@ -86,7 +86,7 @@ ModelLoadResult ModelLoader::load_obj_checked(GraphicsDevice& device, const std:
     if (indices.empty()) return fail("OBJ contains no triangular faces");
     auto mesh = std::make_unique<Mesh>(device,vertices,indices);
     if (!mesh->valid()) return fail("GPU mesh allocation failed or device session is unavailable");
-    return {std::move(mesh), {}};
+    return {std::move(mesh), {}, MeshGeometry::from(vertices, indices)};
 }
 
 } // namespace maya

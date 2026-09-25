@@ -150,6 +150,15 @@ if(MAYA_BUILD_EDITOR)
     target_include_directories(MayaImGui SYSTEM PUBLIC ${imgui_SOURCE_DIR})
     target_include_directories(MayaImGui PUBLIC apps/editor/imgui)
     target_compile_definitions(MayaImGui PUBLIC IMGUI_USER_CONFIG="maya_imgui_config.h")
+    # ImGuizmo (MIT) draws the transform gizmos. Pinned to the last commit before it moved to the
+    # ImGui 1.92.8 drawing API; only its gizmo source is built, not its own CMake project.
+    FetchContent_Declare(imguizmo
+        GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+        GIT_TAG 22a6c900a33dcd7a72576bddc7bd21651a2deed4
+        SOURCE_SUBDIR not-a-cmake-project)
+    FetchContent_MakeAvailable(imguizmo)
+    target_sources(MayaImGui PRIVATE ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp)
+    target_include_directories(MayaImGui SYSTEM PUBLIC ${imguizmo_SOURCE_DIR}/src)
 
     add_library(MayaEditor STATIC
         apps/editor/editor_application.cpp
@@ -157,8 +166,11 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/editor_shell.cpp
         apps/editor/editor_theme.cpp
         apps/editor/input_router.cpp
+        apps/editor/inspector.cpp
+        apps/editor/picking.cpp
         apps/editor/scene_editor.cpp
-        apps/editor/ui_renderer.cpp)
+        apps/editor/ui_renderer.cpp
+        apps/editor/viewport_tools.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
     target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImGui)
     maya_target_options(MayaEditor)

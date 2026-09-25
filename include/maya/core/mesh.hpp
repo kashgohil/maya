@@ -2,11 +2,33 @@
 
 #include "maya/rhi/graphics_device.hpp"
 #include "maya/rhi/vertex.hpp"
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <vector>
 
 namespace maya {
+/// CPU copy of a mesh's triangles in local space, kept for picking and bounds. It costs 12 bytes
+/// per vertex and 4 per index, and empty geometry simply cannot be picked.
+struct MeshGeometry {
+    std::vector<math::Vec3> positions;
+    std::vector<uint32_t> indices; // triangles, three per face
+    math::Vec3 min{0.0f}, max{0.0f}; // local bounds
+    bool empty() const noexcept { return indices.empty(); }
+    static MeshGeometry from(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+        auto geometry = MeshGeometry{};
+        geometry.positions.reserve(vertices.size());
+        for (const auto& vertex : vertices) geometry.positions.push_back(vertex.position);
+        geometry.indices = indices;
+        if (!geometry.positions.empty()) geometry.min = geometry.max = geometry.positions.front();
+        for (const auto& p : geometry.positions) {
+            geometry.min = {std::min(geometry.min.x, p.x), std::min(geometry.min.y, p.y), std::min(geometry.min.z, p.z)};
+            geometry.max = {std::max(geometry.max.x, p.x), std::max(geometry.max.y, p.y), std::max(geometry.max.z, p.z)};
+        }
+        return geometry;
+    }
+};
+
 /// Owns buffer allocations. Share a mesh through an asset lease, never copy its handles.
 class Mesh {
 public:

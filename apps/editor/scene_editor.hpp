@@ -93,8 +93,11 @@ public:
     /// keeping its world pose. Rejects cycles, entities without transforms, and poses that the new
     /// parent cannot represent (e.g. shear from a rotated, nonuniformly scaled parent).
     EditResult move(EntityId id, std::optional<EntityId> target, Placement placement = Placement::inside);
-    /// Replaces a whole component value (validated), e.g. from an inspector.
+    /// Replaces or adds a whole component value (validated), e.g. from an inspector or gizmo.
     EditResult set_component(EntityId id, ComponentValue value);
+    /// Removes a component. A transform cannot be removed while the entity has a parent or children.
+    EditResult remove_component(EntityId id, ComponentId component);
+    bool group_open() const noexcept { return m_group_depth > 0; }
 
     /// Groups the edits made until the matching end_group into one undo step labelled `label`.
     /// Groups nest; only the outermost one records.

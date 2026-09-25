@@ -8,6 +8,7 @@ namespace maya {
 struct ModelLoadResult {
     std::unique_ptr<Mesh> mesh;
     std::string diagnostic;
+    MeshGeometry geometry; // CPU copy of the loaded triangles
 };
 class ModelLoader {
 public:

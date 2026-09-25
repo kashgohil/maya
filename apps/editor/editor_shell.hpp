@@ -3,6 +3,7 @@
 #include "editor_camera.hpp"
 #include "editor_theme.hpp"
 #include "input_router.hpp"
+#include "picking.hpp"
 #include "scene_editor.hpp"
 #include "ui_renderer.hpp"
 #include "maya/platform/input.hpp"
@@ -38,14 +39,24 @@ PixelSize viewport_pixels(float width_points, float height_points, float scale) 
 /// Where the last frame placed interactive elements, in window points. Empty when not shown.
 struct EditorLayout {
     struct Row { EntityId id; ImVec2 min, max; };
+    struct Field { std::string key; ImVec2 min, max; }; // e.g. "transform.translation.x"
     ImVec2 viewport_min{0, 0}, viewport_max{0, 0};
     ImVec2 camera_speed_min{0, 0}, camera_speed_max{0, 0};
     std::vector<Row> hierarchy_rows; // visible hierarchy rows, top to bottom
+    std::vector<Field> inspector_fields; // editable inspector controls
+    std::optional<ImVec2> gizmo_origin; // the selected entity's origin on screen, when a gizmo is shown
+    std::vector<std::pair<EntityId, ImVec2>> icons; // camera and light icons in the viewport
     const Row* row(EntityId id) const {
         for (const auto& row : hierarchy_rows) if (row.id == id) return &row;
         return nullptr;
     }
+    const Field* field(std::string_view key) const {
+        for (const auto& field : inspector_fields) if (field.key == key) return &field;
+        return nullptr;
+    }
 };
+
+enum class GizmoOperation { translate, rotate, scale };
 
 enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit };
 struct DiagnosticEntry {
@@ -104,6 +115,15 @@ public:
     /// The open scene's editing session, or null when no scene is open.
     SceneEditor* scene() noexcept { return m_scene.get(); }
     std::optional<EntityId> renaming() const noexcept { return m_renaming; }
+    GizmoOperation gizmo_operation() const noexcept { return m_gizmo; }
+    bool gizmo_local() const noexcept { return m_gizmo_local; }
+    bool gizmo_hovered() const noexcept { return m_gizmo_hovered; }
+    bool gizmo_active() const noexcept { return m_gizmo_using; }
+    /// The latest inspector or gizmo rejection, shown under the edited component; empty when none.
+    const std::string& edit_error() const noexcept { return m_edit_error; }
+    /// Applies a gizmo's new world matrix to an entity as a validated local transform. Returns false
+    /// (and changes nothing) when the parent cannot represent the pose, e.g. it would need shear.
+    bool apply_world_matrix(EntityId id, const math::Mat4& world);
     uint64_t frames() const noexcept { return m_frame; }
     /// For inspection in tests; make it current only between frames.
     ImGuiContext* context() const noexcept { return m_context; }
@@ -113,6 +133,12 @@ private:
     void rebuild_fonts(float scale);
     void build_dock_layout(unsigned int dockspace);
     void draw_hierarchy();
+    void draw_component(EntityId id, const ComponentValue& value);
+    bool edit_property(EntityId id, const ComponentValue& value, PropertyId property, PropertyValue input);
+    void track_edit(const std::string& label);
+    void draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2 max);
+    void pick_at(ImVec2 point, const RenderView& view, ImVec2 min, ImVec2 max);
+    void frame_selection();
     void draw_hierarchy_row(EntityId id);
     void draw_create_menu(std::optional<EntityId> parent);
     void handle_shortcuts();
@@ -141,6 +167,24 @@ private:
     std::optional<EntityId> m_renaming;
     char m_rename_buffer[256] = {};
     bool m_rename_focus = false;
+    // Inspector
+    std::string m_edit_error;
+    EntityId m_edit_error_entity{};
+    EntityId m_euler_entity{}; // rotation shown as Euler angles, kept stable while dragging
+    math::Vec3 m_euler{0.0f};
+    bool m_edit_group_open = false;
+    char m_name_buffer[256] = {};
+    EntityId m_name_entity{};
+    // Viewport tools
+    GizmoOperation m_gizmo = GizmoOperation::translate;
+    bool m_gizmo_local = false;
+    bool m_gizmo_using = false;
+    bool m_gizmo_hovered = false;
+    std::optional<RenderSnapshot> m_snapshot; // the last rendered frame, for picking and outlines
+    ImVec2 m_pick_point{-1.0f, -1.0f};
+    std::vector<EntityId> m_pick_hits;
+    size_t m_pick_index = 0;
+    std::optional<EntityId> m_reveal; // expand and scroll the hierarchy to this entity
     std::filesystem::path m_scene_path;
     EditorCamera m_camera;
     InputRouter m_router;

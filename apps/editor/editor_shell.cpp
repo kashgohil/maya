@@ -1,7 +1,9 @@
 #include "editor_shell.hpp"
 #include "editor_icons.hpp"
+#include "shell_detail.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
+#include <ImGuizmo.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cmath>
@@ -13,6 +15,7 @@
 #include <type_traits>
 
 namespace maya::editor {
+using namespace detail;
 namespace {
 constexpr std::array<double, 4> window_background{0.06, 0.06, 0.07, 1.0};
 constexpr float fallback_font_size = 13.0f; // ImGui's built-in pixel font is drawn for 13 px
@@ -24,40 +27,6 @@ bool font_signature(const std::string& data) {
     return tag == std::string("\0\1\0\0", 4) || tag == "true" || tag == "OTTO";
 }
 
-// Panel titles carry an icon; the part after ### is the stable window ID used by the dock layout.
-const std::string hierarchy_title = std::string(icon::tree_structure) + "  Hierarchy###Hierarchy";
-const std::string viewport_title = std::string(icon::cube_focus) + "  Viewport###Viewport";
-const std::string inspector_title = std::string(icon::sliders) + "  Inspector###Inspector";
-const std::string assets_title = std::string(icon::folder) + "  Assets###Assets";
-const std::string diagnostics_title = std::string(icon::pulse) + "  Diagnostics###Diagnostics";
-
-const char* const panel_titles[] = {hierarchy_title.c_str(), viewport_title.c_str(), inspector_title.c_str(),
-                                    assets_title.c_str(), diagnostics_title.c_str()};
-
-/// Begins a docked panel with the tab padding, so its reserved title height matches its tab bar, and
-/// muted text: ImGui may draw the node's tab bar here (see theme::decorate_tabs).
-bool begin_panel(const std::string& title, ImGuiWindowFlags flags = 0) {
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, theme::tab_padding);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-    const auto open = ImGui::Begin(title.c_str(), nullptr, flags);
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-    return open;
-}
-
-/// Draws an icon in a color, then continues on the same line.
-void icon_text(const char* glyph, ImU32 color, float spacing = 8.0f) {
-    ImGui::PushStyleColor(ImGuiCol_Text, color);
-    ImGui::TextUnformatted(glyph);
-    ImGui::PopStyleColor();
-    ImGui::SameLine(0.0f, spacing);
-}
-
-std::string format(const char* pattern, auto... values) {
-    char buffer[256];
-    std::snprintf(buffer, sizeof(buffer), pattern, values...);
-    return buffer;
-}
 
 ImGuiKey imgui_key(KeyCode key) {
     const auto code = static_cast<int>(key);
@@ -115,11 +84,6 @@ const char* source_name(DiagnosticSource source) {
     return "?";
 }
 
-std::string id_text(uint64_t high, uint64_t low) {
-    auto text = std::ostringstream{};
-    text << std::hex << high << ':' << low;
-    return text.str();
-}
 } // namespace
 
 PixelSize viewport_pixels(float width_points, float height_points, float scale) noexcept {
@@ -164,6 +128,7 @@ EditorShell::EditorShell(GraphicsDevice& device, std::string renderer_shader, st
     io.BackendPlatformName = "maya_desktop";
     io.BackendRendererName = "maya_rhi";
     theme::apply(ImGui::GetStyle());
+    style_gizmo();
     auto& platform = ImGui::GetPlatformIO();
     platform.Platform_ClipboardUserData = this;
     platform.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* {
@@ -323,6 +288,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     m_camera.update(routed.navigation, io.DeltaTime);
 
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
     // Focusing the viewport deactivates any text field, so it stops receiving keys.
     if (routed.navigation_started) ImGui::SetWindowFocus(viewport_title.c_str());
     draw_top_bar();
@@ -341,6 +307,11 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_assets();
     draw_diagnostics();
     handle_shortcuts();
+    // An edit group whose control is no longer active (e.g. it was removed mid-drag) must not stay open.
+    if (m_edit_group_open && !ImGui::IsAnyItemActive()) {
+        m_scene->end_group();
+        m_edit_group_open = false;
+    }
     theme::decorate_tabs(panel_titles, IM_ARRAYSIZE(panel_titles)); // after every tab bar is drawn
     ImGui::Render();
     // io.WantTextInput describes the previous frame; this is whether a text field is active now.
@@ -531,10 +502,15 @@ void EditorShell::draw_hierarchy_row(EntityId id) {
     if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
     if (scene.selected(id)) flags |= ImGuiTreeNodeFlags_Selected;
     ImGui::PushID(static_cast<int>(id.low ^ (id.high << 7)));
+    if (m_reveal && scene.is_ancestor(id, *m_reveal)) ImGui::SetNextItemOpen(true);
     const auto opened = ImGui::TreeNodeEx("entity", flags, "%s", "");
     const auto row_min = ImGui::GetItemRectMin(), row_max = ImGui::GetItemRectMax();
     m_layout.hierarchy_rows.push_back({id, row_min, row_max});
     const auto& io = ImGui::GetIO();
+    if (m_reveal && id == *m_reveal) {
+        ImGui::SetScrollHereY(0.5f);
+        m_reveal.reset();
+    }
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
         scene.select(id, io.KeyCtrl ? SelectMode::toggle : io.KeyShift ? SelectMode::add : SelectMode::replace);
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
@@ -706,13 +682,15 @@ void EditorShell::draw_viewport() {
             const auto flying = m_router.navigating();
             const auto hint = flying
                 ? std::string(icon::arrows_move) + "  WASD move  \xC2\xB7  Q/E down/up  \xC2\xB7  Shift faster  \xC2\xB7  Esc stop"
-                : std::string(icon::mouse_right) + "  Hold to fly     " + icon::mouse_scroll + "  Scroll to dolly";
+                : "Click to select     " + std::string(icon::mouse_right) + "  Hold to fly     " + icon::mouse_scroll + "  Scroll to dolly";
             auto* draw = ImGui::GetWindowDrawList();
             const auto size = ImGui::CalcTextSize(hint.c_str());
             const auto corner = ImVec2{m_layout.viewport_min.x + 12.0f, m_layout.viewport_max.y - size.y - 22.0f};
             draw->AddRectFilled(corner, {corner.x + size.x + 20.0f, corner.y + size.y + 10.0f},
                                 theme::color::rgb(0x0B0C0E, 190), 8.0f);
             draw->AddText({corner.x + 10.0f, corner.y + 5.0f}, flying ? theme::color::text : theme::color::muted, hint.c_str());
+            if (const auto view = make_render_view(m_camera.camera, m_camera.pose(), request.width, request.height))
+                draw_viewport_tools(*view, m_layout.viewport_min, m_layout.viewport_max);
         }
     } else if (open) {
         ImGui::SetCursorPos({16.0f, 14.0f});
@@ -724,57 +702,6 @@ void EditorShell::draw_viewport() {
     if (request.empty() && !m_viewport_request.empty() && m_router.navigating())
         if (const auto release = m_router.cancel()) m_capture_request = release; // the viewport disappeared
     m_viewport_request = request;
-}
-
-void EditorShell::draw_inspector() {
-    if (begin_panel(inspector_title)) {
-        theme::caption(m_fonts, "EDITOR CAMERA");
-        if (theme::begin_properties("camera")) {
-            theme::property("Position");
-            ImGui::AlignTextToFramePadding();
-            const auto& p = m_camera.position;
-            theme::mono_text(m_fonts, format("%.2f %.2f %.2f", p.x, p.y, p.z).c_str());
-            theme::property("Speed");
-            ImGui::InputFloat("##speed", &m_camera.speed, 0.0f, 0.0f, "%.2f m/s");
-            m_layout.camera_speed_min = ImGui::GetItemRectMin();
-            m_layout.camera_speed_max = ImGui::GetItemRectMax();
-            if (!std::isfinite(m_camera.speed)) m_camera.speed = 3.0f;
-            m_camera.speed = std::clamp(m_camera.speed, 0.1f, 100.0f);
-            theme::property("Field of view");
-            auto fov = m_camera.camera.vertical_fov * 180.0f / math::PI;
-            if (ImGui::InputFloat("##fov", &fov, 0.0f, 0.0f, "%.0f\xC2\xB0") && std::isfinite(fov))
-                m_camera.camera.vertical_fov = std::clamp(fov, 20.0f, 120.0f) * math::PI / 180.0f;
-            theme::end_properties();
-        }
-        ImGui::Dummy({0.0f, 10.0f});
-        const auto& selection = m_scene ? m_scene->selection() : std::vector<EntityId>{};
-        theme::caption(m_fonts, "SELECTION", selection.size() > 1 ? (std::to_string(selection.size()) + " selected").c_str() : nullptr);
-        if (selection.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-            ImGui::TextWrapped("Nothing selected.");
-            ImGui::PopStyleColor();
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
-            ImGui::TextWrapped("Select an entity in the hierarchy.");
-            ImGui::PopStyleColor();
-        } else {
-            const auto primary = *m_scene->primary();
-            ImGui::PushFont(m_fonts.strong);
-            ImGui::TextUnformatted(m_scene->display_name(primary).c_str());
-            ImGui::PopFont();
-            theme::mono_text(m_fonts, id_text(primary.high, primary.low).c_str(), true);
-            ImGui::Dummy({0.0f, 2.0f});
-            for (const auto& value : m_scene->record(primary)->components) {
-                const auto label = std::string(component_schema(component_id(value))->label);
-                theme::pill(m_fonts, label.c_str(), theme::color::muted, theme::color::surface);
-                ImGui::SameLine(0.0f, 6.0f);
-            }
-            ImGui::NewLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
-            ImGui::TextWrapped("Property editing arrives with the inspector.");
-            ImGui::PopStyleColor();
-        }
-    }
-    ImGui::End();
 }
 
 void EditorShell::draw_assets() {
@@ -899,7 +826,7 @@ void EditorShell::render_viewport() {
         m_log.add(DiagnosticSource::viewport, "The editor camera has no valid view", m_frame);
         return;
     }
-    const auto snapshot = extract_render_snapshot(m_scene->world(), *m_assets);
+    auto snapshot = extract_render_snapshot(m_scene->world(), *m_assets);
     m_extraction = snapshot.stats;
     m_frame_problems = snapshot.diagnostics;
     if (auto error = m_renderer.render(snapshot, *view, m_viewport)) {
@@ -907,6 +834,7 @@ void EditorShell::render_viewport() {
         m_log.add(DiagnosticSource::renderer, error.message, m_frame);
     }
     m_ui.set_texture(m_viewport_texture, m_viewport.color());
+    m_snapshot = std::move(snapshot); // for picking and outlines next frame
 }
 
 RhiDiagnostic EditorShell::render(TextureHandle destination) {

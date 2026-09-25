@@ -9,7 +9,7 @@ AssetLoadResult<MeshAsset> FileAssetProvider::load_mesh(const std::filesystem::p
     if (path.extension() != ".obj") return {{},{AssetError::invalid_data,"Initial mesh provider expects a triangulated .obj: " + path.string()}};
     auto loaded = ModelLoader::load_obj_checked(m_device,path.string());
     if (!loaded.mesh) return {{},{AssetError::load_failed,std::move(loaded.diagnostic)}};
-    return {std::make_shared<const MeshAsset>(std::move(loaded.mesh)),{}};
+    return {std::make_shared<const MeshAsset>(std::move(loaded.mesh), std::move(loaded.geometry)),{}};
 }
 AssetLoadResult<MaterialAsset> FileAssetProvider::load_material(const std::filesystem::path& path) {
     auto input = std::ifstream(path);
