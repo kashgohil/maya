@@ -3,15 +3,18 @@
 #include "maya/core/file_system.hpp"
 #include "maya/platform/input.hpp"
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <stdexcept>
 
 namespace maya::editor {
 namespace {
 
-// Hosts the editor shell. Until project open/save lands (#1002), it opens the sample project's scene.
+// Hosts the editor shell and opens its project.
 class EditorApplication final : public Application {
 public:
+    explicit EditorApplication(std::optional<std::filesystem::path> project) : m_project(std::move(project)) {}
+
     bool on_start(GraphicsDevice& device) override {
         auto renderer_shader = FileSystem::read_text("resources/shaders/metal/renderer.metal");
         auto ui_shader = FileSystem::read_text("resources/shaders/metal/editor_ui.metal");
@@ -22,9 +25,13 @@ public:
                                                             read_file("resources/fonts/Inter-SemiBold.ttf"),
                                                             read_file("resources/fonts/GeistMono-Regular.ttf"),
                                                             read_file("resources/fonts/Phosphor-Light.ttf")});
-        // An editor without content still starts; the diagnostics panel explains what is missing.
-        if (const auto catalog = FileSystem::resolve("samples/basic_scene/assets/catalog.maya"))
-            m_shell->open_scene(*catalog, catalog->parent_path() / "basic.scene");
+        // An editor without a project still starts; the Assets panel says how to open one, and a project
+        // that fails to open explains why.
+        if (!m_project) m_project = FileSystem::resolve("samples/basic_scene/project.maya");
+        if (!m_project) std::cerr << "[Editor] no project given, and the sample project was not found\n";
+        else if (!m_shell->open_project(*m_project)) std::cerr << "[Editor] " << m_shell->prompt_message() << '\n';
+        else std::cerr << "[Editor] project " << m_shell->project()->file.string() << ", scene "
+                       << (m_shell->scene_path().empty() ? std::string("(new)") : m_shell->scene_path().filename().string()) << '\n';
         return true;
     }
 
@@ -41,6 +48,8 @@ public:
         if (auto error = m_shell->render(surface.target.texture)) throw std::runtime_error(error.message);
     }
 
+    bool on_close_requested() override { return !m_shell || m_shell->request_close(); }
+
     void on_stop() noexcept override {
         if (m_shell && m_shell->navigating()) Input::instance().request_cursor_capture(false);
         m_shell.reset();
@@ -53,13 +62,14 @@ private:
         return file ? std::string(std::istreambuf_iterator<char>(file), {}) : std::string{};
     }
 
+    std::optional<std::filesystem::path> m_project;
     std::unique_ptr<EditorShell> m_shell;
 };
 
 } // namespace
 
-std::unique_ptr<Application> create_editor_application() {
-    return std::make_unique<EditorApplication>();
+std::unique_ptr<Application> create_editor_application(std::optional<std::filesystem::path> project) {
+    return std::make_unique<EditorApplication>(std::move(project));
 }
 
 } // namespace maya::editor

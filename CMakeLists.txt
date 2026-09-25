@@ -56,6 +56,7 @@ add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/property_context.cpp
     src/maya/assets/file_provider.cpp
+    src/maya/assets/project.cpp
     src/maya/core/model_loader.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
 target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI)
@@ -168,6 +169,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/input_router.cpp
         apps/editor/inspector.cpp
         apps/editor/picking.cpp
+        apps/editor/project_files.cpp
         apps/editor/scene_editor.cpp
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)

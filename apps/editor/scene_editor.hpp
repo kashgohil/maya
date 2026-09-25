@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/properties/schema.hpp"
+#include "maya/scene/scene_io.hpp"
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -52,12 +53,19 @@ class SceneEditor {
 public:
     static constexpr size_t history_limit = 256;
 
-    explicit SceneEditor(std::unique_ptr<World> world);
+    /// Roots listed in `root_order` (normally the scene file's order) come first, in that order; any
+    /// others follow by EntityId.
+    explicit SceneEditor(std::unique_ptr<World> world, const std::vector<EntityId>& root_order = {});
     SceneEditor(const SceneEditor&) = delete;
     SceneEditor& operator=(const SceneEditor&) = delete;
 
     const World& world() const noexcept { return *m_world; }
+    /// The scene for saving: roots in display order, each followed depth-first by its descendants.
+    SceneDocument document() const;
     World& world() noexcept { return *m_world; }
+    /// Checks asset references in created and edited components, normally against the project's
+    /// catalog. Without one, only empty references are accepted.
+    void set_validation_context(PropertyValidationContext context) { m_context = std::move(context); }
     /// Where new EntityIds come from (EntityId::generate by default); tests make it deterministic.
     void set_id_source(std::function<EntityId()> source) { m_new_id = std::move(source); }
     /// Increments on every applied edit, undo, and redo.
@@ -129,6 +137,7 @@ private:
 
     std::unique_ptr<World> m_world;
     std::function<EntityId()> m_new_id = [] { return EntityId::generate(); };
+    PropertyValidationContext m_context;
     SceneState m_state; // mirrors the World's authored data, plus root order
     std::vector<EntityId> m_selection;
     std::deque<Step> m_history;

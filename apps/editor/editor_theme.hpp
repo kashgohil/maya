@@ -39,6 +39,10 @@ inline constexpr float mono_size = 12.5f;
 /// Padding of panel tabs. Apply it while the dock space draws tab bars and while each docked panel
 /// begins, so the panel's reserved title height matches its tab bar.
 inline constexpr ImVec2 tab_padding{12.0f, 8.0f};
+/// Text glyphs for the atlas: Latin-1, typographic punctuation (dashes, quotes, ellipsis), arrows, and
+/// the macOS key symbols used in shortcuts (⌃ ⌘ ⌥ ⌫ ⇧).
+inline constexpr ImWchar text_ranges[] = {0x0020, 0x00FF, 0x2013, 0x2026, 0x2190, 0x21FF, 0x2303, 0x2303,
+                                          0x2318, 0x2318, 0x2325, 0x2325, 0x232B, 0x232B, 0};
 
 void apply(ImGuiStyle& style);
 /// Restyles the tabs of the named docked windows after ImGui has drawn them: a hairline under each

@@ -1,0 +1,4 @@
+maya-project 1
+content "assets"
+catalog "catalog.maya"
+startup "basic.scene"

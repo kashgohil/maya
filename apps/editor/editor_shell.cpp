@@ -80,6 +80,8 @@ const char* source_name(DiagnosticSource source) {
     case DiagnosticSource::gpu: return "gpu";
     case DiagnosticSource::ui: return "ui";
     case DiagnosticSource::edit: return "edit";
+    case DiagnosticSource::project: return "project";
+    case DiagnosticSource::asset: return "asset";
     }
     return "?";
 }
@@ -149,35 +151,6 @@ EditorShell::~EditorShell() {
     ImGui::DestroyContext(m_context);
 }
 
-bool EditorShell::open_scene(const std::filesystem::path& catalog_path, const std::filesystem::path& scene_path) {
-    const auto fail = [&](const std::string& message) {
-        m_log.add(DiagnosticSource::scene, message, m_frame);
-        return false;
-    };
-    auto catalog_file = std::ifstream(catalog_path);
-    if (!catalog_file) return fail("Cannot read asset catalog " + catalog_path.string());
-    const auto catalog = read_asset_catalog(catalog_file);
-    if (!catalog) return fail(catalog_path.string() + ": " + catalog.diagnostic.message);
-    auto assets = std::unique_ptr<AssetRegistry>{};
-    try {
-        assets = std::make_unique<AssetRegistry>(catalog_path.parent_path(), std::make_unique<FileAssetProvider>(m_device));
-    } catch (const std::exception& error) {
-        return fail(error.what());
-    }
-    for (const auto& record : catalog.records)
-        if (const auto error = assets->register_asset(record)) return fail(error.message);
-    auto opened = open_scene_file(scene_path, asset_property_context(*assets));
-    for (const auto& problem : opened.diagnostics) m_log.add(DiagnosticSource::scene, problem.message, m_frame);
-    if (!opened) return false;
-    m_scene = std::make_unique<SceneEditor>(std::move(opened.world)); // history starts empty
-    m_assets = std::move(assets);
-    m_scene_path = scene_path;
-    m_renaming.reset();
-    m_log.add(DiagnosticSource::scene, "Opened " + scene_path.filename().string() + " (" +
-        std::to_string(m_scene->world().size()) + " entities)", m_frame);
-    return true;
-}
-
 void EditorShell::rebuild_fonts(float scale) {
     auto& io = ImGui::GetIO();
     io.Fonts->Clear();
@@ -189,7 +162,7 @@ void EditorShell::rebuild_fonts(float scale) {
             config.OversampleH = 2;
             config.OversampleV = 1;
             if (auto* font = io.Fonts->AddFontFromMemoryTTF(data.data(), static_cast<int>(data.size()),
-                                                            std::round(points * scale), &config))
+                                                            std::round(points * scale), &config, theme::text_ranges))
                 return font;
         }
         if (!data.empty())
@@ -289,6 +262,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
 
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
+    m_layout.controls.clear();
     // Focusing the viewport deactivates any text field, so it stops receiving keys.
     if (routed.navigation_started) ImGui::SetWindowFocus(viewport_title.c_str());
     draw_top_bar();
@@ -306,6 +280,11 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_inspector();
     draw_assets();
     draw_diagnostics();
+    // New windows take focus as they are created, and a focused docked window brings its tab to the
+    // front. Start with the viewport focused, so the bottom panels open on Assets, not on Diagnostics
+    // (the panel created last).
+    if (std::exchange(m_focus_viewport, false)) ImGui::SetWindowFocus(viewport_title.c_str());
+    draw_prompts();
     handle_shortcuts();
     // An edit group whose control is no longer active (e.g. it was removed mid-drag) must not stay open.
     if (m_edit_group_open && !ImGui::IsAnyItemActive()) {
@@ -343,6 +322,7 @@ void EditorShell::build_dock_layout(ImGuiID dockspace) {
     ImGui::DockBuilderDockWindow(viewport_title.c_str(), center);
     ImGui::DockBuilderFinish(dockspace);
     m_layout_built = true;
+    m_focus_viewport = true;
 }
 
 void EditorShell::draw_top_bar() {
@@ -369,9 +349,29 @@ void EditorShell::draw_top_bar() {
         ImGui::TextUnformatted("/");
         ImGui::PopStyleColor();
         ImGui::SameLine(0.0f, 14.0f);
+        if (m_project) {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+            ImGui::TextUnformatted(m_project->name().c_str());
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0f, 14.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextUnformatted("/");
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0f, 8.0f);
+        }
         if (m_scene) {
-            icon_text(icon::file, theme::color::muted, 6.0f);
-            ImGui::TextUnformatted(m_scene_path.filename().string().c_str());
+            // The scene's name opens the scene menu: the project's scenes, New, Save, and Save as.
+            const auto name = m_scene_path.empty() ? std::string("Untitled") : m_scene_path.filename().string();
+            const auto label = std::string(icon::file) + "  " + name + "  " + icon::caret_down;
+            ImGui::PushStyleColor(ImGuiCol_Button, 0u);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6.0f, 3.0f});
+            if (ImGui::Button((label + "###scene_menu_button").c_str())) ImGui::OpenPopup("scene_menu");
+            m_layout.controls.push_back({"scene_menu", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered() && !m_scene_path.empty() && m_project)
+                ImGui::SetTooltip("%s", m_project->relative(m_scene_path).generic_string().c_str());
+            draw_scene_menu();
             if (m_scene->dirty()) {
                 ImGui::SameLine(0.0f, 10.0f);
                 theme::pill(m_fonts, "modified", theme::color::warning, theme::color::rgb(0xF5B454, 28));
@@ -524,7 +524,12 @@ void EditorShell::draw_hierarchy_row(EntityId id) {
         ImGui::TextUnformatted(scene.display_name(id).c_str());
         ImGui::EndDragDropSource();
     }
-    if (ImGui::BeginDragDropTarget()) {
+    if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
+        if (ImGui::BeginDragDropTarget()) {
+            accept_asset_drop(id); // assign the mesh or material to this entity
+            ImGui::EndDragDropTarget();
+        }
+    } else if (ImGui::BeginDragDropTarget()) {
         const auto height = row_max.y - row_min.y;
         const auto y = io.MousePos.y - row_min.y;
         const auto placement = y < height * 0.25f ? Placement::before : y > height * 0.75f ? Placement::after : Placement::inside;
@@ -632,6 +637,7 @@ void EditorShell::draw_hierarchy() {
                 std::memcpy(&moved, payload->Data, sizeof(moved));
                 report(scene.move(moved, std::nullopt), "Move " + scene.display_name(moved));
             }
+            accept_asset_drop({}); // a mesh dropped here is placed in view
             ImGui::EndDragDropTarget();
         }
         if (ImGui::BeginPopupContextItem("empty")) {
@@ -651,8 +657,11 @@ void EditorShell::draw_hierarchy() {
 }
 
 void EditorShell::handle_shortcuts() {
-    if (!m_scene || ImGui::GetIO().WantTextInput || m_renaming) return;
+    if (!m_scene || ImGui::GetIO().WantTextInput || m_renaming || m_prompt != EditorPrompt::none) return;
     constexpr auto global = ImGuiInputFlags_RouteGlobal;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, global)) save_or_ask();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, global)) ask_save_as();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, global)) request_new_scene();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, global)) report(m_scene->undo(), "Undo");
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, global) || ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, global))
         report(m_scene->redo(), "Redo");
@@ -678,6 +687,7 @@ void EditorShell::draw_viewport() {
             m_viewport_hovered = ImGui::IsItemHovered();
             m_layout.viewport_min = ImGui::GetItemRectMin();
             m_layout.viewport_max = ImGui::GetItemRectMax();
+            accept_viewport_drop(); // meshes are placed where they are dropped, materials assigned
             // Navigation hint: a quiet pill in the corner, brighter while flying.
             const auto flying = m_router.navigating();
             const auto hint = flying
@@ -702,46 +712,6 @@ void EditorShell::draw_viewport() {
     if (request.empty() && !m_viewport_request.empty() && m_router.navigating())
         if (const auto release = m_router.cancel()) m_capture_request = release; // the viewport disappeared
     m_viewport_request = request;
-}
-
-void EditorShell::draw_assets() {
-    if (begin_panel(assets_title) && m_assets) {
-        const auto records = m_assets->records();
-        theme::caption(m_fonts, "PROJECT", std::to_string(records.size()).c_str());
-        constexpr auto flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX;
-        if (ImGui::BeginTable("assets", 3, flags)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-            ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthStretch, 0.2f);
-            ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 0.3f);
-            for (const auto& record : records) {
-                const auto info = m_assets->info(record.id);
-                const auto state = info ? info->state : AssetState::unloaded;
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::AlignTextToFramePadding();
-                icon_text(record.kind == AssetKind::mesh ? icon::cube : icon::circle_half, theme::color::muted);
-                ImGui::TextUnformatted(record.path.filename().string().c_str());
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s\n%s", record.path.generic_string().c_str(), id_text(record.id.high, record.id.low).c_str());
-                ImGui::TableNextColumn();
-                ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-                ImGui::TextUnformatted(record.kind == AssetKind::mesh ? "Mesh" : "Material");
-                ImGui::PopStyleColor();
-                ImGui::TableNextColumn();
-                static constexpr const char* names[] = {"unloaded", "loading", "ready", "failed"};
-                const auto tone = state == AssetState::ready ? theme::color::success
-                    : state == AssetState::failed ? theme::color::danger
-                    : state == AssetState::loading ? theme::color::warning : theme::color::faint;
-                theme::dot(tone, 3.0f);
-                ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-                ImGui::TextUnformatted(names[static_cast<int>(state)]);
-                ImGui::PopStyleColor();
-                if (info && info->diagnostic && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", info->diagnostic.message.c_str());
-            }
-            ImGui::EndTable();
-        }
-    }
-    ImGui::End();
 }
 
 void EditorShell::draw_diagnostics() {

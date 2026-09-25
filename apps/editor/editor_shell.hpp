@@ -6,8 +6,10 @@
 #include "picking.hpp"
 #include "scene_editor.hpp"
 #include "ui_renderer.hpp"
+#include "maya/assets/project.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
+#include <array>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -46,6 +48,7 @@ struct EditorLayout {
     std::vector<Field> inspector_fields; // editable inspector controls
     std::optional<ImVec2> gizmo_origin; // the selected entity's origin on screen, when a gizmo is shown
     std::vector<std::pair<EntityId, ImVec2>> icons; // camera and light icons in the viewport
+    std::vector<Field> controls; // dialog buttons and asset rows, e.g. "dialog.save", "asset.cube.obj"
     const Row* row(EntityId id) const {
         for (const auto& row : hierarchy_rows) if (row.id == id) return &row;
         return nullptr;
@@ -54,11 +57,18 @@ struct EditorLayout {
         for (const auto& field : inspector_fields) if (field.key == key) return &field;
         return nullptr;
     }
+    const Field* control(std::string_view key) const {
+        for (const auto& control : controls) if (control.key == key) return &control;
+        return nullptr;
+    }
 };
 
 enum class GizmoOperation { translate, rotate, scale };
 
-enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit };
+enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit, project, asset };
+
+/// A modal dialog the editor is showing.
+enum class EditorPrompt { none, unsaved_changes, save_as, notice };
 struct DiagnosticEntry {
     DiagnosticSource source;
     std::string message;
@@ -88,9 +98,55 @@ public:
     EditorShell(const EditorShell&) = delete;
     EditorShell& operator=(const EditorShell&) = delete;
 
-    /// Opens a project catalog and scene for editing, with fresh history and selection. Problems go
-    /// to the diagnostics panel; the previous scene stays open on failure. Returns whether it opened.
-    bool open_scene(const std::filesystem::path& catalog, const std::filesystem::path& scene);
+    /// Opens a project from its file, or a directory containing project.maya: reads its catalog into a
+    /// new asset registry and opens its startup scene, or a new scene when it has none. It does not ask
+    /// about unsaved changes. On failure the open project and scene stay, and the reason is shown and
+    /// logged. Returns whether it opened.
+    bool open_project(const std::filesystem::path& path);
+    const Project* project() const noexcept { return m_project ? &*m_project : nullptr; }
+    /// Opens a scene of the open project (content-relative, or absolute inside the content root) with
+    /// fresh history and selection. It does not ask about unsaved changes; request_open_scene does.
+    /// On failure the current scene stays open, and the problems are shown and logged.
+    bool open_scene(const std::filesystem::path& path);
+    /// Replaces the open scene with a new, never-saved one holding a camera and a directional light.
+    bool new_scene();
+    /// Saves the open scene to `path` (content-relative, or absolute inside the content root), or to
+    /// its own file when `path` is empty, creating folders as needed. Roots are saved in hierarchy
+    /// order. A failed save leaves every file untouched and the scene unsaved. Returns the reason for
+    /// a failure, which is also logged; empty on success.
+    std::string save_scene(const std::filesystem::path& path = {});
+    /// The open scene's file, or empty for a new scene that has never been saved.
+    const std::filesystem::path& scene_path() const noexcept { return m_scene_path; }
+    /// Scene files in the project's content root, content-relative and sorted.
+    const std::vector<std::filesystem::path>& scene_files() const noexcept { return m_scene_files; }
+    /// The open project's asset registry, or null when no project is open.
+    AssetRegistry* assets() noexcept { return m_assets.get(); }
+    /// Catalog entries whose source file is missing, as of the last open, refresh, or reload.
+    const std::vector<AssetId>& missing_asset_files() const noexcept { return m_missing_files; }
+    /// Rereads the catalog into a new registry (kept only if it is valid), rescans the scene files,
+    /// and rechecks which asset files exist.
+    void refresh_project();
+
+    /// Opening or creating a scene, and closing, first ask about unsaved changes: Save, Don't save,
+    /// or Cancel. Save on a never-saved scene asks for a path first.
+    void request_open_scene(const std::filesystem::path& path);
+    void request_new_scene();
+    /// The host's close request. True when nothing unsaved would be lost; otherwise the editor asks,
+    /// and once the changes are saved or discarded it closes through PlatformServices::request_close.
+    bool request_close();
+    EditorPrompt prompt() const noexcept { return m_prompt; }
+    /// The message a notice or dialog is showing, e.g. why a save failed.
+    const std::string& prompt_message() const noexcept { return m_prompt_message; }
+
+    /// Places an instance of a mesh asset at a world position, named after its file, as one undo step.
+    EditResult place_mesh(AssetId mesh, const math::Vec3& position);
+    /// Assigns a mesh or material asset to an entity's mesh renderer, adding one to an entity with a
+    /// transform when it has none, as one undo step.
+    EditResult assign_asset(EntityId entity, AssetId asset);
+    /// Where a mesh dropped at a viewport point lands: on the surface under it, else on the ground
+    /// plane, else in front of the camera. Null when the viewport is not shown.
+    /// `mesh`, when given, rests on the surface: it is lifted by how far it reaches below its origin.
+    std::optional<math::Vec3> drop_point(ImVec2 point, AssetId mesh = {}) const;
 
     /// Routes this frame's input and builds the UI. A zero-sized (minimized) window skips the frame.
     void update(float delta_time, const std::vector<InputEvent>& events, const WindowMetrics& metrics);
@@ -147,6 +203,30 @@ private:
     void draw_viewport();
     void draw_inspector();
     void draw_assets();
+    struct AssetRow {
+        AssetRecord record;
+        std::string search; // the lowercase path, for the filter
+        bool missing = false; // the source file does not exist
+    };
+    void draw_asset_row(const AssetRow& row);
+    void draw_scene_menu();
+    void draw_prompts();
+    void accept_asset_drop(EntityId target);
+    void accept_viewport_drop();
+    std::optional<Ray> viewport_ray(ImVec2 point) const;
+    std::optional<EntityId> mesh_at(ImVec2 point) const;
+    std::string asset_name(AssetId asset) const; // the file name without extension
+    void place_in_view(AssetId mesh);
+    void assign_to_selection(AssetId asset);
+    void notice(std::string title, std::string message);
+    void ask_save_as();
+    void save_or_ask();
+    enum class Pending { none, open, create, close };
+    void request(Pending action, std::filesystem::path path);
+    void perform_pending();
+    void replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path);
+    std::string read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry);
+    void scan_project();
     void draw_diagnostics();
     void draw_top_bar();
     void draw_status_bar();
@@ -185,7 +265,28 @@ private:
     std::vector<EntityId> m_pick_hits;
     size_t m_pick_index = 0;
     std::optional<EntityId> m_reveal; // expand and scroll the hierarchy to this entity
+    // Project and scene files
+    std::optional<Project> m_project;
     std::filesystem::path m_scene_path;
+    std::vector<std::filesystem::path> m_scene_files;
+    std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
+    std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
+    std::array<std::vector<size_t>, 3> m_shown_rows; // scenes, meshes, and materials passing the filter
+    std::string m_shown_filter;
+    bool m_shown_stale = true; // the rows or scene files changed
+    bool m_rescan = false; // recheck the rows once they are drawn
+    Pending m_pending = Pending::none; // waits for the unsaved-changes prompt
+    std::filesystem::path m_pending_path;
+    bool m_close_confirmed = false;
+    EditorPrompt m_prompt = EditorPrompt::none;
+    bool m_prompt_opening = false; // the prompt's popup opens on the next frame
+    std::string m_prompt_title;
+    std::string m_prompt_message;
+    bool m_prompt_caution = false; // the message is a warning, not an error
+    char m_save_as_buffer[512] = {};
+    std::filesystem::path m_replace_confirmed; // an existing file the person agreed to replace
+    std::optional<AssetId> m_selected_asset;
+    char m_asset_filter[128] = {};
     EditorCamera m_camera;
     InputRouter m_router;
     std::optional<bool> m_capture_request;
@@ -199,6 +300,7 @@ private:
     float m_stats_age = 1.0f;
     int m_cursor = -1; // last ImGuiMouseCursor sent to the host
     bool m_layout_built = false;
+    bool m_focus_viewport = false; // once, after the layout is built
     bool m_frame_ready = false;
     bool m_minimized = false;
     bool m_viewport_hovered = false;

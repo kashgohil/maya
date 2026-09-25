@@ -20,6 +20,8 @@ public:
         std::unique_ptr<Application> application, const DeviceOptions& options = {});
     bool tick(float delta_time, bool input_enabled = true);
     bool resize(uint32_t width, uint32_t height);
+    /// Asks the application whether the window may close. True when no application is running.
+    bool request_close();
     void shutdown();
     bool is_initialized() const { return m_initialized; }
 

@@ -234,14 +234,32 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
                 const auto asset = mesh ? std::get<AssetRef<MeshAsset>>(*current).id : std::get<AssetRef<MaterialAsset>>(*current).id;
                 auto preview = std::string("None");
                 auto missing = false;
+                auto problem = std::string{}; // why a cataloged asset cannot be used
                 if (asset.valid()) {
                     const auto info = m_assets ? m_assets->info(asset) : std::nullopt;
                     missing = !info;
                     preview = info ? info->record.path.stem().string() : "Missing " + id_text(asset.high, asset.low);
+                    if (info && info->diagnostic) problem = info->diagnostic.message;
                 }
-                if (missing) ImGui::PushStyleColor(ImGuiCol_Text, theme::color::warning);
+                if (missing || !problem.empty())
+                    ImGui::PushStyleColor(ImGuiCol_Text, missing ? theme::color::warning : theme::color::danger);
                 const auto open = ImGui::BeginCombo("##asset", preview.c_str());
-                if (missing) ImGui::PopStyleColor();
+                if (missing || !problem.empty()) ImGui::PopStyleColor();
+                if (!problem.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", problem.c_str());
+                else if (missing && ImGui::IsItemHovered())
+                    ImGui::SetTooltip("This asset is not in the project's catalog; saving is refused until it is replaced");
+                // Dropping an asset of the right kind from the Assets panel chooses it.
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
+                        auto payload = AssetPayload{};
+                        std::memcpy(&payload, dragged->Data, sizeof(payload));
+                        if ((payload.kind == AssetKind::mesh) == mesh && ImGui::AcceptDragDropPayload("MAYA_ASSET")) {
+                            if (mesh) edit_property(id, value, property.id, AssetRef<MeshAsset>{payload.id});
+                            else edit_property(id, value, property.id, AssetRef<MaterialAsset>{payload.id});
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
                 if (open) {
                     const auto choose = [&](AssetId chosen) {
                         if (mesh) edit_property(id, value, property.id, AssetRef<MeshAsset>{chosen});

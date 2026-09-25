@@ -61,6 +61,8 @@ struct PlatformServices {
     std::function<std::string()> get_clipboard;
     std::function<void(const std::string&)> set_clipboard;
     std::function<void(CursorShape)> set_cursor;
+    /// Closes the window as its close button does, so Application::on_close_requested is asked.
+    std::function<void()> request_close;
 };
 
 /// Per-window input shared by the desktop host and applications (main thread only). The host

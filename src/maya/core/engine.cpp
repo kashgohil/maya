@@ -74,6 +74,18 @@ bool Engine::resize(uint32_t width, uint32_t height) {
     return false;
 }
 
+bool Engine::request_close() {
+    if (!m_initialized) return true;
+    try {
+        return m_application->on_close_requested();
+    } catch (const std::exception& error) {
+        std::cerr << "[Engine] close request: " << error.what() << '\n';
+    } catch (...) {
+        std::cerr << "[Engine] close request: unknown exception\n";
+    }
+    return true; // an application that cannot answer does not keep the window open
+}
+
 void Engine::shutdown() {
     m_initialized = false;
     if (m_application_started) {

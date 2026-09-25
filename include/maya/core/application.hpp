@@ -14,6 +14,10 @@ public:
     virtual void on_update(float /*delta_time*/, bool /*input_enabled*/) {}
     virtual void on_render(GraphicsDevice&) {}
     virtual void on_resize(uint32_t /*width*/, uint32_t /*height*/) {}
+    /// The window's close button or Quit. Return false to keep running, e.g. to ask about unsaved
+    /// changes; the host then asks again whenever the window is closed, including through
+    /// PlatformServices::request_close.
+    virtual bool on_close_requested() { return true; }
     /// Called once whenever on_start was entered, including a failed/throwing start.
     /// Release application state here; the device remains alive through destruction.
     virtual void on_stop() noexcept {}

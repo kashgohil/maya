@@ -3,6 +3,7 @@
 
 #include "editor_icons.hpp"
 #include "editor_theme.hpp"
+#include "maya/assets/asset.hpp"
 #include <cstdio>
 #include <string>
 
@@ -19,6 +20,12 @@ inline std::string id_text(uint64_t high, uint64_t low) {
     std::snprintf(text, sizeof(text), "%llx:%llx", static_cast<unsigned long long>(high), static_cast<unsigned long long>(low));
     return text;
 }
+
+/// What a "MAYA_ASSET" drag from the Assets panel carries.
+struct AssetPayload {
+    AssetId id;
+    AssetKind kind;
+};
 
 // Panel titles carry an icon; the part after ### is the stable window ID used by the dock layout.
 inline const std::string hierarchy_title = std::string(icon::tree_structure) + "  Hierarchy###Hierarchy";

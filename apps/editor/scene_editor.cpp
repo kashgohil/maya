@@ -151,9 +151,32 @@ SceneChange diff(const SceneState& before, const SceneState& after) {
     return change;
 }
 
-SceneEditor::SceneEditor(std::unique_ptr<World> world) : m_world(std::move(world)) {
+SceneEditor::SceneEditor(std::unique_ptr<World> world, const std::vector<EntityId>& root_order) : m_world(std::move(world)) {
     if (!m_world) m_world = std::make_unique<World>();
     m_state = capture_state(*m_world);
+    // Roots named in root_order come first, in that order; the rest keep their EntityId order.
+    auto& roots = m_state.children[EntityId{}];
+    auto rank = std::unordered_map<EntityId, size_t, PersistentIdHash>{};
+    for (const auto id : root_order) rank.emplace(id, rank.size());
+    std::ranges::stable_sort(roots, {}, [&](EntityId id) {
+        const auto found = rank.find(id);
+        return found == rank.end() ? rank.size() : found->second;
+    });
+}
+
+SceneDocument SceneEditor::document() const {
+    auto document = SceneDocument{};
+    document.entities.reserve(m_state.entities.size());
+    auto pending = std::vector<EntityId>(roots().rbegin(), roots().rend());
+    while (!pending.empty()) {
+        const auto id = pending.back();
+        pending.pop_back();
+        const auto& entity = m_state.entities.at(id);
+        document.entities.push_back({id, entity.parent, entity.components});
+        const auto& children = m_state.children_of(id);
+        pending.insert(pending.end(), children.rbegin(), children.rend());
+    }
+    return document;
 }
 
 const EntityRecord* SceneEditor::record(EntityId id) const {
@@ -407,7 +430,7 @@ EditResult SceneEditor::create(std::string name, std::optional<EntityId> parent,
     put_component(entity, NameComponent{std::move(name)});
     put_component(entity, TransformComponent{});
     for (auto& value : extra) {
-        if (auto error = validate_component(value); !error) return {false, std::string(error.message)};
+        if (auto error = validate_component(value, m_context); !error) return {false, std::string(error.message)};
         put_component(entity, std::move(value));
     }
     const auto id = m_new_id();
@@ -423,7 +446,7 @@ EditResult SceneEditor::rename(EntityId id, std::string name) {
     const auto* entity = record(id);
     if (!entity) return {false, "The entity no longer exists"};
     auto value = ComponentValue{NameComponent{std::move(name)}};
-    if (auto error = validate_component(value); !error) return {false, std::string(error.message)};
+    if (auto error = validate_component(value, m_context); !error) return {false, std::string(error.message)};
     auto renamed = *entity;
     put_component(renamed, std::move(value));
     auto change = ChangeBuilder(m_state);
@@ -434,7 +457,7 @@ EditResult SceneEditor::rename(EntityId id, std::string name) {
 EditResult SceneEditor::set_component(EntityId id, ComponentValue value) {
     const auto* entity = record(id);
     if (!entity) return {false, "The entity no longer exists"};
-    if (auto error = validate_component(value); !error) return {false, std::string(error.message)};
+    if (auto error = validate_component(value, m_context); !error) return {false, std::string(error.message)};
     const auto label = std::string("Edit ") + std::string(component_schema(component_id(value))->label);
     auto edited = *entity;
     put_component(edited, std::move(value));

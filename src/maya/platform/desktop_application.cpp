@@ -21,7 +21,8 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
         if (argument == "--help") {
-            std::cout << "Usage: " << argv[0] << " [--smoke [positive frame count]]\n";
+            std::cout << "Usage: " << argv[0] << (options.usage.empty() ? "" : " ") << options.usage
+                      << " [--smoke [positive frame count]]\n";
             return 0;
         }
         if (argument != "--smoke" || smoke_frames) {
@@ -52,7 +53,8 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     Engine engine;
     Input::instance().set_services({[&window] { return window.clipboard_text(); },
                                     [&window](const std::string& text) { window.set_clipboard_text(text); },
-                                    [&window](CursorShape shape) { window.set_cursor_shape(shape); }});
+                                    [&window](CursorShape shape) { window.set_cursor_shape(shape); },
+                                    [&window] { window.set_should_close(true); }});
     const auto publish_metrics = [&window] {
         const auto [points_width, points_height] = window.window_size();
         const auto [pixels_width, pixels_height] = window.framebuffer_size();
@@ -78,12 +80,15 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     float fps_smooth = 0.0f;
     uint32_t frame_count = 0;
     int result = 0;
-    while (!window.should_close()) {
+    while (true) {
         window.poll_events();
         if (!resize_ok) { result = 1; break; }
-        if (window.should_close() ||
-            (!smoke_frames && options.escape_closes && Input::instance().is_key_pressed(KeyCode::Escape)))
-            break;
+        if (window.should_close()) {
+            // The application may keep the window open, e.g. to ask about unsaved changes first.
+            if (smoke_frames || engine.request_close()) break;
+            window.set_should_close(false);
+        }
+        if (!smoke_frames && options.escape_closes && Input::instance().is_key_pressed(KeyCode::Escape)) break;
         publish_metrics();
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration<float>(now - last_time).count();
