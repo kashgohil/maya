@@ -50,7 +50,7 @@ public:
 }
 
 TEST_CASE("Property schemas have stable identities, discoverable defaults, and typed access", "[properties]") {
-    REQUIRE(component_schemas().size() == 5);
+    REQUIRE(component_schemas().size() == 7);
     auto ids = std::set<ComponentId>{};
     auto names = std::set<std::string_view>{};
     for (const auto& schema : component_schemas()) {
@@ -80,6 +80,16 @@ TEST_CASE("Property schemas have stable identities, discoverable defaults, and t
     REQUIRE(property_schema(ComponentId::light, "enabled")->id == 7);
     REQUIRE(property_schema(ComponentId::mesh_renderer, "mesh")->encoding == PropertyEncoding::persistent_asset_id);
     REQUIRE(property_schema(ComponentId::light, "kind")->choices.size() == 3);
+    // The built-in behaviors (#1003) keep their IDs, keys, and units.
+    REQUIRE(static_cast<uint32_t>(ComponentId::spin) == 6);
+    REQUIRE(static_cast<uint32_t>(ComponentId::fly_control) == 7);
+    REQUIRE(component_schema("maya.spin")->id == ComponentId::spin);
+    REQUIRE(component_schema("maya.fly_control")->id == ComponentId::fly_control);
+    REQUIRE(property_schema(ComponentId::spin, "speed")->units == "rad/s");
+    REQUIRE(property_schema(ComponentId::fly_control, "speed")->id == 1);
+    REQUIRE(property_schema(ComponentId::fly_control, "look_sensitivity")->id == 2);
+    auto fly = ComponentValue{FlyControlComponent{}};
+    REQUIRE(edit(fly, 1, 0.0f).error == PropertyError::invalid_value); // speeds are positive
     REQUIRE_FALSE(component_schema(static_cast<ComponentId>(99)));
     REQUIRE_FALSE(component_schema("unknown"));
     REQUIRE_FALSE(default_component(static_cast<ComponentId>(99)));

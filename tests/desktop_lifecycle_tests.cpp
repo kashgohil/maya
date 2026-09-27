@@ -1,13 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/engine.hpp"
+#include "maya/platform/desktop_application.hpp"
 #include "maya/platform/window.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/file_system.hpp"
 #include "maya/platform/input.hpp"
 #include <algorithm>
-#if MAYA_TEST_BASIC_SCENE
-#include "basic_scene.hpp"
+#if MAYA_TEST_PLAYER
+#include "player_application.hpp"
 #endif
 #if MAYA_TEST_EDITOR
 #include "editor_application.hpp"
@@ -44,6 +45,22 @@ maya::PipelineHandle surface_pipeline(maya::GraphicsDevice& device) {
 maya::RenderPassDesc surface_pass(maya::TextureHandle texture) {
     return {{{texture, maya::LoadAction::clear, maya::StoreAction::store, {0.1, 0.1, 0.1, 1.0}}}, {}, "surface"};
 }
+}
+
+TEST_CASE("Launch arguments separate an application's own arguments from the host's", "[desktop]") {
+    char program[] = "maya_player", project[] = "My Game", scene[] = "levels/a.scene", smoke[] = "--smoke",
+         count[] = "12", help[] = "--help", zero[] = "0";
+    char* argv[] = {program, project, smoke, count, scene, help};
+    const auto split = maya::split_arguments(6, argv);
+    CHECK(split.positional == std::vector<std::string>{"My Game", "levels/a.scene"});
+    REQUIRE(split.host_count() == 4);
+    CHECK(split.host == std::vector<char*>{program, smoke, count, help, nullptr});
+    // A count after --smoke stays with it, even an invalid one, so the host can refuse it.
+    char* invalid[] = {program, smoke, zero};
+    CHECK(maya::split_arguments(3, invalid).positional.empty());
+    // --smoke without a count leaves the next argument positional.
+    char* bare[] = {program, smoke, project};
+    CHECK(maya::split_arguments(3, bare).positional == std::vector<std::string>{"My Game"});
 }
 
 TEST_CASE("Desktop sessions survive partial startup and repeated shutdown", "[desktop]") {
@@ -173,8 +190,8 @@ TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease 
 
 TEST_CASE("Player and editor render their offscreen views through window resizes", "[desktop][renderer]") {
     auto applications = std::vector<std::pair<const char*, std::unique_ptr<maya::Application>(*)()>>{};
-#if MAYA_TEST_BASIC_SCENE
-    applications.emplace_back("player", &maya::samples::create_basic_scene);
+#if MAYA_TEST_PLAYER
+    applications.emplace_back("player", [] { return maya::player::create_player_application(); });
 #endif
 #if MAYA_TEST_EDITOR
     applications.emplace_back("editor", [] { return maya::editor::create_editor_application(); });

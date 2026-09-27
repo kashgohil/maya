@@ -23,6 +23,52 @@ TEST_CASE("Viewport pixel sizes are whole framebuffer pixels for the panel's poi
     CHECK(viewport_pixels(1e9f, 10.0f, 2.0f).width == 16384);
 }
 
+TEST_CASE("While the scene plays, a click on the game view gives the game every event until Escape", "[editor][play]") {
+    InputRouter router;
+    const auto game_view = RouterContext{true, true};
+    const auto down = [](MouseButton button) { return MouseButtonEvent{button, true, KeyModifiers::none}; };
+    // Over the game view, the right button does not fly the editor camera and scrolling does not dolly.
+    auto routed = router.route({down(MouseButton::right), ScrollEvent{0, 3}}, game_view);
+    CHECK_FALSE(router.navigating());
+    CHECK(routed.navigation.dolly == 0.0f);
+    CHECK(routed.ui.size() == 2);
+    // A left click elsewhere is the UI's; on the game view it hands over the input, and is not passed on.
+    routed = router.route({down(MouseButton::left)}, RouterContext{false, true});
+    CHECK_FALSE(router.game_has_input());
+    routed = router.route({down(MouseButton::left)}, game_view);
+    CHECK(router.game_has_input());
+    CHECK(routed.game_started);
+    CHECK(routed.capture == true);
+    CHECK(routed.ui.empty());
+    CHECK(routed.game.empty());
+    // Then the game gets everything, shortcuts and text included, wherever the pointer is.
+    routed = router.route({KeyEvent{KeyCode::W, true, KeyModifiers::none}, TextEvent{'w'},
+                           KeyEvent{KeyCode::P, true, KeyModifiers::super}, MouseMoveEvent{5, 5}, ScrollEvent{0, 1}}, RouterContext{});
+    CHECK(routed.game.size() == 5);
+    CHECK(routed.ui.empty());
+    CHECK(routed.navigation.dolly == 0.0f);
+    // Escape takes it back (the key is not passed on); the UI learns where the pointer is.
+    routed = router.route({KeyEvent{KeyCode::Escape, true, KeyModifiers::none}, KeyEvent{KeyCode::Escape, false, KeyModifiers::none},
+                           KeyEvent{KeyCode::A, true, KeyModifiers::none}}, game_view);
+    CHECK_FALSE(router.game_has_input());
+    CHECK(routed.game_ended);
+    CHECK(routed.capture == false);
+    CHECK(routed.game.empty());
+    REQUIRE(routed.ui.size() == 3); // the pointer, the Escape release, and A
+    CHECK(std::holds_alternative<MouseMoveEvent>(routed.ui[0]));
+    // Losing focus takes it back too, and the game sees the focus change so it can release its keys.
+    router.route({down(MouseButton::left)}, game_view);
+    routed = router.route({FocusEvent{false}}, game_view);
+    CHECK_FALSE(router.game_has_input());
+    CHECK(routed.game.size() == 1);
+    CHECK(routed.game_ended);
+    // cancel() ends it, as when play stops.
+    router.route({down(MouseButton::left)}, game_view);
+    CHECK(router.cancel() == false);
+    CHECK_FALSE(router.game_has_input());
+    CHECK_FALSE(router.cancel());
+}
+
 TEST_CASE("The router gives typing to the UI and navigation input to the camera", "[editor]") {
     InputRouter router;
     const auto over_viewport = RouterContext{true};

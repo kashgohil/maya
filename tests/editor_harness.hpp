@@ -6,9 +6,14 @@
 #include "maya/rhi/null_device.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <imgui_internal.h>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
+#include <unistd.h>
 
 namespace maya::editor::testing {
+namespace fs = std::filesystem;
 /// Null backend that records UI encoding and can fail chosen resources.
 class EditorDevice final : public NullGraphicsDevice {
 public:
@@ -176,5 +181,50 @@ inline void drag(Harness& harness, ImVec2 from, ImVec2 to, int steps = 10) {
     }
     harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
 }
+
+/// A copy of the sample project in a scratch folder, named "Sample Game", with its content folder
+/// under the given name. Removed afterwards.
+struct ProjectCopy {
+    fs::path root;
+    fs::path folder;
+    fs::path content;
+    explicit ProjectCopy(const std::string& content_name = "assets", const std::string& startup = "basic.scene") {
+        const auto scratch = fs::temp_directory_path() /
+            ("maya-editor-project-" + std::to_string(::getpid()) + "-" + std::to_string(detail::next_lifetime_token()));
+        fs::create_directories(scratch / "Sample Game");
+        root = fs::canonical(scratch);
+        folder = root / "Sample Game";
+        content = folder / content_name;
+        fs::copy(sample_project().parent_path() / "assets", content, fs::copy_options::recursive);
+        auto project = std::ofstream(folder / "project.maya");
+        project << "maya-project 1\ncontent \"" << content_name << "\"\ncatalog \"catalog.maya\"\n";
+        if (!startup.empty()) project << "startup \"" << startup << "\"\n";
+    }
+    ~ProjectCopy() {
+        std::error_code error;
+        writable(content);
+        fs::remove_all(root, error);
+    }
+    std::string read(const fs::path& relative) const {
+        auto file = std::ifstream(content / relative, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    void write(const fs::path& relative, const std::string& text) const { std::ofstream(content / relative) << text; }
+    static void read_only(const fs::path& path) {
+        fs::permissions(path, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
+                        fs::perm_options::remove);
+    }
+    static void writable(const fs::path& path) {
+        std::error_code error;
+        fs::permissions(path, fs::perms::owner_all, fs::perm_options::add, error);
+    }
+};
+
+/// Restores the working directory when it goes out of scope.
+struct WorkingDirectory {
+    fs::path previous = fs::current_path();
+    explicit WorkingDirectory(const fs::path& path) { fs::current_path(path); }
+    ~WorkingDirectory() { fs::current_path(previous); }
+};
 
 } // namespace maya::editor::testing
