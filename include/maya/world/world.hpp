@@ -14,6 +14,9 @@ enum class WorldError {
     invalid_transform, hierarchy_cycle, hierarchy_in_use, unrepresentable_transform, invalid_policy
 };
 
+/// A short lowercase name for messages, such as "hierarchy cycle".
+const char* error_name(WorldError error) noexcept;
+
 struct WorldCommitResult {
     WorldError error = WorldError::none;
     size_t command_index = 0; // failing command, or command count on success

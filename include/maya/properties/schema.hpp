@@ -8,10 +8,10 @@
 
 namespace maya {
 // Explicit persistent IDs. Never derive identity from RTTI, ordering, labels, or hashes.
-enum class ComponentId : uint32_t { name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5 };
+enum class ComponentId : uint32_t { name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5, spin = 6, fly_control = 7 };
 using PropertyId = uint32_t; // scoped to ComponentId; zero is reserved
 using ComponentValue = std::variant<NameComponent, TransformComponent, MeshRendererComponent,
-                                    CameraComponent, LightComponent>;
+                                    CameraComponent, LightComponent, SpinComponent, FlyControlComponent>;
 using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat,
                                   LightKind, AssetRef<MeshAsset>, AssetRef<MaterialAsset>>;
 enum class PropertyType { text, boolean, scalar, vector3, quaternion, light_kind, mesh_ref, material_ref };

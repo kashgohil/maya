@@ -4,10 +4,17 @@
 namespace maya::editor {
 
 std::optional<bool> InputRouter::cancel() {
-    if (!m_navigating) return std::nullopt;
     auto output = RoutedInput{};
-    end_navigation(output);
+    if (m_navigating) end_navigation(output);
+    if (m_game) end_game(output);
     return output.capture;
+}
+
+void InputRouter::end_game(RoutedInput& output) {
+    m_game = false;
+    output.capture = false;
+    output.game_ended = true;
+    output.ui.push_back(MouseMoveEvent{m_pointer.x, m_pointer.y});
 }
 
 void InputRouter::end_navigation(RoutedInput& output) {
@@ -35,6 +42,19 @@ RoutedInput InputRouter::route(const std::vector<InputEvent>& events, const Rout
     auto look = math::Vec2{0.0f, 0.0f};
     auto dolly = 0.0f;
     for (const auto& event : events) {
+        if (m_game) { // the game owns everything, except the ways to take the input back
+            if (const auto* key = std::get_if<KeyEvent>(&event); key && key->key == KeyCode::Escape) {
+                if (key->down) end_game(output);
+                continue;
+            }
+            if (const auto* move = std::get_if<MouseMoveEvent>(&event)) m_pointer = {move->x, move->y};
+            output.game.push_back(event);
+            if (const auto* focus = std::get_if<FocusEvent>(&event); focus && !focus->focused) {
+                end_game(output);
+                output.ui.push_back(event);
+            }
+            continue;
+        }
         std::visit([&](const auto& e) {
             using T = std::decay_t<decltype(e)>;
             if constexpr (std::is_same_v<T, MouseMoveEvent>) {
@@ -44,7 +64,11 @@ RoutedInput InputRouter::route(const std::vector<InputEvent>& events, const Rout
             } else if constexpr (std::is_same_v<T, MouseButtonEvent>) {
                 if (m_navigating) {
                     if (e.button == MouseButton::right && !e.down) end_navigation(output);
-                } else if (e.button == MouseButton::right && e.down && context.viewport_hovered) {
+                } else if (e.button == MouseButton::left && e.down && context.viewport_hovered && context.game_view) {
+                    m_game = true; // the click itself only hands over the input
+                    output.capture = true;
+                    output.game_started = true;
+                } else if (e.button == MouseButton::right && e.down && context.viewport_hovered && !context.game_view) {
                     m_navigating = true;
                     output.capture = true;
                     output.navigation_started = true;
@@ -70,7 +94,7 @@ RoutedInput InputRouter::route(const std::vector<InputEvent>& events, const Rout
             } else if constexpr (std::is_same_v<T, TextEvent>) {
                 if (!m_navigating) output.ui.push_back(e);
             } else if constexpr (std::is_same_v<T, ScrollEvent>) {
-                if (m_navigating || context.viewport_hovered) dolly += e.y;
+                if (m_navigating || (context.viewport_hovered && !context.game_view)) dolly += e.y;
                 else output.ui.push_back(e);
             } else if constexpr (std::is_same_v<T, FocusEvent>) {
                 if (!e.focused && m_navigating) end_navigation(output);

@@ -98,6 +98,23 @@ std::string Project::name() const {
     return file.parent_path().filename().string();
 }
 
+ProjectAssetsResult open_project_assets(const Project& project, std::unique_ptr<AssetProvider> provider) {
+    const auto shown = project.relative(project.catalog).generic_string();
+    auto file = std::ifstream(project.catalog);
+    if (!file) return {nullptr, "Cannot read the asset catalog " + shown + " in " + project.content_root.string()};
+    const auto catalog = read_asset_catalog(file);
+    if (!catalog) return {nullptr, shown + ": " + catalog.diagnostic.message};
+    auto registry = std::unique_ptr<AssetRegistry>{};
+    try {
+        registry = std::make_unique<AssetRegistry>(project.content_root, std::move(provider));
+    } catch (const std::invalid_argument& error) {
+        return {nullptr, error.what()};
+    }
+    for (const auto& record : catalog.records)
+        if (const auto error = registry->register_asset(record)) return {nullptr, shown + ": " + error.message};
+    return {std::move(registry), {}};
+}
+
 ProjectResult open_project(const std::filesystem::path& file_or_directory) {
     auto error = std::error_code{};
     auto file = std::filesystem::absolute(file_or_directory, error);

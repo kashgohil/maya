@@ -11,6 +11,9 @@ entity 6d617961 100
     vertical_fov 1.0471976
     near_clip 0.1
     far_clip 1000
+  component maya.fly_control 1
+    speed 3
+    look_sensitivity 0.0025
 end
 
 entity 6d617961 101
@@ -41,6 +44,9 @@ entity 6d617961 200
     mesh 6d617961 1
     material 6d617961 10
     visible true
+  component maya.spin 1
+    axis 0 1 0
+    speed 0.5
 end
 
 entity 6d617961 201

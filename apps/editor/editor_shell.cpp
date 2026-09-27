@@ -82,6 +82,7 @@ const char* source_name(DiagnosticSource source) {
     case DiagnosticSource::edit: return "edit";
     case DiagnosticSource::project: return "project";
     case DiagnosticSource::asset: return "asset";
+    case DiagnosticSource::play: return "play";
     }
     return "?";
 }
@@ -255,16 +256,17 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     io.DisplayFramebufferScale = {scale_x, scale_y};
     io.DeltaTime = std::isfinite(delta_time) && delta_time > 0.0f ? delta_time : 1.0f / 60.0f;
 
-    const auto routed = m_router.route(events, {m_viewport_hovered});
+    const auto routed = m_router.route(events, {m_viewport_hovered, showing_game()});
     if (routed.capture) m_capture_request = routed.capture;
     apply_input(routed);
     m_camera.update(routed.navigation, io.DeltaTime);
+    update_play(routed, io.DeltaTime); // before the UI, so it shows this frame's ticks
 
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
     m_layout.controls.clear();
     // Focusing the viewport deactivates any text field, so it stops receiving keys.
-    if (routed.navigation_started) ImGui::SetWindowFocus(viewport_title.c_str());
+    if (routed.navigation_started || routed.game_started) ImGui::SetWindowFocus(viewport_title.c_str());
     draw_top_bar();
     draw_status_bar();
     const auto dockspace = ImGui::GetID("EditorDockSpace");
@@ -404,6 +406,13 @@ void EditorShell::draw_top_bar() {
             ImGui::TextUnformatted("No scene open");
             ImGui::PopStyleColor();
         }
+        // Play controls in the middle of the bar.
+        if (m_scene) {
+            ImGui::SameLine();
+            const auto controls_width = 3.0f * (ImGui::GetFrameHeight() + 8.0f);
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), (ImGui::GetWindowWidth() - controls_width) * 0.5f));
+            draw_play_controls();
+        }
         const auto frame = format("%.1f ms", ImGui::GetIO().DeltaTime * 1000.0f);
         ImGui::PushFont(m_fonts.mono);
         const auto width = ImGui::CalcTextSize(frame.c_str()).x;
@@ -412,8 +421,9 @@ void EditorShell::draw_top_bar() {
         ImGui::TextUnformatted(frame.c_str());
         ImGui::PopStyleColor();
         ImGui::PopFont();
+        // While playing, the bar's rule turns to the accent, so play is never mistaken for editing.
         draw->AddLine({origin.x, origin.y + height - 1.0f}, {origin.x + ImGui::GetWindowWidth(), origin.y + height - 1.0f},
-                      theme::color::border);
+                      m_play ? theme::color::accent : theme::color::border, m_play ? 2.0f : 1.0f);
     }
     ImGui::End();
     ImGui::PopStyleColor();
@@ -435,7 +445,17 @@ void EditorShell::draw_status_bar() {
         auto tone = theme::color::success;
         auto glyph = icon::check_circle;
         if (m_router.navigating()) { state = "Flying"; tone = theme::color::accent; glyph = icon::arrows_move; }
-        else if (problems) {
+        else if (m_router.game_has_input()) {
+            state = "The game has the mouse and keyboard  \xC2\xB7  Esc to take them back";
+            tone = theme::color::accent;
+            glyph = icon::game_controller;
+        } else if (m_play) {
+            const auto paused = m_play->clock().paused();
+            state = format("%s  \xC2\xB7  tick %llu  \xC2\xB7  %.2f s", paused ? "Paused" : "Playing",
+                           static_cast<unsigned long long>(m_play->clock().tick()), m_play->clock().time());
+            tone = theme::color::accent;
+            glyph = paused ? icon::pause : icon::play;
+        } else if (problems) {
             state = std::to_string(problems) + (problems == 1 ? " problem" : " problems");
             tone = theme::color::danger;
             glyph = icon::warning;
@@ -467,7 +487,7 @@ void EditorShell::report(const EditResult& result, const std::string& action) {
 }
 
 void EditorShell::start_rename(EntityId id) {
-    if (!m_scene || !m_scene->record(id)) return;
+    if (!m_scene || !m_scene->record(id) || m_scene->locked()) return;
     m_renaming = id;
     std::snprintf(m_rename_buffer, sizeof(m_rename_buffer), "%s", m_scene->display_name(id).c_str());
     m_rename_focus = true;
@@ -518,7 +538,7 @@ void EditorShell::draw_hierarchy_row(EntityId id) {
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && !scene.selected(id)) scene.select(id);
 
     // Drag onto a row's upper or lower quarter to place before or after it; onto its middle to parent.
-    if (ImGui::BeginDragDropSource()) {
+    if (!scene.locked() && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("MAYA_ENTITY", &id, sizeof(id));
         icon_text(glyph, tone);
         ImGui::TextUnformatted(scene.display_name(id).c_str());
@@ -546,7 +566,7 @@ void EditorShell::draw_hierarchy_row(EntityId id) {
         }
         ImGui::EndDragDropTarget();
     }
-    if (ImGui::BeginPopupContextItem("row")) {
+    if (!scene.locked() && ImGui::BeginPopupContextItem("row")) {
         if (ImGui::MenuItem((std::string(icon::pencil) + "  Rename").c_str(), "F2")) start_rename(id);
         if (ImGui::MenuItem((std::string(icon::copy) + "  Duplicate").c_str(), "\xE2\x8C\x98" "D"))
             report(scene.duplicate_selection(), "Duplicate");
@@ -607,7 +627,9 @@ void EditorShell::draw_hierarchy() {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
         ImGui::PushStyleColor(ImGuiCol_Button, 0u);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {5.0f, 3.0f});
+        ImGui::BeginDisabled(scene.locked());
         if (ImGui::Button(icon::plus)) ImGui::OpenPopup("create");
+        ImGui::EndDisabled();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create an entity");
@@ -640,13 +662,13 @@ void EditorShell::draw_hierarchy() {
             accept_asset_drop({}); // a mesh dropped here is placed in view
             ImGui::EndDragDropTarget();
         }
-        if (ImGui::BeginPopupContextItem("empty")) {
+        if (!scene.locked() && ImGui::BeginPopupContextItem("empty")) {
             draw_create_menu(std::nullopt);
             ImGui::EndPopup();
         }
         // Keys that act on the selection while the hierarchy has focus.
         if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && !m_renaming) {
-            if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false))
+            if ((ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) && !scene.locked())
                 report(scene.delete_selection(), "Delete");
             if ((ImGui::IsKeyPressed(ImGuiKey_F2, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) && scene.primary())
                 start_rename(*scene.primary());
@@ -659,6 +681,12 @@ void EditorShell::draw_hierarchy() {
 void EditorShell::handle_shortcuts() {
     if (!m_scene || ImGui::GetIO().WantTextInput || m_renaming || m_prompt != EditorPrompt::none) return;
     constexpr auto global = ImGuiInputFlags_RouteGlobal;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, global)) {
+        if (m_play) stop_play();
+        else start_play();
+    }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P, global)) toggle_pause();
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Alt | ImGuiKey_P, global)) step_play();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, global)) save_or_ask();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, global)) ask_save_as();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, global)) request_new_scene();
@@ -687,20 +715,27 @@ void EditorShell::draw_viewport() {
             m_viewport_hovered = ImGui::IsItemHovered();
             m_layout.viewport_min = ImGui::GetItemRectMin();
             m_layout.viewport_max = ImGui::GetItemRectMax();
-            accept_viewport_drop(); // meshes are placed where they are dropped, materials assigned
-            // Navigation hint: a quiet pill in the corner, brighter while flying.
-            const auto flying = m_router.navigating();
-            const auto hint = flying
+            if (!m_play) accept_viewport_drop(); // meshes are placed where they are dropped, materials assigned
+            // Hint: a quiet pill in the corner, brighter while flying or while the game has the input.
+            const auto flying = m_router.navigating() || m_router.game_has_input();
+            const auto game = showing_game();
+            const auto hint = m_router.game_has_input()
+                ? std::string(icon::game_controller) + "  The game has the mouse and keyboard  \xC2\xB7  Esc to take them back"
+                : game ? std::string(icon::game_controller) + "  Click to play with the mouse and keyboard"
+                : m_router.navigating()
                 ? std::string(icon::arrows_move) + "  WASD move  \xC2\xB7  Q/E down/up  \xC2\xB7  Shift faster  \xC2\xB7  Esc stop"
-                : "Click to select     " + std::string(icon::mouse_right) + "  Hold to fly     " + icon::mouse_scroll + "  Scroll to dolly";
+                : std::string(m_play ? "" : "Click to select     ") + icon::mouse_right + "  Hold to fly     " + icon::mouse_scroll + "  Scroll to dolly";
             auto* draw = ImGui::GetWindowDrawList();
             const auto size = ImGui::CalcTextSize(hint.c_str());
             const auto corner = ImVec2{m_layout.viewport_min.x + 12.0f, m_layout.viewport_max.y - size.y - 22.0f};
             draw->AddRectFilled(corner, {corner.x + size.x + 20.0f, corner.y + size.y + 10.0f},
                                 theme::color::rgb(0x0B0C0E, 190), 8.0f);
             draw->AddText({corner.x + 10.0f, corner.y + 5.0f}, flying ? theme::color::text : theme::color::muted, hint.c_str());
-            if (const auto view = make_render_view(m_camera.camera, m_camera.pose(), request.width, request.height))
+            if (m_play) {
+                draw_view_toggle();
+            } else if (const auto view = make_render_view(m_camera.camera, m_camera.pose(), request.width, request.height)) {
                 draw_viewport_tools(*view, m_layout.viewport_min, m_layout.viewport_max);
+            }
         }
     } else if (open) {
         ImGui::SetCursorPos({16.0f, 14.0f});
@@ -743,6 +778,12 @@ void EditorShell::draw_diagnostics() {
                                  static_cast<unsigned long long>(stats.transient_failures)));
             row("Resources", format("%zu buffers   %zu textures   %zu pending", stats.buffers, stats.textures,
                                     stats.pending_retirements));
+            // Slowdown is never hidden: wall time the clock refused and ticks it dropped are shown.
+            if (m_play) {
+                const auto& clock = m_play->clock();
+                row("Play", format("tick %llu   %.2f s rejected   %llu ticks dropped", static_cast<unsigned long long>(clock.tick()),
+                                   clock.total_rejected_time(), static_cast<unsigned long long>(clock.total_discarded_ticks())));
+            }
             theme::end_properties();
         }
         if (!m_frame_problems.empty()) {
@@ -790,13 +831,19 @@ void EditorShell::render_viewport() {
     }
     if (m_viewport.allocations() != allocations)
         m_log.add(DiagnosticSource::viewport, "Viewport target reallocated for a new panel size", m_frame);
-    const auto view = make_render_view(m_camera.camera, m_camera.pose(), m_viewport.width(), m_viewport.height());
+    // While playing, the play World is shown, through its camera in the game view.
+    const auto& world = m_play ? m_play->world() : m_scene->world();
+    auto view = std::optional<RenderView>{};
+    if (showing_game())
+        if (const auto camera = world.find(*m_play->camera()))
+            view = extract_render_view(world, *camera, m_viewport.width(), m_viewport.height());
+    if (!view) view = make_render_view(m_camera.camera, m_camera.pose(), m_viewport.width(), m_viewport.height());
     if (!view) {
         m_viewport_error = true;
-        m_log.add(DiagnosticSource::viewport, "The editor camera has no valid view", m_frame);
+        m_log.add(DiagnosticSource::viewport, "The camera has no valid view", m_frame);
         return;
     }
-    auto snapshot = extract_render_snapshot(m_scene->world(), *m_assets);
+    auto snapshot = extract_render_snapshot(world, *m_assets);
     m_extraction = snapshot.stats;
     m_frame_problems = snapshot.diagnostics;
     if (auto error = m_renderer.render(snapshot, *view, m_viewport)) {
@@ -804,7 +851,7 @@ void EditorShell::render_viewport() {
         m_log.add(DiagnosticSource::renderer, error.message, m_frame);
     }
     m_ui.set_texture(m_viewport_texture, m_viewport.color());
-    m_snapshot = std::move(snapshot); // for picking and outlines next frame
+    if (!m_play) m_snapshot = std::move(snapshot); // for picking and outlines next frame, while editing
 }
 
 RhiDiagnostic EditorShell::render(TextureHandle destination) {

@@ -15,6 +15,25 @@
 
 namespace maya {
 
+LaunchArguments split_arguments(int argc, char** argv) {
+    auto arguments = LaunchArguments{};
+    if (argc > 0) arguments.host.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        const auto argument = std::string_view(argv[i]);
+        if (!argument.starts_with("-")) {
+            arguments.positional.emplace_back(argument);
+            continue;
+        }
+        arguments.host.push_back(argv[i]);
+        // --smoke takes an optional count; anything numeric after it is that count, even if invalid.
+        const auto count = i + 1 < argc ? std::string_view(argv[i + 1]) : std::string_view{};
+        if (argument == "--smoke" && !count.empty() && count.find_first_not_of("0123456789-+") == std::string_view::npos)
+            arguments.host.push_back(argv[++i]);
+    }
+    arguments.host.push_back(nullptr);
+    return arguments;
+}
+
 int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     const DesktopOptions& options) {
     std::optional<uint32_t> smoke_frames;

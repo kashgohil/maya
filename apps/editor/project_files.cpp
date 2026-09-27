@@ -86,19 +86,9 @@ void muted_text(const std::string& text, ImU32 tone = theme::color::muted) {
 // Projects and scene files --------------------------------------------------------------------------
 
 std::string EditorShell::read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry) {
-    const auto shown = project.relative(project.catalog).generic_string();
-    auto file = std::ifstream(project.catalog);
-    if (!file) return "Cannot read the asset catalog " + shown + " in " + project.content_root.string();
-    const auto catalog = read_asset_catalog(file);
-    if (!catalog) return shown + ": " + catalog.diagnostic.message;
-    try {
-        registry = std::make_unique<AssetRegistry>(project.content_root, std::make_unique<FileAssetProvider>(m_device));
-    } catch (const std::exception& error) {
-        return error.what();
-    }
-    for (const auto& record : catalog.records)
-        if (const auto error = registry->register_asset(record)) return shown + ": " + error.message;
-    return {};
+    auto opened = open_project_assets(project, std::make_unique<FileAssetProvider>(m_device));
+    registry = std::move(opened.registry);
+    return opened.error;
 }
 
 bool EditorShell::open_project(const std::filesystem::path& path) {
@@ -123,6 +113,7 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
 }
 
 void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path) {
+    stop_play(); // a play World belongs to the scene it was started from
     // References are checked against whichever catalog is current, including after a refresh.
     scene->set_validation_context({[this](AssetId id, ReferenceKind kind) {
         return m_assets ? asset_property_context(*m_assets).resolve_asset(id, kind) : ReferenceStatus::missing;

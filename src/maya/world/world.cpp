@@ -420,4 +420,26 @@ void World::destroy(uint32_t slot) noexcept {
     }
     for (auto& [type, pool] : m_pools) pool->remove(slot);
 }
+
+const char* error_name(WorldError error) noexcept {
+    switch (error) {
+    case WorldError::none: return "none";
+    case WorldError::busy: return "busy";
+    case WorldError::wrong_world: return "wrong world";
+    case WorldError::invalid_entity: return "invalid entity";
+    case WorldError::invalid_id: return "invalid ID";
+    case WorldError::duplicate_id: return "duplicate ID";
+    case WorldError::invalid_pending_entity: return "invalid pending entity";
+    case WorldError::component_exists: return "component exists";
+    case WorldError::component_missing: return "component missing";
+    case WorldError::capacity_exhausted: return "capacity exhausted";
+    case WorldError::invalid_transform: return "invalid transform";
+    case WorldError::hierarchy_cycle: return "hierarchy cycle";
+    case WorldError::hierarchy_in_use: return "hierarchy in use";
+    case WorldError::unrepresentable_transform: return "unrepresentable transform";
+    case WorldError::invalid_policy: return "invalid policy";
+    }
+    return "unknown";
+}
+
 } // namespace maya

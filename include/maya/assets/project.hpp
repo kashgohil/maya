@@ -1,4 +1,5 @@
 #pragma once
+#include "maya/assets/registry.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <iosfwd>
@@ -55,6 +56,15 @@ struct ProjectResult {
     std::string error; // empty on success
     explicit operator bool() const noexcept { return error.empty(); }
 };
+struct ProjectAssetsResult {
+    std::unique_ptr<AssetRegistry> registry; // null on failure
+    std::string error; // names the catalog and the reason
+    explicit operator bool() const noexcept { return static_cast<bool>(registry); }
+};
+/// Reads the project's catalog into a new registry rooted at its content root. Nothing is loaded yet.
+/// A catalog that cannot be read, parsed, or registered produces no registry.
+ProjectAssetsResult open_project_assets(const Project& project, std::unique_ptr<AssetProvider> provider);
+
 /// Opens a project from its file, or from a directory that contains project.maya. A relative path is
 /// taken from the working directory. Fails when the file is unreadable or invalid, or its content root
 /// is not an existing directory. The catalog and startup scene are checked when they are read.

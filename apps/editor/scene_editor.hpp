@@ -112,13 +112,19 @@ public:
     void begin_group(std::string label);
     void end_group();
 
-    bool can_undo() const noexcept { return m_position > 0 && m_group_depth == 0; }
-    bool can_redo() const noexcept { return m_position < m_history.size() && m_group_depth == 0; }
+    bool can_undo() const noexcept { return m_position > 0 && m_group_depth == 0 && !locked(); }
+    bool can_redo() const noexcept { return m_position < m_history.size() && m_group_depth == 0 && !locked(); }
     std::string undo_label() const { return can_undo() ? m_history[m_position - 1].label : std::string{}; }
     std::string redo_label() const { return can_redo() ? m_history[m_position].label : std::string{}; }
     EditResult undo();
     EditResult redo();
     size_t history_size() const noexcept { return m_history.size(); }
+
+    /// While locked (e.g. while the scene plays), every edit, undo, and redo is refused with `reason`.
+    /// Selection still works.
+    void lock(std::string reason) { m_lock_reason = reason.empty() ? std::string("The scene is locked") : std::move(reason); }
+    void unlock() noexcept { m_lock_reason.clear(); }
+    bool locked() const noexcept { return !m_lock_reason.empty(); }
 
     /// Unsaved changes: the history position differs from the one at the last save or open.
     bool dirty() const noexcept { return !m_saved || *m_saved != m_position; }
@@ -138,6 +144,7 @@ private:
     std::unique_ptr<World> m_world;
     std::function<EntityId()> m_new_id = [] { return EntityId::generate(); };
     PropertyValidationContext m_context;
+    std::string m_lock_reason; // empty when unlocked
     SceneState m_state; // mirrors the World's authored data, plus root order
     std::vector<EntityId> m_selection;
     std::deque<Step> m_history;

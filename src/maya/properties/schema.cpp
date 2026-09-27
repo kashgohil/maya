@@ -86,6 +86,19 @@ const auto& light_bindings() {
         bind<&LightComponent::enabled>(7, "enabled", "Enabled", Hint::toggle)};
     return values;
 }
+const auto& spin_bindings() {
+    static const auto values = std::array{
+        bind<&SpinComponent::axis>(1, "axis", "Axis", Hint::vector, {}, {}, "Local axis to turn about; its length is ignored."),
+        bind<&SpinComponent::speed>(2, "speed", "Speed", Hint::number, {}, "rad/s", "Negative turns the other way.")};
+    return values;
+}
+const auto& fly_bindings() {
+    static const auto values = std::array{
+        bind<&FlyControlComponent::speed>(1, "speed", "Speed", Hint::number, positive, "m/s", "Shift moves four times faster."),
+        bind<&FlyControlComponent::look_sensitivity>(2, "look_sensitivity", "Look sensitivity", Hint::number, positive, "rad/pt",
+            "Turn per point of mouse movement.")};
+    return values;
+}
 
 template<size_t N> auto descriptors(const std::array<Binding, N>& bindings) {
     auto result = std::array<PropertyDescriptor, N>{};
@@ -99,6 +112,8 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::mesh_renderer: return mesh_bindings();
     case ComponentId::camera: return camera_bindings();
     case ComponentId::light: return light_bindings();
+    case ComponentId::spin: return spin_bindings();
+    case ComponentId::fly_control: return fly_bindings();
     }
     return {};
 }
@@ -158,12 +173,16 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto meshes = descriptors(mesh_bindings());
     static const auto cameras = descriptors(camera_bindings());
     static const auto lights = descriptors(light_bindings());
+    static const auto spins = descriptors(spin_bindings());
+    static const auto flights = descriptors(fly_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
         ComponentDescriptor{ComponentId::mesh_renderer, "maya.mesh_renderer", "Mesh renderer", 1, meshes},
         ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 1, cameras},
-        ComponentDescriptor{ComponentId::light, "maya.light", "Light", 1, lights}};
+        ComponentDescriptor{ComponentId::light, "maya.light", "Light", 1, lights},
+        ComponentDescriptor{ComponentId::spin, "maya.spin", "Spin", 1, spins},
+        ComponentDescriptor{ComponentId::fly_control, "maya.fly_control", "Fly control", 1, flights}};
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -190,7 +209,9 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, TransformComponent>) return ComponentId::transform;
         else if constexpr (std::same_as<T, MeshRendererComponent>) return ComponentId::mesh_renderer;
         else if constexpr (std::same_as<T, CameraComponent>) return ComponentId::camera;
-        else return ComponentId::light;
+        else if constexpr (std::same_as<T, LightComponent>) return ComponentId::light;
+        else if constexpr (std::same_as<T, SpinComponent>) return ComponentId::spin;
+        else { static_assert(std::same_as<T, FlyControlComponent>); return ComponentId::fly_control; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -200,6 +221,8 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::mesh_renderer: return MeshRendererComponent{};
     case ComponentId::camera: return CameraComponent{};
     case ComponentId::light: return LightComponent{};
+    case ComponentId::spin: return SpinComponent{};
+    case ComponentId::fly_control: return FlyControlComponent{};
     }
     return std::nullopt;
 }

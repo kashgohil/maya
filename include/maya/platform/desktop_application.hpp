@@ -4,6 +4,7 @@
 #include "maya/rhi/resource.hpp"
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace maya {
 
@@ -19,6 +20,15 @@ struct DesktopOptions {
     std::string usage;
     DeviceOptions device{};
 };
+
+/// An application's own arguments, separated from the host's options. Arguments that start with "-"
+/// belong to the host, and so does the frame count after --smoke; the rest are positional.
+struct LaunchArguments {
+    std::vector<std::string> positional;
+    std::vector<char*> host; // for run_desktop: the program name, then the host's options, then null
+    int host_count() const noexcept { return static_cast<int>(host.size()) - 1; }
+};
+LaunchArguments split_arguments(int argc, char** argv);
 
 /// Desktop host, separate from runtime and game/editor code. Main thread only.
 /// Supports --help and --smoke [positive frame count]; returns nonzero on failure. Closing the window

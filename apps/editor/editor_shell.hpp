@@ -9,6 +9,7 @@
 #include "maya/assets/project.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
+#include "maya/simulation/play_session.hpp"
 #include <array>
 #include <deque>
 #include <filesystem>
@@ -65,7 +66,7 @@ struct EditorLayout {
 
 enum class GizmoOperation { translate, rotate, scale };
 
-enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit, project, asset };
+enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit, project, asset, play };
 
 /// A modal dialog the editor is showing.
 enum class EditorPrompt { none, unsaved_changes, save_as, notice };
@@ -137,6 +138,26 @@ public:
     EditorPrompt prompt() const noexcept { return m_prompt; }
     /// The message a notice or dialog is showing, e.g. why a save failed.
     const std::string& prompt_message() const noexcept { return m_prompt_message; }
+
+    /// Plays the open scene: a new World, built from its current state (saved or not), runs the
+    /// built-in systems on a fixed clock. The authored scene is locked and untouched until stop_play.
+    /// Returns whether play started; a scene that cannot be built reports why.
+    bool start_play();
+    /// Drops the play World and its resources, unlocks the authored scene, and restores the selection
+    /// it had at Play. The editor camera and panels stay as they are.
+    void stop_play();
+    void toggle_pause();
+    /// While paused, runs exactly one tick on the next frame.
+    void step_play();
+    /// The running play session, or null while editing.
+    PlaySession* play_session() noexcept { return m_play.get(); }
+    /// While playing, whether the viewport shows the scene's camera (and a click gives the game the
+    /// input) rather than the editor camera.
+    bool game_view() const noexcept { return m_game_view; }
+    /// Playing, in the game view, with a camera to show: the viewport is the game.
+    bool showing_game() const noexcept { return m_play && m_game_view && m_play->camera(); }
+    void set_game_view(bool game) noexcept;
+    bool game_has_input() const noexcept { return m_router.game_has_input(); }
 
     /// Places an instance of a mesh asset at a world position, named after its file, as one undo step.
     EditResult place_mesh(AssetId mesh, const math::Vec3& position);
@@ -211,6 +232,9 @@ private:
     void draw_asset_row(const AssetRow& row);
     void draw_scene_menu();
     void draw_prompts();
+    void draw_play_controls();
+    void draw_view_toggle();
+    void update_play(const RoutedInput& routed, float delta_time);
     void accept_asset_drop(EntityId target);
     void accept_viewport_drop();
     std::optional<Ray> viewport_ray(ImVec2 point) const;
@@ -265,6 +289,10 @@ private:
     std::vector<EntityId> m_pick_hits;
     size_t m_pick_index = 0;
     std::optional<EntityId> m_reveal; // expand and scroll the hierarchy to this entity
+    // Play
+    std::unique_ptr<PlaySession> m_play;
+    std::vector<EntityId> m_play_selection; // the selection at Play, restored at Stop
+    bool m_game_view = true;
     // Project and scene files
     std::optional<Project> m_project;
     std::filesystem::path m_scene_path;

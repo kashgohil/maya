@@ -21,6 +21,8 @@ const char* component_icon(ComponentId id) {
     case ComponentId::camera: return icon::video_camera;
     case ComponentId::light: return icon::sun;
     case ComponentId::name: return icon::pencil;
+    case ComponentId::spin: return icon::rotate;
+    case ComponentId::fly_control: return icon::game_controller;
     }
     return icon::circle_dashed;
 }
@@ -143,7 +145,8 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
             const auto remember = [&] {
                 m_layout.inspector_fields.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
             };
-            const auto radians = property.units == "rad";
+            // Angles, and rates per second or per point, are shown in degrees.
+            const auto radians = property.units.starts_with("rad");
             switch (property.type) {
             case PropertyType::text: {
                 auto buffer = std::get<std::string>(*current);
@@ -164,7 +167,8 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
                 auto number = std::get<float>(*current) * (radians ? degrees_per_radian : 1.0f);
                 auto minimum = 0.0f, maximum = 0.0f;
                 limits(property.range, radians ? degrees_per_radian : 1.0f, minimum, maximum);
-                const auto format = radians ? std::string("%.1f\xC2\xB0")
+                const auto format = radians ? (std::abs(std::get<float>(property.default_value)) < 0.1f ? "%.3f\xC2\xB0" : "%.1f\xC2\xB0") +
+                                                  std::string(property.units.substr(3))
                     : property.units.empty() || property.units.size() > 3 ? std::string("%.3f")
                     : "%.3f " + std::string(property.units);
                 if (ImGui::DragFloat("##number", &number, radians ? 0.25f : 0.01f, minimum, maximum, format.c_str(),
@@ -306,6 +310,19 @@ void EditorShell::draw_inspector() {
             const auto id = *primary;
             const auto count = m_scene->selection().size();
             theme::caption(m_fonts, "SELECTION", count > 1 ? (std::to_string(count) + " selected, editing the last").c_str() : nullptr);
+            // While playing, the play World's live values, read-only; the authored ones return at Stop.
+            auto components = m_scene->record(id)->components; // a copy, since an edit replaces the record
+            if (m_play) {
+                ImGui::PushStyleColor(ImGuiCol_Text, theme::color::accent);
+                ImGui::TextWrapped("%s", "Live values while playing. Stop to edit.");
+                ImGui::PopStyleColor();
+                if (const auto entity = m_play->world().find(id)) {
+                    components.clear();
+                    for (const auto& schema : component_schemas())
+                        if (auto value = read_component(m_play->world(), *entity, schema.id)) components.push_back(std::move(*value));
+                }
+            }
+            ImGui::BeginDisabled(m_play != nullptr);
             // Name: a large field, committed as one step when editing ends.
             if (m_name_entity != id || !ImGui::IsAnyItemActive())
                 std::snprintf(m_name_buffer, sizeof(m_name_buffer), "%s", m_scene->display_name(id).c_str());
@@ -327,8 +344,7 @@ void EditorShell::draw_inspector() {
                 ImGui::TextWrapped("%s", m_edit_error.c_str());
                 ImGui::PopStyleColor();
             }
-            // Components, in schema order; copies, since an edit replaces the record.
-            const auto components = m_scene->record(id)->components;
+            // Components, in schema order.
             for (const auto& value : components) {
                 if (component_id(value) == ComponentId::name) continue;
                 ImGui::Separator();
@@ -349,6 +365,7 @@ void EditorShell::draw_inspector() {
                 }
                 ImGui::EndPopup();
             }
+            ImGui::EndDisabled();
         }
         ImGui::Dummy({0.0f, 12.0f});
         theme::caption(m_fonts, "EDITOR CAMERA");

@@ -50,6 +50,8 @@ void remove_command(WorldCommands& commands, EntityTarget target, ComponentId id
     case ComponentId::mesh_renderer: commands.remove<MeshRendererComponent>(target); break;
     case ComponentId::camera: commands.remove<CameraComponent>(target); break;
     case ComponentId::light: commands.remove<LightComponent>(target); break;
+    case ComponentId::spin: commands.remove<SpinComponent>(target); break;
+    case ComponentId::fly_control: commands.remove<FlyControlComponent>(target); break;
     }
 }
 
@@ -403,6 +405,7 @@ void drop_unchanged(SceneChange& change) {
 EditResult SceneEditor::commit(std::string label, SceneChange change, std::vector<EntityId> selection_after) {
     drop_unchanged(change);
     if (change.empty()) return {false, "Nothing to change"};
+    if (locked()) return {false, m_lock_reason};
     const auto selection_before = m_selection;
     if (auto result = apply(change, true); !result) return result;
     set_selection(std::move(selection_after));
@@ -601,6 +604,7 @@ void SceneEditor::end_group() {
 }
 
 EditResult SceneEditor::undo() {
+    if (locked()) return {false, m_lock_reason};
     if (!can_undo()) return {false, "Nothing to undo"};
     const auto& step = m_history[m_position - 1];
     if (auto result = apply(step.change, false); !result) return result;
@@ -610,6 +614,7 @@ EditResult SceneEditor::undo() {
 }
 
 EditResult SceneEditor::redo() {
+    if (locked()) return {false, m_lock_reason};
     if (!can_redo()) return {false, "Nothing to redo"};
     const auto& step = m_history[m_position];
     if (auto result = apply(step.change, true); !result) return result;

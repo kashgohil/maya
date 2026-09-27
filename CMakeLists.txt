@@ -79,6 +79,15 @@ add_library(Maya::Renderer ALIAS MayaRenderer)
 target_link_libraries(MayaRenderer PUBLIC MayaWorld MayaAssets MayaRHI)
 maya_target_options(MayaRenderer)
 
+# Play sessions: the fixed clock, gameplay input, and simulation systems shared by the player and the
+# editor's play mode. CPU-only, on top of World and scene data.
+add_library(MayaSimulation STATIC
+    src/maya/simulation/simulation.cpp
+    src/maya/simulation/play_session.cpp)
+add_library(Maya::Simulation ALIAS MayaSimulation)
+target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene)
+maya_target_options(MayaSimulation)
+
 add_library(MayaRuntime STATIC
     src/maya/core/engine.cpp
     src/maya/core/camera.cpp
@@ -89,7 +98,7 @@ add_library(MayaRuntime STATIC
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer MayaSimulation PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 
@@ -124,15 +133,16 @@ if(MAYA_BUILD_EDITOR OR MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
 endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
-    add_library(MayaBasicScene STATIC samples/basic_scene/basic_scene.cpp)
-    target_include_directories(MayaBasicScene PUBLIC samples/basic_scene)
-    target_link_libraries(MayaBasicScene PUBLIC MayaRuntime)
-    maya_target_options(MayaBasicScene)
+    # Runs a project's saved scene through a play session. The player and the sample share it.
+    add_library(MayaPlayer STATIC apps/player/player_application.cpp)
+    target_include_directories(MayaPlayer PUBLIC apps/player)
+    target_link_libraries(MayaPlayer PUBLIC MayaRuntime)
+    maya_target_options(MayaPlayer)
 endif()
 
 if(MAYA_BUILD_PLAYER)
     add_executable(maya_player apps/player/main.cpp)
-    target_link_libraries(maya_player PRIVATE MayaDesktop MayaBasicScene)
+    target_link_libraries(maya_player PRIVATE MayaDesktop MayaPlayer)
     maya_target_options(maya_player)
 endif()
 
@@ -169,6 +179,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/input_router.cpp
         apps/editor/inspector.cpp
         apps/editor/picking.cpp
+        apps/editor/play_mode.cpp
         apps/editor/project_files.cpp
         apps/editor/scene_editor.cpp
         apps/editor/ui_renderer.cpp
@@ -184,7 +195,7 @@ endif()
 
 if(MAYA_BUILD_SAMPLES)
     add_executable(maya_sample samples/basic_scene/main.cpp)
-    target_link_libraries(maya_sample PRIVATE MayaDesktop MayaBasicScene)
+    target_link_libraries(maya_sample PRIVATE MayaDesktop MayaPlayer)
     maya_target_options(maya_sample)
 endif()
 

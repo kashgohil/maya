@@ -25,26 +25,6 @@ bool valid_utf8(std::string_view text) {
     return true;
 }
 namespace {
-const char* world_error_text(WorldError error) {
-    switch (error) {
-    case WorldError::none: return "none";
-    case WorldError::busy: return "busy";
-    case WorldError::wrong_world: return "wrong world";
-    case WorldError::invalid_entity: return "invalid entity";
-    case WorldError::invalid_id: return "invalid ID";
-    case WorldError::duplicate_id: return "duplicate ID";
-    case WorldError::invalid_pending_entity: return "invalid pending entity";
-    case WorldError::component_exists: return "component exists";
-    case WorldError::component_missing: return "component missing";
-    case WorldError::capacity_exhausted: return "capacity exhausted";
-    case WorldError::invalid_transform: return "invalid transform";
-    case WorldError::hierarchy_cycle: return "hierarchy cycle";
-    case WorldError::hierarchy_in_use: return "hierarchy in use";
-    case WorldError::unrepresentable_transform: return "unrepresentable transform";
-    case WorldError::invalid_policy: return "invalid policy";
-    }
-    return "unknown";
-}
 std::string at_line(size_t line, const std::string& text) {
     return line ? "line " + std::to_string(line) + ": " + text : text;
 }
@@ -263,7 +243,7 @@ SceneWorldResult instantiate_scene(SceneDocument document, const PropertyValidat
     const auto result = world->commit(commands);
     if (!result)
         return {nullptr, {{SceneError::world_rejected, "The World rejected the scene at command " +
-            std::to_string(result.command_index) + " (" + detail::world_error_text(result.error) +
+            std::to_string(result.command_index) + " (" + error_name(result.error) +
             "); the active scene was not changed"}}};
     return {std::move(world), {}};
 }

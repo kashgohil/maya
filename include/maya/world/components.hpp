@@ -39,4 +39,20 @@ struct LightComponent {
     float outer_cone = math::PI / 4.0f;
     bool enabled = true;
 };
+
+// Built-in behaviors, until scripting exists. They are authored like any other component and run
+// only in play sessions (the player and editor play), through the shared simulation systems.
+
+/// Turns the entity about a local axis while playing. A zero axis does not turn.
+struct SpinComponent {
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    float speed = math::PI / 4.0f; // radians per second; negative turns the other way
+};
+
+/// Gameplay input flies the entity while playing (normally a camera): WASD to move, Q/E down and up,
+/// Shift faster, and the mouse to look.
+struct FlyControlComponent {
+    float speed = 3.0f; // metres per second
+    float look_sensitivity = 0.0025f; // radians per point of mouse movement
+};
 } // namespace maya
