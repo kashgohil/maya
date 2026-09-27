@@ -29,7 +29,7 @@ if (auto error = renderer.render(snapshot, *view, view_target)) { /* report */ }
 if (auto error = renderer.present(view_target, surface.target.texture, {0, 0, width, height})) { /* report */ }
 ```
 
-The [basic scene](../samples/basic_scene/basic_scene.cpp) uses exactly this path. The player and sample render the scene's camera entity at the window's size. The [editor](editor.md) renders the same kind of World with its own camera, which is tool state rather than an entity, into a target sized to its viewport panel. Its UI then draws that target as an image instead of calling `present`.
+The [player](../apps/player/player_application.cpp) uses exactly this path: it renders its play World's first camera entity at the window's size (see [play](play.md#the-player)). The [editor](editor.md) renders the same kind of World with its own camera, which is tool state rather than an entity, into a target sized to its viewport panel. Its UI then draws that target as an image instead of calling `present`.
 
 ## Render snapshots
 

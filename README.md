@@ -77,13 +77,13 @@ The editor today is the window that work will land in. It has a hierarchy, a vie
 
 Three programs build from this repository.
 
-**Player.** The program a finished game grows out of. It opens the sample's saved scene: a pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly freely. The view renders offscreen and is then presented in the window. It cannot choose a different project yet. Project selection is still in its entry point.
+**Player.** The program a finished game grows out of. It runs a project's saved scene: by default the sample, a spinning pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly. Give it a project and a scene to run another one, with no code changes. The spinning and the flying are components saved in the scene, run by the same fixed-step simulation the editor plays.
 
-**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Click an object to select it; move, rotate, or scale it with the gizmo (W, E, R); and edit its properties, lights, camera, mesh, and material in the inspector. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them. Drag a mesh from the Assets panel into the viewport to place it, and a material onto an object to paint it. Undo or redo any of it with ⌘Z and ⇧⌘Z. Save with ⌘S, or start a new scene with ⌘N; the editor asks before unsaved changes would be lost.
+**Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Click an object to select it; move, rotate, or scale it with the gizmo (W, E, R); and edit its properties, lights, camera, mesh, and material in the inspector. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them. Drag a mesh from the Assets panel into the viewport to place it, and a material onto an object to paint it. Undo or redo any of it with ⌘Z and ⇧⌘Z. Save with ⌘S, or start a new scene with ⌘N; the editor asks before unsaved changes would be lost. Press ⌘P to play the scene in a separate world, click the view to fly its camera, and press ⌘P again to stop: the scene is exactly as you left it.
 
-**Sample.** The same scene as the player, kept as a sample, so the demo can stay a demo while the player becomes a game.
+**Sample.** The player on the sample project, kept as its own program so the demo stays a demo while the player becomes a game.
 
-In the player and the sample, you look with the mouse and move with WASD. Space rises. Escape closes the window; in the editor, Escape only stops flying. The title bar carries a smoothed frame rate, the frame time, and the size of the view in pixels.
+In the player and the sample, you look with the mouse and move with WASD; Q and E go down and up, and Shift is faster. Escape closes the window; in the editor, Escape only stops flying or takes the mouse back from the game. The title bar carries a smoothed frame rate, the frame time, and the size of the view in pixels.
 
 The scene is small on purpose. It is the loop the rest of the engine has to survive: open a window, draw frames, shut down cleanly, and be willing to do it again.
 
@@ -108,10 +108,11 @@ cmake --build build -j 4
 ./build/maya_sample
 ```
 
-`maya_player` and `maya_sample` capture the mouse. `maya_editor` captures it only while you fly. Give the editor a project to open, as a `project.maya` file or its folder; without one it opens the sample project:
+`maya_player` and `maya_sample` capture the mouse. `maya_editor` captures it only while you fly. Give the editor or the player a project to open, as a `project.maya` file or its folder, and the player a scene inside it; without them they open the sample project and its startup scene ([play](docs/play.md#the-player)):
 
 ```bash
 ./build/maya_editor samples/basic_scene
+./build/maya_player samples/basic_scene basic.scene
 ```
  The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
@@ -135,7 +136,8 @@ A build made inside the repository finds its content, because a parent of the ex
 | MayaRenderer | Turns a world into images: extraction, camera views, offscreen targets, and presentation. |
 | MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
 | MayaDesktop | The window, input, and launch loop. |
-| MayaBasicScene | The sample scene. |
+| MayaSimulation | Play sessions: the fixed-step clock, gameplay input, and simulation systems. CPU-only. |
+| MayaPlayer | Runs a project's saved scene through a play session; shared by the player and the sample. |
 | MayaEditor | The editor: panels, viewport, and input routing, on Dear ImGui. |
 | maya_player | The player. |
 | maya_editor | The editor. |

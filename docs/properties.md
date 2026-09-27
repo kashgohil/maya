@@ -4,7 +4,7 @@
 
 ## Discovery and identity
 
-`component_schemas()` returns immutable descriptors with stable addresses; `component_schema` and `property_schema` look up IDs or stable names. Every property has its exact value type, a default derived from its C++ component's default construction, numeric bounds and inclusivity, units, a display label/presentation hint, and a persistence encoding. Light kinds expose named choices. Descriptions record contextual constraints such as intensity units and cone relationships. All 17 initial properties are editable and persistent; derived matrices, hierarchy links, runtime handles, and asset residency are not properties in these schemas.
+`component_schemas()` returns immutable descriptors with stable addresses; `component_schema` and `property_schema` look up IDs or stable names. Every property has its exact value type, a default derived from its C++ component's default construction, numeric bounds and inclusivity, units, a display label/presentation hint, and a persistence encoding. Light kinds expose named choices. Descriptions record contextual constraints such as intensity units and cone relationships. All 21 properties (17 initial ones and 4 for the built-in play behaviors of #1003) are editable and persistent; derived matrices, hierarchy links, runtime handles, and asset residency are not properties in these schemas.
 
 | Component ID / stable name | Property IDs / stable names |
 | --- | --- |
@@ -13,6 +13,8 @@
 | 3 / `maya.mesh_renderer` | 1 `mesh`, 2 `material`, 3 `visible` |
 | 4 / `maya.camera` | 1 `vertical_fov`, 2 `near_clip`, 3 `far_clip` |
 | 5 / `maya.light` | 1 `kind`, 2 `color`, 3 `intensity`, 4 `range`, 5 `inner_cone`, 6 `outer_cone`, 7 `enabled` |
+| 6 / `maya.spin` | 1 `axis`, 2 `speed` (rad/s) — a built-in play behavior (#1003, [play](play.md#systems)) |
+| 7 / `maya.fly_control` | 1 `speed` (m/s), 2 `look_sensitivity` (rad/pt) — a built-in play behavior (#1003) |
 
 A persistent property identity is the pair `(ComponentId, PropertyId)`. Property IDs are scoped to their component; zero is reserved. Display labels, table order, RTTI, C++ layout, variant indices, and pointer addresses never identify saved data. Lookup returns null for unknown identities. The initial built-in schema set is deliberately closed; adding another component requires a typed variant alternative, schema bindings, default/snapshot dispatch, and validation tests. There is no dynamic plugin registration or script VM yet.
 
@@ -64,7 +66,7 @@ Pass `asset_property_context(registry)` when editing components with nonempty re
 
 ## Persistence and schema evolution
 
-All five schemas start at version 1. The [#995 scene codec](scene.md) follows these rules: it persists stable names only, writes every property, and rejects unknown/duplicate/newer data before publication.
+All seven schemas start at version 1. The [#995 scene codec](scene.md) follows these rules: it persists stable names only, writes every property, and rejects unknown/duplicate/newer data before publication.
 
 - Persist component identity/version and property identity using the stable IDs or names above. Choose one canonical representation in the codec, and reject conflicting ID/name pairs if both are supplied. Never serialize object memory or variant ordinals.
 - Encode floats/vectors as finite scalar values, quaternion as normalized `(x,y,z,w)`, boolean as boolean, string as text, and light kind using the stable choice names. Asset properties encode only the 128-bit persistent ID (zero/unassigned explicitly), never a path, lease, pointer, registry token, or runtime handle.
@@ -86,4 +88,4 @@ The CPU-only `maya_property_tests` covers discovery/defaults, stable lookup, typ
 - A bounded Release CPU microbenchmark exercised 1,000 / 10,000 / 100,000 detached camera edit/read pairs and edits across equally sized Worlds. At 100,000, one local run took about 2.49 ms for detached operations and 24.86 ms for individual World publications. Setup was outside the timed regions. These are local checks, not representative game workloads or #1004 capacity evidence.
 - All 38 local documentation links across the changed guides resolve; whitespace and diff checks pass.
 
-Schema/property lookup is a bounded scan of five components and at most seven properties. Editing validates the complete small component; duplicate detection is quadratic in the edit count (at most seven distinct supported fields). World publication uses existing transaction staging; it is an authoring/validation boundary, not a per-frame simulation interface. No production scene-capacity claim follows from these tests. Asset graph editing, material asset factor schemas, custom script components, the inspector, and render extraction remain separate work.
+Schema/property lookup is a bounded scan of seven components and at most seven properties. Editing validates the complete small component; duplicate detection is quadratic in the edit count (at most seven distinct supported fields). World publication uses existing transaction staging; it is an authoring/validation boundary, not a per-frame simulation interface. No production scene-capacity claim follows from these tests. Asset graph editing, material asset factor schemas, custom script components, the inspector, and render extraction remain separate work.

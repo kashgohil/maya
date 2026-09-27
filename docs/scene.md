@@ -96,7 +96,7 @@ An asset absent from the catalog is an error, so a scene never loads with an unk
 
 ## Versions and migration
 
-The initial format is `maya-scene 1` and all five component schemas are version 1. Newer format or component versions are rejected with `unsupported_version` before any World is built. No migrations exist yet: a component version older than the schema would be rejected with the missing migration named, and version 0 is malformed.
+The initial format is `maya-scene 1` and all component schemas are version 1. Newer format or component versions are rejected with `unsupported_version` before any World is built. No migrations exist yet: a component version older than the schema would be rejected with the missing migration named, and version 0 is malformed.
 
 When a schema changes, [its version increments](properties.md#persistence-and-schema-evolution) and a migration keyed by component and source version is added where the parser checks component versions. A migration rewrites the raw property list into the current shape. The result is then validated through the same schema APIs, so a failed migration produces diagnostics and publishes nothing. Loading an older file never rewrites it. The next explicit save writes current versions, and editors should confirm or back up before overwriting an older file. No older version exists yet; the #1002 editor writes a scene only on an explicit Save. Unknown data is rejected, not dropped; a preservation mode would need to be designed explicitly.
 

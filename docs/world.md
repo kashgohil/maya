@@ -78,7 +78,7 @@ This small sparse-set implementation keeps storage independent of an external EC
 | `CameraComponent` | Vertical FOV in radians, near/far clip in metres. Aspect belongs to a rendered view; no window/input ownership. |
 | `LightComponent` | Kind, linear RGB, intensity (directional lux, point/spot lumens), local-light range, spot cone full angles in radians, enabled flag. Renderer interpretation follows later. |
 
-Entities start with no implicit components. The five schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle; #992 adds transform validation and validated camera calculations. Shared property validation is #994, and the [renderer](renderer.md) reads mesh renderers, cameras, and directional lights since #998. Mutable fields are not yet a validated inspector or scripting API.
+Entities start with no implicit components. The component schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle; #992 adds transform validation and validated camera calculations. Shared property validation is #994, and the [renderer](renderer.md) reads mesh renderers, cameras, and directional lights since #998. Mutable fields are not yet a validated inspector or scripting API.
 
 ## Verification
 

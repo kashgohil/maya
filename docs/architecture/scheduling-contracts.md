@@ -1,6 +1,6 @@
 # Scheduling and rendering contracts
 
-Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). The current `Engine::tick` still calls one update followed by rendering; none of the future scheduler, scripting, physics, or job APIs below is implemented here.
+Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, physics, events, presentation interpolation, capture/replay, and a job system are not implemented yet.
 
 ## Clocks and modes
 

@@ -20,7 +20,7 @@ The editor uses [Dear ImGui](https://github.com/ocornut/imgui), the candidate na
 - **Icons:** [Phosphor Icons](https://phosphoricons.com), Light weight (MIT), chosen over the widely used Lucide set for a less generic look. Its thin, even strokes match Inter. The font ships as `resources/fonts/Phosphor-Light.ttf` and is merged into the text fonts, so labels can mix text and icons. Only the glyphs named in [editor_icons.hpp](../apps/editor/editor_icons.hpp) enter the font atlas; add a constant and its codepoint there to use another icon. Icons mark panel tabs, entity types (camera, light, mesh), asset kinds, log severity, the status bar state, and the viewport's navigation hint. Without the icon font, panels show text only and Diagnostics notes it.
 - **Shape:** 6 pt rounding on fields, generous padding, and no window menu buttons or title bars.
 - **Tabs:** flat and 30 pt tall, on a strip in the panel color with a hairline beneath it. Unselected labels are muted, with a soft hover. The visible tab's label is bright, with a short 2 pt underline: the accent when that panel has focus, grey otherwise. ImGui has no per-state tab label colors, so `theme::decorate_tabs` restyles the tabs after they are drawn. Tab bars may be drawn by the dock space or by a panel's `Begin`, so the shell applies the tab padding and muted text to both (`begin_panel`). Each panel then reserves exactly its tab bar's height, which a test checks.
-- **Layout:** a 40 pt top bar with the Maya mark, the open scene, and frame time; a 26 pt status bar with state (ready, flying, or the number of problems), object count, and viewport size; and docked panels between them. Property grids put muted labels on the left and full-width controls on the right. Icons mark entity types in the hierarchy; dots mark load state in the asset list.
+- **Layout:** a 40 pt top bar with the Maya mark, the open scene, the Play controls, and frame time; a 26 pt status bar with state (ready, flying, playing or paused with the tick, or the number of problems), object count, and viewport size; and docked panels between them. Property grids put muted labels on the left and full-width controls on the right. Icons mark entity types in the hierarchy; dots mark load state in the asset list.
 
 Numbers that change every frame are sampled four times a second in the Diagnostics panel. The desktop host likewise refreshes the window title four times a second, so neither flickers.
 
@@ -50,7 +50,7 @@ On its first frame the shell docks the panels: Hierarchy on the left, Inspector 
 - **Assets:** the project's scenes, meshes, and materials, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 
-The top bar shows the project and the open scene; the scene's name opens a menu to open, create, and save scenes. `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
+The top bar shows the project and the open scene; the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
 
 ## Viewport size and display scale
 
@@ -72,6 +72,8 @@ The router gives each event one owner. Its context is whether the viewport image
 | Navigating | Scroll | Dolly. |
 | Navigating | Right button released, Escape, or loss of window focus | Ends navigation: the cursor is released, held keys are cleared, and the UI gets the current pointer position. |
 | Navigating | Other keys and text | Dropped. They are neither shortcuts nor text while flying. |
+| Playing, Game view | Left click on the viewport | Gives the game the input ([play](play.md#who-gets-the-input)); the right button and scrolling do nothing there. |
+| The game has the input | Everything, including shortcuts and text | The play session, until Escape or loss of focus takes it back. |
 
 Keyboard input therefore reaches the camera only while the right button is held over the viewport. Typing into a field, even with the pointer over the viewport, never moves the camera. Keys held when navigation starts do not count until pressed again, and keys still held when it ends stop moving the camera. The viewport disappearing (minimized, hidden, or zero-sized) also ends navigation. Escape does not quit the editor (`DesktopOptions::escape_closes = false`); close the window instead.
 
