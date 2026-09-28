@@ -319,15 +319,41 @@ if(BUILD_TESTING)
 
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
-            tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp)
+            tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
-        target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain)
+        # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
+        # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
+        target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain z)
+        set(MAYA_ACCEPTANCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/acceptance")
+        target_compile_definitions(maya_editor_tests PRIVATE MAYA_ACCEPTANCE_DIR="${MAYA_ACCEPTANCE_DIR}"
+            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         maya_target_options(maya_editor_tests)
-        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]")
+        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]")
         set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 60)
-        add_test(NAME maya_editor_gpu COMMAND maya_editor_tests "[gpu]")
+        add_test(NAME maya_editor_gpu COMMAND maya_editor_tests "[gpu]~[acceptance]~[visual]")
         set_tests_properties(maya_editor_gpu PROPERTIES LABELS "gpu;editor" TIMEOUT 60
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+
+        # Milestone acceptance (docs/acceptance.md): authoring in the editor writes a project that the
+        # player's path renders on Metal and the real maya_player runs from another directory.
+        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]")
+        set_tests_properties(maya_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 60
+            FIXTURES_SETUP authored_project)
+        add_test(NAME maya_acceptance_render COMMAND maya_editor_tests "[acceptance][gpu]")
+        set_tests_properties(maya_acceptance_render PROPERTIES LABELS "gpu;acceptance" TIMEOUT 120 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED authored_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        add_test(NAME maya_visual_reference COMMAND maya_editor_tests "[visual]")
+        set_tests_properties(maya_visual_reference PROPERTIES LABELS "gpu;acceptance;visual" TIMEOUT 120 RUN_SERIAL TRUE
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        if(TARGET maya_player)
+            add_test(NAME maya_acceptance_player COMMAND ${CMAKE_COMMAND}
+                "-DCOMMAND=$<TARGET_FILE:maya_player>|../Authored Game|levels/authored.scene|--smoke|120"
+                -DEXIT_CODE=0 "-DEXPECT=Authored Game / levels/authored.scene: 6 entities"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+            set_tests_properties(maya_acceptance_player PROPERTIES LABELS "gpu;smoke;acceptance" TIMEOUT 60 RUN_SERIAL TRUE
+                WORKING_DIRECTORY "${MAYA_ACCEPTANCE_DIR}/elsewhere" FIXTURES_REQUIRED authored_project
+                ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        endif()
     endif()
 
     if(TARGET MayaDesktop)

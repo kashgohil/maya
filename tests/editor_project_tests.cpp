@@ -68,7 +68,7 @@ TEST_CASE("A scene is authored from project assets, saved, and reopened from ano
         REQUIRE(harness.shell.project());
         CHECK(harness.shell.project()->content_root == copy.content);
         CHECK(harness.shell.scene_path() == copy.content / "basic.scene");
-        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene"});
+        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "v1_reference.scene"});
         harness.frames(3);
 
         // ⌘N: the open scene has no changes, so it is replaced at once by a camera and a light.
@@ -141,7 +141,7 @@ TEST_CASE("A scene is authored from project assets, saved, and reopened from ano
         CHECK(harness.shell.prompt() == EditorPrompt::none);
         CHECK(harness.shell.scene_path() == copy.content / "levels/workshop.scene");
         CHECK_FALSE(scene->dirty());
-        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "levels/workshop.scene"});
+        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "levels/workshop.scene", "v1_reference.scene"});
         harness.frames(1);
         CHECK(harness.shell.layout().control("scene.levels/workshop.scene")); // listed in the Assets panel
         expected = saved_text(harness);
@@ -417,7 +417,7 @@ TEST_CASE("Missing asset files leave the project usable and say what is missing"
     harness.shell.refresh_project();
     CHECK(harness.shell.missing_asset_files().empty());
     CHECK(harness.shell.assets()->records().size() == 7);
-    CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "empty.scene"});
+    CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "empty.scene", "v1_reference.scene"});
     harness.frames(3);
     CHECK(harness.shell.extraction().skipped == 0);
     CHECK(harness.shell.assets()->info(red_material)->state == AssetState::ready);

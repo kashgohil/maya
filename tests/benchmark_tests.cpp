@@ -154,6 +154,10 @@ TEST_CASE("Repeated instances share one mesh and material, and every instance is
     CHECK(result.uninstrumented->frame.size() == 6);
     CHECK(result.uninstrumented->simulation.empty());
     CHECK(std::ranges::any_of(result.unavailable, [](const auto& entry) { return entry.first == "gpu_frame_time"; }));
+    // The conditions at the end are recorded for every workload, next to those at the start.
+    CHECK_FALSE(result.system.thermal_state.empty());
+    CHECK_FALSE(result.thermal_state_at_end.empty());
+    CHECK_FALSE(result.thread_qos.empty());
 
     // The same seed selects the same entities; another seed selects others, still exactly 10%.
     manifest.count = 1000;
@@ -245,12 +249,14 @@ TEST_CASE("On Metal every sampled frame gets its own GPU time, and warmup frames
     REQUIRE_FALSE(shader.empty());
     auto manifest = small(Workload::instances);
     manifest.warmup = 40; // more than the frames in flight, so warmup timings arrive during sampling
-    manifest.samples = 30;
+    manifest.samples = 1100; // more than the device keeps waiting, in both the instrumented and matched runs
+    manifest.runs = 1;
     const auto result = run(manifest, device, shader);
     INFO(result.failure);
     REQUIRE(result.failure.empty());
-    for (const auto& run : result.runs) {
-        REQUIRE(run.gpu.size() == 30);
+    REQUIRE(result.uninstrumented);
+    for (const auto& run : {result.runs.front(), *result.uninstrumented}) {
+        REQUIRE(run.gpu.size() == 1100);
         for (const auto& gpu : run.gpu) {
             REQUIRE(gpu);
             CHECK(*gpu > 0.0);
