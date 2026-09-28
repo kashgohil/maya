@@ -254,6 +254,40 @@ TEST_CASE("Metal retires destroyed resources only after their frames complete", 
     CHECK(device.take_gpu_errors().empty());
 }
 
+TEST_CASE("Metal measures each frame's GPU execution time and reports its allocated memory", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr));
+    CHECK(device.gpu_timing_supported());
+    const auto color = color_target(device, 64);
+    const auto pipeline = rectangle_pipeline(device, Format::undefined);
+    const auto params = params_buffer(device, {{{1, 0, 0, 1}, 0.5f, -1, 1, 0}});
+    const auto first = device.stats().submitted_frames + 1;
+    constexpr uint64_t frames = 20;
+    for (uint64_t frame = 0; frame < frames; ++frame) {
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(device.begin_render_pass({{{color}}, {}, "timed"}));
+        draw_rectangle(device, pipeline, params, 0);
+        REQUIRE_FALSE(device.end_render_pass());
+        REQUIRE_FALSE(device.end_frame());
+    }
+    device.wait_idle();
+    auto dropped = uint64_t{99};
+    const auto timings = device.take_gpu_timings(&dropped);
+    CHECK(dropped == 0);
+    REQUIRE(timings.size() == frames); // one per completed frame, from the GPU's own timestamps
+    for (uint64_t i = 0; i < frames; ++i) {
+        CHECK(timings[i].frame == first + i);
+        CHECK(timings[i].milliseconds > 0.0);
+        CHECK(timings[i].milliseconds < 1000.0);
+    }
+    CHECK(device.take_gpu_timings().empty()); // taken once
+    const auto reported = device.reported_memory();
+    REQUIRE(reported);
+    CHECK(*reported >= device.stats().texture_bytes); // what Metal allocated covers what was tracked
+    device.shutdown();
+    CHECK_FALSE(device.reported_memory());
+}
+
 TEST_CASE("Metal sessions handle headless surfaces, open-frame shutdown, and stale handles", "[rhi]") {
     MetalDevice device;
     for (int session = 0; session < 3; ++session) {

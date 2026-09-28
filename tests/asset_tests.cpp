@@ -381,3 +381,34 @@ TEST_CASE("Malformed sources report errors before allocating GPU buffers", "[ass
     }
 }
 } // namespace
+
+TEST_CASE("Residency counts resident versions, outside leases, and mesh bytes", "[assets]") {
+    Project project; CountingDevice device;
+    project.write("missing_face.obj","v 0 0 0\n");
+    AssetRegistry registry(project.root,std::make_unique<FileAssetProvider>(device));
+    REQUIRE_FALSE(registry.register_asset(mesh_ref,"triangle.obj"));
+    REQUIRE_FALSE(registry.register_asset(material_ref,"surface.mat"));
+    const auto broken=AssetRef<MeshAsset>{{1,3}};
+    REQUIRE_FALSE(registry.register_asset(broken,"missing_face.obj"));
+    auto empty=registry.residency();
+    CHECK(empty.entries == 3); CHECK(empty.unloaded == 3);
+    CHECK(empty.meshes == 0); CHECK(empty.mesh_gpu_bytes == 0);
+    {
+        auto mesh=registry.acquire(mesh_ref), again=registry.acquire(mesh_ref);
+        REQUIRE(mesh); REQUIRE(registry.acquire(material_ref));
+        CHECK_FALSE(registry.acquire(broken));
+        const auto held=registry.residency();
+        CHECK(held.ready == 2); CHECK(held.failed == 1); CHECK(held.unloaded == 0);
+        CHECK(held.meshes == 1); CHECK(held.materials == 1);
+        CHECK(held.leased == 1); // two leases of the mesh are one resident version held outside
+        // Three vertices and three 4-byte indices on the GPU; picking keeps 12 + 4 bytes per corner.
+        CHECK(held.mesh_gpu_bytes == 3*sizeof(Vertex) + 3*sizeof(uint32_t));
+        CHECK(held.mesh_gpu_bytes == device.stats().buffer_bytes);
+        CHECK(held.mesh_cpu_bytes == 3*sizeof(math::Vec3) + 3*sizeof(uint32_t));
+    }
+    CHECK(registry.residency().leased == 0);
+    CHECK(registry.evict_unused() == 2);
+    const auto evicted=registry.residency();
+    CHECK(evicted.meshes == 0); CHECK(evicted.materials == 0); CHECK(evicted.mesh_gpu_bytes == 0);
+    CHECK(evicted.unloaded == 2); CHECK(evicted.failed == 1);
+}

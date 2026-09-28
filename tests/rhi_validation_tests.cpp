@@ -655,3 +655,79 @@ TEST_CASE("Indexed draws can read indices from this frame's upload slices only",
     REQUIRE_FALSE(device.end_render_pass());
     REQUIRE_FALSE(device.end_frame());
 }
+
+TEST_CASE("Frames count their passes, draws, instances, and triangles", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    const auto color = target(device);
+    const auto pipe = pipeline(device);
+    const auto indices = buffer(device, BufferUsage::index, 64);
+    open(device, color, pipe);
+    REQUIRE_FALSE(device.draw(6));
+    REQUIRE_FALSE(device.draw(3, 0, 4));
+    REQUIRE_FALSE(device.draw_indexed(indices, IndexType::uint32, 12, 0, 10));
+    CHECK(code(device.draw(0)) == RhiError::invalid_usage); // refused draws do not count
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.begin_render_pass(color_pass(color)));
+    REQUIRE_FALSE(device.end_render_pass());
+    auto stats = device.stats();
+    CHECK(stats.frame_passes == 2);
+    CHECK(stats.frame_draws == 3);
+    CHECK(stats.frame_instances == 15);
+    CHECK(stats.frame_triangles == 2 + 4 + 40);
+    REQUIRE_FALSE(device.end_frame());
+    CHECK(device.stats().frame_draws == 3); // the most recent frame, until the next one begins
+    REQUIRE_FALSE(device.begin_frame());
+    stats = device.stats();
+    CHECK(stats.frame_passes == 0);
+    CHECK(stats.frame_draws == 0);
+    CHECK(stats.frame_triangles == 0);
+    REQUIRE_FALSE(device.end_frame());
+}
+
+TEST_CASE("Tracked bytes follow resource descriptors, apart from platform memory", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr, {3, 4096}));
+    CHECK(device.stats().buffer_bytes == 0);
+    CHECK(device.stats().upload_bytes == 3 * 4096); // the device's own upload memory, per frame in flight
+    const auto a = buffer(device, BufferUsage::vertex, 1000);
+    const auto b = buffer(device, BufferUsage::uniform, 24);
+    const auto color = target(device, 16); // 16 × 16 × 4 bytes
+    auto depth = device.create_texture({8, 4, Format::depth32_float, TextureUsage::render_target, "depth"});
+    REQUIRE(depth);
+    auto stats = device.stats();
+    CHECK(stats.buffer_bytes == 1024);
+    CHECK(stats.texture_bytes == 16 * 16 * 4 + 8 * 4 * 4);
+    // A resource destroyed during a frame moves to pending until that frame completes.
+    const auto pipe = pipeline(device);
+    open(device, color, pipe);
+    CHECK(device.destroy(a));
+    stats = device.stats();
+    CHECK(stats.buffer_bytes == 24);
+    CHECK(stats.pending_retirement_bytes == 1000);
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    device.wait_idle();
+    CHECK(device.stats().pending_retirement_bytes == 0);
+    CHECK(device.destroy(b));
+    CHECK(device.destroy(depth.handle));
+    stats = device.stats();
+    CHECK(stats.buffer_bytes == 0);
+    CHECK(stats.texture_bytes == 16 * 16 * 4);
+    // The null device measures no GPU time and reports no platform memory: both are unavailable.
+    CHECK_FALSE(device.gpu_timing_supported());
+    CHECK(device.take_gpu_timings().empty());
+    CHECK_FALSE(device.reported_memory());
+    device.shutdown();
+    CHECK(device.stats().upload_bytes == 0);
+    CHECK_FALSE(device.gpu_timing_supported());
+}
+
+TEST_CASE("GPU timings are kept up to a bound until taken", "[rhi-api]") {
+    auto completion = RhiCompletion{};
+    for (uint64_t frame = 1; frame <= RhiCompletion::timing_capacity + 5; ++frame) completion.record_timing(frame, 1.5);
+    CHECK(completion.timings.size() == RhiCompletion::timing_capacity);
+    CHECK(completion.timings.front().frame == 6); // the oldest were dropped and counted
+    CHECK(completion.dropped_timings == 5);
+    CHECK(completion.timings.back().milliseconds == 1.5);
+}

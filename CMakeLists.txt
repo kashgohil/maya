@@ -271,6 +271,12 @@ if(BUILD_TESTING)
     add_test(NAME maya_renderer COMMAND maya_renderer_tests)
     set_tests_properties(maya_renderer PROPERTIES LABELS "cpu;renderer" TIMEOUT 60)
 
+    add_executable(maya_metrics_tests tests/metrics_tests.cpp)
+    target_link_libraries(maya_metrics_tests PRIVATE MayaMetrics Catch2::Catch2WithMain)
+    maya_target_options(maya_metrics_tests)
+    add_test(NAME maya_metrics COMMAND maya_metrics_tests)
+    set_tests_properties(maya_metrics PROPERTIES LABELS "cpu;metrics" TIMEOUT 30)
+
     add_executable(maya_simulation_tests tests/simulation_tests.cpp)
     target_link_libraries(maya_simulation_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_simulation_tests)
@@ -344,7 +350,7 @@ if(BUILD_TESTING)
 
     # Runtime targets must stay free of the editor UI framework. The editor itself is the positive
     # control that proves the check detects it.
-    foreach(target MayaRuntime MayaRenderer MayaDesktop maya_player maya_sample maya_editor)
+    foreach(target MayaRuntime MayaRenderer MayaDesktop maya_player maya_sample maya_benchmark maya_editor)
         if(TARGET ${target})
             add_test(NAME ${target}_no_editor_ui COMMAND ${CMAKE_COMMAND}
                 -DBINARY=$<TARGET_FILE:${target}> -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_no_editor_ui.cmake)
@@ -374,6 +380,30 @@ if(BUILD_TESTING)
         maya_player_failure(missing_project 1 "Cannot read project file" ${CMAKE_CURRENT_BINARY_DIR}/no-such-project --smoke 3)
         maya_player_failure(missing_scene 1 "missing.scene cannot be run" ${sample_project} missing.scene --smoke 3)
         maya_player_failure(scene_outside_project 1 "outside the project's content root" ${sample_project} ../project.maya --smoke 3)
+    endif()
+
+    # The benchmark runner: its logic on the null device (CPU), and its command line on Metal with
+    # the small smoke manifests, which must complete and report results.
+    if(TARGET MayaBenchmark)
+        add_executable(maya_benchmark_tests tests/benchmark_tests.cpp)
+        target_link_libraries(maya_benchmark_tests PRIVATE MayaBenchmark Catch2::Catch2WithMain)
+        maya_target_options(maya_benchmark_tests)
+        add_test(NAME maya_benchmark COMMAND maya_benchmark_tests "~[gpu]")
+        set_tests_properties(maya_benchmark PROPERTIES LABELS "cpu;benchmark" TIMEOUT 120)
+        add_test(NAME maya_benchmark_gpu COMMAND maya_benchmark_tests "[gpu]")
+        set_tests_properties(maya_benchmark_gpu PROPERTIES LABELS "gpu;benchmark" TIMEOUT 120 RUN_SERIAL TRUE
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        foreach(manifest sample i1_1k l1_load l1_play)
+            add_test(NAME maya_benchmark_smoke_${manifest} COMMAND ${CMAKE_COMMAND}
+                "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/${manifest}.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-${manifest}.json"
+                -DEXIT_CODE=0 "-DEXPECT=results: " -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+            set_tests_properties(maya_benchmark_smoke_${manifest} PROPERTIES LABELS "gpu;smoke;benchmark" TIMEOUT 120
+                RUN_SERIAL TRUE ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        endforeach()
+        add_test(NAME maya_benchmark_bad_manifest COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+            -DEXIT_CODE=2 "-DEXPECT=expected a maya-benchmark header" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        set_tests_properties(maya_benchmark_bad_manifest PROPERTIES LABELS "cpu;benchmark" TIMEOUT 15)
     endif()
 
     foreach(app maya_player maya_editor maya_sample)

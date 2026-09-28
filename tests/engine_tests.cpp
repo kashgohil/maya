@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/engine.hpp"
 #include "maya/rhi/null_device.hpp"
@@ -19,6 +20,7 @@ struct Session {
     bool resize_throws = false;
     bool allow_close = true;
     bool close_throws = false;
+    std::vector<maya::FrameTiming> timings;
     bool alive = false;
     bool input_enabled = true;
 };
@@ -78,6 +80,7 @@ public:
         m_session.events.push_back("app.resize");
         if (m_session.resize_throws) throw std::runtime_error("resize failure");
     }
+    void on_frame_timing(const maya::FrameTiming& timing) override { m_session.timings.push_back(timing); }
     bool on_close_requested() override {
         m_session.events.push_back("app.close");
         if (m_session.close_throws) throw std::runtime_error("close failure");
@@ -222,4 +225,30 @@ TEST_CASE("Engine asks the application before the window closes", "[core][engine
     engine.shutdown();
     CHECK(engine.request_close());
     CHECK(std::ranges::count(session.events, std::string("app.close")) == 3);
+}
+
+TEST_CASE("Engine reports where each frame's CPU time went", "[core][engine]") {
+    Session session;
+    maya::Engine engine;
+    REQUIRE(start(engine, session));
+    for (int i = 0; i < 3; ++i) REQUIRE(engine.tick(1.0f / 60.0f));
+    REQUIRE(session.timings.size() == 3);
+    for (size_t i = 0; i < session.timings.size(); ++i) {
+        const auto& t = session.timings[i];
+        CHECK(t.frame == i + 1); // the frame's submission serial
+        for (const auto part : {t.update, t.wait, t.render, t.submit}) CHECK(part >= 0.0);
+        CHECK(t.update + t.wait + t.render + t.submit == Catch::Approx(t.tick).margin(1e-9));
+    }
+    CHECK(session.timings[0].interval == 0.0); // no previous frame
+    CHECK(session.timings[1].interval > 0.0);
+    CHECK(engine.last_frame_timing().frame == 3);
+    // A failed frame reports nothing; a new session starts without an interval.
+    session.render_throws = true;
+    CHECK_FALSE(engine.tick(1.0f / 60.0f));
+    CHECK(session.timings.size() == 3);
+    session.render_throws = false;
+    REQUIRE(start(engine, session));
+    REQUIRE(engine.tick(1.0f / 60.0f));
+    CHECK(session.timings.back().interval == 0.0);
+    CHECK(session.timings.back().frame == 1);
 }

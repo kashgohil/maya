@@ -136,6 +136,9 @@ TEST_CASE("Surface presentation follows resizes and is independent of offscreen 
                     REQUIRE(surface);
                     CHECK(surface.target.width == width);
                     CHECK(surface.target.height == height);
+                    // The drawable belongs to the window, not to tracked allocations: only the offscreen
+                    // texture is counted.
+                    CHECK(device.stats().texture_bytes == 64 * 64 * 4);
                     REQUIRE_FALSE(device.begin_render_pass(surface_pass(surface.target.texture)));
                     REQUIRE_FALSE(device.set_pipeline(pipeline));
                     REQUIRE_FALSE(device.draw(3));
