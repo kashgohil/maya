@@ -84,7 +84,7 @@ Hovering a row explains what it measures. These are live observations of an inte
 maya_benchmark benchmarks/i1_10k.benchmark results.json
 ```
 
-`maya_benchmark` runs a manifest headless and offscreen on the default Metal device. It writes JSON results (by default `<name>.results.json`) and prints a summary. It exits with 0 when the benchmark completed, 1 when it failed (the results say why and keep what completed), and 2 for bad arguments or manifests. Nothing is presented, so display pacing does not apply. Each frame runs exactly one 60 Hz simulation tick: a fixed-workload throughput run, labelled as such, not a live wall-clock run.
+`maya_benchmark` runs a manifest headless and offscreen on the default Metal device. It measures as foreground work: its thread's quality of service is user-interactive. Started from a script, a long run could otherwise be scheduled as background work partway through. It writes JSON results (by default `<name>.results.json`) and prints a summary. It exits with 0 when the benchmark completed, 1 when it failed (the results say why and keep what completed), and 2 for bad arguments or manifests. Nothing is presented, so display pacing does not apply. Each frame runs exactly one 60 Hz simulation tick: a fixed-workload throughput run, labelled as such, not a live wall-clock run.
 
 ### Manifests
 
@@ -124,7 +124,7 @@ The seed selection uses SplitMix64, so it is the same on every machine. Generate
 The JSON holds:
 
 - the manifest;
-- the environment, build, and quality settings (resolution, formats, antialiasing, lighting, presentation, simulation);
+- the environment, build, and quality settings (resolution, formats, antialiasing, lighting, presentation, simulation), including the thermal state at the start and at the end and the measuring thread's quality of service. The text summary warns when either thermal state is not nominal;
 - counters, including `centers_in_view`: instances whose origin projects into the view;
 - baseline and resident memory, tracked and reported;
 - for each run: throughput, summaries of the frame, of each CPU scope, and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
@@ -135,7 +135,18 @@ The JSON holds:
 
 The protocol's three independent runs are the `runs` of one invocation, each a fresh session. Invoke the runner again to compare across processes.
 
+## Thermal state
+
+Results from a warm machine are not comparable with results from a cool one.
+
+- **What #1005 saw.** Back-to-back runs over about 40 minutes moved the machine to the `fair` thermal state. `i1_100k` frames then rose steadily from 21 ms to 37 ms, while GPU time stayed flat. In two earlier attempts, frame time stepped up about fivefold partway through the third run and stayed there. The runner now records the thermal state at the end as well as the start.
+- **Protocol.** Start each manifest on a machine in the `nominal` state, leave a pause between manifests, and keep attempts that were disturbed, recorded as such, rather than silently repeating them.
+
+GPU timings are taken from the device every 64 frames in both the instrumented and uninstrumented runs. Before #1005 the uninstrumented run took them only at its end, so with more than 1,024 samples it lost the earliest.
+
 ## First observations
+
+The milestone's baselines, measured on a clean commit, are in the [acceptance record](acceptance.md#baselines).
 
 These are observations of one run of each manifest, not budgets.
 

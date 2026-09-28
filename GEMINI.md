@@ -14,6 +14,7 @@ cmake --build build -j 4
 ./build/maya_sample
 ctest --test-dir build -L cpu --output-on-failure
 ctest --test-dir build -L gpu --output-on-failure
+tools/check_milestone.sh build   # CPU, headless GPU, and windowed groups; reports what could not run
 ```
 
 GPU tests require an interactive macOS session. Applications support `--smoke [positive frame count]`. Use `MAYA_ENABLE_SANITIZERS=ON` in a separate build directory for ASan/UBSan.
@@ -32,6 +33,7 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 - `MayaSimulation` / `Maya::Simulation`: Play sessions: the fixed clock, gameplay input frames, and ordered `SimulationSystem`s, on a World built from a scene document. CPU-only; shared by the player and editor play ([docs/play.md](docs/play.md)). Gameplay writes go through the tick's commands; never touch the authored scene from play.
 - `MayaMetrics` / `Maya::Metrics`: Nearest-rank summaries, sample windows, `Stopwatch`, and `FrameTiming`. CPU-only. Engine reports `FrameTiming` to `Application::on_frame_timing`.
 - `maya_benchmark` (`MayaBenchmark`, `apps/benchmark/`): headless benchmark runner for `benchmarks/*.benchmark` manifests; JSON results with raw samples ([docs/performance.md](docs/performance.md)). Report measured values as observations; never invent budgets. Keep tracked bytes and platform-reported memory apart; GPU time comes only from `take_gpu_timings()`.
+- Milestone acceptance ([docs/acceptance.md](docs/acceptance.md)): `tests/acceptance_tests.cpp` authors a project in `build/acceptance` that `maya_acceptance_player` runs with the real player; V1 reference images live in `tests/references/v1` (re-bless with `MAYA_BLESS_REFERENCES=1` and inspect them before committing).
 - `MayaPlayer`: Runs a project's saved scene through a play session (`create_player_application`); the player and the sample both use it. No sample-specific C++: scene behavior is data (`maya.spin`, `maya.fly_control`).
 - `apps/player/main.cpp`: Launches the player; takes an optional project and scene.
 - `apps/editor/main.cpp`: Launches the editor; takes an optional project file or folder.

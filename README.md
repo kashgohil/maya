@@ -115,7 +115,7 @@ cmake --build build -j 4
 ./build/maya_player samples/basic_scene basic.scene
 ```
 
-To measure, build Release and run a benchmark manifest; the results are JSON ([performance](docs/performance.md)):
+To check the milestone, run `tools/check_milestone.sh build`: CPU checks, then GPU and windowed checks where a Metal device and a desktop session are available ([acceptance](docs/acceptance.md)). To measure, build Release and run a benchmark manifest; the results are JSON ([performance](docs/performance.md)):
 
 ```bash
 ./build/maya_benchmark benchmarks/i1_10k.benchmark results.json

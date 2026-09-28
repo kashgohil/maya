@@ -49,11 +49,11 @@ The initial report should contain the following fields even when unresolved:
 
 | Budget / envelope | Current status | Evidence needed to approve it |
 | --- | --- | --- |
-| Platforms, hardware, output quality | macOS/Metal implementation base; two proposed profiles above | Product/platform choice and representative content on named machines. |
-| Frame pacing and simulation rate | Proposed 60 fps / 60 Hz | P95/P99 frame pacing, input latency, solver stability, sustained thermal runs. |
-| CPU/GPU subsystem limits and headroom | Unallocated | #1004 timing breakdown, overlap/waits, and expected additional physics/render features. |
-| Memory and residency ceiling | Unallocated | I1/L1 live/peak attribution, available device memory and other process/system demands. |
-| Load, activation, unload, edit-preview limits | Unallocated | Timed L1 and authoring traces; acceptable user-visible stalls and pending-work limits. |
+| Platforms, hardware, output quality | macOS/Metal implementation base; two proposed profiles above, both **unmeasured** (not available). #1005 measured an M4 Pro as its own profile ([acceptance](../acceptance.md#baselines)). | Product/platform choice and representative content on named machines. |
+| Frame pacing and simulation rate | Proposed 60 fps / 60 Hz. Offscreen CPU frame P99 on a cool M4 Pro: 0.12–0.13 ms (sample), 2.04–2.06 ms (I1 10k), 21.3–21.7 ms (I1 100k, over the target; the full 100k protocol throttles). Present pacing is unmeasured. | P95/P99 frame pacing, input latency, solver stability, sustained thermal runs. |
+| CPU/GPU subsystem limits and headroom | Unallocated. #1004/#1005 breakdowns exist (encoding dominates at scale). Regression thresholds are proposed in [acceptance](../acceptance.md#baselines), awaiting approval. | #1004 timing breakdown, overlap/waits, and expected additional physics/render features. |
+| Memory and residency ceiling | Unallocated. Tracked counts return exactly to the empty session; a ~200 MiB process-footprint plateau after the first load is unattributed. | I1/L1 live/peak attribution, available device memory and other process/system demands. |
+| Load, activation, unload, edit-preview limits | Unallocated. A 10,000-entity scene loads in 31–40 ms (P95 up to 46 ms) on the M4 Pro; edit-to-preview is unmeasured. | Timed L1 and authoring traces; acceptable user-visible stalls and pending-work limits. |
 | World extent / positional accuracy | Unresolved; local float transforms only | Sweep origin offsets (for example 0, 100 m, 1 km, 10 km), measure camera/picking/physics error, then choose tolerances and coordinate strategy. The sweep is an experiment, not a supported range. |
 | Physics, procedural, cinematic scale | Unresolved | Representative authored slice with fixed body/query/generator/capture recipes. |
 
