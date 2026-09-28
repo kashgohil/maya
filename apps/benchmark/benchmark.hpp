@@ -107,6 +107,8 @@ struct Result {
     std::vector<RejectedCase> rejected;
     std::optional<bool> authored_unchanged; // play cycles
     std::vector<std::pair<std::string, std::string>> unavailable; // metric, reason
+    std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended
+    std::string thread_qos; // the measuring thread's quality-of-service class
 };
 
 /// Runs the manifest offscreen on `device` (initialized, headless or not) with the renderer shader.

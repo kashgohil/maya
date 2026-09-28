@@ -2,6 +2,7 @@
 #include "maya/core/file_system.hpp"
 #include <fstream>
 #include <iostream>
+#include <pthread.h>
 
 // maya_benchmark <manifest> [results.json]: runs a benchmark manifest headless and offscreen, writes
 // its JSON results (by default <manifest name>.results.json in the working directory), and prints a
@@ -12,6 +13,9 @@ int main(int argc, char** argv) {
         return argc == 2 && std::string_view(argv[1]) == "--help" ? 0 : 2;
     }
     maya::FileSystem::initialize(argc, argv);
+    // Measure as foreground work. Started from a script or another tool, the process could otherwise
+    // be scheduled as background work partway through a long run (efficiency cores, lower clocks).
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     const auto loaded = maya::benchmark::load_manifest(argv[1]);
     if (!loaded) {
         std::cerr << "[Benchmark] " << loaded.error << '\n';

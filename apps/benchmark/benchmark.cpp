@@ -13,6 +13,7 @@
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <pthread.h>
 #include <unistd.h>
 
 namespace maya::benchmark {
@@ -206,7 +207,9 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
             samples.encode.push_back(frame.encode);
             samples.submit.push_back(frame.submit);
         }
-        if (instrumented && i % 16 == 0) collect(); // keep the device's timing buffer small
+        // Both modes collect alike, so the matched runs differ only by the CPU scopes; the device keeps
+        // at most RhiCompletion::timing_capacity timings, so waiting until the end would lose samples.
+        if (i % 64 == 63) collect();
     }
     stage.device.wait_idle();
     collect();
@@ -244,6 +247,20 @@ size_t centers_in_view(const SceneDocument& document, const Manifest& manifest, 
             if (clip.w > 0.0f && std::abs(clip.x) <= clip.w && std::abs(clip.y) <= clip.w && clip.z >= 0.0f && clip.z <= clip.w) ++inside;
         });
     return inside;
+}
+
+std::string thread_qos() {
+    auto qos = QOS_CLASS_UNSPECIFIED;
+    auto relative = 0;
+    pthread_get_qos_class_np(pthread_self(), &qos, &relative);
+    switch (qos) {
+    case QOS_CLASS_USER_INTERACTIVE: return "user_interactive";
+    case QOS_CLASS_USER_INITIATED: return "user_initiated";
+    case QOS_CLASS_DEFAULT: return "default";
+    case QOS_CLASS_UTILITY: return "utility";
+    case QOS_CLASS_BACKGROUND: return "background";
+    default: return "unspecified";
+    }
 }
 
 // JSON ------------------------------------------------------------------------------------------------
@@ -507,11 +524,9 @@ ManifestResult load_manifest(const fs::path& file) {
     return result;
 }
 
-Result run(const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
-    auto result = Result{};
-    result.manifest = manifest;
-    result.system = system_info();
-    result.build = build_info();
+namespace {
+/// The workload itself; run() records what surrounds it.
+void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
     result.unavailable = {
         {"gpu_pass_time", "per-pass GPU timing is not implemented; each frame's GPU execution time is measured"},
         {"present_pacing", "the benchmark renders offscreen and never presents, so display pacing does not apply"},
@@ -558,7 +573,7 @@ Result run(const Manifest& manifest, GraphicsDevice& device, std::string rendere
             for (uint32_t i = 0; i < manifest.runs; ++i)
                 result.runs.push_back(measure(manifest, stage, document, context, camera, true, result, i == 0));
             if (manifest.overhead) result.uninstrumented = measure(manifest, stage, document, context, camera, false, result, false);
-            return result;
+            return;
         }
 
         // Cycles: load (or start) the same scene again and again, and look at what remains after each.
@@ -627,6 +642,17 @@ Result run(const Manifest& manifest, GraphicsDevice& device, std::string rendere
         fs::remove_all(temporary, error);
     }
     device.wait_idle();
+}
+} // namespace
+
+Result run(const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
+    auto result = Result{};
+    result.manifest = manifest;
+    result.system = system_info();
+    result.build = build_info();
+    run_workload(result, manifest, device, std::move(renderer_shader));
+    result.thermal_state_at_end = system_info().thermal_state; // throttling during a run shows here
+    result.thread_qos = thread_qos();
     return result;
 }
 
@@ -673,6 +699,8 @@ std::string to_json(const Result& r) {
     json.field("gpu", r.system.gpu);
     json.field("unified_memory", r.system.unified_memory);
     json.field("thermal_state", r.system.thermal_state);
+    json.field("thermal_state_at_end", r.thermal_state_at_end);
+    json.field("thread_qos", r.thread_qos);
     json.field("low_power_mode", r.system.low_power_mode);
     json.close('}');
     json.key("build");
@@ -806,6 +834,9 @@ std::string to_text(const Result& r) {
     out << r.manifest.name << " (" << workload_name(r.manifest.workload) << ") on " << r.system.cpu << ", " << r.system.os
         << ", build " << r.build.revision << " " << r.build.build_type << "\n";
     if (!r.failure.empty()) out << "  FAILED: " << r.failure << "\n";
+    if (r.system.thermal_state != "nominal" || r.thermal_state_at_end != "nominal")
+        out << "  WARNING: thermal state " << r.system.thermal_state << " at the start and " << r.thermal_state_at_end
+            << " at the end; results are not comparable with a cool machine\n";
     for (size_t i = 0; i < r.runs.size(); ++i) {
         const auto frame = summarize(r.runs[i].frame);
         auto gpu = std::vector<double>{};

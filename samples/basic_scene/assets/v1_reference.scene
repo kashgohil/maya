@@ -1,0 +1,149 @@
+maya-scene 1
+
+entity 6d617961 300
+  component maya.name 1
+    value "Camera rig"
+  component maya.transform 1
+    translation 0 0 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.spin 1
+    axis 0 1 0
+    speed 0.62831855
+end
+
+entity 6d617961 301
+  parent 6d617961 300
+  component maya.name 1
+    value "Camera"
+  component maya.transform 1
+    translation 0 3.5 8
+    rotation -0.204747 0 0 0.97881493
+    scale 1 1 1
+  component maya.camera 1
+    vertical_fov 1.0471976
+    near_clip 0.1
+    far_clip 200
+end
+
+entity 6d617961 302
+  component maya.name 1
+    value "Sun"
+  component maya.transform 1
+    translation 0 6 0
+    rotation -0.5161719 0.2429044 0 0.82131857
+    scale 1 1 1
+  component maya.light 1
+    kind directional
+    color 1 1 1
+    intensity 1
+    range 10
+    inner_cone 0.5235988
+    outer_cone 0.7853982
+    enabled true
+end
+
+entity 6d617961 310
+  component maya.name 1
+    value "Floor"
+  component maya.transform 1
+    translation 0 -0.1 0
+    rotation 0 0 0 1
+    scale 20 0.2 20
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 13
+    visible true
+end
+
+entity 6d617961 311
+  component maya.name 1
+    value "Back wall"
+  component maya.transform 1
+    translation 0 2 -10
+    rotation 0 0 0 1
+    scale 20 4 0.2
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 320
+  component maya.name 1
+    value "Near cube"
+  component maya.transform 1
+    translation -1.5 0.5 5
+    rotation 0 0.38268343 0 0.9238795
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 321
+  component maya.name 1
+    value "Far cube"
+  component maya.transform 1
+    translation -2.5 0.75 -4
+    rotation 0 0 0 1
+    scale 1.5 1.5 1.5
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 322
+  component maya.name 1
+    value "Pyramid"
+  component maya.transform 1
+    translation 0 0 0
+    rotation 0 0 0 1
+    scale 1.5 1.5 1.5
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 323
+  component maya.name 1
+    value "Tilted slab"
+  component maya.transform 1
+    translation 3 1.2 1
+    rotation 0.04494346 0.16773126 0.25488700 0.95125124
+    scale 3 0.3 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 330
+  component maya.name 1
+    value "Stack base"
+  component maya.transform 1
+    translation 4 0.5 -3
+    rotation 0 0.38268343 0 0.9238795
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 331
+  parent 6d617961 330
+  component maya.name 1
+    value "Stack top"
+  component maya.transform 1
+    translation 0 0.5 0
+    rotation 0 0.25881905 0 0.9659258
+    scale 0.8 0.8 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
