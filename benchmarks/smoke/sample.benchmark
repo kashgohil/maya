@@ -1,0 +1,10 @@
+maya-benchmark 1
+# The sample project's saved scene, as the player runs it: the fast regression case. It cannot stand
+# in for the repeated-instance or load workloads.
+name "smoke-sample-scene"
+workload scene
+project "../../samples/basic_scene"
+resolution 320 180
+warmup 5
+samples 20
+runs 2

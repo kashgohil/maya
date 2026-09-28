@@ -66,6 +66,19 @@ void RhiCompletion::report(std::string message) noexcept {
     }
 }
 
+void RhiCompletion::record_timing(uint64_t serial, double milliseconds) noexcept {
+    try {
+        const auto lock = std::scoped_lock(mutex);
+        if (timings.size() == timing_capacity) {
+            timings.erase(timings.begin());
+            ++dropped_timings;
+        }
+        timings.push_back({serial, milliseconds});
+    } catch (...) {
+        // Timing must not throw from a completion callback.
+    }
+}
+
 bool GraphicsDevice::initialize(void* native_window_handle, const DeviceOptions& options) {
     shutdown();
     if (options.frames_in_flight < 1 || options.frames_in_flight > 8) return false;
@@ -155,6 +168,22 @@ RhiStats GraphicsDevice::stats() const noexcept {
     result.pending_retirements = m_retirements.size();
     result.submitted_frames = m_submitted;
     result.completed_frames = std::min(m_completion->completed.load(std::memory_order_acquire), m_submitted);
+    // Tracked bytes come from descriptors, summed on request: resource tables stay small.
+    const auto texture_size = [](const TextureDesc& desc) {
+        return size_t{desc.width} * desc.height * bytes_per_pixel(desc.format);
+    };
+    for (const auto& slot : m_buffers.slots)
+        if (slot.live && !slot.internal) result.buffer_bytes += slot.desc.size;
+    for (uint32_t index = 0; index < m_textures.slots.size(); ++index) {
+        const auto& slot = m_textures.slots[index];
+        if (slot.live && !slot.internal && !(m_surface && m_surface->texture.slot == index))
+            result.texture_bytes += texture_size(slot.desc);
+    }
+    for (const auto& retirement : m_retirements) {
+        if (retirement.kind == ResourceKind::buffer) result.pending_retirement_bytes += m_buffers.slots[retirement.slot].desc.size;
+        if (retirement.kind == ResourceKind::texture) result.pending_retirement_bytes += texture_size(m_textures.slots[retirement.slot].desc);
+    }
+    result.upload_bytes = m_session ? m_options.transient_bytes_per_frame * m_options.frames_in_flight : 0;
     return result;
 }
 
@@ -448,6 +477,8 @@ RhiDiagnostic GraphicsDevice::begin_frame() {
     m_pipeline_set = false;
     m_transient_used = 0;
     m_counters.transient_bytes_used = 0;
+    m_counters.frame_passes = 0;
+    m_counters.frame_draws = m_counters.frame_instances = m_counters.frame_triangles = 0;
     return {};
 }
 
@@ -566,6 +597,7 @@ RhiDiagnostic GraphicsDevice::begin_render_pass(const RenderPassDesc& desc) {
         if (std::find(attachments.begin() + static_cast<std::ptrdiff_t>(i) + 1, attachments.end(), attachments[i]) != attachments.end())
             return fail(RhiError::invalid_usage, name + " uses the same texture for more than one attachment");
     if (auto diagnostic = backend_begin_pass(desc)) return diagnostic;
+    ++m_counters.frame_passes;
     m_pass_colors = std::move(colors);
     m_pass_depth = depth_format;
     m_pass_attachments = std::move(attachments);
@@ -695,6 +727,7 @@ RhiDiagnostic GraphicsDevice::draw(uint32_t vertex_count, uint32_t first_vertex,
     if (vertex_count == 0 || instance_count == 0)
         return fail(RhiError::invalid_usage, "draw needs a nonzero vertex and instance count");
     backend_draw(vertex_count, first_vertex, instance_count);
+    count_draw(vertex_count, instance_count);
     return {};
 }
 
@@ -736,6 +769,7 @@ RhiDiagnostic GraphicsDevice::encode_indexed(BufferHandle indices, IndexType typ
             " exceed " + (slice ? std::string("the upload slice") : "index buffer" + quoted(desc->label)) +
             " of size " + std::to_string(size));
     backend_draw_indexed(indices.slot, type, index_count, begin + offset, instance_count);
+    count_draw(index_count, instance_count);
     return {};
 }
 
@@ -784,6 +818,18 @@ void GraphicsDevice::wait_idle() noexcept {
     backend_wait_idle();
     m_completion->complete_through(m_submitted);
     if (m_state == State::idle) collect_retired();
+}
+
+void GraphicsDevice::count_draw(uint32_t elements, uint32_t instances) noexcept {
+    ++m_counters.frame_draws;
+    m_counters.frame_instances += instances;
+    m_counters.frame_triangles += uint64_t{elements / 3} * instances; // pipelines draw triangle lists
+}
+
+std::vector<GpuFrameTiming> GraphicsDevice::take_gpu_timings(uint64_t* dropped) {
+    const auto lock = std::scoped_lock(m_completion->mutex);
+    if (dropped) *dropped = std::exchange(m_completion->dropped_timings, 0);
+    return std::exchange(m_completion->timings, {});
 }
 
 std::vector<RhiDiagnostic> GraphicsDevice::take_gpu_errors() {

@@ -210,6 +210,24 @@ struct RhiStats {
     size_t transient_bytes_used = 0; // in the current or most recent frame
     size_t transient_high_water = 0;
     uint64_t transient_failures = 0; // uploads rejected because a frame's memory was exhausted
+    // Encoded in the current or most recent frame.
+    uint32_t frame_passes = 0;
+    uint64_t frame_draws = 0;
+    uint64_t frame_instances = 0; // summed over draws
+    uint64_t frame_triangles = 0; // vertices or indices / 3, times instances
+    // Tracked allocations: sizes from the descriptors of live resources (textures as width × height ×
+    // bytes per pixel), not memory the platform reports as resident. See reported_memory().
+    size_t buffer_bytes = 0;
+    size_t texture_bytes = 0;
+    size_t pending_retirement_bytes = 0; // destroyed buffers and textures awaiting GPU completion
+    size_t upload_bytes = 0; // the device's own per-frame upload memory, across all frames in flight
+};
+
+/// How long the GPU spent executing one submitted frame, measured on the GPU's own timeline and
+/// reported when the frame completes.
+struct GpuFrameTiming {
+    uint64_t frame = 0; // the submission serial (RhiStats::submitted_frames when it was submitted)
+    double milliseconds = 0.0;
 };
 
 } // namespace maya

@@ -1,0 +1,18 @@
+maya-benchmark 1
+# L1 load/unload: the 10,000-entity I1 scene is saved to a file, then 100 times loaded, played and
+# rendered for 120 ticks, and unloaded; the GPU work retires and the registry evicts unused versions
+# before memory is sampled. A malformed scene and one with a missing asset must be refused.
+name "smoke-l1-load"
+workload load_cycles
+project "../../samples/basic_scene"
+mesh 6d617961 2
+material 6d617961 11
+count 500
+rotating 0.1
+spacing 1.5
+seed 990
+camera 0 130 150 0 0 0
+resolution 320 180
+upload_mib 64
+cycles 12
+ticks 4

@@ -3,6 +3,7 @@
 #include "maya/core/application.hpp"
 #include "maya/rhi/graphics_device.hpp"
 #include <memory>
+#include <optional>
 
 namespace maya {
 
@@ -22,6 +23,8 @@ public:
     bool resize(uint32_t width, uint32_t height);
     /// Asks the application whether the window may close. True when no application is running.
     bool request_close();
+    /// The most recent completed tick's CPU timing; it is also given to Application::on_frame_timing.
+    const FrameTiming& last_frame_timing() const noexcept { return m_timing; }
     void shutdown();
     bool is_initialized() const { return m_initialized; }
 
@@ -29,6 +32,8 @@ private:
     std::unique_ptr<GraphicsDevice> m_device;
     std::unique_ptr<Application> m_application;
     bool m_application_started = false;
+    FrameTiming m_timing{};
+    std::optional<Stopwatch> m_since_last_tick;
     bool m_initialized = false;
 };
 

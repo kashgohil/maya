@@ -67,6 +67,13 @@ public:
 
     bool valid() const noexcept { return !m_lifetime.expired() && m_vb.valid() && m_ib.valid(); }
     uint32_t index_count() const noexcept { return m_index_count; }
+    /// Bytes of its vertex and index buffers, from their descriptors; 0 without buffers.
+    size_t gpu_bytes() const noexcept {
+        if (!valid()) return 0;
+        const auto* vertices = m_device.describe(m_vb);
+        const auto* indices = m_device.describe(m_ib);
+        return (vertices ? vertices->size : 0) + (indices ? indices->size : 0);
+    }
     BufferHandle vertex_buffer() const noexcept { return m_vb; }
     BufferHandle index_buffer() const noexcept { return m_ib; }
     /// Binds vertices at buffer index 0 and draws. Requires an open pass with a pipeline set.

@@ -79,6 +79,12 @@ add_library(Maya::Renderer ALIAS MayaRenderer)
 target_link_libraries(MayaRenderer PUBLIC MayaWorld MayaAssets MayaRHI)
 maya_target_options(MayaRenderer)
 
+# Timing aggregation (percentiles, sample windows, frame timing) shared by live displays and benchmarks.
+add_library(MayaMetrics STATIC src/maya/metrics/metrics.cpp)
+add_library(Maya::Metrics ALIAS MayaMetrics)
+target_include_directories(MayaMetrics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+maya_target_options(MayaMetrics)
+
 # Play sessions: the fixed clock, gameplay input, and simulation systems shared by the player and the
 # editor's play mode. CPU-only, on top of World and scene data.
 add_library(MayaSimulation STATIC
@@ -94,11 +100,12 @@ add_library(MayaRuntime STATIC
     src/maya/core/file_system.cpp
     src/maya/core/model_loader_legacy.cpp
     src/maya/core/primitives.cpp
+    src/maya/core/system_info.mm
     src/maya/rhi/metal/metal_device.mm
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer MayaSimulation PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer MayaSimulation MayaMetrics PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 
@@ -144,6 +151,32 @@ if(MAYA_BUILD_PLAYER)
     add_executable(maya_player apps/player/main.cpp)
     target_link_libraries(maya_player PRIVATE MayaDesktop MayaPlayer)
     maya_target_options(maya_player)
+endif()
+
+if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
+    # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
+    # Its build information is regenerated on every build, so results name the revision they measured.
+    set(MAYA_BUILD_INFO "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.cpp")
+    string(REPLACE ";" "," maya_sanitizers "${MAYA_SANITIZERS}")
+    if(NOT MAYA_ENABLE_SANITIZERS)
+        set(maya_sanitizers "none")
+    endif()
+    add_custom_target(maya_build_info
+        COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR} -DOUTPUT=${MAYA_BUILD_INFO}
+            -DBUILD_TYPE=${CMAKE_BUILD_TYPE} -DSANITIZERS=${maya_sanitizers}
+            "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
+        BYPRODUCTS ${MAYA_BUILD_INFO}
+        COMMENT "Recording the build's revision and configuration"
+        VERBATIM)
+    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp ${MAYA_BUILD_INFO})
+    add_dependencies(MayaBenchmark maya_build_info)
+    target_include_directories(MayaBenchmark PUBLIC apps/benchmark)
+    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime)
+    maya_target_options(MayaBenchmark)
+    add_executable(maya_benchmark apps/benchmark/main.cpp)
+    target_link_libraries(maya_benchmark PRIVATE MayaBenchmark)
+    maya_target_options(maya_benchmark)
 endif()
 
 if(MAYA_BUILD_EDITOR)

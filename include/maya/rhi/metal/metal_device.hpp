@@ -47,6 +47,8 @@ protected:
     void backend_wait_idle() noexcept override;
     bool backend_wait_frame(uint64_t serial) noexcept override;
     void backend_release_surface(uint32_t slot) noexcept override;
+    bool backend_gpu_timing_supported() const noexcept override { return true; }
+    std::optional<size_t> backend_reported_memory() const noexcept override;
 
 private:
     struct Impl;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/metrics/metrics.hpp"
 #include <cstdint>
 
 namespace maya {
@@ -18,6 +19,8 @@ public:
     /// changes; the host then asks again whenever the window is closed, including through
     /// PlatformServices::request_close.
     virtual bool on_close_requested() { return true; }
+    /// After each frame's end_frame: where the frame's CPU time went (see FrameTiming).
+    virtual void on_frame_timing(const FrameTiming&) {}
     /// Called once whenever on_start was entered, including a failed/throwing start.
     /// Release application state here; the device remains alive through destruction.
     virtual void on_stop() noexcept {}

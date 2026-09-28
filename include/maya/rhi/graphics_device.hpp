@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,11 +20,16 @@ struct RhiCompletion {
     std::mutex mutex;
     std::vector<uint64_t> early; // finished frames above the watermark
     std::vector<RhiDiagnostic> errors;
+    static constexpr size_t timing_capacity = 1024; // older timings are dropped if nobody takes them
+    std::vector<GpuFrameTiming> timings;
+    uint64_t dropped_timings = 0;
     /// One frame finished executing.
     void complete(uint64_t serial) noexcept;
     /// Every frame up to `serial` finished (e.g. after waiting for the queue to drain).
     void complete_through(uint64_t serial) noexcept;
     void report(std::string message) noexcept;
+    /// A frame's GPU execution time, from any thread.
+    void record_timing(uint64_t serial, double milliseconds) noexcept;
 };
 
 /// Single-owner-thread graphics device. Public calls validate handles, descriptors, usage,
@@ -115,6 +121,15 @@ public:
     void wait_idle() noexcept;
     /// GPU execution failures reported by completed frames since the last call.
     std::vector<RhiDiagnostic> take_gpu_errors();
+    /// Whether completed frames report their GPU execution time. When false, GPU time is unavailable;
+    /// it is never estimated from CPU submission time.
+    bool gpu_timing_supported() const noexcept { return m_session != 0 && backend_gpu_timing_supported(); }
+    /// GPU execution times of frames completed since the last call, in completion order. At most
+    /// RhiCompletion::timing_capacity are kept; `dropped` (if given) receives how many were lost.
+    std::vector<GpuFrameTiming> take_gpu_timings(uint64_t* dropped = nullptr);
+    /// Memory the platform reports as allocated for this device (Metal: currentAllocatedSize), or
+    /// nullopt when it cannot say. On unified memory it overlaps process memory; never add the two.
+    std::optional<size_t> reported_memory() const noexcept { return m_session ? backend_reported_memory() : std::nullopt; }
 
     static std::unique_ptr<GraphicsDevice> create_default();
 
@@ -166,6 +181,9 @@ protected:
     virtual bool backend_wait_frame(uint64_t serial) noexcept = 0;
     /// Release the transient surface texture bound to `slot` at the end of a frame.
     virtual void backend_release_surface(uint32_t slot) noexcept = 0;
+    /// Backends that call completion()->record_timing for every completed frame return true.
+    virtual bool backend_gpu_timing_supported() const noexcept { return false; }
+    virtual std::optional<size_t> backend_reported_memory() const noexcept { return std::nullopt; }
 
     const std::shared_ptr<RhiCompletion>& completion() const noexcept { return m_completion; }
 
@@ -203,6 +221,7 @@ private:
     RhiDiagnostic check_slice(const TransientSlice& slice) const;
     RhiDiagnostic encode_indexed(BufferHandle indices, IndexType type, uint32_t index_count, size_t offset,
                                  uint32_t instance_count, const TransientSlice* slice);
+    void count_draw(uint32_t elements, uint32_t instances) noexcept;
     RhiDiagnostic validate_attachment(const TextureHandle& handle, bool depth, uint32_t& width,
                                       uint32_t& height) const;
 

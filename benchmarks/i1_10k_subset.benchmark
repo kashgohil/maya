@@ -1,0 +1,19 @@
+maya-benchmark 1
+# I1 at 10,000 instances with the camera close to the grid, so only a fixed subset is in view. The
+# renderer does not cull yet, so it still submits every instance; counters.centers_in_view records
+# how many a frustum test would keep.
+name "i1-10k-subset"
+workload instances
+project "../samples/basic_scene"
+mesh 6d617961 2
+material 6d617961 11
+count 10000
+rotating 0.1
+spacing 1.5
+seed 990
+camera 0 4 12 0 0 0
+resolution 1920 1080
+upload_mib 64
+warmup 300
+samples 3000
+runs 3

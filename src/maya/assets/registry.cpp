@@ -65,6 +65,29 @@ std::vector<AssetRecord> AssetRegistry::records() const {
     for (const auto& entry : m_entries) records.push_back(entry.record);
     return records;
 }
+AssetResidency AssetRegistry::residency() const noexcept {
+    auto result = AssetResidency{};
+    result.entries = m_entries.size();
+    for (const auto& entry : m_entries) {
+        if (entry.state == AssetState::unloaded) ++result.unloaded;
+        else if (entry.state == AssetState::ready) ++result.ready;
+        else if (entry.state == AssetState::failed) ++result.failed;
+        std::visit([&](const auto& value) {
+            if (!value) return;
+            if (value.use_count() > 1) ++result.leased; // the cache's own reference is one
+            if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const MeshAsset>) {
+                ++result.meshes;
+                result.mesh_gpu_bytes += value->mesh().gpu_bytes();
+                const auto& geometry = value->geometry();
+                result.mesh_cpu_bytes += geometry.positions.size() * sizeof(math::Vec3) + geometry.indices.size() * sizeof(uint32_t);
+            } else {
+                ++result.materials;
+            }
+        }, entry.payload);
+    }
+    return result;
+}
+
 std::optional<AssetInfo> AssetRegistry::info(AssetId id) const {
     const auto it = m_ids.find(id);
     if (it == m_ids.end()) return std::nullopt;

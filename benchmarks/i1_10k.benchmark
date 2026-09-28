@@ -1,0 +1,19 @@
+maya-benchmark 1
+# I1 repeated instances: one cube mesh (12 triangles) and one material shared by 10000 entities on a
+# 1.5 m grid; a seeded 10% spin each tick. Every instance is in view. Unique mesh and material
+# allocations must not grow with the instance count.
+name "i1-10k"
+workload instances
+project "../samples/basic_scene"
+mesh 6d617961 2
+material 6d617961 11
+count 10000
+rotating 0.1
+spacing 1.5
+seed 990
+camera 0 130 150 0 0 0
+resolution 1920 1080
+upload_mib 64
+warmup 300
+samples 3000
+runs 3

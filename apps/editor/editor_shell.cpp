@@ -755,6 +755,20 @@ void EditorShell::draw_diagnostics() {
         m_stats_age += io.DeltaTime;
         if (m_stats_age >= 0.25f) {
             m_shown_stats = m_device.stats();
+            auto& shown = m_shown_performance;
+            const auto& p = m_performance;
+            shown.interval = p.interval.summary();
+            shown.update = p.update.summary();
+            shown.wait = p.wait.summary();
+            shown.render = p.render.summary();
+            shown.submit = p.submit.summary();
+            shown.extract = p.extract.summary();
+            shown.view = p.view.summary();
+            shown.ui = p.ui.summary();
+            shown.gpu = p.gpu.summary();
+            shown.gpu_reported = m_device.reported_memory();
+            shown.process = process_memory();
+            shown.assets = m_assets ? m_assets->residency() : AssetResidency{};
             m_stats_age = 0.0f;
         }
         const auto& stats = m_shown_stats;
@@ -784,6 +798,46 @@ void EditorShell::draw_diagnostics() {
                 row("Play", format("tick %llu   %.2f s rejected   %llu ticks dropped", static_cast<unsigned long long>(clock.tick()),
                                    clock.total_rejected_time(), static_cast<unsigned long long>(clock.total_discarded_ticks())));
             }
+            theme::end_properties();
+        }
+        // Performance over the last few seconds: the frame interval, where the CPU time went, the GPU's
+        // own execution time, what was drawn, and memory, tracked and platform-reported kept apart.
+        ImGui::Dummy({0.0f, 6.0f});
+        theme::caption(m_fonts, "PERFORMANCE", format("last %zu frames", m_performance.interval.size()).c_str());
+        if (theme::begin_properties("performance")) {
+            const auto& shown = m_shown_performance;
+            const auto row = [&](const char* label, const std::string& value, const char* tip = nullptr) {
+                theme::property(label);
+                ImGui::AlignTextToFramePadding();
+                theme::mono_text(m_fonts, value.c_str());
+                if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+            };
+            const auto mib = [](size_t bytes) { return double(bytes) / (1024.0 * 1024.0); };
+            const auto& frame = shown.interval;
+            row("Frame", frame.count ? format("%.2f ms   P95 %.2f   P99 %.2f   %.0f fps", frame.mean, frame.p95, frame.p99,
+                                              frame.mean > 0.0 ? 1000.0 / frame.mean : 0.0) : std::string("waiting"),
+                "Wall time between frames, including waiting for the display. Percentiles are nearest-rank.");
+            row("CPU", format("update %.2f   wait %.2f   render %.2f   submit %.2f", shown.update.mean, shown.wait.mean,
+                              shown.render.mean, shown.submit.mean), "Mean milliseconds of each part of a frame.");
+            row("Render", format("extract %.2f   view %.2f   UI %.2f", shown.extract.mean, shown.view.mean, shown.ui.mean),
+                "Mean milliseconds: building the render snapshot, encoding the viewport, encoding the UI.");
+            row("GPU", !m_device.gpu_timing_supported() ? std::string("unavailable on this device")
+                : shown.gpu.count ? format("%.2f ms   P95 %.2f   P99 %.2f", shown.gpu.mean, shown.gpu.p95, shown.gpu.p99)
+                : std::string("waiting for frames"),
+                "The GPU's execution time per frame, from its own timestamps when frames complete; never CPU time.");
+            row("Drawn", format("%llu draws   %llu instances   %llu triangles   %u passes",
+                                static_cast<unsigned long long>(stats.frame_draws), static_cast<unsigned long long>(stats.frame_instances),
+                                static_cast<unsigned long long>(stats.frame_triangles), stats.frame_passes));
+            row("Tracked", format("buffers %.1f   textures %.1f   upload %.1f   pending %.1f MiB", mib(stats.buffer_bytes),
+                                  mib(stats.texture_bytes), mib(stats.upload_bytes), mib(stats.pending_retirement_bytes)),
+                "Sizes from resource descriptors: what the engine allocated, not what the platform reports.");
+            row("Reported", format("GPU %s   process %s",
+                                   shown.gpu_reported ? format("%.1f MiB", mib(*shown.gpu_reported)).c_str() : "unavailable",
+                                   shown.process ? format("%.1f MiB", mib(shown.process->footprint)).c_str() : "unavailable"),
+                "Platform-reported: the device's allocated size and the process's physical footprint. On unified memory "
+                "they overlap; they are not added together.");
+            row("Assets", format("%zu meshes (%.1f MiB)   %zu materials   %zu leased", shown.assets.meshes,
+                                 mib(shown.assets.mesh_gpu_bytes), shown.assets.materials, shown.assets.leased));
             theme::end_properties();
         }
         if (!m_frame_problems.empty()) {
@@ -819,6 +873,15 @@ void EditorShell::draw_diagnostics() {
     ImGui::End();
 }
 
+void EditorShell::record_frame(const FrameTiming& timing) {
+    auto& p = m_performance;
+    if (timing.interval > 0.0) p.interval.add(timing.interval);
+    p.update.add(timing.update);
+    p.wait.add(timing.wait);
+    p.render.add(timing.render);
+    p.submit.add(timing.submit);
+}
+
 void EditorShell::render_viewport() {
     m_ui.set_texture(m_viewport_texture, {});
     m_viewport_error = false;
@@ -843,10 +906,15 @@ void EditorShell::render_viewport() {
         m_log.add(DiagnosticSource::viewport, "The camera has no valid view", m_frame);
         return;
     }
+    auto clock = Stopwatch{};
     auto snapshot = extract_render_snapshot(world, *m_assets);
+    m_performance.extract.add(clock.milliseconds());
     m_extraction = snapshot.stats;
     m_frame_problems = snapshot.diagnostics;
-    if (auto error = m_renderer.render(snapshot, *view, m_viewport)) {
+    clock.restart();
+    const auto rendered = m_renderer.render(snapshot, *view, m_viewport);
+    m_performance.view.add(clock.milliseconds());
+    if (auto error = rendered) {
         m_viewport_error = true;
         m_log.add(DiagnosticSource::renderer, error.message, m_frame);
     }
@@ -859,12 +927,20 @@ RhiDiagnostic EditorShell::render(TextureHandle destination) {
         std::cerr << "[Editor] GPU: " << error.message << '\n';
         m_log.add(DiagnosticSource::gpu, std::move(error.message), m_frame);
     }
+    auto dropped = uint64_t{0};
+    for (const auto& timing : m_device.take_gpu_timings(&dropped)) { // frames that completed since last time
+        m_performance.gpu.add(timing.milliseconds);
+        ++m_performance.gpu_frames;
+    }
+    m_performance.gpu_dropped += dropped;
     if (!m_frame_ready) return {};
     auto* previous = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(m_context);
     render_viewport();
     const auto* data = ImGui::GetDrawData();
+    auto clock = Stopwatch{};
     auto result = data ? m_ui.render(*data, destination, window_background) : RhiDiagnostic{};
+    m_performance.ui.add(clock.milliseconds());
     if (result) m_log.add(DiagnosticSource::ui, result.message, m_frame);
     ImGui::SetCurrentContext(previous ? previous : m_context);
     return result;

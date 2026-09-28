@@ -7,6 +7,8 @@
 #include "scene_editor.hpp"
 #include "ui_renderer.hpp"
 #include "maya/assets/project.hpp"
+#include "maya/core/system_info.hpp"
+#include "maya/metrics/metrics.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
 #include "maya/simulation/play_session.hpp"
@@ -202,6 +204,19 @@ public:
     /// (and changes nothing) when the parent cannot represent the pose, e.g. it would need shear.
     bool apply_world_matrix(EntityId id, const math::Mat4& world);
     uint64_t frames() const noexcept { return m_frame; }
+    /// The host's timing of the frame just submitted (Application::on_frame_timing), for the
+    /// Performance section of Diagnostics.
+    void record_frame(const FrameTiming& timing);
+    /// Recent timings, in milliseconds, over the last Performance::window frames.
+    struct Performance {
+        static constexpr size_t window = 240;
+        SampleWindow interval{window}, update{window}, wait{window}, render{window}, submit{window};
+        SampleWindow extract{window}, view{window}, ui{window}; // parts of render
+        SampleWindow gpu{window}; // GPU execution, as frames complete
+        uint64_t gpu_frames = 0; // frames with a GPU time
+        uint64_t gpu_dropped = 0;
+    };
+    const Performance& performance() const noexcept { return m_performance; }
     /// For inspection in tests; make it current only between frames.
     ImGuiContext* context() const noexcept { return m_context; }
 
@@ -325,6 +340,13 @@ private:
     PixelSize m_viewport_request{};
     float m_font_scale = 0.0f;
     RhiStats m_shown_stats{}; // refreshed a few times a second so the numbers stay readable
+    Performance m_performance;
+    struct ShownPerformance {
+        Summary interval, update, wait, render, submit, extract, view, ui, gpu;
+        std::optional<size_t> gpu_reported;
+        std::optional<ProcessMemory> process;
+        AssetResidency assets;
+    } m_shown_performance;
     float m_stats_age = 1.0f;
     int m_cursor = -1; // last ImGuiMouseCursor sent to the host
     bool m_layout_built = false;

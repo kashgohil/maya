@@ -1,0 +1,17 @@
+maya-benchmark 1
+# L1 play reset: 100 play sessions started and stopped from the same authored 10,000-entity scene,
+# each rendering 120 ticks. The authored scene must be unchanged afterwards.
+name "l1-play"
+workload play_cycles
+project "../samples/basic_scene"
+mesh 6d617961 2
+material 6d617961 11
+count 10000
+rotating 0.1
+spacing 1.5
+seed 990
+camera 0 130 150 0 0 0
+resolution 1920 1080
+upload_mib 64
+cycles 100
+ticks 120

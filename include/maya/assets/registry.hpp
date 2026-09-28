@@ -6,6 +6,17 @@
 #include <variant>
 
 namespace maya {
+/// What a registry holds now. Bytes are tracked from buffer descriptors and CPU copies, not platform
+/// residency.
+struct AssetResidency {
+    size_t entries = 0; // catalog entries
+    size_t unloaded = 0, ready = 0, failed = 0; // entries by state
+    size_t meshes = 0, materials = 0; // resident versions owned by the cache
+    size_t leased = 0; // resident versions also held by a lease outside the registry
+    size_t mesh_gpu_bytes = 0; // vertex and index buffers of resident meshes
+    size_t mesh_cpu_bytes = 0; // their picking geometry (MeshGeometry)
+};
+
 /// Single-owner-thread registry. Providers execute synchronously at the caller's load boundary.
 /// It owns one cache lease per ready entry; evict_unused releases entries with no external lease.
 class AssetRegistry {
@@ -22,6 +33,8 @@ public:
     }
     std::vector<AssetRecord> records() const;
     std::optional<AssetInfo> info(AssetId id) const;
+    /// Counts and bytes of what is resident; O(catalog size).
+    AssetResidency residency() const noexcept;
     uint64_t token() const noexcept { return m_token; }
 
     template<Asset T> AssetResult<T> acquire(AssetRef<T> ref) { return load<T>(ref, false); }

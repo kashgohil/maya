@@ -48,6 +48,10 @@ public:
         if (auto error = m_shell->render(surface.target.texture)) throw std::runtime_error(error.message);
     }
 
+    void on_frame_timing(const FrameTiming& timing) override {
+        if (m_shell) m_shell->record_frame(timing);
+    }
+
     bool on_close_requested() override { return !m_shell || m_shell->request_close(); }
 
     void on_stop() noexcept override {

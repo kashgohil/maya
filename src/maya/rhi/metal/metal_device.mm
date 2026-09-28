@@ -416,6 +416,9 @@ void MetalDevice::backend_submit(uint64_t serial, bool present) {
             (void)drawable_texture;
             if (buffer.status == MTLCommandBufferStatusError)
                 state->report("Frame " + std::to_string(serial) + " failed on the GPU: " + error_text(buffer.error));
+            // The GPU's own timestamps for this command buffer: execution time, not CPU submit time.
+            else if (buffer.GPUEndTime > buffer.GPUStartTime && buffer.GPUStartTime > 0.0)
+                state->record_timing(serial, (buffer.GPUEndTime - buffer.GPUStartTime) * 1000.0);
             state->complete(serial);
         }];
         [frame commit];
@@ -424,6 +427,11 @@ void MetalDevice::backend_submit(uint64_t serial, bool present) {
         while (!m_impl->in_flight.empty() && m_impl->in_flight.front().first <= completed) m_impl->in_flight.pop_front();
         m_impl->in_flight.emplace_back(serial, frame);
     }
+}
+
+std::optional<size_t> MetalDevice::backend_reported_memory() const noexcept {
+    if (!m_impl->device) return std::nullopt;
+    return static_cast<size_t>(m_impl->device.currentAllocatedSize);
 }
 
 bool MetalDevice::backend_wait_frame(uint64_t serial) noexcept {
