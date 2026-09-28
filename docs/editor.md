@@ -108,7 +108,9 @@ The Diagnostics panel shows the current state:
 - viewport size in pixels and points, scale, and allocation count;
 - drawn, hidden, and skipped mesh renderers;
 - frames, waits, and upload-memory high water against capacity;
-- live resources and pending retirements.
+- live resources and pending retirements;
+- while playing, the tick, the wall time the clock refused, and the ticks it dropped;
+- **Performance** over the last 240 frames: the frame interval with P95 and P99, CPU time per part of the frame, GPU time (or why it is unavailable), draws, instances, and triangles, tracked bytes, platform-reported GPU and process memory, and resident assets ([performance](performance.md#in-the-editor)).
 
 It also lists this frame's extraction problems, such as missing meshes and materials, and a log. The log records:
 

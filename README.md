@@ -114,6 +114,12 @@ cmake --build build -j 4
 ./build/maya_editor samples/basic_scene
 ./build/maya_player samples/basic_scene basic.scene
 ```
+
+To measure, build Release and run a benchmark manifest; the results are JSON ([performance](docs/performance.md)):
+
+```bash
+./build/maya_benchmark benchmarks/i1_10k.benchmark results.json
+```
  The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
 ### Where the files are
@@ -138,6 +144,8 @@ A build made inside the repository finds its content, because a parent of the ex
 | MayaDesktop | The window, input, and launch loop. |
 | MayaSimulation | Play sessions: the fixed-step clock, gameplay input, and simulation systems. CPU-only. |
 | MayaPlayer | Runs a project's saved scene through a play session; shared by the player and the sample. |
+| MayaMetrics | Timing aggregation: nearest-rank percentiles, sample windows, frame timing. CPU-only. |
+| maya_benchmark | Runs benchmark manifests headless and offscreen, and writes JSON results. |
 | MayaEditor | The editor: panels, viewport, and input routing, on Dear ImGui. |
 | maya_player | The player. |
 | maya_editor | The editor. |

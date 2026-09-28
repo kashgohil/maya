@@ -1,6 +1,6 @@
 # Performance baseline and workload proposals
 
-Status: proposed experiment plan for [#990](https://work.rezee.app/kash/issues/990), to implement and measure in [#1004](https://work.rezee.app/kash/issues/1004) and validate end-to-end in [#1005](https://work.rezee.app/kash/issues/1005). **No timings, scale claims, or production budgets are established by this record.** The existing smoke tests check lifecycle, not visual correctness or performance.
+Status: proposed experiment plan for [#990](https://work.rezee.app/kash/issues/990), to validate end-to-end in [#1005](https://work.rezee.app/kash/issues/1005). [#1004](../performance.md) implements the instruments, the runner, and manifests for the sample, I1, and L1; its first observations are recorded there. **No production budgets are established by this record or by those observations.** The existing smoke tests check lifecycle, not visual correctness or performance.
 
 ## Candidate measurement envelope
 

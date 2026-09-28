@@ -106,6 +106,18 @@ Frame *n* uses upload slot *n mod frames_in_flight*. `begin_frame` waits until f
 
 Resources the caller owns remain the caller's responsibility: `write_buffer` into a buffer a submitted frame still reads is a data race. Use upload memory, or double-buffer and destroy through the device.
 
+## Measurement
+
+Since [#1004](performance.md), the device measures as well as renders:
+
+- **Per-frame counters.** `stats()` counts the current or most recent frame's `frame_passes`, `frame_draws`, `frame_instances`, and `frame_triangles`, as submitted; they reset in `begin_frame`.
+- **Tracked bytes.** `stats()` also reports tracked bytes, computed from descriptors on request:
+  - `buffer_bytes` and `texture_bytes` for live caller resources (excluding the upload buffers and the window's drawable);
+  - `pending_retirement_bytes`;
+  - `upload_bytes`, the device's own per-frame memory times frames in flight.
+- **GPU time.** When a frame completes, the Metal backend records its command buffer's GPU execution time, `GPUEndTime − GPUStartTime`, keyed by the frame's serial. `take_gpu_timings()` hands these over, and at most 1,024 wait (older ones are dropped and counted). `gpu_timing_supported()` is false where GPU time cannot be measured, including the null device; GPU time is never inferred from CPU submission.
+- **Reported memory.** `reported_memory()` is the platform's figure for the device (Metal's `currentAllocatedSize`), or nullopt. It is kept apart from tracked bytes.
+
 ## Verification
 
 The #997 additions:
