@@ -1,6 +1,6 @@
 # Scheduling and rendering contracts
 
-Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, physics, events, presentation interpolation, capture/replay, and a job system are not implemented yet.
+Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, physics, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave.
 
 ## Clocks and modes
 
@@ -55,6 +55,56 @@ After the final tick (or with no tick), prepare render-only animation/tool updat
 For running play, interpolate previous/current completed poses with `alpha = accumulator / fixed_interval`, bounded to [0,1). This intentionally presents one simulation interval behind the accumulated clock. Interpolate translation/scale linearly and normalized rotations along the shortest quaternion arc; preserve hierarchy relationships when composing visual poses. Never linearly blend arbitrary affine matrices as the default hierarchy solution.
 
 Teleports, origin changes, reparenting, spawning, and body-mode transitions reset the affected pose history (including dependent descendants) so presentation cannot interpolate across a discontinuity. Pause and single-step display alpha = 1 explicitly. Capture selects its sample times and any interpolation/cache policy explicitly; frame index is not a substitute for simulation tick index.
+
+## Physics and behavior in the fixed tick
+
+Recorded for #1015 on [Jolt Physics and Luau](physics-scripting-decision.md). The [physics](runtime-world-contracts.md#physics-boundary) and [scripting](runtime-world-contracts.md#scripting-boundary) boundaries define what each side owns. #1017–#1023 implement this section.
+
+**Scripts are one system among others.** All script instances run as a single `SimulationSystem` at a configured place in the session's system list (by default after the built-in systems). Within it, instances run in activation order, which is the order bodies are created: document order at session start, then spawn order. Native systems keep their existing contract.
+
+| Phase | What happens |
+| --- | --- |
+| 1. Commit | Commands from the previous tick apply in stable order. Entities are destroyed first (their `stop` hooks run and their bodies are removed), then created entities activate (bodies are added, then `start` hooks run in activation order). Motion-type changes and reparenting apply here and reset pose history. Commands issued by `start` and `stop` wait for the next tick. |
+| 2. Input and history | This tick's input is latched and the previous completed poses are kept for [interpolation](#transform-authority). |
+| 3. Pre-physics | Native systems and then script `fixed_update(self, dt)` hooks read the state committed by the last tick. They write through commands: property and transform edits, and body requests (force, impulse, torque, velocity, kinematic target, teleport, wake). |
+| 4. Body preparation | The adapter first moves static colliders whose committed transforms changed. Then it applies this tick's body requests in the order they were issued (system order, then call order): forces, impulses, velocities, kinematic targets, and teleports. A teleport resets that entity's pose history. |
+| 5. Physics step | One `Update` of exactly one fixed interval, with the configured number of collision steps (default one). |
+| 6. Synchronize | Kinematic and dynamic body poses are written to their entities' transforms in one World batch, in body creation order, and their descendants resolve. The step's error flags become diagnostics. |
+| 7. Events and post-physics | The step's buffered contact and trigger records are resolved to entities and sorted by event kind, then by the two EntityIds. Recipients destroyed meanwhile are skipped and counted. Events are delivered to event hooks (`on_contact_begin`, `on_contact_end`, `on_trigger_enter`, `on_trigger_exit`) and native listeners. Then `late_fixed_update(self, dt)` hooks run. Their commands apply at the next tick's phase 1. |
+
+After the frame's last tick, `update(self, frame_dt)` hooks run once per host frame. They may read and log, but may not issue simulation commands, because what happens between frames would then depend on the frame rate. This narrows the render-time rule above, which allowed commands for a future tick, until a frame-rate-independent input path for them exists. Presentation interpolation and extraction follow.
+
+**Reset.** Stopping play releases the play World, the physics world, and the script VM. The next Play builds all three again from the authored document; no state is carried over.
+
+**What "the same result" means.** A replay produces the same result on every tick when these match:
+- the machine and the Maya build;
+- Jolt's configuration;
+- the scene document and its asset versions;
+- the session seed;
+- the per-tick input sequence.
+
+The same result means identical component values for every entity, identical body states, and identical event sequences. The physics worker count may differ; the prototype showed identical results for any count. Live play with the same wall-clock frame times also repeats exactly, as it does today.
+
+**What replay does not promise.** It makes no promise across machines, CPU architectures, OS or compiler versions, Jolt or Luau versions, or builds with different options. A cross-machine promise would need Jolt's cross-platform determinism and a Luau audit; that decision comes with networking or capture requirements.
+
+**What determinism rests on.**
+- Stable creation, command, and event orders.
+- Work budgets counted in safepoints, not time.
+- A seeded `math.random`, and no wall clock in scripts.
+- Entities created during play take their IDs from a sequence seeded by the session, not from `EntityId::generate`.
+- Replay records hold the tick-indexed input, the session seed, the scene document and asset versions, the build, and any reload markers ([#1023](https://work.rezee.app/kash/issues/1023)).
+
+**Where scripts can still vary.** Luau's `pairs` order over keys that are tables, functions, or userdata depends on addresses. Scripts must not let that order affect the simulation. #1023's replay tests use content that follows the rule.
+
+**Reload.**
+- **When a script is edited during authoring,** it recompiles at the next host frame. A syntax error is reported and the last good version stays current, as for any asset reload. The exposed-property schema updates and scene values are revalidated. No hook runs, because authoring runs no scripts.
+- **When a script changes during play,** it compiles off the tick:
+  - **If compilation fails,** the old version keeps running and the error is reported.
+  - **If it succeeds,** the instances of that script are replaced at the next tick boundary (phase 1). Each old instance's `stop` runs, then a new instance starts from the new version, in the same activation order.
+  - **State.** Exposed properties keep their current play values; everything else in `self` starts over.
+  - **While paused,** the swap waits for the next step or resume.
+  - **Replay.** A reload is recorded, and replaying a session that reloaded is not promised to match.
+- **Next Play.** Always uses each script's current good version.
 
 ## Extraction and GPU ownership
 

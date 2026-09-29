@@ -1,6 +1,6 @@
 # Runtime and world contracts
 
-Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). See [the index](README.md) for current-code gaps and unresolved product decisions.
+Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). [#1015](https://work.rezee.app/kash/issues/1015) adds the [physics](#physics-boundary) and [scripting](#scripting-boundary) boundaries on [Jolt Physics and Luau](physics-scripting-decision.md). See [the index](README.md) for current-code gaps and unresolved product decisions.
 
 ## Dependencies and ownership
 
@@ -68,6 +68,131 @@ Local TRS is authoritative authored data; derived world matrices are cached, nev
 Allow finite positive nonuniform scale for visual entities. Parent composition can produce shear: keep the full affine world matrix rather than decomposing it each frame. Transform normals with the inverse transpose of the world linear transform. Initially reject zero/negative scale, singular transforms, and nonfinite values at authoring/load boundaries; mirror authoring and its winding/tangent rules need an explicit extension. Normalize finite nonzero quaternions; reject a zero quaternion. Floating-point tolerances are explicit and tested in [#992 spatial operations](../spatial.md), not hidden in arbitrary clamps. That record also defines failure handling when finite local transforms compose into a world pose outside float matrix/inverse representability.
 
 Reparenting rejects cycles and cross-world parents. Offer explicit keep-local or keep-world semantics. A keep-world operation that cannot represent the new local transform as supported TRS (for example, requiring local shear) fails without changing the hierarchy. Camera and physics adapters enforce their additional restrictions; they never silently discard scale/shear. Physics body scale is initially baked into shapes before activation; dynamic/kinematic bodies must be root entities with unit transform scale until an explicit parent/body synchronization design is validated.
+
+## Physics boundary
+
+Recorded for #1015; `MayaPhysics` ([#1017](https://work.rezee.app/kash/issues/1017)) implements it, and [#1019](https://work.rezee.app/kash/issues/1019) and [#1021](https://work.rezee.app/kash/issues/1021) add the components, queries, and events. Jolt is chosen in the [decision record](physics-scripting-decision.md).
+
+**The interface.** `MayaPhysics` is a static library with public headers in `include/maya/physics/`, and those headers contain no Jolt types. Jolt headers are included only by `src/maya/physics/`, and a CTest check enforces this, like the `*_no_editor_ui` checks. The library links MayaWorld and Jolt. MayaSimulation links MayaPhysics, and MayaRuntime receives it through MayaSimulation. Bodies are named across the interface by EntityHandle and EntityId. Jolt `BodyID`s, body pointers, and shapes never leave the library; a body's Jolt user data is an index into the adapter's own table.
+
+**Process and world lifetime.**
+- **Process setup.** Jolt's allocator, trace, and assert hooks, its factory, and its type registry are installed once per process before the first physics world, and kept until exit.
+- **One physics world per play session.** It is created after the play World is built and before any start hook runs. It is destroyed before the play World is released. Authoring Worlds have no physics world: the editor's picking stays with the renderer, and #1022's debug views draw from the play session.
+- **Body creation order.** Bodies are created in document order: roots in order, each followed by its descendants. Entities activated during play are added in activation order.
+- **Resources.** A world owns its temporary allocator and its body, body-pair, and contact limits, all configurable per project; the prototype used 16 MiB of scratch. One job pool serves all physics worlds in a process. Its worker count is configurable and does not change results. Exceeding a limit fails that body's creation, or reports the step's error flags as a diagnostic with a counter. It never corrupts the world.
+
+**Bodies and motion types.** A body is the `maya.rigid_body` component, and its shape is a `maya.collider` component on the same entity (#1019). Motion type is authored and has one pose writer, as in the [transform-authority table](scheduling-contracts.md#transform-authority):
+
+| Motion type | Pose writer | Scripts and systems may |
+| --- | --- | --- |
+| Static (a collider without a body) | World data at a tick boundary | Move it with ordinary transform writes, which the adapter applies before the next step. Moving static colliders every tick is supported but costly. |
+| Kinematic | Gameplay supplies a target pose each tick; the adapter moves the body to it | Set the kinematic target, or teleport. Direct transform writes are refused. |
+| Dynamic | Physics | Add forces, impulses, and torques, set velocities, or teleport. Direct transform writes are refused. |
+
+- **Changing motion type.** A command applied at the next tick boundary. It resets the entity's pose history.
+- **Scale and hierarchy.** A static collider may sit anywhere in a hierarchy; its world scale is baked into its shape when it is created or moved. A kinematic or dynamic body must be a root entity with unit scale. Its descendants follow it as ordinary children, and they may not have bodies of their own.
+- **Unsupported shape scale.** A sphere needs uniform scale, and a capsule needs uniform scale in its radius axes. A body or collider that breaks these rules stops Play from starting, with a message naming the entity, like a missing required asset.
+
+**Shapes for this milestone.**
+- **Primitives:** box (half extents), sphere (radius), and capsule (radius and half height along local Y), each with a local offset and rotation.
+- **One shape per collider component.** An entity with several colliders forms a compound shape.
+- **Later:** mesh, convex-hull, and height-field shapes come with the content pipeline (Milestone 3) and streaming (Milestone 4).
+
+**Collision groups and masks.**
+- **Groups.** A project names up to 16 collision groups. Each collider has one group and a mask of the groups it collides with.
+- **Filtering.** Two colliders collide only if each one's group is in the other's mask, which makes filtering symmetric.
+- **Default.** Group `Default` colliding with every group.
+- **Broad-phase layers.** The adapter's choice (static and moving, then sensors if needed), never authored.
+- **Sensors.** A sensor collider (a trigger) reports overlaps but produces no contact response.
+- **Surfaces and bodies.** Friction and restitution are collider properties. Mass (or density), damping, gravity factor, and initial velocity are body properties.
+- **Gravity.** A scene setting, (0, −9.81, 0) m/s² by default.
+
+**Threading and callbacks.**
+- **The step.** Runs on the world's owner thread, which blocks while Jolt's jobs run.
+- **Jolt listeners** (contact, activation, and step) run on worker threads. They only append plain records (tick, event kind, the two body indices, contact point and normal, and impulse) to per-step buffers. They never touch the World, scripts, the asset service, or the renderer, and they never throw.
+- **After the step.** On the owner thread, the adapter resolves indices to entities, sorts the records deterministically, and delivers them in phase 7 ([scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick)).
+- **Queries** (raycasts, shape casts, overlaps) run on the owner thread between steps, against the last completed step. Their results are sorted by distance and then EntityId, because Jolt's broad-phase order is not deterministic. Queries from inside Jolt callbacks are not allowed.
+
+**Precision and errors.** Physics runs in single precision in the same metres, seconds, and kilograms as the World, and inherits the open world-extent decision. Jolt returns no exceptions; step error flags become diagnostics. Maya code called by Jolt is `noexcept`.
+
+**Integration contracts for later work.** These are out of scope for this milestone, but their seams are fixed now:
+
+| Later feature | How it attaches |
+| --- | --- |
+| Constraints and joints | A constraint component names two entities by EntityId. The constraint is created after both bodies and destroyed with either. Breaking it is an event. |
+| Character controllers | A controller component owns its entity's pose, like a kinematic body. It moves in phase 4 from gameplay input, using Jolt's `CharacterVirtual`, and reports ground state after phase 6. |
+| Skeletal animation and ragdolls | Animation drives kinematic bodies in phase 4, or reads dynamic ragdoll bodies after phase 6. One motion authority per body still applies. |
+| Streaming cells | A cell's bodies are added or removed in its activation or unload transaction at phase 1. Constraints, like hierarchies, may not cross independently unloadable cells. |
+| Networking and rollback | Needs `CROSS_PLATFORM_DETERMINISTIC` or server authority, decided with the multiplayer requirements. Jolt's state snapshots (334 bytes for one box in the prototype) are the rollback primitive. |
+| GPU physics | Not planned. |
+
+## Scripting boundary
+
+Recorded for #1015; the scripting host ([#1018](https://work.rezee.app/kash/issues/1018)) implements it, and [#1020](https://work.rezee.app/kash/issues/1020) makes scripts project assets. Luau is chosen in the [decision record](physics-scripting-decision.md). When scripts run is in [scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick).
+
+**Ownership.** The Luau VM lives inside MayaSimulation's scripting host; Luau types do not appear in Maya's public headers. There is one VM per play session, created at session start and closed after the last stop hook. It runs only on the world's owner thread. Each script asset version is compiled once and runs in its own sandboxed thread. Authoring Worlds run no scripts.
+
+**Script components.**
+- **Attachment.** A `maya.script` component attaches a script asset to an entity and stores the values of the script's exposed properties. This milestone allows one script component per entity; shared modules (`require`) are out of scope.
+- **What a script returns.** A table of hooks and property declarations:
+
+```lua
+local Mover = {}
+Mover.properties = {
+    speed = { type = "number", default = 3, min = 0, unit = "m/s" },
+}
+function Mover:start() end
+function Mover:fixed_update(dt: number) end
+function Mover:stop() end
+return Mover
+```
+
+- **Instances.** Each entity with the component gets its own instance (`self`), which carries its entity and its property values. Per-entity state lives in `self`, never in script globals.
+- **The hooks** are `start`, `fixed_update`, `late_fixed_update`, `update`, `stop`, and the event hooks; their phases are in the scheduling contract.
+- **Type annotations** are allowed. They are not checked yet; checking them in the editor with Luau's analyzer is a later option.
+
+**Exposed properties.**
+- **Declarations.** `properties` declares each property's type (`number`, `integer`, `boolean`, `string`, `vector`, `color`, `entity`, or an asset type), its default, and optionally its range, unit, and label.
+- **Schema.** The host turns the declarations into a property schema for that script asset version. The Inspector, scene files, and scripts all use it through the [property system](../properties.md), with the same validation as built-in components.
+- **Identity.** A script property is identified by its name, since scripts have no numeric property IDs.
+- **Stale values.** Values for properties a script no longer declares are kept in the scene and reported as unused. They are neither applied nor silently dropped.
+
+**The engine API.** Scripts reach the engine only through the read-only `maya` table and methods on `self`. Values cross the boundary as numbers, booleans, strings, Luau vectors, quaternions, and opaque entity and asset handles; handles are checked again on every use. No component pointer, Jolt object, or native address reaches a script.
+
+| Area | Reads | Writes (commands, visible from the next tick) | Issue |
+| --- | --- | --- | --- |
+| Own entity and others | Component properties through the property system; names; hierarchy; find by EntityId | Property edits through the same validation as the Inspector; create and destroy entities | #1018 |
+| Transforms | Local and world pose of any entity | Local transform of entities without a body, and of static colliders | #1018 |
+| Bodies | Velocity, mass, sleeping, motion type | Force, impulse, torque, velocity, kinematic target, teleport, and wake | #1019 |
+| Queries and events | Raycast, shape cast, and overlap against the last completed step | Event hooks receive contacts and triggers | #1021 |
+| Time and input | Tick, simulation time, fixed interval, this tick's input frame | None | #1018 |
+| Diagnostics | None | `maya.log(message)` | #1018 |
+
+**What scripts may not write.** A script may not write the transform of a kinematic or dynamic body, write a property outside its schema's validation, or change the world except through commands. A refused write is a script error at the call that attempted it.
+
+**Write conflicts.** Two writes to the same property in one tick are applied in the stable script order, so the last one wins, and each is reported as a conflict diagnostic.
+
+**Sandbox.**
+- **Libraries.** Scripts see the read-only Luau libraries `string`, `table`, `math`, `bit32`, `utf8`, `buffer`, `vector`, and `coroutine`, plus `maya`.
+- **Removed.** The host removes:
+  - `print`, replaced by `maya.log`;
+  - `debug`;
+  - `os`, whose clock and date break determinism; simulation time comes from the hooks;
+  - `getfenv` and `setfenv`.
+- **No code loading.** Luau already has no file, process, environment, or bytecode-loading functions. Scripts reach code only through the host, which compiles source text; bytecode is never loaded from content.
+- **Random numbers.** `math.random` is reseeded from the play session's seed when the VM is created, instead of Luau's clock-and-address seed.
+
+**Limits.**
+- **Work budget.** Each hook call has a budget counted at Luau safepoints (loop back edges and calls), never in wall time, so the same script and inputs always pass or always fail.
+- **Memory.** Each play session's VM has a memory limit.
+- **Defaults.** Both defaults are chosen in #1018 from measurements, and a project may raise them. The prototype used 10 million safepoints and 4 MiB.
+- **Coroutines.** They may run within a call, but a hook that yields is an error; waiting across ticks is a later design.
+
+**Errors.**
+- **Messages.** Syntax, runtime, budget, and memory errors report the script, the line, and the message, with a traceback where Luau provides one. An error in a native function called by a script becomes a script error at that call; C++ exceptions never cross the VM unconverted.
+- **An error in a hook** discards the commands that hook issued in that call, and disables that script instance for the rest of the session: no more hooks except `stop` if `start` was entered. Everything else keeps running.
+- **Reporting.** The editor shows a notice and a "script" entry in Diagnostics; the player logs it. Scripts never crash the editor or the player.
+- **Native systems.** A failing native `SimulationSystem` still stops the session, as in [play](../play.md#play-sessions).
 
 ## Future streaming boundary
 

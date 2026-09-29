@@ -1,6 +1,6 @@
 # Performance baseline and workload proposals
 
-Status: proposed experiment plan for [#990](https://work.rezee.app/kash/issues/990), to validate end-to-end in [#1005](https://work.rezee.app/kash/issues/1005). [#1004](../performance.md) implements the instruments, the runner, and manifests for the sample, I1, and L1; its first observations are recorded there. #1005 validated the milestone and recorded [regression budgets for the M4 Pro reference runs](../acceptance.md#budgets), approved on 29 September 2026. **No production budgets are established by this record, and those regression budgets are not production budgets.** The existing smoke tests check lifecycle, not visual correctness or performance.
+Status: proposed experiment plan for [#990](https://work.rezee.app/kash/issues/990), to validate end-to-end in [#1005](https://work.rezee.app/kash/issues/1005). [#1004](../performance.md) implements the instruments, the runner, and manifests for the sample, I1, and L1; its first observations are recorded there. #1015 specifies the [physics stress workload P1](#p1-physics-stress). #1005 validated the milestone and recorded [regression budgets for the M4 Pro reference runs](../acceptance.md#budgets), approved on 29 September 2026. **No production budgets are established by this record, and those regression budgets are not production budgets.** The existing smoke tests check lifecycle, not visual correctness or performance.
 
 ## Candidate measurement envelope
 
@@ -27,6 +27,44 @@ Each workload has a versioned manifest: seed `990`, entity/asset counts, assets 
 | S1: future streaming/physics extension | Version a fixed traversal across at least three cells, with one persistent cross-cell reference, delayed/cancelled load completions, and an explicit body/query workload. Repeat crossings and unloads. | Cell activation budgets, cancelled work, unresolved references, contact stability and memory pressure. Recipe, cell extent, velocity, active/sleeping body mix, constraints, queries, and error tolerances must be fixed when these systems exist. This is not a prerequisite benchmark implementation for the authorable-runtime milestone. |
 
 The current two-object sample remains a fast regression case. It cannot stand in for I1 or L1. Scale the workload down explicitly if resource limits are reached, preserve the failure record, and report the largest completed case; never silently change density to achieve a target. Benchmark generation must use the same world/asset APIs as authored content.
+
+## P1: physics stress
+
+Specified for [#1015](https://work.rezee.app/kash/issues/1015) and measured in [#1024](https://work.rezee.app/kash/issues/1024), once MayaPhysics (#1017), bodies and colliders (#1019), scripts (#1018), and queries and events (#1021) exist. It is the "physics stress scene" of DOC-58's scale acceptance. It follows the protocol below. The benchmark runner builds the scene through the same World and component APIs as authored content, then runs it headless with no views, so it measures simulation, not rendering.
+
+**Recipe, version 1** (manifest `p1_physics`, seed `990`). Any change to a count, shape, placement rule, or setting makes a new version.
+
+| Part | Content |
+| --- | --- |
+| Ground | One static box, 200 × 1 × 200 m, top face at y = 0. |
+| Static obstacles | 500 static boxes. Each axis is 0.5–3 m, yaw is uniform, and positions are seeded in the 160 × 160 m field outside the bin. |
+| Bin | Four static walls, 4 m high, around a 20 × 20 m square at the origin. A kinematic paddle (an 18 × 1 × 0.5 m box, 0.5 m above the floor) turns about Y at 1 rad/s and keeps the bin's bodies awake. |
+| Dynamic bodies | 5,000 in all: 60% 1 m boxes, 25% spheres of radius 0.5 m, and 15% capsules of radius 0.3 m with half height 0.5 m. Density 1,000 kg/m³, friction 0.5, restitution 0. **Active set:** 2,000 dropped into the bin from a seeded grid above it. **Sleeping set:** 3,000 laid in 30 single-layer 10 × 10 patches resting on the ground across the field. |
+| Scripts | 500 bodies of the active set carry one script. Its `fixed_update` reads its body's velocity and adds a small force toward the bin's centre. Its `on_contact_begin` counts contacts. |
+| Sensors | 50 sensor boxes (2 m) at seeded places in the bin. |
+| Collision groups | `Static`, `Dynamic`, and `Trigger`. Static collides with Dynamic, Dynamic with Dynamic, and Trigger with Dynamic. |
+| Queries each tick | Generated from the seed and the tick index, so they vary but repeat. **Raycasts:** 1,000 closest-hit rays up to 100 m, from seeded points on a 60 m sphere around the bin (5–30 m high) toward seeded points in the bin. **Overlaps:** 100 sphere overlaps (radius 2 m) in the bin. **Shape casts:** 20 box casts (1 m cube, 20 m long). |
+| Settings | 60 Hz, one collision step, gravity (0, −9.81, 0) m/s². Physics worker threads: the default (recorded), and 0 in a second configuration. |
+| Run | 300 warmup ticks (the drop settles into steady churn), 3,000 sampled ticks, three runs per configuration. Fixed-workload throughput mode: ticks run back to back with no wall-clock pacing. |
+
+**Report.**
+- **Timing per tick:** count, mean, P50, P95, P99, and maximum, for the whole fixed tick and for each part: scripts (phase 3), body preparation (4), the physics step (5), synchronization (6), events and post-physics hooks (7), and queries.
+- **Counts per tick:** active and sleeping bodies, body pairs, contact constraints, events delivered, and query hits.
+- **Memory:**
+  - Jolt heap, live and peak, from the allocator hooks;
+  - temporary-allocator high water;
+  - script VM bytes;
+  - process footprint at the start and end, with its per-tick slope.
+- **Failures:**
+  - Any step error flag, or a hit body, pair, or contact limit, is recorded as a failed run, not averaged in.
+  - The run stores the hash of every body's pose after the last tick. The three runs, and the two worker-thread configurations, must match; a mismatch is a determinism failure.
+
+**Sizes.**
+- `p1_small`: a tenth of every count (500 dynamic bodies, 50 obstacles, 100 rays, and so on) and 120 sampled ticks. A CTest smoke run that must complete.
+- `p1_physics`: the baseline, measured on the M4 Pro reference machine when cool (nominal thermal state at the start and end of each run, as for the [approved budgets](../acceptance.md#budgets)).
+- `p1_20k`: four times the dynamic bodies. A stress input that reports the largest completed case; it gets no budget.
+
+Budgets for P1 are proposed from #1024's baselines and approved separately. Until then, they are recorded as unresolved.
 
 ## Measurement protocol
 
@@ -55,6 +93,6 @@ The initial report should contain the following fields even when unresolved:
 | Memory and residency ceiling | Unallocated. Tracked counts return exactly to the empty session; a ~200 MiB process-footprint plateau after the first load is unattributed. | I1/L1 live/peak attribution, available device memory and other process/system demands. |
 | Load, activation, unload, edit-preview limits | Unallocated. A 10,000-entity scene loads in 34 ms (P95 35 ms) on a cool M4 Pro, and a P95 of 46 ms while throttled; edit-to-preview is unmeasured. | Timed L1 and authoring traces; acceptable user-visible stalls and pending-work limits. |
 | World extent / positional accuracy | Unresolved; local float transforms only | Sweep origin offsets (for example 0, 100 m, 1 km, 10 km), measure camera/picking/physics error, then choose tolerances and coordinate strategy. The sweep is an experiment, not a supported range. |
-| Physics, procedural, cinematic scale | Unresolved | Representative authored slice with fixed body/query/generator/capture recipes. |
+| Physics, procedural, cinematic scale | Unresolved. The physics stress recipe [P1](#p1-physics-stress) is specified (#1015); its baselines come from #1024. Procedural and cinematic recipes are not specified. | P1 baselines on named hardware; representative authored slice with fixed generator and capture recipes. |
 
 An approved budget must record workload version, hardware profile, quality/resolution, numerical limit, measurement method, rationale, and the review decision. Until then, results are observations. Regression thresholds and image tolerances are established from repeated baseline variance and review, not invented from a single run.

@@ -120,7 +120,7 @@ To check the milestone, run `tools/check_milestone.sh build`: CPU checks, then G
 ```bash
 ./build/maya_benchmark benchmarks/i1_10k.benchmark results.json
 ```
- The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
+ The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. `-DMAYA_BUILD_PROTOTYPES=ON` adds the physics and scripting prototypes, which fetch Jolt Physics, Lua 5.4, and Luau; they are off by default ([libraries](docs/architecture/physics-scripting-decision.md)). Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
 ### Where the files are
 
