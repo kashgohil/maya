@@ -1,6 +1,6 @@
 # Performance baseline and workload proposals
 
-Status: proposed experiment plan for [#990](https://work.rezee.app/kash/issues/990), to validate end-to-end in [#1005](https://work.rezee.app/kash/issues/1005). [#1004](../performance.md) implements the instruments, the runner, and manifests for the sample, I1, and L1; its first observations are recorded there. **No production budgets are established by this record or by those observations.** The existing smoke tests check lifecycle, not visual correctness or performance.
+Status: proposed experiment plan for [#990](https://work.rezee.app/kash/issues/990), to validate end-to-end in [#1005](https://work.rezee.app/kash/issues/1005). [#1004](../performance.md) implements the instruments, the runner, and manifests for the sample, I1, and L1; its first observations are recorded there. #1005 validated the milestone and recorded [regression budgets for the M4 Pro reference runs](../acceptance.md#budgets), approved on 29 September 2026. **No production budgets are established by this record, and those regression budgets are not production budgets.** The existing smoke tests check lifecycle, not visual correctness or performance.
 
 ## Candidate measurement envelope
 
@@ -51,9 +51,9 @@ The initial report should contain the following fields even when unresolved:
 | --- | --- | --- |
 | Platforms, hardware, output quality | macOS/Metal implementation base; two proposed profiles above, both **unmeasured** (not available). #1005 measured an M4 Pro as its own profile ([acceptance](../acceptance.md#baselines)). | Product/platform choice and representative content on named machines. |
 | Frame pacing and simulation rate | Proposed 60 fps / 60 Hz. Offscreen CPU frame P99 on a cool M4 Pro: 0.12–0.13 ms (sample), 2.04–2.06 ms (I1 10k), 21.3–21.7 ms (I1 100k, over the target; the full 100k protocol throttles). Present pacing is unmeasured. | P95/P99 frame pacing, input latency, solver stability, sustained thermal runs. |
-| CPU/GPU subsystem limits and headroom | Unallocated. #1004/#1005 breakdowns exist (encoding dominates at scale). Regression thresholds are proposed in [acceptance](../acceptance.md#baselines), awaiting approval. | #1004 timing breakdown, overlap/waits, and expected additional physics/render features. |
+| CPU/GPU subsystem limits and headroom | Unallocated. #1004/#1005 breakdowns exist (encoding dominates at scale). M4 Pro regression budgets were approved in [acceptance](../acceptance.md#budgets) on 29 September 2026. | #1004 timing breakdown, overlap/waits, and expected additional physics/render features. |
 | Memory and residency ceiling | Unallocated. Tracked counts return exactly to the empty session; a ~200 MiB process-footprint plateau after the first load is unattributed. | I1/L1 live/peak attribution, available device memory and other process/system demands. |
-| Load, activation, unload, edit-preview limits | Unallocated. A 10,000-entity scene loads in 31–40 ms (P95 up to 46 ms) on the M4 Pro; edit-to-preview is unmeasured. | Timed L1 and authoring traces; acceptable user-visible stalls and pending-work limits. |
+| Load, activation, unload, edit-preview limits | Unallocated. A 10,000-entity scene loads in 34 ms (P95 35 ms) on a cool M4 Pro, and a P95 of 46 ms while throttled; edit-to-preview is unmeasured. | Timed L1 and authoring traces; acceptable user-visible stalls and pending-work limits. |
 | World extent / positional accuracy | Unresolved; local float transforms only | Sweep origin offsets (for example 0, 100 m, 1 km, 10 km), measure camera/picking/physics error, then choose tolerances and coordinate strategy. The sweep is an experiment, not a supported range. |
 | Physics, procedural, cinematic scale | Unresolved | Representative authored slice with fixed body/query/generator/capture recipes. |
 

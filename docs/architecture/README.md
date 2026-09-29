@@ -48,7 +48,7 @@ These remain open rather than being resolved by convenient defaults in the proto
 | --- | --- |
 | Shipping platforms and minimum hardware | Select actual representative game content and supported device matrix before promising a minimum spec. macOS/Metal is the implementation base only. |
 | Required world extent and precision | Measure camera, picking, contact, and joint error at increasing distances. Decide double precision, cell-relative coordinates, or origin rebasing before the streaming format and physics integration are fixed. |
-| Frame, memory, load, and iteration budgets | Run the proposed workloads through #1004; allocate budgets with headroom on named hardware. No production numbers have been approved. |
+| Frame, memory, load, and iteration budgets | Run the proposed workloads through #1004; allocate budgets with headroom on named hardware. No production numbers have been approved. Regression budgets for the M4 Pro reference runs were approved in [acceptance](../acceptance.md#budgets). |
 | Game genres, content density, and physics workload | Choose a representative game slice, active/sleeping body mix, query/constraint count, and traversal speed before scale acceptance. |
 | Simulation frequency and overload policy for shipping | Validate the proposed 60 Hz profile against physics stability, input latency, and CPU cost. Multiplayer/rollback requirements may alter timing and determinism needs. |
 | Cinematic capture scope and repeatability | Define output format/color, shutter sampling, frame rates, and replay/cache fidelity before promising reproducible exports. |

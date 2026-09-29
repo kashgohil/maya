@@ -6,7 +6,7 @@
 - a short manual script for what only a person at the machine can check;
 - the steady states that repeated work must return to;
 - the scenes kept for regression;
-- the benchmark baselines, and the limits of what they show.
+- the benchmark baselines, the approved budgets, and the limits of what they show.
 
 ## Automated checks
 
@@ -99,7 +99,7 @@ Run on the reference machine with a Release build. Each step lists its expected 
 Measured for #1005:
 
 - **Machine:** a Mac16,7 with an Apple M4 Pro (10 performance and 4 efficiency cores, a unified-memory GPU) and 24 GiB of memory, on macOS 26.6.2 (25G83).
-- **Build:** Release, at revision `7329fda` plus the #1005 runner changes. The engine code is that of `7329fda`.
+- **Build:** Release. The per-instance workloads ran at revision `7329fda` plus the #1005 runner changes; the cycle workloads were re-measured at `a0f84ca`. The engine code is the same in both.
 - **Rendering:** 1920×1080 offscreen, one tick per frame.
 - **Conditions:** the measuring thread ran at user-interactive quality of service. Each manifest started after the machine reached the `nominal` thermal state or after a two-minute pause, as noted below. The JSON results record everything else.
 
@@ -119,24 +119,38 @@ The per-instance workloads used 300 warmup and 3,000 sampled frames per run and 
 
 | Cycles (100 each) | Thermal | Load or start (ms, mean / P95) | First frame (ms) | Stop (ms) | Tracked counts after every cycle | Footprint |
 | --- | --- | --- | --- | --- | --- | --- |
-| `l1_load`: a 10,000-entity scene from its file | fair → fair | 39.7 / 46.4 | 2.48 | 0.13 | back at the empty session | 218 MiB empty; 406–415 MiB; slope +41 KB/cycle |
-| `l1_play`: play sessions from the authored scene | fair → fair | 6.9 / 7.2 | 2.39 | 0.13 | back at the empty session | 218 MiB empty; 402–408 MiB; slope +37 KB/cycle |
+| `l1_load`: a 10,000-entity scene from its file (two runs) | nominal → nominal | 34.2–34.4 / 35.1 | 2.26–2.29 | 0.12–0.13 | back at the empty session | 218 MiB empty; 422–433 MiB; slope +16 and +59 KB/cycle |
+| `l1_play`: play sessions from the authored scene | nominal → nominal | 6.5 / 6.8 | 2.28 | 0.13 | back at the empty session | 218 MiB empty; 416–422 MiB; slope +46 KB/cycle |
 
 - **Refusals.** The malformed and missing-asset scenes were refused, with nothing left behind.
 - **Authored scene.** It was unchanged after the play cycles.
-- **Footprint slopes.** Earlier runs of the same workloads measured slopes from −25 to +54 KB/cycle, within about ±10 MiB of cycle-to-cycle variation. The data shows no unbounded growth.
+- **Throttled first measurement.** The first measurement of both cycle workloads followed `i1_100k` and started in the `fair` state. It loaded in 39.7 ms (P95 46.4 ms) and started play in 6.9 ms (P95 7.2 ms). The cool re-measurement above replaces it; the two cool load runs agreed to within 0.2 ms.
+- **Footprint slopes.** All runs of the same workloads measured slopes from −25 to +59 KB/cycle, within about ±10 MiB of cycle-to-cycle variation. The data shows no unbounded growth.
 
-### Budget proposals
+### Budgets
 
-No budget was agreed before this milestone. The following are **proposals** from the observations above, for review. They are not approved budgets, and they hold only for this machine and these workloads.
+Approved on 29 September 2026 by the project owner, after the cycle workloads were re-measured on a cool machine. No budget existed before this milestone.
 
-| Proposal | Observed | Why this value |
-| --- | --- | --- |
-| Tracked counts return exactly to the empty session after load, play, and resize cycles | Exact in every run | Already enforced by tests; any drift is a defect |
-| Process footprint slope over cycles 11–100 at most 100 KB/cycle | −25 to +54 KB/cycle | About twice the observed spread; flags growth of 10 MiB per 100 cycles |
-| I1 10k CPU frame P99 at most 2.5 ms, GPU P95 at most 1.5 ms, on a cool M4 Pro | 2.04–2.13 ms, 1.14–1.22 ms | About 20% above the observations. Tighten once repeated baselines show the variance. |
-| Loading a 10,000-entity scene: P95 at most 50 ms; starting play: P95 at most 10 ms | 38.5–46.4 ms; 6.6–7.6 ms | Headroom over warm and cool observations |
-| I1 100k: **no budget** | 20.5–20.8 ms CPU, over the proposed 16.67 ms target | A stress input, not a capacity. Instancing and culling come first. |
+These are **regression budgets for the M4 Pro reference runs**. They are not the production budgets of the [performance baseline](architecture/performance-baseline.md): the 60 fps target, the M1 Baseline and M2 Pro Headroom profiles, and subsystem allocations stay unallocated.
+
+Every budget shares these conditions:
+
+- **Workloads:** the `maya-benchmark 1` manifests in [benchmarks/](../benchmarks) at `a0f84ca`. A change to a manifest is a new workload and needs a new baseline.
+- **Hardware:** the Mac16,7 above (Apple M4 Pro, 24 GiB, macOS 26.6.2).
+- **Quality:** a Release build, 1920×1080 offscreen, RGBA8 color and 32-bit depth, no antialiasing, one tick per frame.
+- **Method:** `maya_benchmark` at user-interactive QoS. Percentiles are nearest-rank over the sampled frames or the cycles after warmup.
+- **Valid runs:** the machine must be `nominal` at the start and at the end. A run that ends in any other state does not count, pass or fail, and is repeated after the machine cools.
+
+| Budget | Limit | Checked by | Observed | Rationale |
+| --- | --- | --- | --- | --- |
+| Tracked counts after load, play, and resize cycles | Exactly the empty session | Tests, on every CTest run; `l1_load` and `l1_play` | Exact in every run | Any drift is a defect |
+| Process footprint slope over cycles 11–100 | At most 100 KB/cycle | `l1_load`, `l1_play` | −25 to +59 KB/cycle | About twice the observed spread; flags growth of 10 MiB per 100 cycles |
+| I1 10k frame | CPU P99 at most 2.5 ms; GPU P95 at most 1.5 ms | `i1_10k`, `i1_10k_subset` | 2.04–2.13 ms; 1.14–1.22 ms | About 20% above the observations. Tighten once repeated baselines show the variance. |
+| Loading a 10,000-entity scene | P95 at most 50 ms | `l1_load` | 35.1 ms cool (46.4 ms throttled) | About 40% above the cool observations |
+| Starting play | P95 at most 10 ms | `l1_play` | 6.8 ms cool (7.2 ms throttled) | About 45% above the cool observations |
+| I1 100k | **No budget** | — | 20.5–20.8 ms CPU, over the proposed 16.67 ms target | A stress input, not a capacity. Instancing and culling come first. |
+
+The benchmarks are not part of CTest, so the timing and slope budgets are checked by running the manifests on the reference machine, not on every build.
 
 ## Limits against the workload contract
 
