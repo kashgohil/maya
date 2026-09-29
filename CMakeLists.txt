@@ -17,6 +17,7 @@ option(MAYA_BUILD_EDITOR "Build the editor application" ON)
 option(MAYA_BUILD_PLAYER "Build the standalone player with the basic-scene project" ON)
 option(MAYA_BUILD_SAMPLES "Build sample executables" ON)
 option(MAYA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(MAYA_BUILD_PROTOTYPES "Build the physics and scripting library prototypes (#1015)" OFF)
 set(MAYA_SANITIZERS "address,undefined" CACHE STRING "Comma-separated Clang sanitizers when enabled")
 include(CTest)
 include(FetchContent)
@@ -230,6 +231,91 @@ if(MAYA_BUILD_SAMPLES)
     add_executable(maya_sample samples/basic_scene/main.cpp)
     target_link_libraries(maya_sample PRIVATE MayaDesktop MayaPlayer)
     maya_target_options(maya_sample)
+endif()
+
+if(MAYA_BUILD_PROTOTYPES)
+    # Library prototypes for the physics and behavior decisions (docs/architecture/physics-scripting-decision.md).
+    # They are not engine code: MayaPhysics (#1017) and the scripting host (#1018) replace them.
+    # Dependency sources are pinned, and none of their targets are part of `all` unless a prototype
+    # links them. Their headers are system headers, so Maya's warnings apply to Maya code only.
+    function(maya_prototype_dependency_headers target)
+        get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
+        set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
+    endfunction()
+
+    # Jolt Physics (MIT). Single precision, 16 collision groups with masks, no GPU compute, no
+    # serialization, no install rules. Jolt builds without exceptions and with its own warnings. RTTI
+    # is on so UndefinedBehaviorSanitizer's vptr check can see Jolt's classes, as in the rest of Maya.
+    FetchContent_Declare(jolt
+        GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+        GIT_TAG v5.6.0
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR Build)
+    set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+    set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
+    set(CPP_RTTI_ENABLED ON CACHE BOOL "" FORCE)
+    set(OBJECT_LAYER_BITS 32 CACHE STRING "" FORCE)
+    set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+    set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)
+    set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+    set(GENERATE_DEBUG_SYMBOLS OFF CACHE BOOL "" FORCE)
+    foreach(backend JPH_USE_DX12 JPH_USE_VK JPH_USE_MTL JPH_USE_CPU_COMPUTE)
+        set(${backend} OFF CACHE BOOL "" FORCE)
+    endforeach()
+    FetchContent_MakeAvailable(jolt)
+    set_property(DIRECTORY ${jolt_SOURCE_DIR}/Build PROPERTY EXCLUDE_FROM_ALL TRUE)
+    maya_prototype_dependency_headers(Jolt)
+
+    # Lua 5.4 (MIT), from the release archive. Compiled as C++, so errors unwind with exceptions
+    # instead of longjmp and destructors in native functions run.
+    FetchContent_Declare(lua
+        URL https://www.lua.org/ftp/lua-5.4.9.tar.gz
+        URL_HASH SHA256=2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(lua)
+    file(GLOB lua_sources ${lua_SOURCE_DIR}/src/*.c)
+    list(FILTER lua_sources EXCLUDE REGEX "/(lua|luac)\\.c$")
+    set_source_files_properties(${lua_sources} PROPERTIES LANGUAGE CXX)
+    add_library(MayaPrototypeLua STATIC ${lua_sources})
+    target_include_directories(MayaPrototypeLua SYSTEM PUBLIC ${lua_SOURCE_DIR}/src)
+    target_compile_options(MayaPrototypeLua PRIVATE -w)
+
+    # Luau (MIT): the VM and the bytecode compiler. The type checker, native code generation, and
+    # the command-line tools are not built.
+    FetchContent_Declare(luau
+        GIT_REPOSITORY https://github.com/luau-lang/luau.git
+        GIT_TAG 0.740
+        GIT_SHALLOW TRUE)
+    set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
+    set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(luau)
+    set_property(DIRECTORY ${luau_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
+    maya_prototype_dependency_headers(Luau.VM)
+    maya_prototype_dependency_headers(Luau.Compiler)
+
+    add_library(MayaPrototypePhysics STATIC prototypes/physics/jolt_prototype.cpp)
+    target_include_directories(MayaPrototypePhysics PUBLIC prototypes/physics)
+    target_link_libraries(MayaPrototypePhysics PUBLIC Jolt)
+    maya_target_options(MayaPrototypePhysics)
+    add_executable(maya_physics_prototype prototypes/physics/main.cpp)
+    target_link_libraries(maya_physics_prototype PRIVATE MayaPrototypePhysics)
+    maya_target_options(maya_physics_prototype)
+
+    # Lua and Luau export the same C API names, so each language has its own host library and
+    # executable, and the two are never linked together.
+    add_library(MayaPrototypeLuaHost STATIC prototypes/scripting/lua_host.cpp)
+    target_link_libraries(MayaPrototypeLuaHost PUBLIC MayaPrototypeLua)
+    add_library(MayaPrototypeLuauHost STATIC prototypes/scripting/luau_host.cpp)
+    target_link_libraries(MayaPrototypeLuauHost PUBLIC Luau.VM Luau.Compiler)
+    foreach(language Lua Luau)
+        string(TOLOWER ${language} name)
+        target_include_directories(MayaPrototype${language}Host PUBLIC prototypes/scripting)
+        maya_target_options(MayaPrototype${language}Host)
+        add_executable(maya_${name}_prototype prototypes/scripting/main.cpp)
+        target_link_libraries(maya_${name}_prototype PRIVATE MayaPrototype${language}Host)
+        maya_target_options(maya_${name}_prototype)
+    endforeach()
 endif()
 
 if(BUILD_TESTING)
