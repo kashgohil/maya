@@ -48,6 +48,8 @@ Create/destroy/add/remove/replace, transform edits, and reparent operations are 
 
 `WorldCommands::staged(first)` lists the staged commands from an index on, in order: each one's kind, target, component type, and new parent, without its value. It lets a caller check a batch before committing it; play sessions use it to refuse transform writes to [physics bodies](physics.md#requests-during-a-tick) (#1017).
 
+`WorldCommands::truncate(size)` drops the commands staged after the first `size` (from `size()`), as if they were never made; pending entities from dropped creates must not be used again. The [script host](scripting.md#errors) uses it to discard a failed hook call's commands (#1018).
+
 Commit validates commands in enqueue order. Missing components, duplicate additions/IDs, commands after destruction, stale/foreign handles, and invalid pending targets return a `WorldError` and failing index. No prefix of a rejected batch is applied. Remove followed by add replaces a component. Creating then destroying a pending entity is allowed; its result handle is already invalid when commit returns. Failed buffers retain their staging values and may be discarded or retried after a transient `busy` result.
 
 After validation, commit allocates storage/map nodes before publication. Allocation/construction failures propagate as exceptions while logical world contents remain unchanged (capacity may grow). Components must meet the `Component` concept: unqualified object type with nonthrowing move construction, move assignment, and destruction. This permits packed relocation and a publication phase without allocating or invoking throwing component operations. Fallible value construction/copying happens while staging, before live state changes.

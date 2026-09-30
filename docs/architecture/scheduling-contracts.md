@@ -1,6 +1,6 @@
 # Scheduling and rendering contracts
 
-Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave. [#1017](../physics.md) implements phases 4–6 for bodies made from code.
+Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave. [#1017](../physics.md) implements phases 4–6 for bodies made from code. [#1018](../scripting.md) runs script `start`, `fixed_update`, `update`, and `stop` hooks as one system; event hooks, `late_fixed_update`, and reload come with #1020 and #1021.
 
 ## Clocks and modes
 
@@ -60,7 +60,7 @@ Teleports, origin changes, reparenting, spawning, and body-mode transitions rese
 
 Recorded for #1015 on [Jolt Physics and Luau](physics-scripting-decision.md). The [physics](runtime-world-contracts.md#physics-boundary) and [scripting](runtime-world-contracts.md#scripting-boundary) boundaries define what each side owns. #1017–#1023 implement this section.
 
-**Scripts are one system among others.** All script instances run as a single `SimulationSystem` at a configured place in the session's system list (by default after the built-in systems). Within it, instances run in activation order, which is the order bodies are created: document order at session start, then spawn order. Native systems keep their existing contract.
+**Scripts are one system among others.** All script instances run as a single `SimulationSystem` at a configured place in the session's system list (by default after the built-in systems). Within it, instances run in activation order, which is the order bodies are created: document order at session start, then spawn order. Native systems keep their existing contract. (#1018 starts the instances that arrive in one tick in World storage order, which is document order at session start. An entity created during play may take a freed slot, so its order within its tick follows storage rather than creation, deterministically either way.)
 
 | Phase | What happens |
 | --- | --- |

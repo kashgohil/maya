@@ -33,6 +33,7 @@ The version-one catalog stores kind, hexadecimal high/low ID words, and a quoted
 maya-assets 1
 mesh 6d617961 1 "models/tree.obj"
 material 6d617961 2 "materials/bark.mat"
+script 6d617961 20 "scripts/spin.luau"
 ```
 
 `write_asset_catalog(stream, registry.records())` writes metadata only. `read_asset_catalog(stream)` checks syntax/version/ID words and returns records or a diagnostic; register each record in a fresh registry before publishing that project. Registration validates identity, kind, duplicate sources, and project boundaries. Parsing/registration does not load resources. Loading a malformed catalog must discard the unpublished registry, not expose a partially registered project. Filesystem I/O and allocation exceptions remain ordinary exceptions. This catalog is not the [scene format](scene.md) (#995); scenes store only AssetIds and validate them against the catalog.
@@ -49,6 +50,8 @@ roughness 0.7
 ```
 
 All six factors must be finite and in [0,1]. Field order is fixed in version one; extra data, unsupported versions, and malformed values fail. These immutable material values are ready for renderer integration; this issue does not implement PBR shading, textures, material graphs, or shader cooking. `fallback_material()` returns explicit magenta/opaque, nonmetallic, rough data for callers choosing a fallback. Missing meshes skip their draw. Neither fallback replaces the missing reference's ID or reports the source as successfully loaded.
+
+Script assets (`script`, `ScriptAsset`, since #1018) are Luau source text. `AssetProvider::load_script` reads the file as text, and every provider inherits it; the registry neither compiles nor checks the source. Play sessions and the editor compile it ([scripting](scripting.md)), and bytecode is never stored. The Assets panel lists scripts, and scripts reload while editing, with [#1020](https://work.rezee.app/kash/issues/1020).
 
 ## Loading and reload
 

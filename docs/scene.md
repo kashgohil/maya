@@ -62,6 +62,7 @@ The format is line-based UTF-8 text, so it diffs and merges well and is consiste
 | Integer | A whole number, such as a collision group: `group 3`. |
 | Flags | Hexadecimal with a `0x` prefix, such as a collision mask: `mask 0xffff`. |
 | Asset reference | `none` when unassigned, otherwise the persistent AssetId words. Never a path, lease, handle, or registry token. |
+| Script values | One line: a count (at most 4096), then each value's name, type (`number`, `integer`, `boolean`, `string`, `vector`, `color`, or `entity`), and data in the encodings above, in stored order. An entity value is `none` or its ID words: `values 2 speed number 1.5 target entity 6d617961 300` ([scripting](scripting.md#script-assets-and-the-component)). |
 
 Writing keeps the document's entity order. `capture_scene` orders roots by EntityId, since the World has no root order, and follows each root depth-first by its descendants. The editor writes roots in its hierarchy order instead, and reads them back in file order ([#1002](projects.md#scene-files)). Components are ordered by ComponentId and properties by schema order. Entity order also records sibling order: children appear in their parent's child order, and loading reproduces that order. Saving, reopening, and saving again produces byte-identical output. When reading, blank lines, `#` comment lines, tabs, and CRLF line endings are accepted. Comments and formatting are not preserved on the next save.
 

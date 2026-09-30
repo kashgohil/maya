@@ -77,7 +77,7 @@ The editor today is the window that work will land in. It has a hierarchy, a vie
 
 Three programs build from this repository.
 
-**Player.** The program a finished game grows out of. It runs a project's saved scene: by default the sample, a spinning pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly. Give it a project and a scene to run another one, with no code changes. The spinning and the flying are components saved in the scene, run by the same fixed-step simulation the editor plays. The sample's `physics.scene` drops crates on a floor: colliders and rigid bodies are components too, simulated by Jolt Physics.
+**Player.** The program a finished game grows out of. It runs a project's saved scene: by default the sample, a spinning pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly. Give it a project and a scene to run another one, with no code changes. The spinning and the flying are components saved in the scene, run by the same fixed-step simulation the editor plays. The sample's `physics.scene` drops crates on a floor: colliders and rigid bodies are components too, simulated by Jolt Physics. Its beacon turns by a Luau script, `assets/scripts/spin.luau`, attached by a script component ([scripting](docs/scripting.md)).
 
 **Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Click an object to select it; move, rotate, or scale it with the gizmo (W, E, R); and edit its properties, lights, camera, mesh, and material in the inspector. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them. Drag a mesh from the Assets panel into the viewport to place it, and a material onto an object to paint it. Undo or redo any of it with ⌘Z and ⇧⌘Z. Save with ⌘S, or start a new scene with ⌘N; the editor asks before unsaved changes would be lost. Press ⌘P to play the scene in a separate world, click the view to fly its camera, and press ⌘P again to stop: the scene is exactly as you left it.
 
@@ -121,7 +121,7 @@ To check the milestone, run `tools/check_milestone.sh build`: CPU checks, then G
 ```bash
 ./build/maya_benchmark benchmarks/i1_10k.benchmark results.json
 ```
- The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. `-DMAYA_BUILD_PROTOTYPES=ON` adds the scripting prototypes, which fetch Lua 5.4 and Luau; they are off by default ([libraries](docs/architecture/physics-scripting-decision.md)). Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
+ The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. The first configure also fetches Jolt Physics and Luau, which every build uses ([libraries](docs/architecture/physics-scripting-decision.md)). Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
 ### Where the files are
 
@@ -144,7 +144,7 @@ A build made inside the repository finds its content, because a parent of the ex
 | MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
 | MayaDesktop | The window, input, and launch loop. |
 | MayaPhysics | Rigid-body physics for play sessions, on Jolt Physics. CPU-only. |
-| MayaSimulation | Play sessions: the fixed-step clock, gameplay input, simulation systems, and physics. CPU-only. |
+| MayaSimulation | Play sessions: the fixed-step clock, gameplay input, simulation systems, physics, and Luau scripts. CPU-only. |
 | MayaPlayer | Runs a project's saved scene through a play session; shared by the player and the sample. |
 | MayaMetrics | Timing aggregation: nearest-rank percentiles, sample windows, frame timing. CPU-only. |
 | maya_benchmark | Runs benchmark manifests headless and offscreen, and writes JSON results. |

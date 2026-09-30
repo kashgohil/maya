@@ -120,6 +120,7 @@ It also lists this frame's extraction problems, such as missing meshes and mater
 - renderer errors, for example a pipeline that fails to compile;
 - GPU errors taken from the device, also written to stderr;
 - UI pass errors;
+- script logs and script errors while playing, under **script** ([scripting](scripting.md#errors)); an error also shows the notice "A script stopped";
 - minimize and restore.
 
 Repeated messages are merged with a count, and the log keeps at most 200 entries. Viewport and renderer problems do not stop the editor: the rest of the UI keeps drawing, and a later frame recovers once the cause is gone. Only a failure of the UI pass itself is returned to the Engine.

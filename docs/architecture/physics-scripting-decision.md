@@ -7,19 +7,22 @@ Decided 30 September 2026 for [ISSUE-1015](https://work.rezee.app/kash/issues/10
 | Physics library | **Jolt Physics 5.6.0**, confirmed by the prototype | PhysX 5, the fallback; not needed |
 | Scripting language | **Luau 0.740**, chosen by the project owner from the prototype results | Lua 5.4.9 |
 
-The contracts built on these choices are in [runtime and world](runtime-world-contracts.md#physics-boundary) (the physics and scripting boundaries) and [scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick) (hooks, the fixed-tick phases, reset, replay, and reload). The physics stress workload is [P1](performance-baseline.md#p1-physics-stress). Nothing here is engine code yet: `MayaPhysics` ([#1017](https://work.rezee.app/kash/issues/1017)) and the scripting host ([#1018](https://work.rezee.app/kash/issues/1018)) implement these decisions.
+The contracts built on these choices are in [runtime and world](runtime-world-contracts.md#physics-boundary) (the physics and scripting boundaries) and [scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick) (hooks, the fixed-tick phases, reset, replay, and reload). The physics stress workload is [P1](performance-baseline.md#p1-physics-stress). `MayaPhysics` ([#1017](https://work.rezee.app/kash/issues/1017), [physics](../physics.md)) and the scripting host ([#1018](https://work.rezee.app/kash/issues/1018), [scripting](../scripting.md)) implement these decisions.
 
 ## The prototypes
 
-Configure with `-DMAYA_BUILD_PROTOTYPES=ON`. The option is off by default, so a normal build neither downloads nor compiles these libraries until #1017 and #1018 adopt them.
+The decisions were made from prototypes built behind a `MAYA_BUILD_PROTOTYPES` option, off by default:
 
-| Target | What it is |
+| Target | What it was |
 | --- | --- |
-| `maya_physics_prototype` (`MayaPrototypePhysics`, `prototypes/physics`; replaced by [MayaPhysics](../physics.md) in #1017) | A falling-box scene in a Jolt PhysicsSystem: a static floor, 1 m boxes, collision groups and masks, contact callbacks, allocator hooks, and state save and restore. It printed timings, heap use, and trace hashes. |
-| `maya_lua_prototype`, `maya_luau_prototype` (`MayaPrototypeLuaHost`, `MayaPrototypeLuauHost`, [prototypes/scripting](../../prototypes/scripting/script_host.hpp)) | The same sandboxed host in each language. A `maya` table offers `add_force(x, y, z)` and `log(message)`. The host has a memory limit and a deterministic work budget per call. It prints call cost, loop cost, and memory. Lua and Luau export the same C API names, so they are never linked into one program. |
-| `maya_prototype_physics_tests`, `maya_prototype_lua_tests`, `maya_prototype_luau_tests` | The behavior the decisions rely on, in CTest under the `prototype` label. One scripting test file runs against both languages. |
+| `maya_physics_prototype` | A falling-box scene in a Jolt PhysicsSystem: a static floor, 1 m boxes, collision groups and masks, contact callbacks, allocator hooks, and state save and restore. It printed timings, heap use, and trace hashes. |
+| `maya_lua_prototype`, `maya_luau_prototype` | The same sandboxed host in each language. A `maya` table offered `add_force(x, y, z)` and `log(message)`. The host had a memory limit and a deterministic work budget per call, and printed call cost, loop cost, and memory. Lua and Luau export the same C API names, so they were never linked into one program. |
+| `maya_prototype_physics_tests`, `maya_prototype_lua_tests`, `maya_prototype_luau_tests` | The behavior the decisions rely on, in CTest under the `prototype` label. One scripting test file ran against both languages. |
 
-#1017 replaced the physics prototype with [MayaPhysics](../physics.md), whose tests carry its checks over, and made Jolt part of every build. The scripting prototypes stay until #1018, which removes the Lua host and the Lua 5.4 dependency.
+- **#1017** replaced the physics prototype with [MayaPhysics](../physics.md), whose tests carry its checks over, and made Jolt part of every build.
+- **#1018** replaced the scripting prototypes with the [scripting host](../scripting.md). Its tests carry the sandbox, error, budget, and memory checks over. It removed the option, the Lua host, and the Lua 5.4 dependency, and made Luau part of every build.
+
+The prototypes remain in the history before #1018.
 
 ## Jolt Physics
 
@@ -59,7 +62,7 @@ The trace hash is `d513b239a20c23aa` in every row. The peak includes the 16 MiB 
 | Libraries built | `Luau.VM` and `Luau.Compiler`, with `Luau.Ast`, `Luau.Common`, and `Luau.Bytecode`: about 2.5 MB of static libraries. The type checker (`Luau.Analysis`) and native code generation (`Luau.CodeGen`) are not built. The first could check scripts in the editor later; the second is an optimization to measure against real scripts first. |
 | Embedding API | `lua_newstate` with Maya's allocator, then `luaL_openlibs`, then removing what scripts may not use, then `luaL_sandbox`. Each script runs in a thread made with `lua_newthread` and `luaL_sandboxthread`. The host compiles source with `Luau::compile` and loads it with `luau_load`. Calls use `lua_pcall`. `lua_callbacks` carries the host pointer and the `interrupt` that enforces the work budget. |
 | Errors | Luau is built as C++ (`LUA_USE_LONGJMP` 0), so script errors unwind with exceptions and destructors in native functions run. Messages name the script and line: `faulty:3: attempt to call a nil value`. |
-| Sandbox | `luaL_sandbox` makes the global table and every library read-only. `luaL_sandboxthread` gives each script its own globals, which fall through to the read-only ones. Luau has no file, process, environment, or bytecode-loading functions. The host also removes `print` and `debug`; the contract also removes `os`, `getfenv`, and `setfenv`. |
+| Sandbox | `luaL_sandbox` makes the global table and every library read-only. `luaL_sandboxthread` gives each script its own globals, which fall through to the read-only ones. Luau has no file, process, environment, or bytecode-loading functions. The prototype host removed `print` and `debug`; the [scripting host](../scripting.md#sandbox-and-limits) also removes `os`, `getfenv`, and `setfenv`, as the contract requires. |
 | Limits | Memory: the allocator refuses to grow past a limit, and the script gets "not enough memory". Work: the interrupt runs at loop back edges and calls, and it counts them. Counting work rather than measuring time makes the budget deterministic: a call either always fits or never does. |
 | Threading | A VM belongs to one thread at a time. Maya runs it only on the world's owner thread. |
 | Types | Luau accepts optional type annotations (`function f(v: number): number`); the compiler ignores them. Lua 5.4 rejects them as syntax errors. |
@@ -85,5 +88,5 @@ Both hosts pass the same checks: native calls, error recovery, the sandbox, read
 Validated on 30 September 2026:
 - **Builds.** Release, and Debug with `MAYA_SANITIZERS=undefined`: both build with no warnings in Maya code.
 - **Offline and clean export.** Configured with `FETCHCONTENT_FULLY_DISCONNECTED=ON` from cached sources, and from a clean export of the source tree: both build and pass all 47 CTest tests.
-- **Prototype tests.** `maya_prototype_physics` (5 cases, 26 assertions), `maya_prototype_lua` (7 cases, 114 assertions), and `maya_prototype_luau` (7 cases, 116 assertions) pass, also under UBSan. The physics tests also pass with Jolt's asserts on. (#1017 replaced the physics prototype tests with `maya_physics`.)
+- **Prototype tests.** `maya_prototype_physics` (5 cases, 26 assertions), `maya_prototype_lua` (7 cases, 114 assertions), and `maya_prototype_luau` (7 cases, 116 assertions) pass, also under UBSan. The physics tests also pass with Jolt's asserts on. (#1017 replaced the physics prototype tests with `maya_physics`, and #1018 the scripting ones with `maya_scripting`.)
 - **What this does not show.** It is not a P1 baseline, and not evidence for the engine's physics or scripting, which do not exist yet. Jolt and Luau are not themselves sanitized; only Maya code is.

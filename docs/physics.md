@@ -1,12 +1,12 @@
 # Physics
 
-[Issue #1017](https://work.rezee.app/kash/issues/1017) adds rigid-body physics to play sessions: the `MayaPhysics` library on [Jolt Physics 5.6.0](architecture/physics-scripting-decision.md). It follows the [physics boundary](architecture/runtime-world-contracts.md#physics-boundary) and runs phases 4–6 of the [fixed tick](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). [Issue #1019](https://work.rezee.app/kash/issues/1019) adds the components that author bodies in the editor and in scene files. Systems can also make bodies from code. The script API and events follow in #1021.
+[Issue #1017](https://work.rezee.app/kash/issues/1017) adds rigid-body physics to play sessions: the `MayaPhysics` library on [Jolt Physics 5.6.0](architecture/physics-scripting-decision.md). It follows the [physics boundary](architecture/runtime-world-contracts.md#physics-boundary) and runs phases 4–6 of the [fixed tick](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). [Issue #1019](https://work.rezee.app/kash/issues/1019) adds the components that author bodies in the editor and in scene files. Systems can also make bodies from code. [Issue #1018](scripting.md) lets scripts move entities that have no body, or a static one; the script API for bodies and events follows in #1021.
 
 ## The library
 
 `MayaPhysics` / `Maya::Physics` ([physics.hpp](../include/maya/physics/physics.hpp)) links MayaWorld, and Jolt privately. MayaSimulation links it, so the player and the editor's play mode share it.
 
-- **Jolt stays inside.** Only `src/maya/physics/` includes Jolt headers, and the public header has no Jolt types. Bodies are named by EntityHandle; Jolt's body IDs never leave the library. The CTest check `maya_physics_headers` ([check_physics_headers.cmake](../cmake/check_physics_headers.cmake)) fails the build's tests if any other source, header, or test includes Jolt.
+- **Jolt stays inside.** Only `src/maya/physics/` includes Jolt headers, and the public header has no Jolt types. Bodies are named by EntityHandle; Jolt's body IDs never leave the library. The CTest check `maya_library_headers` ([check_library_headers.cmake](../cmake/check_library_headers.cmake)) fails the build's tests if any other source, header, or test includes Jolt; it checks Luau's boundary too ([scripting](scripting.md)).
 - **Jolt is part of every build.** The first configure fetches it with GLFW and Catch2; only the Jolt library itself is built. The options are in the [decision record](architecture/physics-scripting-decision.md#jolt-physics).
 - **One physics world per play session.** `PlaySession::start` creates a `PhysicsWorld` after it builds the World and before any system starts. The session destroys it before the World. Authoring Worlds never have one.
 
@@ -50,7 +50,7 @@ If any body cannot be made, Play does not start. The reason names the entity by 
 
 **Collision groups.** A collider's `group` (0–15) and `mask` (bit *n* set: collides with group *n*) decide what it collides with. Two colliders collide only when each one's group is in the other's mask. A project names its groups in its [project file](projects.md#collision-groups), and the editor edits the names in its Collision groups window. Group 0, `Default`, is where every collider starts, and a new collider's mask includes every group.
 
-The sample project's [physics.scene](../samples/basic_scene/assets/physics.scene) is a floor, a stack of five crates, and a crate that falls beside them: `maya_player samples/basic_scene physics.scene`.
+The sample project's [physics.scene](../samples/basic_scene/assets/physics.scene) is a floor, a stack of five crates, a crate that falls beside them, and a beacon turned by a [script](scripting.md): `maya_player samples/basic_scene physics.scene`.
 
 ## Bodies
 

@@ -73,6 +73,8 @@ The Assets panel is the bottom panel shown first (Diagnostics is its neighbourin
 - **Meshes:** meshes from the catalog, by file name.
 - **Materials:** materials from the catalog, each with a swatch of its base color.
 
+Scripts in the catalog ([scripting](scripting.md)) are not listed yet; they are assigned in the Inspector until [#1020](https://work.rezee.app/kash/issues/1020) adds them here.
+
 A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, or **not loaded** for a mesh no frame has drawn yet. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Assign to selection**, **Reload** (read the file again), and **Copy ID**.
 
 | Gesture | Result |

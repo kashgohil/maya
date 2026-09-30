@@ -23,7 +23,7 @@ Each property's control comes from its schema descriptor:
 | choice | Menu of the schema's choices (a light's kind, a collider's shape, a body's motion). |
 | integer | Drag field clamped to the schema range. A collision group shows a menu of the project's group names instead. |
 | flags, collision mask | A menu with one check box per collision group, named as in the project, plus All groups and None. Its label summarizes the mask: All groups, None, one group's name, or how many. |
-| mesh / material reference | Menu of catalog assets of that kind, plus None. An asset of that kind dragged from the [Assets panel](projects.md#the-assets-panel) can be dropped on it. A reference to an asset missing from the catalog shows as "Missing" in amber; an asset that failed to load shows in red, with the reason as a tooltip. |
+| mesh / material / script reference | Menu of catalog assets of that kind, plus None. An asset of that kind dragged from the [Assets panel](projects.md#the-assets-panel) can be dropped on it. A reference to an asset missing from the catalog shows as "Missing" in amber; an asset that failed to load shows in red, with the reason as a tooltip. |
 
 A light shows only the properties its kind uses: range for point and spot lights, cone angles for spot lights. A collider shows only its shape's size (half extents for a box, a radius for a sphere, a radius and half height for a capsule), and a kinematic body hides the initial velocities that only dynamic bodies use. Descriptions appear as tooltips. The editor camera's settings sit below the selection's components.
 
@@ -39,6 +39,28 @@ Collider, Rigid body, and Physics settings are added from **Add component** like
 - a collider that is part of the rigid body on an ancestor (named).
 
 Collision group names come from the project; its Collision groups window renames them ([projects](projects.md#collision-groups)).
+
+### Script components
+
+A Script component (#1018, [scripting](scripting.md)) shows its script asset, then one row per property the script declares, sorted by name, labelled with the declaration's label or its name. Each row edits the stored value of that name, or shows the default until one is stored:
+
+| Declared type | Control |
+| --- | --- |
+| number | Drag field clamped to the declared range, with its unit. |
+| integer | Drag field clamped to the declared range. |
+| boolean | Checkbox. |
+| string | Text field, applied when entry ends. |
+| vector | Three axis drag fields. |
+| color | Color editor (RGB, HDR). |
+| entity | Menu of the scene's entities in hierarchy order, plus None; a reference to an entity no longer in the scene shows as Missing. |
+
+Edits are "Edit Script" undo steps, like other properties.
+
+Below the fields, the Inspector notes:
+- **Scripts that cannot be read or compiled,** in red, with the reason, such as `scripts/broken.luau:2: Expected identifier when parsing expression, got 'return'`. No fields are shown.
+- **Stored values that do not fit,** in amber: one for a property the script no longer declares, of another type, or out of range. **Remove unused values** drops those for undeclared properties, as one undo step.
+
+The editor compiles a script to read its declarations when the Inspector first shows it, and keeps the result for that asset version. The editor does not watch script files yet: until [#1020](https://work.rezee.app/kash/issues/1020), a changed script is read again when the project is reopened.
 
 ## Gizmos
 
