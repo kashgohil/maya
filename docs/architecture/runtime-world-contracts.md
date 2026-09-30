@@ -128,11 +128,11 @@ Recorded for #1015. `MayaPhysics` ([#1017](../physics.md)) implements the interf
 
 ## Scripting boundary
 
-Recorded for #1015. The scripting host ([#1018](../scripting.md)) implements it, with a minimal script asset kind; [#1020](https://work.rezee.app/kash/issues/1020) completes script assets in the editor and adds reload, and [#1021](https://work.rezee.app/kash/issues/1021) adds bodies, queries, events, and `late_fixed_update`. Where #1018 differs from or narrows this contract:
+Recorded for #1015. The scripting host ([#1018](../scripting.md)) implements it, with a minimal script asset kind; [#1020](https://work.rezee.app/kash/issues/1020) completes script assets in the editor and adds reload, and [#1021](https://work.rezee.app/kash/issues/1021) adds bodies, queries, events, and `late_fixed_update`. Luau is chosen in the [decision record](physics-scripting-decision.md). When scripts run is in [scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). Where #1018 differs from or narrows this contract:
 - **Stop after destruction.** When an entity is destroyed, its instance's `stop` runs at the next tick boundary, after the entity is gone; `self.entity:alive()` is false there.
 - **Schema.** Script values are stored as one `values` property of `maya.script`, validated for names, types, and finite data. The host checks them against the script's declarations when an instance starts: values that do not fit are reported and replaced by defaults. The Inspector draws one field per declared property, sorted by name.
 - **Types.** Asset-typed script properties, and asset handles in scripts, are not implemented yet.
-- **Limits.** The defaults are 1,000,000 safepoints per hook call and 64 MiB per play session (`ScriptSettings`); projects cannot set them yet. Luau is chosen in the [decision record](physics-scripting-decision.md). When scripts run is in [scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick).
+- **Setup counts.** Loading a script and setting up its instances count against the memory limit; a script that cannot be set up is that script's error.
 
 **Ownership.** The Luau VM lives inside MayaSimulation's scripting host; Luau types do not appear in Maya's public headers. There is one VM per play session, created at session start and closed after the last stop hook. It runs only on the world's owner thread. Each script asset version is compiled once and runs in its own sandboxed thread. Authoring Worlds run no scripts.
 
@@ -189,7 +189,7 @@ return Mover
 **Limits.**
 - **Work budget.** Each hook call has a budget counted at Luau safepoints (loop back edges and calls), never in wall time, so the same script and inputs always pass or always fail.
 - **Memory.** Each play session's VM has a memory limit.
-- **Defaults.** #1018 sets 1,000,000 safepoints per call and 64 MiB per session. An empty hook costs about 97 ns; the sample's spin script needs fewer than 5 safepoints per call and plays within 512 KiB ([scripting](../scripting.md#cost)). A project may raise them later. The prototype used 10 million safepoints and 4 MiB.
+- **Defaults.** #1018 sets 1,000,000 safepoints per call and 64 MiB per session. An empty hook costs about 97 ns; the sample's spin script needs fewer than 5 safepoints per call and plays within 512 KiB ([scripting](../scripting.md#cost)). A project sets other values in its file (`script_work`, `script_memory`; [projects](../projects.md#projects)). The prototype used 10 million safepoints and 4 MiB.
 - **Coroutines.** They may run within a call, but a hook that yields is an error; waiting across ticks is a later design.
 
 **Errors.**

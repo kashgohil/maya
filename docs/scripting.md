@@ -136,6 +136,8 @@ Reads see the World as the previous tick committed it.
 | `limits.memory_bytes` | 64 MiB per play session |
 | `seed` | `0x6d617961`; seeds `math.random` and created entity IDs |
 
+A project sets the limits in its [project file](projects.md#projects): `script_work` in safepoints per hook call (1,000 to 1,000,000,000) and `script_memory` in MiB per play session (1 to 4,096). The player and the editor's Play use them through `project_script_settings`.
+
 ## Errors
 
 A syntax, runtime, budget, or memory error names the entity, the script, the line, and a short traceback:
@@ -218,8 +220,9 @@ That is about 97 ns per call for an empty hook and 480 ns per moved instance, fl
 
 Also:
 - [asset_tests.cpp](../tests/asset_tests.cpp): script catalog entries, loading, reloading, and missing files.
+- [project_tests.cpp](../tests/project_tests.cpp): the project file's script limits, written back and refused out of range.
 - [property_tests.cpp](../tests/property_tests.cpp): the component's schema and value validation.
 - [scene_tests.cpp](../tests/scene_tests.cpp): value encoding and refused values.
 - [world_tests.cpp](../tests/world_tests.cpp): dropping a batch's newest commands (`WorldCommands::truncate`).
-- [editor_scripting_tests.cpp](../tests/editor_scripting_tests.cpp): the Inspector's script fields with undo, unused values, compile errors in the Inspector, and script logs and failures in Diagnostics while play continues.
+- [editor_scripting_tests.cpp](../tests/editor_scripting_tests.cpp): the Inspector's script fields with undo, unused values, compile errors in the Inspector, and script logs and failures in Diagnostics while play continues, and a project's raised work budget letting a heavy script run.
 - The editor–player parity tests now play the sample scenes with scripts.

@@ -19,6 +19,8 @@ group 1 "Player"
 | `content` | The content root: where the catalog, sources, and scenes live, relative to the project file's folder. `"."` is the folder itself. |
 | `catalog` | The [asset catalog](assets.md#catalog-and-material-files), relative to the content root. |
 | `startup` | Optional. The scene opened with the project, relative to the content root. |
+| `script_work <n>` | Optional: the [scripts'](scripting.md#sandbox-and-limits) work budget, in safepoints per hook call, from 1,000 to 1,000,000,000. Without it, 1,000,000. |
+| `script_memory <n>` | Optional: the scripts' memory limit per play session, in MiB, from 1 to 4,096. Without it, 64. |
 | `group <n> "<name>"` | Optional, any number, after the others: the name of [collision group](#collision-groups) *n* (0–15). Groups named as by default are not written. |
 
 Every path must be relative and may not contain `..`, so a copied or moved project keeps working. [project.hpp](../include/maya/assets/project.hpp) in `MayaAssets` reads and writes the file (`read_project`, `write_project`) and opens it (`open_project`). The result holds canonical absolute paths derived from the project file. `Project::resolve` maps a content-relative path into the content root and refuses any path that would leave it, including through a symlink. Nothing about a project comes from the working directory or from the application's resource search roots. Only the editor's own shaders and fonts are found that way.
