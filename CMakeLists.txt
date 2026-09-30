@@ -343,7 +343,7 @@ if(BUILD_TESTING)
     add_test(NAME maya_metrics COMMAND maya_metrics_tests)
     set_tests_properties(maya_metrics PROPERTIES LABELS "cpu;metrics" TIMEOUT 30)
 
-    add_executable(maya_simulation_tests tests/simulation_tests.cpp)
+    add_executable(maya_simulation_tests tests/simulation_tests.cpp tests/replay_tests.cpp)
     target_link_libraries(maya_simulation_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_simulation_tests)
     add_test(NAME maya_simulation COMMAND maya_simulation_tests)
@@ -404,7 +404,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/acceptance_tests.cpp)
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
@@ -491,6 +491,21 @@ if(BUILD_TESTING)
         maya_player_failure(missing_project 1 "Cannot read project file" ${CMAKE_CURRENT_BINARY_DIR}/no-such-project --smoke 3)
         maya_player_failure(missing_scene 1 "missing.scene cannot be run" ${sample_project} missing.scene --smoke 3)
         maya_player_failure(scene_outside_project 1 "outside the project's content root" ${sample_project} ../project.maya --smoke 3)
+        maya_player_failure(record_without_file 2 "--record needs a file" --record)
+        maya_player_failure(record_and_replay 2 "--record and --replay cannot be used together" --record a --replay b)
+        maya_player_failure(missing_recording 1 "cannot read the recording" --replay ${CMAKE_CURRENT_BINARY_DIR}/no-such.recording --smoke 3)
+        # A recorded smoke run replays to the same result (#1023).
+        set(smoke_recording ${CMAKE_CURRENT_BINARY_DIR}/smoke-physics.recording)
+        add_test(NAME maya_player_record COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_player>|${sample_project}|physics.scene|--smoke|120|--record|${smoke_recording}"
+            -DEXIT_CODE=0 "-DEXPECT=recorded 120 ticks" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        add_test(NAME maya_player_replay COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_player>|${sample_project}|--smoke|150|--replay|${smoke_recording}"
+            -DEXIT_CODE=0 "-DEXPECT=the replay matches the recording: 120 ticks, 2 checkpoints" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        set_tests_properties(maya_player_record PROPERTIES FIXTURES_SETUP smoke_recording)
+        set_tests_properties(maya_player_replay PROPERTIES FIXTURES_REQUIRED smoke_recording)
+        set_tests_properties(maya_player_record maya_player_replay PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
     endif()
 
     # The benchmark runner: its logic on the null device (CPU), and its command line on Metal with
