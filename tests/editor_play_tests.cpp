@@ -286,3 +286,32 @@ TEST_CASE("A scene that cannot be played says why and stays editable", "[editor]
     CHECK_FALSE(harness.shell.scene()->locked());
     CHECK(harness.shell.scene()->rename(red_cube_id, "Still editable"));
 }
+
+TEST_CASE("At a 120 Hz display, play shows motion every frame though ticks come every other frame", "[editor][play][presentation]") {
+    Harness harness;
+    harness.frames(2);
+    auto& scene = *harness.shell.scene();
+    const auto pyramid = find_named(scene, "Pyramid");
+    REQUIRE(harness.shell.start_play());
+    auto shown = std::vector<float>{};
+    auto committed = std::vector<float>{};
+    for (int i = 0; i < 12; ++i) {
+        harness.frame({}, 1.0f / 120.0f);
+        const auto& world = harness.shell.play_session()->world();
+        const auto handle = *world.find(pyramid);
+        const auto pose = *harness.shell.play_session()->presentation().world_matrix(world, handle);
+        const auto now = *world.world_matrix(handle);
+        shown.push_back(std::atan2(pose.at(0, 2), pose.at(2, 2))); // the turn of its local +Z about Y
+        committed.push_back(std::atan2(now.at(0, 2), now.at(2, 2)));
+    }
+    auto shown_changes = 0, committed_changes = 0;
+    for (size_t i = 3; i < shown.size(); ++i) {
+        shown_changes += shown[i] != shown[i - 1];
+        committed_changes += committed[i] != committed[i - 1];
+    }
+    CHECK(shown_changes == int(shown.size()) - 3); // every frame
+    CHECK(committed_changes == (int(shown.size()) - 3) / 2 + ((int(shown.size()) - 3) % 2)); // every other frame
+    // Evenly: each frame's step is half a tick's.
+    const auto step = std::abs(shown[5] - shown[4]);
+    CHECK(std::abs(shown[6] - shown[5]) == Approx(step).epsilon(0.01));
+}

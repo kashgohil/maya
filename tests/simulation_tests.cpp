@@ -1,7 +1,11 @@
 #include "maya/simulation/play_session.hpp"
+#include "maya/world/spatial.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <functional>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -315,4 +319,185 @@ TEST_CASE("The same scene, inputs, and frame times give the same result", "[simu
     const auto first = run(), second = run();
     CHECK(first.first == second.first);
     CHECK(first.second == second.second);
+}
+
+// --- Presentation between ticks (#1016) -------------------------------------------------------------------
+
+namespace {
+/// Runs a callback each tick; the tests drive poses with it.
+class Driver final : public SimulationSystem {
+public:
+    explicit Driver(std::function<void(TickContext&)> tick) : m_tick(std::move(tick)) {}
+    std::string_view name() const override { return "Driver"; }
+    void fixed_update(TickContext& tick) override { m_tick(tick); }
+
+private:
+    std::function<void(TickContext&)> m_tick;
+};
+std::unique_ptr<PlaySession> drive(SceneDocument document, std::function<void(TickContext&)> tick) {
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<Driver>(std::move(tick)));
+    auto started = PlaySession::start(std::move(document), {}, std::move(systems));
+    REQUIRE(started);
+    return std::move(started.session);
+}
+EntityHandle live(const World& world, uint64_t low) { return *world.find(EntityId{0x51, low}); }
+math::Vec3 origin_of(const math::Mat4& m) { return {m.at(0, 3), m.at(1, 3), m.at(2, 3)}; }
+math::Quat turn(float degrees) { return math::Quat::from_axis_angle({0, 1, 0}, degrees * 3.14159265f / 180.0f); }
+TransformComponent placed(math::Vec3 at, math::Quat rotation = {}, math::Vec3 scale = math::Vec3(1.0f)) {
+    return {at, rotation, scale};
+}
+} // namespace
+
+TEST_CASE("Poses between ticks interpolate linearly, and rotations along the shortest arc", "[simulation][presentation]") {
+    const auto a = placed({0, 0, 0}, turn(0), {1, 1, 1});
+    const auto b = placed({2, 4, -6}, turn(90), {3, 1, 1});
+    const auto half = interpolate_transform(a, b, 0.5f);
+    CHECK(half.translation.x == Approx(1.0f));
+    CHECK(half.translation.z == Approx(-3.0f));
+    CHECK(half.scale.x == Approx(2.0f));
+    const auto expected = turn(45);
+    CHECK(std::abs(half.rotation.y) == Approx(std::abs(expected.y)).margin(1e-5));
+    CHECK(std::abs(half.rotation.w) == Approx(std::abs(expected.w)).margin(1e-5));
+    CHECK(interpolate_transform(a, b, 0.0f).translation.x == 0.0f);
+    CHECK(interpolate_transform(a, b, 1.0f).translation.x == Approx(2.0f));
+    // 170° to -170° passes through 180°, not back through 0°.
+    const auto wrap = interpolate_transform(placed({}, turn(170)), placed({}, turn(-170)), 0.5f);
+    const auto facing = local_matrix(wrap); // local +Z after the turn
+    CHECK(facing.at(2, 2) == Approx(-1.0f).margin(1e-4));
+    // q and -q are the same rotation: nothing turns between them.
+    const auto q = turn(30);
+    const auto same = interpolate_transform(placed({}, q), placed({}, math::Quat(-q.x, -q.y, -q.z, -q.w)), 0.5f);
+    CHECK(local_matrix(same).at(0, 2) == Approx(local_matrix(placed({}, q)).at(0, 2)).margin(1e-5));
+}
+
+TEST_CASE("Play shows poses between the last two ticks, composed down the hierarchy", "[simulation][presentation]") {
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {placed({0, 0, 0})}), entity(2, {placed({0, 0, 1})}, 1), entity(3, {placed({5, 0, 0})})};
+    auto session = drive(document, [](TickContext& tick) {
+        // Entity 1 moves 1 m along X and turns 90° a tick; 2 is its child; 3 stays still.
+        auto moved = transform_of(tick.world, 1);
+        moved.translation.x += 1.0f;
+        moved.rotation = moved.rotation * turn(90);
+        tick.commands.set_transform(live(tick.world, 1), moved);
+    });
+    session->update(frame); // tick 0: 1 goes from x 0 to x 1
+    auto poses = session->presentation();
+    // At a completed tick (alpha 0) the previous pose is shown: one interval behind the clock.
+    REQUIRE(poses.find(live(session->world(), 1)));
+    CHECK(origin_of(*poses.find(live(session->world(), 1))).x == Approx(0.0f).margin(1e-5));
+    session->update(frame / 2); // no tick: alpha 0.5
+    poses = session->presentation();
+    const auto parent = *poses.find(live(session->world(), 1));
+    CHECK(origin_of(parent).x == Approx(0.5f).margin(1e-5));
+    // The child keeps its place relative to its parent's shown pose: 1 m along the parent's +Z,
+    // which has turned 45°.
+    const auto child = poses.find(live(session->world(), 2));
+    REQUIRE(child);
+    CHECK(origin_of(*child).x == Approx(0.5f + std::sin(3.14159265f / 4)).margin(1e-4));
+    CHECK(origin_of(*child).z == Approx(std::cos(3.14159265f / 4)).margin(1e-4));
+    CHECK_FALSE(poses.find(live(session->world(), 3))); // it did not move: the World's own pose shows
+    CHECK(origin_of(*poses.world_matrix(session->world(), live(session->world(), 3))).x == 5.0f);
+    // Presentation writes nothing: the World holds the completed tick.
+    CHECK(transform_of(session->world(), 1).translation.x == 1.0f);
+}
+
+TEST_CASE("Pause and step show the completed tick; uneven frames show the accumulated time", "[simulation][presentation]") {
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {placed({0, 0, 0})})};
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<Mover>());
+    auto session = std::move(PlaySession::start(document, {}, std::move(systems)).session);
+    REQUIRE(session);
+    // Uneven frames: the shown X is the simulated time, less one interval.
+    auto admitted = 0.0;
+    for (const auto delta : {0.3, 0.9, 1.4, 0.2, 2.1, 0.6, 0.05, 1.0}) {
+        session->update(frame * delta);
+        admitted += delta;
+        if (session->clock().tick() == 0) continue;
+        const auto shown = session->presentation().world_matrix(session->world(), live(session->world(), 1));
+        REQUIRE(shown);
+        INFO(delta);
+        CHECK(origin_of(*shown).x == Approx(float(admitted - 1.0)).margin(1e-4));
+    }
+    // Paused, or stepping, the completed tick shows as it is.
+    session->clock().pause();
+    session->update(frame * 0.5);
+    CHECK(session->presentation().empty());
+    session->clock().step();
+    session->update(frame * 0.5);
+    CHECK(session->presentation().empty());
+    CHECK(transform_of(session->world(), 1).translation.x == Approx(float(session->clock().tick())));
+}
+
+TEST_CASE("Teleports, reparenting, and new entities reset the pose history", "[simulation][presentation]") {
+    auto document = SceneDocument{};
+    auto body = RigidBodyComponent{};
+    document.entities = {entity(1, {placed({0, 0, 0})}), entity(2, {placed({0, 0, 1})}, 1), entity(3, {placed({0, 5, 0})}),
+                         entity(4, {placed({0, 10, 0}), ColliderComponent{}, body}), entity(5, {placed({3, 0, 0})})};
+    auto spawned = std::optional<EntityId>{};
+    auto session = drive(document, [&](TickContext& tick) {
+        auto moved = transform_of(tick.world, 1);
+        moved.translation.x += 1.0f;
+        tick.commands.set_transform(live(tick.world, 1), moved);
+        auto other = transform_of(tick.world, 5);
+        other.translation.x += 1.0f;
+        tick.commands.set_transform(live(tick.world, 5), other);
+        if (tick.tick == 2) {
+            tick.commands.reparent(live(tick.world, 1), live(tick.world, 3), ReparentPolicy::keep_world); // 1 and its child reset
+            tick.bodies.teleport(live(tick.world, 4), {0, 20, 0}, {}); // the falling body jumps
+            const auto created = tick.commands.create(EntityId{0x51, 9});
+            tick.commands.add(created, placed({1, 1, 1}));
+            spawned = EntityId{0x51, 9};
+        }
+    });
+    session->update(frame * 2);
+    session->update(frame * 0.5);
+    auto poses = session->presentation();
+    CHECK(poses.find(live(session->world(), 1)));
+    CHECK(poses.find(live(session->world(), 4))); // falling
+    session->update(frame * 0.5); // tick 2
+    session->update(frame * 0.5);
+    poses = session->presentation();
+    CHECK_FALSE(poses.find(live(session->world(), 1))); // reparented
+    CHECK_FALSE(poses.find(live(session->world(), 2))); // below it
+    CHECK_FALSE(poses.find(live(session->world(), 4))); // teleported
+    CHECK_FALSE(poses.find(*session->world().find(*spawned))); // new: it has no previous pose
+    CHECK(poses.find(live(session->world(), 5))); // the others still interpolate
+    // The next tick interpolates them all again.
+    session->update(frame * 0.5);
+    session->update(frame * 0.5);
+    poses = session->presentation();
+    CHECK(poses.find(live(session->world(), 1)));
+    CHECK(poses.find(live(session->world(), 4)));
+}
+
+TEST_CASE("Presentation cost at 1,000, 10,000, and 50,000 moving entities", "[.][simulation][presentation][cost]") {
+    for (const auto count : {1000, 10000, 50000}) {
+        auto document = SceneDocument{};
+        for (int i = 0; i < count; ++i) document.entities.push_back(entity(uint64_t(10 + i), {placed({float(i % 100), 0, float(i / 100)})}));
+        auto session = drive(document, [count](TickContext& tick) {
+            for (int i = 0; i < count; ++i) {
+                const auto handle = live(tick.world, uint64_t(10 + i));
+                auto moved = transform_of(tick.world, uint64_t(10 + i));
+                moved.translation.y += 0.01f;
+                tick.commands.set_transform(handle, moved);
+            }
+        });
+        session->update(frame);
+        auto tick_ms = 0.0, frame_ms = 0.0;
+        constexpr int rounds = 60;
+        for (int i = 0; i < rounds; ++i) {
+            auto start = std::chrono::steady_clock::now();
+            session->update(frame * 0.5);
+            session->update(frame * 0.5); // one tick per two frames, as at 120 Hz
+            tick_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            start = std::chrono::steady_clock::now();
+            const auto poses = session->presentation();
+            frame_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            REQUIRE(poses.size() == size_t(count));
+        }
+        std::printf("%6d moving entities: tick (with its history) %.3f ms, presentation %.3f ms per frame\n", count, tick_ms / rounds,
+                    frame_ms / rounds);
+    }
 }

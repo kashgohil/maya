@@ -1,7 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/file_system.hpp"
+#include "maya/assets/property_context.hpp"
 #include "maya/renderer/renderer.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
+#include "maya/simulation/play_session.hpp"
+#include "maya/world/spatial.hpp"
 #include "support/render_scene.hpp"
 #include <array>
 #include <cstdlib>
@@ -245,4 +248,55 @@ TEST_CASE("Metal frames in flight keep their meshes when entities and assets go 
         CHECK(fixture.device.native_buffer_count() == baseline);
     }
     CHECK(*fixture.project->loads >= 20); // every round reloaded the evicted mesh and material
+}
+
+namespace {
+/// Moves the cube 1 m along X and turns it 60° about Y each tick.
+class CubeMover final : public SimulationSystem {
+public:
+    std::string_view name() const override { return "CubeMover"; }
+    void fixed_update(TickContext& tick) override {
+        const auto cube = *tick.world.find(EntityId{0x7465, 20});
+        auto moved = TransformComponent{};
+        tick.world.with<TransformComponent>(cube, [&](const TransformComponent& value) { moved = value; });
+        moved.translation.x += 1.0f;
+        moved.rotation = moved.rotation * math::Quat::from_axis_angle({0, 1, 0}, 3.14159265f / 3.0f);
+        tick.commands.set_transform(cube, moved);
+    }
+};
+} // namespace
+
+TEST_CASE("Metal renders a playing scene between ticks exactly as the pose between them", "[rhi][renderer][presentation]") {
+    GpuFixture fixture;
+    const auto start = TransformComponent{{-1, 0, 0}, {}, math::Vec3(1.0f)};
+    auto document = SceneDocument{};
+    document.entities = {SceneEntity{EntityId{0x7465, 10}, {}, {TransformComponent{}, LightComponent{}}},
+                         SceneEntity{EntityId{0x7465, 20}, {}, {start, MeshRendererComponent{fixture.cube, fixture.red, true}}}};
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<CubeMover>());
+    auto started = PlaySession::start(document, asset_property_context(*fixture.project->registry), std::move(systems));
+    INFO(started.error);
+    REQUIRE(started);
+    auto& session = *started.session;
+    session.update(1.0 / 60.0); // tick 0: x -1 to 0, turned 60°
+    session.update(1.0 / 120.0); // halfway to the next tick
+    REQUIRE(session.clock().alpha() == 0.5);
+    const auto poses = session.presentation();
+    auto options = no_ambient;
+    options.poses = &poses;
+    auto target = RenderTarget(fixture.device, {Format::rgba8_unorm, true, "between ticks"});
+    const auto view = fixture.front_view(64, 64);
+    const auto shown = fixture.render(extract_render_snapshot(session.world(), *fixture.project->registry, options), view, target);
+    // The same cube authored at the pose halfway between the ticks.
+    World expected;
+    build_world(expected, [&](WorldCommands& commands) {
+        fixture.add_light(commands);
+        const auto end = TransformComponent{{0, 0, 0}, math::Quat::from_axis_angle({0, 1, 0}, 3.14159265f / 3.0f), math::Vec3(1.0f)};
+        fixture.add_mesh(commands, fixture.cube, fixture.red, interpolate_transform(start, end, 0.5f));
+    });
+    const auto between = fixture.render(extract_render_snapshot(expected, *fixture.project->registry, no_ambient), view, target);
+    CHECK(shown == between);
+    // Without the poses, the completed tick shows instead: a different image.
+    const auto completed = fixture.render(extract_render_snapshot(session.world(), *fixture.project->registry, no_ambient), view, target);
+    CHECK(completed != between);
 }
