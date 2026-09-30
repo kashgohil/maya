@@ -581,3 +581,71 @@ TEST_CASE("Scene format keywords are reserved from property names", "[scene]") {
             for (const auto keyword : {"maya-scene", "entity", "parent", "component", "end"})
                 REQUIRE(property.name != keyword);
 }
+
+TEST_CASE("Physics components round-trip as readable scene text", "[scene][physics]") {
+    Project project;
+    auto collider = ColliderComponent{};
+    collider.shape = ColliderShape::capsule;
+    collider.radius = 0.25f;
+    collider.half_height = 0.75f;
+    collider.offset = {0.0f, 1.0f, 0.0f};
+    collider.sensor = true;
+    collider.group = 3;
+    collider.mask = 0x0005;
+    auto body = RigidBodyComponent{};
+    body.motion = BodyMotion::kinematic;
+    body.mass = 12.5f;
+    auto settings = PhysicsSettingsComponent{};
+    settings.gravity = {0.0f, -1.62f, 0.0f};
+    auto document = SceneDocument{};
+    document.entities = {SceneEntity{EntityId{1, 1}, {}, {TransformComponent{}, collider, body}},
+                         SceneEntity{EntityId{1, 2}, {}, {settings}}};
+    const auto text = encode(document, project.context());
+    for (const auto* line : {"  component maya.collider 1\n    shape capsule\n", "    sensor true\n    group 3\n    mask 0x5\n",
+                             "  component maya.rigid_body 1\n    motion kinematic\n    mass 12.5\n",
+                             "  component maya.physics_settings 1\n    gravity 0 -1.62 0\n"}) {
+        INFO(line);
+        CHECK(text.find(line) != std::string::npos);
+    }
+    auto loaded = read_scene(std::string_view(text), project.context());
+    REQUIRE(loaded);
+    CHECK(encode(loaded.document, project.context()) == text);
+    const auto& components = loaded.document.entities[0].components;
+    const auto read = std::get<ColliderComponent>(components[1]);
+    CHECK(read.shape == ColliderShape::capsule);
+    CHECK(read.group == 3);
+    CHECK(read.mask == 0x5u);
+    CHECK(read.sensor);
+    CHECK(std::get<RigidBodyComponent>(components[2]).motion == BodyMotion::kinematic);
+
+    // Values each new property type rejects.
+    const auto bad = [&](std::string_view from, std::string_view to, std::string_view excerpt) {
+        const auto result = read_scene(std::string_view(replace(text, from, to)), project.context());
+        INFO(to);
+        REQUIRE_FALSE(result);
+        CHECK(result.diagnostics.front().message.find(excerpt) != std::string::npos);
+    };
+    bad("shape capsule", "shape cone", "one of box sphere capsule");
+    bad("group 3", "group 3.5", "one whole number");
+    bad("group 3", "group 16", "outside its allowed range");
+    bad("mask 0x5", "mask 5", "hexadecimal bit set");
+    bad("mask 0x5", "mask 0x", "hexadecimal bit set");
+    bad("mask 0x5", "mask 0x10000", "outside its allowed range");
+    bad("motion kinematic", "motion static", "one of dynamic kinematic");
+}
+
+TEST_CASE("The sample project's scenes load, including the physics scene", "[scene][physics]") {
+    const auto assets = fs::path(MAYA_SAMPLE_ASSETS);
+    for (const auto* name : {"basic.scene", "v1_reference.scene", "physics.scene"}) {
+        INFO(name);
+        const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+        const auto loaded = read_scene(std::string_view(read_file(assets / name)), any);
+        CHECK(loaded);
+        if (loaded && std::string_view(name) == "physics.scene") {
+            auto bodies = 0;
+            for (const auto& entity : loaded.document.entities)
+                for (const auto& value : entity.components) bodies += std::holds_alternative<RigidBodyComponent>(value);
+            CHECK(bodies == 6);
+        }
+    }
+}

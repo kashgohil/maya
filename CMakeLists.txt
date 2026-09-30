@@ -349,6 +349,7 @@ if(BUILD_TESTING)
 
     add_executable(maya_scene_tests tests/scene_tests.cpp)
     target_link_libraries(maya_scene_tests PRIVATE MayaScene MayaAssets Catch2::Catch2WithMain)
+    target_compile_definitions(maya_scene_tests PRIVATE MAYA_SAMPLE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/samples/basic_scene/assets")
     maya_target_options(maya_scene_tests)
     add_test(NAME maya_scene COMMAND maya_scene_tests)
     set_tests_properties(maya_scene PROPERTIES LABELS "cpu;scene" TIMEOUT 60)
@@ -432,7 +433,8 @@ if(BUILD_TESTING)
 
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
-            tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/acceptance_tests.cpp)
+            tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
+            tests/acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.

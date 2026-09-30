@@ -134,3 +134,64 @@ TEST_CASE("Opening a project finds its content root from its file, wherever it i
         CHECK_FALSE(open_project(folder.root / "file"));
     }
 }
+
+TEST_CASE("Projects name their collision groups and keep them when saved", "[assets][project][physics]") {
+    const auto header = std::string("maya-project 1\ncontent \".\"\ncatalog \"catalog.maya\"\n");
+    const auto defaults = parse(header);
+    REQUIRE(defaults);
+    CHECK(defaults.settings.collision_groups == default_collision_groups());
+    CHECK(defaults.settings.collision_groups[0] == "Default");
+    CHECK(collision_group_label(defaults.settings.collision_groups, 0) == "Default");
+    CHECK(collision_group_label(defaults.settings.collision_groups, 7) == "Group 7");
+
+    const auto named = parse(header + "startup \"level.scene\"\ngroup 1 \"Player\"\ngroup 15 \"Debris and dust\"\ngroup 0 \"World\"\n");
+    REQUIRE(named);
+    CHECK(named.settings.collision_groups[0] == "World");
+    CHECK(named.settings.collision_groups[1] == "Player");
+    CHECK(named.settings.collision_groups[15] == "Debris and dust");
+    auto written = std::ostringstream{};
+    write_project(written, named.settings);
+    CHECK(written.str() == header + "startup \"level.scene\"\ngroup 0 \"World\"\ngroup 1 \"Player\"\ngroup 15 \"Debris and dust\"\n");
+    CHECK(parse(written.str()).settings.collision_groups == named.settings.collision_groups);
+    // A group named as by default is not written.
+    auto plain = std::ostringstream{};
+    write_project(plain, defaults.settings);
+    CHECK(plain.str() == header);
+
+    const auto refused = [&](const std::string& lines, std::string_view why) {
+        const auto result = parse(header + lines);
+        INFO(lines);
+        CHECK_FALSE(result);
+        CHECK(result.error.find(why) != std::string::npos);
+    };
+    refused("group 16 \"Far\"\n", "from 0 to 15");
+    refused("group x \"Far\"\n", "from 0 to 15");
+    refused("group 2 Unquoted\n", "needs a quoted name");
+    refused("group 2\n", "needs a quoted name");
+    refused("group 2 \"A\"\ngroup 2 \"B\"\n", "named twice");
+    refused("group 2 \"\"\n", "cannot be empty");
+    refused("group 2 \" padded\"\n", "start or end with a space");
+    refused("group 2 \"" + std::string(33, 'x') + "\"\n", "at most 32 bytes");
+    refused("group 2 \"Tab\there\"\n", "control characters");
+    refused("layer 2 \"Player\"\n", "Unexpected 'layer'");
+    CHECK(validate_collision_group_name("Player").empty());
+
+    // Saving writes the file in place; the old file survives a failed save.
+    Folder folder;
+    folder.write("project.maya", header);
+    folder.write("catalog.maya", "maya-assets 1\n");
+    auto opened = open_project(folder.root);
+    REQUIRE(opened);
+    CHECK(opened.project.settings.collision_groups == default_collision_groups());
+    opened.project.settings.collision_groups[4] = "Water";
+    REQUIRE(save_project(opened.project).empty());
+    const auto reopened = open_project(folder.root);
+    REQUIRE(reopened);
+    CHECK(reopened.project.settings.collision_groups[4] == "Water");
+    CHECK_FALSE(fs::exists(folder.root / "project.maya.saving"));
+    fs::permissions(folder.root, fs::perms::owner_read | fs::perms::owner_exec);
+    opened.project.settings.collision_groups[4] = "Lava";
+    CHECK_FALSE(save_project(opened.project).empty());
+    fs::permissions(folder.root, fs::perms::owner_all);
+    CHECK(open_project(folder.root).project.settings.collision_groups[4] == "Water");
+}

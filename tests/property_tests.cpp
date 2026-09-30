@@ -1,4 +1,5 @@
 #include "maya/assets/property_context.hpp"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <cmath>
@@ -6,6 +7,7 @@
 #include <set>
 
 using namespace maya;
+using Catch::Approx;
 namespace {
 PropertyResult edit(ComponentValue& value, PropertyId id, PropertyValue input,
                     const PropertyValidationContext& context = {}) {
@@ -330,3 +332,59 @@ TEST_CASE("Replacement handles move-only ownership and releases staged resources
     REQUIRE(world.with<Owned>(entity, [](const auto& value) { REQUIRE(*value.value == 2); }));
 }
 
+TEST_CASE("Physics components have stable schemas and validate their values", "[properties][physics]") {
+    // Stable identities for the physics milestone (#1019).
+    REQUIRE(static_cast<uint32_t>(ComponentId::collider) == 8);
+    REQUIRE(static_cast<uint32_t>(ComponentId::rigid_body) == 9);
+    REQUIRE(static_cast<uint32_t>(ComponentId::physics_settings) == 10);
+    REQUIRE(component_schema("maya.collider")->id == ComponentId::collider);
+    REQUIRE(component_schema("maya.rigid_body")->id == ComponentId::rigid_body);
+    REQUIRE(component_schema("maya.physics_settings")->id == ComponentId::physics_settings);
+    const auto* shape = property_schema(ComponentId::collider, "shape");
+    REQUIRE(shape->type == PropertyType::choice);
+    REQUIRE(shape->choices.size() == 3);
+    REQUIRE(property_schema(ComponentId::collider, "group")->type == PropertyType::integer);
+    REQUIRE(property_schema(ComponentId::collider, "group")->presentation == PropertyPresentation::collision_group);
+    REQUIRE(property_schema(ComponentId::collider, "mask")->type == PropertyType::flags);
+    REQUIRE(property_schema(ComponentId::collider, "mask")->presentation == PropertyPresentation::collision_mask);
+    REQUIRE(property_schema(ComponentId::rigid_body, "motion")->choices.size() == 2);
+
+    auto collider = ComponentValue{ColliderComponent{}};
+    REQUIRE(edit(collider, 1, ChoiceValue{uint32_t(ColliderShape::capsule)}));
+    REQUIRE(std::get<ColliderComponent>(collider).shape == ColliderShape::capsule);
+    REQUIRE(edit(collider, 1, ChoiceValue{7}).error == PropertyError::invalid_value);
+    REQUIRE(edit(collider, 1, 1.0f).error == PropertyError::type_mismatch);
+    REQUIRE(edit(collider, 2, math::Vec3{1, 0, 1}).error == PropertyError::invalid_value); // half extents are positive
+    REQUIRE(edit(collider, 3, 0.0f).error == PropertyError::invalid_value); // so is the radius
+    REQUIRE(edit(collider, 4, -1.0f).error == PropertyError::invalid_value);
+    REQUIRE(edit(collider, 6, math::Quat{0, 0, 0, 3}));
+    REQUIRE(std::get<ColliderComponent>(collider).rotation.w == 1.0f); // normalized
+    REQUIRE(edit(collider, 6, math::Quat{0, 0, 0, 0}).error == PropertyError::invalid_value);
+    REQUIRE(edit(collider, 7, -0.1f).error == PropertyError::invalid_value);
+    REQUIRE(edit(collider, 8, 1.0f));
+    REQUIRE(edit(collider, 8, 1.5f).error == PropertyError::invalid_value); // restitution is 0 to 1
+    REQUIRE(edit(collider, 10, int32_t{15}));
+    REQUIRE(edit(collider, 10, int32_t{16}).error == PropertyError::invalid_value);
+    REQUIRE(edit(collider, 10, int32_t{-1}).error == PropertyError::invalid_value);
+    REQUIRE(edit(collider, 10, 3.0f).error == PropertyError::type_mismatch);
+    REQUIRE(edit(collider, 11, uint32_t{0}));
+    REQUIRE(edit(collider, 11, uint32_t{0xFFFF}));
+    REQUIRE(edit(collider, 11, uint32_t{0x10000}).error == PropertyError::invalid_value);
+
+    auto body = ComponentValue{RigidBodyComponent{}};
+    REQUIRE(edit(body, 7, math::Vec3{1, 2, 3}));
+    // A kinematic body has no initial velocity: switching with one set is refused as a whole.
+    REQUIRE(edit(body, 1, ChoiceValue{uint32_t(BodyMotion::kinematic)}).error == PropertyError::invalid_value);
+    const auto both = std::array{PropertyEdit{1, ChoiceValue{uint32_t(BodyMotion::kinematic)}}, PropertyEdit{7, math::Vec3{0, 0, 0}}};
+    REQUIRE(edit_properties(body, both));
+    REQUIRE(std::get<RigidBodyComponent>(body).motion == BodyMotion::kinematic);
+    REQUIRE(edit(body, 2, -1.0f).error == PropertyError::invalid_value);
+    REQUIRE(edit(body, 3, 0.0f).error == PropertyError::invalid_value); // density is positive
+    REQUIRE(edit(body, 6, -2.0f)); // a negative gravity factor floats upward
+    REQUIRE(edit(body, 6, std::numeric_limits<float>::infinity()).error == PropertyError::invalid_value);
+
+    auto settings = ComponentValue{PhysicsSettingsComponent{}};
+    REQUIRE(std::get<PhysicsSettingsComponent>(settings).gravity.y == Approx(-9.81f));
+    REQUIRE(edit(settings, 1, math::Vec3{0, -1.62f, 0}));
+    REQUIRE(edit(settings, 1, math::Vec3{0, std::nanf(""), 0}).error == PropertyError::invalid_value);
+}

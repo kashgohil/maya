@@ -605,3 +605,183 @@ TEST_CASE("Step cost at 1,000 and 10,000 bodies", "[.][physics][cost]") {
                     phases[1], phases[2], phases[3]);
     }
 }
+
+// --- Authored bodies (#1019): maya.collider, maya.rigid_body, and maya.physics_settings -----------
+
+namespace {
+ColliderComponent box_collider(math::Vec3 half = math::Vec3(0.5f)) {
+    auto collider = ColliderComponent{};
+    collider.half_extents = half;
+    return collider;
+}
+ColliderComponent sphere_collider(float radius = 0.5f) {
+    auto collider = ColliderComponent{};
+    collider.shape = ColliderShape::sphere;
+    collider.radius = radius;
+    return collider;
+}
+SceneEntity floor_entity() {
+    return entity(1, {TransformComponent{at({0.0f, -0.1f, 0.0f}, {20.0f, 0.2f, 20.0f})}, box_collider()});
+}
+/// Starts a session of `document` with no systems.
+PlayStartResult start(const SceneDocument& document) {
+    return PlaySession::start(document, {}, {});
+}
+std::unique_ptr<PlaySession> authored(const SceneDocument& document) {
+    auto started = start(document);
+    INFO(started.error);
+    REQUIRE(started);
+    return std::move(started.session);
+}
+std::string refusal(const SceneDocument& document) {
+    auto started = start(document);
+    CHECK_FALSE(started);
+    return started.error;
+}
+} // namespace
+
+TEST_CASE("An authored stack of boxes settles and stays at rest", "[physics][authored]") {
+    auto document = SceneDocument{};
+    document.entities.push_back(floor_entity());
+    for (int i = 0; i < 6; ++i)
+        document.entities.push_back(entity(10 + i, {TransformComponent{at({0.0f, 0.5f + float(i), 0.0f})}, box_collider(),
+                                                    RigidBodyComponent{}}));
+    auto session = authored(document);
+    const auto& physics = session->physics();
+    CHECK(physics.stats().bodies == 7);
+    CHECK(physics.stats().static_bodies == 1);
+    CHECK(physics.motion_type(handle(session->world(), 1)) == MotionType::static_body);
+    run(*session, 300);
+    for (int i = 0; i < 6; ++i) {
+        INFO("box " << i);
+        const auto rested = transform_of(session->world(), 10 + i);
+        CHECK(rested.translation.y == Approx(0.5f + float(i)).margin(0.03f));
+        CHECK(std::abs(rested.translation.x) < 0.02f); // the solver settles a tall stack by about 1 cm
+        CHECK(std::abs(rested.translation.z) < 0.02f);
+        CHECK(physics.state(handle(session->world(), 10 + i))->sleeping);
+    }
+    const auto settled = pose_hash(session->world());
+    run(*session, 300);
+    CHECK(pose_hash(session->world()) == settled); // asleep: nothing moves at all
+}
+
+TEST_CASE("Authored bodies take their settings from the components", "[physics][authored]") {
+    auto body = RigidBodyComponent{};
+    body.mass = 5.0f;
+    body.linear_damping = 0.0f;
+    body.gravity_factor = 0.5f;
+    body.linear_velocity = {2.0f, 0.0f, 0.0f};
+    auto kinematic = RigidBodyComponent{};
+    kinematic.motion = BodyMotion::kinematic;
+    auto settings = PhysicsSettingsComponent{};
+    settings.gravity = {0.0f, -2.0f, 0.0f};
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {TransformComponent{at({0.0f, 50.0f, 0.0f})}, sphere_collider(), body}),
+                         entity(2, {TransformComponent{at({5.0f, 50.0f, 0.0f})}, sphere_collider(), kinematic}),
+                         entity(3, {settings})};
+    auto session = authored(document);
+    run(*session, 61); // bodies exist from the start: 61 steps
+    const auto state = *session->physics().state(handle(session->world(), 1));
+    CHECK(state.motion == MotionType::dynamic);
+    CHECK(state.mass == Approx(5.0f));
+    CHECK(state.linear_velocity.x == Approx(2.0f).margin(1e-4));
+    CHECK(state.linear_velocity.y == Approx(-2.0f * 0.5f * 61.0f / 60.0f).margin(1e-3)); // scene gravity x factor
+    CHECK(session->physics().motion_type(handle(session->world(), 2)) == MotionType::kinematic);
+    CHECK(transform_of(session->world(), 2).translation.y == 50.0f); // kinematic: no target, no motion
+}
+
+TEST_CASE("Colliders below a rigid body form its compound shape", "[physics][authored]") {
+    // A dumbbell: the body entity has no collider itself; two scaled children carry spheres.
+    auto document = SceneDocument{};
+    document.entities = {floor_entity(),
+                         entity(2, {TransformComponent{at({0.0f, 3.0f, 0.0f})}, RigidBodyComponent{}}),
+                         entity(3, {TransformComponent{at({-1.0f, 0.0f, 0.0f}, math::Vec3(0.5f))}, sphere_collider(1.0f)}, 2),
+                         entity(4, {TransformComponent{at({1.0f, 0.0f, 0.0f}, math::Vec3(0.5f))}, sphere_collider(1.0f)}, 2),
+                         entity(5, {TransformComponent{at({0.0f, 0.0f, 0.0f})}}, 2)}; // no collider: ignored
+    auto session = authored(document);
+    CHECK(session->physics().stats().bodies == 2);
+    CHECK_FALSE(session->physics().has_body(handle(session->world(), 3)));
+    run(*session, 300);
+    // Both spheres (radius 1 x scale 0.5) rest on the floor, so the body's origin rests at 0.5.
+    CHECK(transform_of(session->world(), 2).translation.y == Approx(0.49f).margin(0.015f));
+    CHECK(session->physics().state(handle(session->world(), 2))->mass ==
+          Approx(2.0 * 1000.0 * 4.0 / 3.0 * math::PI * 0.125).epsilon(1e-3));
+}
+
+TEST_CASE("Collision groups and masks filter authored colliders", "[physics][authored]") {
+    auto ghost = box_collider();
+    ghost.group = 3;
+    ghost.mask = 1u << 3; // collides only with group 3: not the floor (group 0)
+    auto picky = box_collider();
+    picky.mask = 0xFFFFu & ~(1u << 3); // everything but group 3
+    auto sensor = box_collider({2.0f, 0.1f, 2.0f});
+    sensor.sensor = true;
+    auto document = SceneDocument{};
+    document.entities = {floor_entity(),
+                         entity(2, {TransformComponent{at({0.0f, 2.0f, 0.0f})}, ghost, RigidBodyComponent{}}),
+                         entity(3, {TransformComponent{at({3.0f, 2.0f, 0.0f})}, picky, RigidBodyComponent{}}),
+                         entity(4, {TransformComponent{at({-3.0f, 1.0f, 0.0f})}, sensor}), // a static sensor slab
+                         entity(5, {TransformComponent{at({-3.0f, 3.0f, 0.0f})}, box_collider(), RigidBodyComponent{}})};
+    auto session = authored(document);
+    run(*session, 180);
+    CHECK(transform_of(session->world(), 2).translation.y < -5.0f); // fell through the floor
+    CHECK(transform_of(session->world(), 3).translation.y == Approx(0.5f).margin(0.03f));
+    CHECK(transform_of(session->world(), 5).translation.y == Approx(0.5f).margin(0.03f)); // through the sensor
+}
+
+TEST_CASE("Play refuses authored physics it cannot build, and starts nothing", "[physics][authored]") {
+    const auto document = [](std::vector<SceneEntity> entities) {
+        auto value = SceneDocument{};
+        value.entities = std::move(entities);
+        return value;
+    };
+    auto named = [](uint64_t low, std::string name, std::vector<ComponentValue> components, std::optional<uint64_t> parent = {}) {
+        components.insert(components.begin(), NameComponent{std::move(name)});
+        return entity(low, std::move(components), parent);
+    };
+    CHECK(refusal(document({named(2, "Crate", {TransformComponent{}, RigidBodyComponent{}})})) ==
+          "Physics: entity 70 2 \"Crate\": a rigid body needs a collider on its entity or on an entity below it");
+    CHECK(refusal(document({entity(2, {TransformComponent{}}), entity(3, {TransformComponent{}, box_collider(), RigidBodyComponent{}}, 2)})) ==
+          "Physics: cannot create a dynamic body for entity 70 3: a dynamic body must be a root entity");
+    CHECK(refusal(document({entity(2, {TransformComponent{at({}, {1.0f, 2.0f, 1.0f})}, sphere_collider()})})) ==
+          "Physics: cannot create a static body for entity 70 2: a sphere needs uniform scale");
+    CHECK(refusal(document({entity(2, {TransformComponent{at({}, {2.0f, 2.0f, 2.0f})}, box_collider(), RigidBodyComponent{}})})) ==
+          "Physics: cannot create a dynamic body for entity 70 2: a dynamic body needs unit scale");
+    auto grouped = box_collider();
+    grouped.group = 2;
+    CHECK(contains(refusal(document({entity(2, {TransformComponent{}, box_collider(), RigidBodyComponent{}}),
+                                     entity(3, {TransformComponent{}, grouped}, 2)})),
+                   "entity 70 3: its collider must have the same collision group, mask, and sensor setting"));
+    auto rotated = box_collider();
+    rotated.rotation = math::Quat::from_axis_angle({0.0f, 0.0f, 1.0f}, 0.4f);
+    CHECK(contains(refusal(document({entity(2, {TransformComponent{}, RigidBodyComponent{}}),
+                                     entity(3, {TransformComponent{at({}, {1.0f, 3.0f, 1.0f})}, rotated}, 2)})),
+                   "entity 70 3: a rotated collider cannot take its entity's nonuniform scale"));
+    CHECK(contains(refusal(document({entity(2, {PhysicsSettingsComponent{}}), entity(3, {PhysicsSettingsComponent{}})})),
+                   "entity 70 3: a scene has at most one physics settings component; entity 70 2 has one too"));
+    // A refusal after other bodies were made leaves none behind: the second body fails, the first is undone.
+    const auto before = physics_memory().live_bytes;
+    CHECK(contains(refusal(document({entity(2, {TransformComponent{}, box_collider(), RigidBodyComponent{}}),
+                                     entity(3, {TransformComponent{at({}, {1.0f, 2.0f, 1.0f})}, sphere_collider()})})),
+                   "a sphere needs uniform scale"));
+    CHECK(physics_memory().live_bytes == before);
+}
+
+TEST_CASE("The same authored scene plays identically every time", "[physics][authored]") {
+    auto document = SceneDocument{};
+    document.entities.push_back(floor_entity());
+    for (int i = 0; i < 40; ++i) {
+        auto body = RigidBodyComponent{};
+        body.linear_velocity = {float(i % 5) - 2.0f, 0.0f, float(i % 3) - 1.0f};
+        document.entities.push_back(entity(10 + i, {TransformComponent{at({float(i % 4) * 0.3f, 1.0f + float(i) * 1.2f, 0.0f})},
+                                                    i % 2 ? sphere_collider() : box_collider(), body}));
+    }
+    const auto trace = [&](int workers) {
+        auto guard = Workers(workers);
+        auto session = authored(document);
+        run(*session, 240);
+        return pose_hash(session->world());
+    };
+    CHECK(trace(0) == trace(4));
+    CHECK(trace(4) == trace(4));
+}
