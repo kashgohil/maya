@@ -18,7 +18,7 @@ render(session.world(), session.camera());               // the first camera in 
 ```
 
 - **Start.** `PlaySession::start` validates the scene document, just as loading a scene file does, and builds a new World from it. It creates the session's [physics world](physics.md) (its settings are an optional last argument, and a scene's physics settings component replaces them). The scene's colliders and rigid bodies then become [bodies](physics.md#authored-bodies), all or none; a refusal names the entity and nothing starts. Then it starts each system in order. If the scene is invalid, the diagnostics say why. If a system throws from `start`, the error names it. The systems already entered are then stopped in reverse order, and nothing is left running.
-- **Frames.** `update(wall_delta)` admits the frame's wall time to the clock and runs the ticks that are due. For each tick, the session latches that tick's input and runs every system in order. Physics then steps once ([the fixed tick](physics.md#the-fixed-tick)). The session commits the systems' commands, with the moved body poses, as one atomic World batch, adds and removes bodies, and counts the tick. After the frame's ticks, each system's `frame` hook runs once with the admitted wall time, including while paused.
+- **Frames.** `update(wall_delta)` admits the frame's wall time to the clock and runs the ticks that are due. For each tick, the session latches that tick's input and runs every system in order. Physics then steps once ([the fixed tick](physics.md#the-fixed-tick)), and each system's `late_fixed_update` runs with the step's contact and trigger events. The session commits the systems' commands, with the moved body poses, as one atomic World batch, adds and removes bodies, and counts the tick. After the frame's ticks, each system's `frame` hook runs once with the admitted wall time, including while paused.
 - **Messages.** Systems report through `TickContext::messages` and `FrameContext::messages`. `PlayFrame::messages` returns them with a level (info, warning, or error), a source, and the tick. They do not stop play: [scripts](scripting.md#errors) use them for logs and for errors that stop one instance.
 - **Failures.** A system that throws or breaks the physics authority rules, or a batch the World rejects, stops the simulation. The World stays as the last completed tick left it (a body that cannot be created at the commit stops the session after that tick's batch). The error names the tick and the cause, for example `Tick 2: Spin failed: ...`, and later updates return the same error.
 - **End.** Destroying the session stops the systems in reverse order, then releases the World.
@@ -50,7 +50,7 @@ render(session.world(), session.camera());               // the first camera in 
 
 ## Systems
 
-A `SimulationSystem` has a name, `start`, `fixed_update`, `frame`, and `stop`.
+A `SimulationSystem` has a name, `start`, `fixed_update`, `late_fixed_update`, `frame`, and `stop`.
 
 - **What an update sees.** `fixed_update` gets a `TickContext` with:
   - the World as the previous tick committed it;
@@ -58,6 +58,7 @@ A `SimulationSystem` has a name, `start`, `fixed_update`, `frame`, and `stop`.
   - its `InputFrame`;
   - the tick index, simulation time, and fixed interval;
   - `bodies`, for physics requests, and `physics`, the body state after the previous step ([physics](physics.md#requests-during-a-tick)).
+- **After the step.** `late_fixed_update` (phase 7, #1021) gets the same kind of `TickContext`, with `events` holding the step's sorted contact and trigger events and `physics` the completed step. Its commands join the tick's batch; its body requests apply before the next step ([physics](physics.md#the-fixed-tick)). It also runs once when the session stops, with `stopping` set and the events that end every contact in progress; nothing done then is kept.
 - **Once per frame.** `frame` gets a `FrameContext`: the World and physics state as the last tick left them, the frame's admitted wall time, `alpha`, the tick and time, and the messages. It may not change anything. Its default does nothing.
 - **When writes appear.** A system writes through the commands. Its writes are visible to the next tick, not to later systems in the same tick, so the result does not depend on how many systems read a value.
 - **One writer.** Each transform should have one writer. Physics writes kinematic and dynamic bodies' transforms, and a system that writes one fails.
@@ -72,7 +73,7 @@ Two built-in systems (`builtin_systems()`) run in this order, driven by two auth
 
 The sample's spinning pyramid and flying camera are now these components in [basic.scene](../samples/basic_scene/assets/basic.scene). They are no longer sample code: `basic_scene.cpp` and `MayaBasicScene` are gone.
 
-The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Animation, events, and post-physics hooks (phase 7) arrive with #1021. Presentation interpolation is not implemented yet. Views show the latest completed tick, and `alpha()` is computed for when it is. Recorded replay and capture modes are also still contracts.
+The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Animation arrives later. Presentation interpolation is not implemented yet. Views show the latest completed tick, and `alpha()` is computed for when it is. Recorded replay and capture modes are also still contracts.
 
 ## The player
 

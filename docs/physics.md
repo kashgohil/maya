@@ -1,6 +1,6 @@
 # Physics
 
-[Issue #1017](https://work.rezee.app/kash/issues/1017) adds rigid-body physics to play sessions: the `MayaPhysics` library on [Jolt Physics 5.6.0](architecture/physics-scripting-decision.md). It follows the [physics boundary](architecture/runtime-world-contracts.md#physics-boundary) and runs phases 4–6 of the [fixed tick](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). [Issue #1019](https://work.rezee.app/kash/issues/1019) adds the components that author bodies in the editor and in scene files. Systems can also make bodies from code. [Issue #1018](scripting.md) lets scripts move entities that have no body, or a static one; the script API for bodies and events follows in #1021.
+[Issue #1017](https://work.rezee.app/kash/issues/1017) adds rigid-body physics to play sessions: the `MayaPhysics` library on [Jolt Physics 5.6.0](architecture/physics-scripting-decision.md). It follows the [physics boundary](architecture/runtime-world-contracts.md#physics-boundary) and runs phases 4–6 of the [fixed tick](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). [Issue #1019](https://work.rezee.app/kash/issues/1019) adds the components that author bodies in the editor and in scene files. Systems can also make bodies from code. [Issue #1018](scripting.md) lets scripts move entities that have no body, or a static one. [Issue #1021](https://work.rezee.app/kash/issues/1021) adds [queries](#queries), [contact and trigger events](#contact-and-trigger-events) with phase 7, and the [script body API](scripting.md#bodies-queries-and-events).
 
 ## The library
 
@@ -116,11 +116,43 @@ Destroying an entity removes its body when the tick commits. A handle to a destr
 3. **Preparation** (phase 4). Static bodies whose committed world transforms changed move first. Then the tick's requests apply in the order they were made. Kinematic bodies without a target stop.
 4. **Step** (phase 5). One `PhysicsSystem::Update` of the fixed interval, with `collision_steps` collision iterations (default 1).
 5. **Synchronize** (phase 6). Each kinematic and dynamic body whose pose changed has its transform added to the tick's World batch, in body creation order. Bodies whose entities this batch destroys are skipped.
-6. **Commit.** The World batch commits as one transaction. Then bodies of destroyed entities are removed, and requested bodies are created and removed in request order. This is the next tick's phase 1.
+6. **Events and post-physics** (phase 7, #1021). The step's contact and trigger events are resolved and sorted ([events](#contact-and-trigger-events)). Then each system's `late_fixed_update` runs in order, with the events in `TickContext::events` and `physics` showing the completed step. Their World commands join the tick's batch and are checked like phase 3's. Their body requests wait: creations and removals apply at this commit, and everything else applies first in the next tick's phase 4, so the completed step cannot change.
+7. **Commit.** The World batch commits as one transaction. Then bodies of destroyed entities are removed, and requested bodies are created and removed in request order, phase 3's and then phase 7's. This is the next tick's phase 1.
 
-Pause and single step need nothing extra: a paused session runs no ticks, and a step runs one tick with one physics step. Events and post-physics hooks (phase 7) arrive in #1021; pose interpolation for display arrives in #1016.
+During phase 7 the World is still as the previous tick committed it, since the batch commits after it: a moving body's transform there lags its `state`, which is the completed step's.
+
+Pause and single step need nothing extra: a paused session runs no ticks, and a step runs one tick with one physics step. Pose interpolation for display arrives in #1016; a teleport will reset its pose history then.
+
+When a session stops, a last `late_fixed_update` runs with `TickContext::stopping` set and events that end every contact and trigger still in progress, marked `removed`. Nothing systems do then is kept.
 
 If creating a body fails at the commit (a refused entity, or a full world), the session stops with the reason. The World keeps that tick's batch, and bodies created before the failure are kept.
+
+## Queries
+
+`PhysicsWorld` answers queries against the last completed step, on the owner thread between steps: in phase 3 the previous tick's, in phase 7 this tick's. Scripts and native systems see the same state, and the same query repeats exactly.
+
+| Query | Returns |
+| --- | --- |
+| `raycast(origin, direction, distance, filter)` | Every body the ray hits within `distance`. A ray starting inside a shape hits it at distance 0. |
+| `shape_cast(shape, origin, rotation, direction, distance, filter)` | Every body a box, sphere, or capsule swept along the direction touches. One that touches at the start is at distance 0. |
+| `overlap(shape, position, rotation, filter)` | Every body the shape touches where it is. |
+
+- **One hit per body** (`QueryHit`): the entity's handle and EntityId, the nearest point, the hit surface's outward normal, and the distance.
+- **Order.** By distance, then EntityId; overlaps (all at distance 0) are by EntityId. Jolt's broad-phase order never shows through.
+- **Filter** (`QueryFilter`): `groups`, a bit set of the collision groups to hit (default all); `sensors`, whether to hit sensors (default not); `ignore`, an entity whose body is skipped.
+- **Refusals.** A zero or non-finite direction, a negative distance, or a shape a collider could not have throws `std::invalid_argument` with the reason.
+
+## Contact and trigger events
+
+A Jolt contact listener runs on the worker threads during the step. It only appends plain records (the two bodies and sub-shapes, and for a new contact its point, normal, and approach speed) under a lock, and never throws; a record it cannot store is lost, never the step. In phase 7, `take_events` turns them into `PhysicsEvent`s on the owner thread:
+
+- **Per pair of bodies.** A compound body's sub-shapes are counted together: a pair's contact begins when its first sub-shape pair touches and ends when its last one parts.
+- **Kinds.** `contact_begin` and `contact_end`, or `trigger_enter` and `trigger_exit` when either collider is a sensor. A sensor never makes a contact.
+- **Sleeping keeps contacts.** Jolt removes a body's contacts when it falls asleep; Maya keeps the pair and ends it only if the bodies are awake after a step and no longer touching. A stack that settles and sleeps does not end its contacts.
+- **Contents.** The tick, both EntityIds (`first` the lower), for a begin or enter the point, the normal from `first` toward `second`, and the approach speed along it. Jolt knows no impulse when a contact is added, so the speed stands in for it. Events hold identities, never component pointers.
+- **Order.** Sorted by kind, then `first`, then `second`: the same events in the same order for any worker count.
+- **Removed bodies.** A body removed with its entity, by `BodyCommands::remove`, or when the session stops ends its contacts and triggers with `removed` set. The first two are delivered in the next tick's phase 7, the last in the session's final `late_fixed_update`.
+- **Recipients.** `first_entity` and `second_entity` are the entities' handles, or empty when an entity is gone or being destroyed in the tick's batch. Each empty one counts in `PhysicsStats::event_recipients_skipped`; `events` counts all events.
 
 ## Process-wide state, memory, and limits
 
@@ -162,16 +194,27 @@ Jolt's callbacks, which arrive in any order, are not used yet. Cross-machine det
 
 Release on the M4 Pro reference machine (thermal state nominal), with the default 7 workers. Boxes 1 m wide are dropped in 10 × 10 layers onto a static floor. The timings are over 300 ticks after the first, with all bodies awake:
 
-| Bodies | Whole tick, mean | P95 | Jolt step | Synchronize | Preparation and body commit |
-| --- | --- | --- | --- | --- | --- |
-| 1,000 | 0.47 ms | 0.58 ms | 0.34 ms | 0.03 ms | < 0.01 ms |
-| 10,000 | 5.7 ms | 12.8 ms | 4.4 ms | 0.32 ms | 0.03 ms |
+| Bodies | Whole tick, mean | P95 | Jolt step | Synchronize | Events (#1021) | Preparation and body commit |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,000 | 0.48 ms | 0.60 ms | 0.35 ms | 0.03 ms | 0.006 ms (6 events per tick) | < 0.01 ms |
+| 10,000 | 6.2 ms | 14.1 ms | 4.6 ms | 0.35 ms | 0.21 ms (490 events per tick) | 0.03 ms |
 
-The rest of the tick is the World commit of the moved poses. The 10,000-body P95 comes from the pile's collisions. It is an observation for P1 ([#1024](https://work.rezee.app/kash/issues/1024)), not a budget.
+The rest of the tick is the World commit of the moved poses. The events phase grows with how many contacts begin and end, about 0.4 µs per event including Jolt's records, not with the number of bodies. #1021's first version walked every contact pair each tick (0.27 ms at 10,000 bodies); it now visits only pairs that stopped touching. The 10,000-body P95 comes from the pile's collisions. It is an observation for P1 ([#1024](https://work.rezee.app/kash/issues/1024)), not a budget.
 
 ## Tests
 
-[physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers authored bodies (#1019):
+[physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers queries and events (#1021):
+- **Queries:** raycasts, shape casts, and overlaps with group, sensor, and ignore filters; distances, points, and normals; one hit per body, nearest first; the same results on repeated calls; refused queries.
+- **Events:**
+  - one begin or enter per pair, contacts held while bodies sleep, and a sphere passing through a sensor entering and exiting once;
+  - the same events at the same ticks with 0 and 4 workers;
+  - order by kind and EntityId in a tick where two boxes land together, made in the opposite order;
+  - a recipient being destroyed in the tick its contact begins left out and counted;
+  - removals: a destroyed entity's and a removed body's contacts ending as `removed`, the tick after;
+  - session stop ending every contact and trigger in progress.
+- **Phase 7:** systems read the completed step; a velocity set there does not change it, and the next tick's phase 3 still sees it, but it applies before the next step; transform writes to bodies are refused there too.
+
+It also covers authored bodies (#1019):
 - an authored stack of six boxes that settles and stays at rest;
 - settings from the components (mass, damping, gravity factor, initial velocity, kinematic motion, scene gravity);
 - compound bodies from colliders on scaled child entities;

@@ -2,7 +2,7 @@
 
 [Issue #1018](https://work.rezee.app/kash/issues/1018) runs [Luau 0.740](architecture/physics-scripting-decision.md#luau) scripts in play sessions. A script is a project asset, attached to an entity by a `maya.script` component, and it runs in the player and in the editor's play mode. The design follows the [scripting boundary](architecture/runtime-world-contracts.md#scripting-boundary) and the [fixed-tick phases](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick).
 
-[Issue #1020](https://work.rezee.app/kash/issues/1020) completes scripts as project assets in the editor: they are listed in the Assets panel, attached by dragging, opened in an external editor, and [reloaded](#reload) when their files change, during play too. [#1021](https://work.rezee.app/kash/issues/1021) adds body requests, queries, events, and `late_fixed_update`.
+[Issue #1020](https://work.rezee.app/kash/issues/1020) completes scripts as project assets in the editor: they are listed in the Assets panel, attached by dragging, opened in an external editor, and [reloaded](#reload) when their files change, during play too. [Issue #1021](https://work.rezee.app/kash/issues/1021) lets scripts [read and push bodies, query the physics world, and hear contacts and triggers](#bodies-queries-and-events), with `late_fixed_update` after each step.
 
 ## A script
 
@@ -72,6 +72,8 @@ An entity has at most one script. In the editor, a script is attached by draggin
 | --- | --- |
 | `start(self)` | Once, when the instance starts: at the tick boundary, before its first `fixed_update`. At the start of play this is in document order; an entity that gets a script during play starts at the next tick. |
 | `fixed_update(self, dt)` | Every tick, before physics, after the built-in systems. Instances run in the order they started. |
+| `on_contact_begin(self, other, contact)`, `on_contact_end(self, other, contact)`, `on_trigger_enter(self, other, contact)`, `on_trigger_exit(self, other, contact)` | After the step (phase 7), for each [event](#bodies-queries-and-events) the entity is part of, in event order. |
+| `late_fixed_update(self, dt)` | Every tick after the step and its events, in the order instances started. |
 | `update(self, frame_dt)` | Once per host frame after its ticks, also while paused. Read-only. |
 | `stop(self)` | Once, if `start` ran. When the entity is destroyed, loses its component, or gets another script, this is the next tick, and the entity may already be gone (`self.entity:alive()` is false). At the end of play, newest first, with no world left to change. |
 
@@ -108,11 +110,49 @@ An entity value holds a persistent ID and is checked again on every use.
 
 Reads see the World as the previous tick committed it.
 
+## Bodies, queries, and events
+
+Since #1021, entity values also reach their bodies ([physics](physics.md#requests-during-a-tick)):
+
+| Entity method | |
+| --- | --- |
+| `motion()` | `"static"`, `"kinematic"`, or `"dynamic"`; nil without a body. |
+| `velocity()`, `angular_velocity()`, `mass()`, `sleeping()` | The body after the last completed step; nil without a body. Mass is 0 for static and kinematic bodies. |
+| `add_force(v)`, `add_torque(v)` | Dynamic bodies, for one step. |
+| `add_impulse(v)`, `add_angular_impulse(v)`, `set_velocity(v)`, `set_angular_velocity(v)` | Dynamic bodies. |
+| `move_kinematic(position, rotation?)` | A kinematic body's target for the step; the rotation stays without one. Without a target a kinematic body stops. |
+| `teleport(position, rotation?)` | Kinematic and dynamic bodies; velocities are kept. |
+| `wake()` | Kinematic and dynamic bodies. |
+
+Requests are checked when they are made: `add_force` on a kinematic body fails with `cannot push entity 70 4 "Platform": its body is kinematic; move it with a kinematic target`. Made in `fixed_update` (or `start`), they apply before this tick's step; made after the step, before the next one. A failing call's requests are discarded with its other changes. `update` hooks cannot push bodies.
+
+Queries run against the last completed step, and scripts and native systems get the same results:
+
+| `maya` | |
+| --- | --- |
+| `raycast(origin, direction, distance, options?)`, `raycast_all(...)` | The nearest hit, or nil; or every hit, nearest first. |
+| `shape_cast(shape, origin, direction, distance, options?)`, `shape_cast_all(...)` | The same, sweeping a shape. |
+| `overlap(shape, position, options?)` | The entities a shape touches, by EntityId. |
+
+- **A hit** is a table: `entity`, `point`, `normal` (the hit surface's), and `distance`.
+- **A shape** is `{sphere = radius}`, `{box = half extents}`, or `{capsule = radius, half_height = h}`.
+- **Options:** `groups` (a bit set of collision groups to hit; all by default), `sensors` (whether to hit sensors; not by default), `ignore` (an entity), and `rotation` (a shape's).
+
+After each step, each contact or trigger event (sorted by kind and EntityIds) goes to both entities' instances, the lower EntityId first. The hook gets the other entity and a table: `point` and `normal` (from this entity toward the other) and `speed` (how fast they approached) for a begin or enter, and `removed`, true when an end or exit comes from a body being removed rather than the two separating. An entity destroyed in the tick is skipped. Then `late_fixed_update` runs. The World is still as the last tick committed it, bodies are as this step left them, and changes go into this tick's batch; body requests apply before the next step. When play stops, every contact and trigger in progress ends with `removed` true, before the `stop` hooks, with nothing left to change.
+
+```lua
+local Zone = {}
+function Zone:start() self.inside = 0 end
+function Zone:on_trigger_enter(other) self.inside += 1; maya.log(other:name() .. " came in") end
+function Zone:on_trigger_exit(other) self.inside -= 1 end
+return Zone
+```
+
 ## What scripts may change
 
 - **Commands.** Every change is a command, visible from the next tick. Edits to one component in a tick are merged, then applied as one replacement.
 - **Validation.** A property edit is validated like an Inspector edit: an intensity of −1 is an error at that line.
-- **Physics bodies.** A script may not set the transform of a kinematic or dynamic body ([physics](physics.md#requests-during-a-tick)).
+- **Physics bodies.** A script may not set the transform of a kinematic or dynamic body ([physics](physics.md#requests-during-a-tick)); the error names what to use instead (`add_force`, `set_velocity`, `move_kinematic`, `teleport`).
 - **`update` hooks** change nothing, because between-frame changes would depend on the frame rate. A write there is an error.
 - **Conflicts.** When two instances write the same property in a tick, the later one wins, and a warning names both.
 - **Created entities** get IDs from a sequence seeded by the session, so a replayed session creates the same entities.
@@ -242,6 +282,9 @@ That is about 97 ns per call for an empty hook and 480 ns per moved instance, fl
 - **Determinism:** random numbers and created IDs repeating from the seed.
 - **Spin parity:** a spin script matching the built-in `maya.spin` for 600 ticks.
 - **Stale handles:** held entity values checked on every use.
+- **Bodies** (#1021): reads, impulses, teleports, kinematic targets, the refusals with their messages, a failed call's impulse discarded, and `update` hooks refused.
+- **Queries** (#1021): rays, shape casts, and overlaps from scripts with their options, and shape errors.
+- **Events** (#1021): a trigger counting a ball dropped through it five times, and its landings on the floor; `late_fixed_update` reading the completed step and queueing a velocity and an edit for the next.
 - **Reload** (#1020):
   - a new version replacing its instances at the next tick, old `stop`s before new `start`s in activation order, with exposed values kept and the rest of `self` starting over;
   - a version that does not compile refused, with the running one kept;
