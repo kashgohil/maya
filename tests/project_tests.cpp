@@ -195,3 +195,37 @@ TEST_CASE("Projects name their collision groups and keep them when saved", "[ass
     fs::permissions(folder.root, fs::perms::owner_all);
     CHECK(open_project(folder.root).project.settings.collision_groups[4] == "Water");
 }
+
+TEST_CASE("Projects may set their scripts' work budget and memory limit", "[assets][project][scripting]") {
+    const auto header = std::string("maya-project 1\ncontent \".\"\ncatalog \"catalog.maya\"\n");
+    const auto defaults = parse(header);
+    REQUIRE(defaults);
+    CHECK_FALSE(defaults.settings.script_work);
+    CHECK_FALSE(defaults.settings.script_memory);
+
+    const auto set = parse(header + "startup \"level.scene\"\ngroup 1 \"Player\"\nscript_memory 256\nscript_work 5000000\n");
+    REQUIRE(set);
+    CHECK(set.settings.script_work == 5'000'000u);
+    CHECK(set.settings.script_memory == 256u);
+    auto written = std::ostringstream{};
+    write_project(written, set.settings);
+    CHECK(written.str() == header + "startup \"level.scene\"\nscript_work 5000000\nscript_memory 256\ngroup 1 \"Player\"\n");
+    CHECK(parse(written.str()).settings.script_work == 5'000'000u);
+
+    const auto refused = [&](const std::string& lines, std::string_view why) {
+        const auto result = parse(header + lines);
+        INFO(lines);
+        CHECK_FALSE(result);
+        CHECK(result.error.find(why) != std::string::npos);
+    };
+    refused("script_work 999\n", "from 1000 to 1000000000");
+    refused("script_work 1000000001\n", "from 1000 to 1000000000");
+    refused("script_work -5\n", "from 1000 to 1000000000");
+    refused("script_work 5e6\n", "from 1000 to 1000000000");
+    refused("script_work\n", "from 1000 to 1000000000");
+    refused("script_memory 0\n", "from 1 to 4096");
+    refused("script_memory 4097\n", "from 1 to 4096");
+    refused("script_memory 64MiB\n", "from 1 to 4096");
+    refused("script_work 2000\nscript_work 3000\n", "'script_work' is set twice");
+    CHECK(parse(header + "script_work 1000\nscript_memory 4096\n"));
+}

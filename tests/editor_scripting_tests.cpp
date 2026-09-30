@@ -1,6 +1,7 @@
 #include "editor_harness.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
+#include "maya/simulation/script_assets.hpp"
 #include <catch2/catch_approx.hpp>
 
 // Scripts in the editor (#1018): a script component's declared properties in the Inspector, and
@@ -119,4 +120,38 @@ return T
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::script, "Red cube (scripts/talker.luau): hello from Red cube"));
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::script, "scripts/talker.luau:5: tick five went wrong"));
     CHECK(harness.shell.prompt() == EditorPrompt::notice);
+}
+
+TEST_CASE("A project's script limits apply when it plays", "[editor][scripting][play]") {
+    auto project = ProjectSettings{};
+    CHECK(project_script_settings(project).limits.work_per_call == ScriptLimits{}.work_per_call);
+    CHECK(project_script_settings(project).limits.memory_bytes == ScriptLimits{}.memory_bytes);
+    project.script_work = 3'000'000;
+    project.script_memory = 128;
+    CHECK(project_script_settings(project).limits.work_per_call == 3'000'000u);
+    CHECK(project_script_settings(project).limits.memory_bytes == size_t{128} << 20);
+
+    // A script that needs more work per call than the default budget, played with and without a raise.
+    const auto play_heavy = [](const std::string& limit_lines) {
+        const auto copy = ProjectCopy();
+        const auto heavy = add_script(copy, 0x32, "scripts/heavy.luau", R"(
+local H = {}
+function H:fixed_update(dt)
+    local total = 0
+    for i = 1, 1500000 do total += 1 end
+end
+return H
+)");
+        std::ofstream(copy.folder / "project.maya", std::ios::app) << limit_lines;
+        Harness harness(false);
+        REQUIRE(harness.shell.open_project(copy.folder));
+        harness.frames(2);
+        auto& scene = *harness.shell.scene();
+        REQUIRE(scene.set_component(find_named(scene, "Red cube"), ScriptComponent{AssetRef<ScriptAsset>{heavy}, {}}));
+        REQUIRE(harness.shell.start_play());
+        harness.frames(4);
+        return logged(harness.shell.diagnostics(), DiagnosticSource::script, "work budget exceeded");
+    };
+    CHECK(play_heavy(""));
+    CHECK_FALSE(play_heavy("script_work 3000000\n"));
 }
