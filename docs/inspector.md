@@ -20,14 +20,25 @@ Each property's control comes from its schema descriptor:
 | vector3, color | Color editor (RGB with a swatch), allowing values above 1 (HDR). |
 | quaternion | Euler angles in degrees, rotation = Rz·Ry·Rx. They are kept stable during a drag so they do not jump at ±180°, and gimbal lock is handled. |
 | boolean | Checkbox. |
-| light kind | Menu of the schema's choices. |
+| choice | Menu of the schema's choices (a light's kind, a collider's shape, a body's motion). |
+| integer | Drag field clamped to the schema range. A collision group shows a menu of the project's group names instead. |
+| flags, collision mask | A menu with one check box per collision group, named as in the project, plus All groups and None. Its label summarizes the mask: All groups, None, one group's name, or how many. |
 | mesh / material reference | Menu of catalog assets of that kind, plus None. An asset of that kind dragged from the [Assets panel](projects.md#the-assets-panel) can be dropped on it. A reference to an asset missing from the catalog shows as "Missing" in amber; an asset that failed to load shows in red, with the reason as a tooltip. |
 
-A light shows only the properties its kind uses: range for point and spot lights, cone angles for spot lights. Descriptions appear as tooltips. The editor camera's settings sit below the selection's components.
+A light shows only the properties its kind uses: range for point and spot lights, cone angles for spot lights. A collider shows only its shape's size (half extents for a box, a radius for a sphere, a radius and half height for a capsule), and a kinematic body hides the initial velocities that only dynamic bodies use. Descriptions appear as tooltips. The editor camera's settings sit below the selection's components.
 
 **Validation.** Every edit runs `edit_properties` with the project's asset context, and SceneEditor checks the result against the same catalog (a fix in #1002: before it, choosing any asset was refused). A rejected value leaves the component unchanged, and the reason appears in red under the entity's name. Examples are a near clip beyond the far clip, a nonpositive scale, or an asset of the wrong kind. The same happens for World rejections such as a transform the hierarchy cannot represent.
 
 **One step per interaction.** Activating a control (starting a drag or clicking into a field) opens an [undo group](editing.md#history). Every change it makes applies immediately, so the viewport updates live, and deactivating it closes the group as one step labelled "Edit ⟨component⟩". A group left open by a control that disappeared mid-drag is closed at the end of the frame. **Typing** into a drag field (⌘-click or double-click it) applies only when entry ends (Enter or clicking away), never per keystroke. A half-typed number such as "9" on the way to "900" therefore never becomes an edit.
+
+### Physics components
+
+Collider, Rigid body, and Physics settings are added from **Add component** like any other component ([physics](physics.md#authored-bodies)). Under a physics component, the Inspector notes what Play will refuse, or where a collider belongs:
+- a rigid body without a collider on its entity or below it;
+- a rigid body on an entity that is not a root, or that is scaled;
+- a collider that is part of the rigid body on an ancestor (named).
+
+Collision group names come from the project; its Collision groups window renames them ([projects](projects.md#collision-groups)).
 
 ## Gizmos
 

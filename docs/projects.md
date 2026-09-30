@@ -11,6 +11,7 @@ maya-project 1
 content "assets"
 catalog "catalog.maya"
 startup "basic.scene"
+group 1 "Player"
 ```
 
 | Field | Meaning |
@@ -18,10 +19,17 @@ startup "basic.scene"
 | `content` | The content root: where the catalog, sources, and scenes live, relative to the project file's folder. `"."` is the folder itself. |
 | `catalog` | The [asset catalog](assets.md#catalog-and-material-files), relative to the content root. |
 | `startup` | Optional. The scene opened with the project, relative to the content root. |
+| `group <n> "<name>"` | Optional, any number, after the others: the name of [collision group](#collision-groups) *n* (0–15). Groups named as by default are not written. |
 
 Every path must be relative and may not contain `..`, so a copied or moved project keeps working. [project.hpp](../include/maya/assets/project.hpp) in `MayaAssets` reads and writes the file (`read_project`, `write_project`) and opens it (`open_project`). The result holds canonical absolute paths derived from the project file. `Project::resolve` maps a content-relative path into the content root and refuses any path that would leave it, including through a symlink. Nothing about a project comes from the working directory or from the application's resource search roots. Only the editor's own shaders and fonts are found that way.
 
 The sample project is [samples/basic_scene/project.maya](../samples/basic_scene/project.maya).
+
+### Collision groups
+
+A project names the 16 physics [collision groups](physics.md#authored-bodies) that colliders choose from. Group 0 is `Default`; the others are unnamed until named and show as "Group *n*". Names are 1 to 32 bytes of printable text without quotes or backslashes, and without leading or trailing spaces. `Project::settings` holds them with the rest of the file's settings, and `save_project` writes the file back, replacing it through a temporary file beside it.
+
+In the editor, the project's name in the top bar opens a menu with **Collision groups**. Its window has one field per group; a name applies when its field loses focus, and the project file is saved at once. An empty field makes the group unnamed. Renaming is not an undoable scene edit, and an invalid name is refused with the reason. `EditorShell::rename_collision_group` does the same from code.
 
 **Starting the editor.** `maya_editor [project]` opens a project file, or a folder containing `project.maya`. A relative path is taken from where the editor was started. Without an argument, the editor opens the sample project when it can find it. A project that cannot be opened leaves an empty editor with a notice explaining why. The editor also prints the opened project, or the reason, to standard error. Opening a project reads its catalog into a new asset registry and opens its startup scene. If the project has no startup scene, or the startup scene fails to open, the editor starts with a new scene instead and shows why in a notice.
 

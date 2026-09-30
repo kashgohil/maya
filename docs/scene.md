@@ -58,7 +58,9 @@ The format is line-based UTF-8 text, so it diffs and merges well and is consiste
 | Vector / quaternion | 3 or 4 numbers; quaternions are `x y z w`. |
 | Boolean | `true` or `false`. |
 | Text | Double-quoted UTF-8. `\"`, `\\`, `\n`, `\r`, `\t` escapes; other control characters use `\xHH`. `\x` is only for control characters. |
-| Light kind | Stable choice name: `directional`, `point`, or `spot`. |
+| Choice | Stable choice name, such as a light kind (`directional`, `point`, `spot`), a collider shape (`box`, `sphere`, `capsule`), or a body motion (`dynamic`, `kinematic`). |
+| Integer | A whole number, such as a collision group: `group 3`. |
+| Flags | Hexadecimal with a `0x` prefix, such as a collision mask: `mask 0xffff`. |
 | Asset reference | `none` when unassigned, otherwise the persistent AssetId words. Never a path, lease, handle, or registry token. |
 
 Writing keeps the document's entity order. `capture_scene` orders roots by EntityId, since the World has no root order, and follows each root depth-first by its descendants. The editor writes roots in its hierarchy order instead, and reads them back in file order ([#1002](projects.md#scene-files)). Components are ordered by ComponentId and properties by schema order. Entity order also records sibling order: children appear in their parent's child order, and loading reproduces that order. Saving, reopening, and saving again produces byte-identical output. When reading, blank lines, `#` comment lines, tabs, and CRLF line endings are accepted. Comments and formatting are not preserved on the next save.

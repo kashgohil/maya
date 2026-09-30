@@ -1,6 +1,6 @@
 # Physics
 
-[Issue #1017](https://work.rezee.app/kash/issues/1017) adds rigid-body physics to play sessions: the `MayaPhysics` library on [Jolt Physics 5.6.0](architecture/physics-scripting-decision.md). It follows the [physics boundary](architecture/runtime-world-contracts.md#physics-boundary) and runs phases 4–6 of the [fixed tick](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). Bodies are made from code for now: authored colliders and bodies follow in #1019, the script API and events in #1021.
+[Issue #1017](https://work.rezee.app/kash/issues/1017) adds rigid-body physics to play sessions: the `MayaPhysics` library on [Jolt Physics 5.6.0](architecture/physics-scripting-decision.md). It follows the [physics boundary](architecture/runtime-world-contracts.md#physics-boundary) and runs phases 4–6 of the [fixed tick](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick). [Issue #1019](https://work.rezee.app/kash/issues/1019) adds the components that author bodies in the editor and in scene files. Systems can also make bodies from code. The script API and events follow in #1021.
 
 ## The library
 
@@ -29,6 +29,29 @@ public:
 };
 ```
 
+## Authored bodies
+
+Three components describe physics in a scene. They are saved like any other component and edited in the [Inspector](inspector.md#physics-components).
+
+| Component | Properties | Meaning |
+| --- | --- | --- |
+| `maya.collider` (ID 8) | `shape` (box, sphere, capsule), `half_extents`, `radius`, `half_height`, `offset`, `rotation`, `friction`, `restitution`, `sensor`, `group`, `mask` | A shape in the entity's local space. `half_height` is half the capsule's straight section. A sensor reports overlaps (#1021) and gets no contact response. |
+| `maya.rigid_body` (ID 9) | `motion` (dynamic, kinematic), `mass` (0 derives it from `density`), `density`, `linear_damping`, `angular_damping`, `gravity_factor`, `linear_velocity`, `angular_velocity` | Makes the entity a moving body. Initial velocities are for dynamic bodies; a kinematic body stays where it is until something sets a target. |
+| `maya.physics_settings` (ID 10) | `gravity` (m/s², default (0, −9.81, 0)) | The scene's physics settings. At most one per scene; without one, the defaults apply. |
+
+When Play starts, `authored_physics` ([authored_physics.hpp](../include/maya/simulation/authored_physics.hpp)) turns these components into bodies in document order. `PhysicsWorld::create_bodies` creates them all or none, before any system starts:
+
+- **Moving bodies.** An entity with a rigid body is a kinematic or dynamic body. Its shape is its own collider plus the colliders on entities below it that have no rigid body. Those colliders are placed relative to the body, and their entity's scale is baked into their shape. More than one collider forms a compound shape.
+- **Static bodies.** An entity with a collider and no rigid body on it or an ancestor is a static body. Its world scale is baked into its shape.
+- **One material and filter per body.** A body takes its friction and restitution from its first collider (its own, then the first below it in hierarchy order). All its colliders must share one collision group, mask, and sensor setting.
+- **The rules of [Bodies](#bodies) apply.** A moving body is a root entity with unit scale. To scale a mesh, put it on an entity below the body, or size the collider instead.
+
+If any body cannot be made, Play does not start. The reason names the entity by ID and name: `Physics: entity 6d617961 201 "Red cube": a rigid body needs a collider on its entity or on an entity below it`. The editor shows it in a notice and in Diagnostics; the player prints it and exits with code 1.
+
+**Collision groups.** A collider's `group` (0–15) and `mask` (bit *n* set: collides with group *n*) decide what it collides with. Two colliders collide only when each one's group is in the other's mask. A project names its groups in its [project file](projects.md#collision-groups), and the editor edits the names in its Collision groups window. Group 0, `Default`, is where every collider starts, and a new collider's mask includes every group.
+
+The sample project's [physics.scene](../samples/basic_scene/assets/physics.scene) is a floor, a stack of five crates, and a crate that falls beside them: `maya_player samples/basic_scene physics.scene`.
+
 ## Bodies
 
 A `BodyDesc` makes a body for one entity:
@@ -36,12 +59,13 @@ A `BodyDesc` makes a body for one entity:
 | Field | Meaning |
 | --- | --- |
 | `motion` | Static, kinematic, or dynamic (below). |
-| `colliders` | One or more box, sphere, or capsule shapes, each with an offset and rotation in the entity's local space. Several form a compound shape. A capsule's `half_height` is half its straight section, excluding the caps. |
+| `colliders` | One or more box, sphere, or capsule shapes, each with an offset, rotation, and scale in the entity's local space. The scale stretches the shape along its own axes; a sphere needs it uniform and a capsule needs X and Z to match. Several colliders form a compound shape. A capsule's `half_height` is half its straight section, excluding the caps. |
 | `mass`, `density` | Mass in kg for a dynamic body, or 0 to derive it from the density (kg/m³, default 1,000). |
 | `friction`, `restitution` | Surface response; restitution is 0 to 1. |
 | `linear_damping`, `angular_damping`, `gravity_factor` | Per-body motion settings. |
 | `linear_velocity`, `angular_velocity` | Initial velocities, for dynamic bodies only. |
 | `group`, `mask` | Collision group 0–15 and the groups it collides with. Two bodies collide only when each one's group is in the other's mask. |
+| `sensor` | Detects overlaps without a contact response. |
 
 `validate_body` explains what is wrong with a description. Creating a body also checks the entity:
 
@@ -147,7 +171,15 @@ The rest of the tick is the World commit of the moved poses. The 10,000-body P95
 
 ## Tests
 
-[physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers:
+[physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers authored bodies (#1019):
+- an authored stack of six boxes that settles and stays at rest;
+- settings from the components (mass, damping, gravity factor, initial velocity, kinematic motion, scene gravity);
+- compound bodies from colliders on scaled child entities;
+- groups, masks, and sensors;
+- every refusal at Play start, with nothing left behind;
+- identical results with 0 and 4 workers.
+
+It also covers bodies made from code (#1017):
 - **Description checks:** body description validation.
 - **Motion:**
   - free fall against the fixed-step integration (position and velocity), with the World showing the body's exact pose;

@@ -50,7 +50,7 @@ On its first frame the shell docks the panels: Hierarchy on the left, Inspector 
 - **Assets:** the project's scenes, meshes, and materials, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 
-The top bar shows the project and the open scene; the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
+The top bar shows the project and the open scene. The project's name opens a menu with its settings (the [collision groups](projects.md#collision-groups)); the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
 
 ## Viewport size and display scale
 

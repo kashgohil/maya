@@ -77,7 +77,7 @@ The editor today is the window that work will land in. It has a hierarchy, a vie
 
 Three programs build from this repository.
 
-**Player.** The program a finished game grows out of. It runs a project's saved scene: by default the sample, a spinning pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly. Give it a project and a scene to run another one, with no code changes. The spinning and the flying are components saved in the scene, run by the same fixed-step simulation the editor plays.
+**Player.** The program a finished game grows out of. It runs a project's saved scene: by default the sample, a spinning pyramid and cubes on a ground slab, lit by a directional sun, seen through the scene's camera, which you fly. Give it a project and a scene to run another one, with no code changes. The spinning and the flying are components saved in the scene, run by the same fixed-step simulation the editor plays. The sample's `physics.scene` drops crates on a floor: colliders and rigid bodies are components too, simulated by Jolt Physics.
 
 **Editor.** An editing window with dockable panels around a viewport of the sample scene. Hold the right mouse button over the viewport to fly: WASD moves, Q and E go down and up, and Shift is faster. Scroll over it to move forward and back. Typing in a field never moves the camera. Click an object to select it; move, rotate, or scale it with the gizmo (W, E, R); and edit its properties, lights, camera, mesh, and material in the inspector. In the hierarchy you can create, rename, duplicate, delete, and drag entities to reparent them. Drag a mesh from the Assets panel into the viewport to place it, and a material onto an object to paint it. Undo or redo any of it with ⌘Z and ⇧⌘Z. Save with ⌘S, or start a new scene with ⌘N; the editor asks before unsaved changes would be lost. Press ⌘P to play the scene in a separate world, click the view to fly its camera, and press ⌘P again to stop: the scene is exactly as you left it.
 
@@ -113,6 +113,7 @@ cmake --build build -j 4
 ```bash
 ./build/maya_editor samples/basic_scene
 ./build/maya_player samples/basic_scene basic.scene
+./build/maya_player samples/basic_scene physics.scene
 ```
 
 To check the milestone, run `tools/check_milestone.sh build`: CPU checks, then GPU and windowed checks where a Metal device and a desktop session are available ([acceptance](docs/acceptance.md)). To measure, build Release and run a benchmark manifest; the results are JSON ([performance](docs/performance.md)):

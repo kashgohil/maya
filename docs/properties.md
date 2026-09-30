@@ -4,7 +4,7 @@
 
 ## Discovery and identity
 
-`component_schemas()` returns immutable descriptors with stable addresses; `component_schema` and `property_schema` look up IDs or stable names. Every property has its exact value type, a default derived from its C++ component's default construction, numeric bounds and inclusivity, units, a display label/presentation hint, and a persistence encoding. Light kinds expose named choices. Descriptions record contextual constraints such as intensity units and cone relationships. All 21 properties (17 initial ones and 4 for the built-in play behaviors of #1003) are editable and persistent; derived matrices, hierarchy links, runtime handles, and asset residency are not properties in these schemas.
+`component_schemas()` returns immutable descriptors with stable addresses; `component_schema` and `property_schema` look up IDs or stable names. Every property has its exact value type, a default derived from its C++ component's default construction, numeric bounds and inclusivity, units, a display label/presentation hint, and a persistence encoding. Choice properties (a light's kind, a collider's shape, a body's motion) expose named choices. Descriptions record contextual constraints such as intensity units and cone relationships. All 41 properties (17 initial ones, 4 for the built-in play behaviors of #1003, and 20 for physics in #1019) are editable and persistent; derived matrices, hierarchy links, runtime handles, and asset residency are not properties in these schemas.
 
 | Component ID / stable name | Property IDs / stable names |
 | --- | --- |
@@ -15,6 +15,11 @@
 | 5 / `maya.light` | 1 `kind`, 2 `color`, 3 `intensity`, 4 `range`, 5 `inner_cone`, 6 `outer_cone`, 7 `enabled` |
 | 6 / `maya.spin` | 1 `axis`, 2 `speed` (rad/s) — a built-in play behavior (#1003, [play](play.md#systems)) |
 | 7 / `maya.fly_control` | 1 `speed` (m/s), 2 `look_sensitivity` (rad/pt) — a built-in play behavior (#1003) |
+| 8 / `maya.collider` | 1 `shape`, 2 `half_extents`, 3 `radius`, 4 `half_height`, 5 `offset`, 6 `rotation`, 7 `friction`, 8 `restitution`, 9 `sensor`, 10 `group`, 11 `mask` — [physics](physics.md#authored-bodies) (#1019) |
+| 9 / `maya.rigid_body` | 1 `motion`, 2 `mass`, 3 `density`, 4 `linear_damping`, 5 `angular_damping`, 6 `gravity_factor`, 7 `linear_velocity`, 8 `angular_velocity` (#1019) |
+| 10 / `maya.physics_settings` | 1 `gravity` (#1019) |
+
+Property values are one of: text, boolean, scalar (float), vector3, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh or material reference, integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
 
 A persistent property identity is the pair `(ComponentId, PropertyId)`. Property IDs are scoped to their component; zero is reserved. Display labels, table order, RTTI, C++ layout, variant indices, and pointer addresses never identify saved data. Lookup returns null for unknown identities. The initial built-in schema set is deliberately closed; adding another component requires a typed variant alternative, schema bindings, default/snapshot dispatch, and validation tests. There is no dynamic plugin registration or script VM yet.
 
@@ -57,7 +62,10 @@ The detached API lets a future scene loader validate an entire unpublished scene
 | Camera | Finite FOV strictly between 0 and pi radians; finite near clip > 0, far clip > near clip. Aspect and camera pose are view-level constraints. |
 | Light color / intensity | Finite nonnegative linear RGB (HDR above one allowed), finite nonnegative intensity. Directional intensity is lux; point/spot intensity is lumens. |
 | Light range / cones | Finite range > 0; full-angle cones in radians with 0 <= inner <= outer < pi and outer > 0. Validate inactive fields too, so switching light kind does not reveal invalid values. |
-| Light kind / flags | Only named directional/point/spot values; flags require exact bool values. |
+| Choices / flags | Only the named choices (light kind, collider shape, body motion); booleans require exact bool values. |
+| Collider | Positive half extents, radius, and half height; finite offset; a finite nonzero rotation, normalized; friction ≥ 0; restitution 0 to 1; group 0 to 15; mask at most 0xFFFF. |
+| Rigid body | Mass ≥ 0 (0 derives it from the density); density > 0; damping ≥ 0; finite gravity factor and velocities. A kinematic body has no initial velocity. |
+| Physics settings | Finite gravity. |
 | Asset references | Empty means unassigned. Nonempty ID must exist in the supplied catalog and have the correct mesh/material kind. |
 
 Numbers are rejected instead of clamped. Numeric ranges in descriptors drive generic validation; complete-component rules handle relationships and transform normalization. Rotation is the only normalization. Camera property validity does not guarantee a representable projection at every aspect/pose/extreme scale; `camera_matrices` retains its numerical checks. Local transform validity similarly does not guarantee that composing an arbitrarily deep hierarchy will stay representable.
@@ -69,7 +77,7 @@ Pass `asset_property_context(registry)` when editing components with nonempty re
 All seven schemas start at version 1. The [#995 scene codec](scene.md) follows these rules: it persists stable names only, writes every property, and rejects unknown/duplicate/newer data before publication.
 
 - Persist component identity/version and property identity using the stable IDs or names above. Choose one canonical representation in the codec, and reject conflicting ID/name pairs if both are supplied. Never serialize object memory or variant ordinals.
-- Encode floats/vectors as finite scalar values, quaternion as normalized `(x,y,z,w)`, boolean as boolean, string as text, and light kind using the stable choice names. Asset properties encode only the 128-bit persistent ID (zero/unassigned explicitly), never a path, lease, pointer, registry token, or runtime handle.
+- Encode floats/vectors as finite scalar values, quaternion as normalized `(x,y,z,w)`, boolean as boolean, string as text, choices using their stable names, integers as whole numbers, and flags as hexadecimal (`0xffff`). Asset properties encode only the 128-bit persistent ID (zero/unassigned explicitly), never a path, lease, pointer, registry token, or runtime handle.
 - Never reuse a retired component/property ID or stable name. A display-label change does not change identity. Renaming a persistence key requires an explicit migration/alias; reordering the table does not.
 - Increment the component schema version when persistent shape, units, default semantics, or validation meaning changes. Additive properties need explicit migration defaults for older versions. A changed default must not silently reinterpret old omitted fields.
 - Type/unit changes require an explicit migration; do not reinterpret bytes or coerce strings/numbers. Keep migrations keyed by source and destination versions, then validate the complete migrated component with these same APIs.

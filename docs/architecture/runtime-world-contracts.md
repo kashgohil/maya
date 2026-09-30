@@ -71,7 +71,7 @@ Reparenting rejects cycles and cross-world parents. Offer explicit keep-local or
 
 ## Physics boundary
 
-Recorded for #1015. `MayaPhysics` ([#1017](../physics.md)) implements the interface, lifetime, motion types, shapes, filtering, and threading below; [#1019](https://work.rezee.app/kash/issues/1019) and [#1021](https://work.rezee.app/kash/issues/1021) add the components, queries, and events. Jolt is chosen in the [decision record](physics-scripting-decision.md).
+Recorded for #1015. `MayaPhysics` ([#1017](../physics.md)) implements the interface, lifetime, motion types, shapes, filtering, and threading below; [#1019](../physics.md#authored-bodies) adds the components, and [#1021](https://work.rezee.app/kash/issues/1021) the queries and events. Gravity, which the contract calls a scene setting, is the scene's `maya.physics_settings` component. Jolt is chosen in the [decision record](physics-scripting-decision.md).
 
 **The interface.** `MayaPhysics` is a static library with public headers in `include/maya/physics/`, and those headers contain no Jolt types. Jolt headers are included only by `src/maya/physics/`, and a CTest check enforces this, like the `*_no_editor_ui` checks. The library links MayaWorld and Jolt. MayaSimulation links MayaPhysics, and MayaRuntime receives it through MayaSimulation. Bodies are named across the interface by EntityHandle and EntityId. Jolt `BodyID`s, body pointers, and shapes never leave the library; a body's Jolt user data is an index into the adapter's own table.
 
