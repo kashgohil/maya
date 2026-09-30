@@ -97,7 +97,7 @@ The contracts for identity, time, and rendering are in the [architecture notes](
 
 ## Setup
 
-A Mac, Xcode Command Line Tools, and CMake 3.20 or newer. The first configure fetches pinned GLFW and Catch2 sources.
+A Mac, Xcode Command Line Tools, and CMake 3.20 or newer. The first configure fetches pinned GLFW, Catch2, and Jolt Physics sources.
 
 ```bash
 cmake -S . -B build
@@ -120,7 +120,7 @@ To check the milestone, run `tools/check_milestone.sh build`: CPU checks, then G
 ```bash
 ./build/maya_benchmark benchmarks/i1_10k.benchmark results.json
 ```
- The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. `-DMAYA_BUILD_PROTOTYPES=ON` adds the physics and scripting prototypes, which fetch Jolt Physics, Lua 5.4, and Luau; they are off by default ([libraries](docs/architecture/physics-scripting-decision.md)). Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
+ The editor fetches Dear ImGui the first time it is configured; a build without the editor never downloads it. `-DMAYA_BUILD_PROTOTYPES=ON` adds the scripting prototypes, which fetch Lua 5.4 and Luau; they are off by default ([libraries](docs/architecture/physics-scripting-decision.md)). Add `-DCMAKE_BUILD_TYPE=Release` when configuring a release build. CMake writes `build/compile_commands.json` for clangd.
 
 ### Where the files are
 
@@ -142,7 +142,8 @@ A build made inside the repository finds its content, because a parent of the ex
 | MayaRenderer | Turns a world into images: extraction, camera views, offscreen targets, and presentation. |
 | MayaRuntime | The engine session, core utilities, and Metal. No window and no editor. |
 | MayaDesktop | The window, input, and launch loop. |
-| MayaSimulation | Play sessions: the fixed-step clock, gameplay input, and simulation systems. CPU-only. |
+| MayaPhysics | Rigid-body physics for play sessions, on Jolt Physics. CPU-only. |
+| MayaSimulation | Play sessions: the fixed-step clock, gameplay input, simulation systems, and physics. CPU-only. |
 | MayaPlayer | Runs a project's saved scene through a play session; shared by the player and the sample. |
 | MayaMetrics | Timing aggregation: nearest-rank percentiles, sample windows, frame timing. CPU-only. |
 | maya_benchmark | Runs benchmark manifests headless and offscreen, and writes JSON results. |

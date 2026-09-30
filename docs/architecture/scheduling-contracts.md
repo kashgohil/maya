@@ -1,6 +1,6 @@
 # Scheduling and rendering contracts
 
-Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, physics, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave.
+Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave. [#1017](../physics.md) implements phases 4–6 for bodies made from code.
 
 ## Clocks and modes
 

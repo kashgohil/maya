@@ -4,7 +4,7 @@
 
 ## Play sessions
 
-`MayaSimulation` / `Maya::Simulation` ([play_session.hpp](../include/maya/simulation/play_session.hpp), [simulation.hpp](../include/maya/simulation/simulation.hpp)) is CPU-only and links only MayaWorld and MayaScene. MayaRuntime links it, so the player and the editor share one implementation.
+`MayaSimulation` / `Maya::Simulation` ([play_session.hpp](../include/maya/simulation/play_session.hpp), [simulation.hpp](../include/maya/simulation/simulation.hpp)) is CPU-only and links MayaWorld, MayaScene, and [MayaPhysics](physics.md). MayaRuntime links it, so the player and the editor share one implementation.
 
 ```cpp
 auto started = maya::PlaySession::start(document, maya::asset_property_context(registry), maya::builtin_systems());
@@ -15,9 +15,9 @@ if (const auto frame = session.update(wall_delta); !frame.error.empty()) { /* st
 render(session.world(), session.camera());               // the first camera in document order
 ```
 
-- **Start.** `PlaySession::start` validates the scene document, just as loading a scene file does, and builds a new World from it. Then it starts each system in order. If the scene is invalid, the diagnostics say why. If a system throws from `start`, the error names it. The systems already entered are then stopped in reverse order, and nothing is left running.
-- **Frames.** `update(wall_delta)` admits the frame's wall time to the clock and runs the ticks that are due. For each tick, the session latches that tick's input and runs every system in order. It then commits their commands as one atomic World batch and counts the tick.
-- **Failures.** A system that throws, or a batch the World rejects, stops the simulation. The World stays as the last completed tick left it. The error names the tick and the cause, for example `Tick 2: Spin failed: ...`, and later updates return the same error.
+- **Start.** `PlaySession::start` validates the scene document, just as loading a scene file does, and builds a new World from it. It creates the session's [physics world](physics.md) (its settings are an optional last argument). Then it starts each system in order. If the scene is invalid, the diagnostics say why. If a system throws from `start`, the error names it. The systems already entered are then stopped in reverse order, and nothing is left running.
+- **Frames.** `update(wall_delta)` admits the frame's wall time to the clock and runs the ticks that are due. For each tick, the session latches that tick's input and runs every system in order. Physics then steps once ([the fixed tick](physics.md#the-fixed-tick)). The session commits the systems' commands, with the moved body poses, as one atomic World batch, adds and removes bodies, and counts the tick.
+- **Failures.** A system that throws or breaks the physics authority rules, or a batch the World rejects, stops the simulation. The World stays as the last completed tick left it (a body that cannot be created at the commit stops the session after that tick's batch). The error names the tick and the cause, for example `Tick 2: Spin failed: ...`, and later updates return the same error.
 - **End.** Destroying the session stops the systems in reverse order, then releases the World.
 
 ## The fixed clock
@@ -53,12 +53,13 @@ A `SimulationSystem` has a name, `start`, `fixed_update`, and `stop`.
   - the World as the previous tick committed it;
   - the tick's command batch;
   - its `InputFrame`;
-  - the tick index, simulation time, and fixed interval.
+  - the tick index, simulation time, and fixed interval;
+  - `bodies`, for physics requests, and `physics`, the body state after the previous step ([physics](physics.md#requests-during-a-tick)).
 - **When writes appear.** A system writes through the commands. Its writes are visible to the next tick, not to later systems in the same tick, so the result does not depend on how many systems read a value.
-- **One writer.** Each transform should have one writer.
+- **One writer.** Each transform should have one writer. Physics writes kinematic and dynamic bodies' transforms, and a system that writes one fails.
 - **Determinism.** The same scene, input, and frame times give the same World.
 
-Until scripting and physics arrive, two built-in systems run in this order, driven by two authored components. The editor edits them like any other component, and scene files save them.
+Until scripting arrives, two built-in systems run in this order, driven by two authored components. The editor edits them like any other component, and scene files save them.
 
 | Component | Properties | While playing |
 | --- | --- | --- |
@@ -67,7 +68,7 @@ Until scripting and physics arrive, two built-in systems run in this order, driv
 
 The sample's spinning pyramid and flying camera are now these components in [basic.scene](../samples/basic_scene/assets/basic.scene). They are no longer sample code: `basic_scene.cpp` and `MayaBasicScene` are gone.
 
-The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–3: committing, latching input, and fixed-update hooks. This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Animation, physics, events, and post-physics hooks (phases 4–7) arrive with physics and scripting. Presentation interpolation is not implemented yet. Views show the latest completed tick, and `alpha()` is computed for when it is. Recorded replay and capture modes are also still contracts.
+The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Animation, events, and post-physics hooks (phase 7) arrive with scripting and #1021. Presentation interpolation is not implemented yet. Views show the latest completed tick, and `alpha()` is computed for when it is. Recorded replay and capture modes are also still contracts.
 
 ## The player
 

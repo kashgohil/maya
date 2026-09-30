@@ -15,18 +15,18 @@ Configure with `-DMAYA_BUILD_PROTOTYPES=ON`. The option is off by default, so a 
 
 | Target | What it is |
 | --- | --- |
-| `maya_physics_prototype` (`MayaPrototypePhysics`, [prototypes/physics](../../prototypes/physics/jolt_prototype.hpp)) | A falling-box scene in a Jolt PhysicsSystem: a static floor, 1 m boxes, collision groups and masks, contact callbacks, allocator hooks, and state save and restore. It prints timings, heap use, and trace hashes. |
+| `maya_physics_prototype` (`MayaPrototypePhysics`, `prototypes/physics`; replaced by [MayaPhysics](../physics.md) in #1017) | A falling-box scene in a Jolt PhysicsSystem: a static floor, 1 m boxes, collision groups and masks, contact callbacks, allocator hooks, and state save and restore. It printed timings, heap use, and trace hashes. |
 | `maya_lua_prototype`, `maya_luau_prototype` (`MayaPrototypeLuaHost`, `MayaPrototypeLuauHost`, [prototypes/scripting](../../prototypes/scripting/script_host.hpp)) | The same sandboxed host in each language. A `maya` table offers `add_force(x, y, z)` and `log(message)`. The host has a memory limit and a deterministic work budget per call. It prints call cost, loop cost, and memory. Lua and Luau export the same C API names, so they are never linked into one program. |
 | `maya_prototype_physics_tests`, `maya_prototype_lua_tests`, `maya_prototype_luau_tests` | The behavior the decisions rely on, in CTest under the `prototype` label. One scripting test file runs against both languages. |
 
-The prototypes stay until #1017 and #1018 replace them. #1018 removes the Lua host and the Lua 5.4 dependency.
+#1017 replaced the physics prototype with [MayaPhysics](../physics.md), whose tests carry its checks over, and made Jolt part of every build. The scripting prototypes stay until #1018, which removes the Lua host and the Lua 5.4 dependency.
 
 ## Jolt Physics
 
 | Topic | Decision and evidence |
 | --- | --- |
 | License | MIT. Packaged games ship its copyright and permission notice, as they will for Dear ImGui and Luau. |
-| Version and pinning | Tag `v5.6.0` (commit `e77f1755`), fetched shallowly with FetchContent from `Build/`. Jolt's own targets stay out of `all`; only the Jolt library builds. An upgrade is its own change and reruns the prototype tests and P1. |
+| Version and pinning | Tag `v5.6.0` (commit `e77f1755`), fetched shallowly with FetchContent from `Build/`. Jolt's own targets stay out of `all`; only the Jolt library builds. An upgrade is its own change and reruns the physics tests and P1. |
 | Build options | Single precision (`DOUBLE_PRECISION` off, since world extent is still [open](README.md#open-product-decisions)). `OBJECT_LAYER_BITS` 32, giving 16 collision groups and 16-bit masks. RTTI is on, because UndefinedBehaviorSanitizer's vptr check needs Jolt's type information. Exceptions stay off. No object stream, GPU compute backends, profiler, install rules, or link-time optimization. The debug renderer remains available in Debug and Release for #1022. `USE_ASSERTS` is off by default; the prototype tests also pass with it on. |
 | Warnings | Jolt compiles with its own `-Wall -Werror` in its own directory scope. Maya adds its headers as system headers, so Maya's `-Wall -Wextra -Wpedantic` applies to Maya code only, and that code builds without warnings. |
 | Process-wide state | Allocator hooks, trace and assert hooks, the `Factory`, and type registration are global. They are installed once, before any Jolt object exists, and kept for the life of the process. A world's own memory is released with its `PhysicsSystem`: after the runs, 6,256 bytes remain, all of it the type registry. |
@@ -85,5 +85,5 @@ Both hosts pass the same checks: native calls, error recovery, the sandbox, read
 Validated on 30 September 2026:
 - **Builds.** Release, and Debug with `MAYA_SANITIZERS=undefined`: both build with no warnings in Maya code.
 - **Offline and clean export.** Configured with `FETCHCONTENT_FULLY_DISCONNECTED=ON` from cached sources, and from a clean export of the source tree: both build and pass all 47 CTest tests.
-- **Prototype tests.** `maya_prototype_physics` (5 cases, 26 assertions), `maya_prototype_lua` (7 cases, 114 assertions), and `maya_prototype_luau` (7 cases, 116 assertions) pass, also under UBSan. The physics tests also pass with Jolt's asserts on.
+- **Prototype tests.** `maya_prototype_physics` (5 cases, 26 assertions), `maya_prototype_lua` (7 cases, 114 assertions), and `maya_prototype_luau` (7 cases, 116 assertions) pass, also under UBSan. The physics tests also pass with Jolt's asserts on. (#1017 replaced the physics prototype tests with `maya_physics`.)
 - **What this does not show.** It is not a P1 baseline, and not evidence for the engine's physics or scripting, which do not exist yet. Jolt and Luau are not themselves sanitized; only Maya code is.
