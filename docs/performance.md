@@ -61,7 +61,7 @@ The editor splits `render` further into extraction, viewport encoding, and UI en
 - the Metal device and whether its memory is unified;
 - thermal state and low-power mode.
 
-The benchmark also records its build: `git describe --dirty` revision, build type, sanitizers, and compiler. These come from `cmake/build_info.cmake` at build time, so they describe the binary that ran.
+The benchmark also records its build: `git describe --dirty` revision, build type, sanitizers, and compiler. A dirty revision is followed by a hash of the uncommitted changes, so two builds with different changes have different names. These come from `cmake/build_info.cmake` at build time (`maya/core/build_info.hpp`, shared with [play recordings](play.md#recording-and-replay)), so they describe the binary that ran.
 
 ## In the editor
 

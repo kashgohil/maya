@@ -73,7 +73,7 @@ Two built-in systems (`builtin_systems()`) run in this order, driven by two auth
 
 The sample's spinning pyramid and flying camera are now these components in [basic.scene](../samples/basic_scene/assets/basic.scene). They are no longer sample code: `basic_scene.cpp` and `MayaBasicScene` are gone.
 
-The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Animation arrives later. Since #1016, phase 2 keeps a pose history and views show [poses between ticks](#between-ticks). Recorded replay and capture modes are still contracts.
+The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Animation arrives later. Since #1016, phase 2 keeps a pose history and views show [poses between ticks](#between-ticks). Since #1023, sessions can be [recorded and replayed](#recording-and-replay). Capture modes are still contracts.
 
 ## Between ticks
 
@@ -100,13 +100,15 @@ History is the difference from the same ticks without it (about 20–28 ns per m
 ## The player
 
 ```bash
-maya_player [project [scene]] [--smoke N]
+maya_player [project [scene]] [--record file | --replay file] [--smoke N]
 ```
 
 - **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project.
 - **Scene.** The scene is relative to the project's content root. Without one, the player uses the project's startup scene.
 - **View.** The player shows the scene's first camera, in document order, at the window's size.
 - **Input.** Every window event goes to the game, and the cursor is captured. Escape closes the window.
+- **`--record file`** records the session and writes it to `file` when the window closes ([recording and replay](#recording-and-replay)).
+- **`--replay file`** plays a recording's scene with its input instead of the window's. The scene comes from the recording, so no scene argument is needed. At the end the player reports `[Player] the replay matches the recording: 120 ticks, 2 checkpoints, and the final state` and stays on the last frame. A replay that differs fails with exit code 1, and so does a recording that cannot be replayed.
 
 It reports what it runs, `[Player] My Game / basic.scene: 6 entities`, and exits with:
 
@@ -114,7 +116,7 @@ It reports what it runs, `[Player] My Game / basic.scene: 6 entities`, and exits
 | --- | --- | --- |
 | 0 | The window closed normally, or a smoke run completed. | |
 | 1 | The project, catalog, or scene cannot be run, the scene has no camera, the device cannot start, or something failed while playing. | `[Player] second.scene cannot be run:` followed by `line 10: unknown component 'maya.name_is_bad'; ...` |
-| 2 | Unexpected arguments. | `[Player] unexpected argument: c` |
+| 2 | Unexpected arguments, `--record` or `--replay` without a file, or both together. | `[Player] unexpected argument: c` |
 
 Render problems, such as a missing mesh file, are printed when they change, and play continues with that mesh skipped. Script logs and errors are printed as they happen, as `[Scripts] Beacon (scripts/spin.luau): ...`, and play continues. `maya_sample` is the same player on the sample project; it takes no project or scene.
 
@@ -151,6 +153,62 @@ The [input router](editor.md#input-routing) now has three owners.
 
 A click on the Game/Scene toggle in the viewport's corner never hands the input to the game.
 
+## Recording and replay
+
+[Issue #1023](https://work.rezee.app/kash/issues/1023) records play sessions and replays them. It follows the [scheduling contract's](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick) definition of the same result: on the same machine and build, a replay repeats the recorded session tick for tick, with any physics worker count. Nothing is promised across machines.
+
+**What a recording holds** (`PlayRecording`, [recording.hpp](../include/maya/simulation/recording.hpp)):
+
+- **Input.** Each tick's `InputFrame`, stored only where it changes (`InputTrack`), so a held key costs one entry. Replay uses the tick each edge was assigned, not wall time.
+- **The seed** the scripts ran with.
+- **The scene.** The document that was played, as scene-file text, saved or not, and the scene's path for messages.
+- **Asset versions.** A hash (FNV-1a 64) of each mesh and material file and each script's source that the scene names. For scripts, this is the version Play used, which in the editor is the last good one.
+- **The build and physics.** `recording_build()` is the revision, build type, sanitizers, and compiler. A build from uncommitted changes carries a hash of those changes, so two different dirty builds do not share a name. `recording_physics()` is Jolt's version and configuration and the collision steps.
+- **Reloads.** Each script reload applied while recording, with its tick.
+- **Checkpoints.** A `state_hash` every 60 ticks, and `full_state_hash` after the last tick.
+
+**The state hash** folds, in EntityId order:
+
+- every entity's transform;
+- each body's pose, linear and angular velocity, and sleep state;
+- a running trace of every event delivered and every message the tick produced (script logs and errors).
+
+What a script can observe shows up in what it does to the World and what it logs. `full_state_hash` adds the play World written as scene text, so every component value counts too. Values are hashed bit for bit.
+
+**Replay.** `PlaySession::start_replay` takes the input track and the checkpoints. Each tick takes its input from the track instead of the window. The clock runs no further than the recorded ticks and pauses at the end. `replay()` reports whether it finished, how many checkpoints it checked, and the first checkpoint that differed.
+
+**Refusals.** `replay_refusal` names the first reason a recording cannot be replayed here, and nothing plays:
+
+| Mismatch | Reason given |
+| --- | --- |
+| Another build | `It was recorded by build 1a2b3c4d5e6f Release …; this is build …. A replay is promised to match only on the build that recorded it` |
+| Other physics | `It was recorded with Jolt 5.5.0, …; this session uses …` |
+| A reload while recording | `scripts/zone.luau was reloaded at tick 240 of the recorded session, so its replay is not promised to match` |
+| A changed asset | `scripts/zone.luau has changed since the recording` |
+| A removed asset | `scripts/zone.luau is no longer in the project` |
+
+**Files.** Recordings are versioned text files that start with `maya-recording 1`. Header lines come first (build, physics, seed, ticks, scene name), then asset, reload, checkpoint, and final-state lines, and one `input` line per change. The scene comes last, as a counted block. Reading is strict: another format version, an unknown line, or a file cut short is refused with its line number.
+
+**In the editor,** Play records nothing, since a recording has a cost (below). The scene menu offers:
+
+- **Play and record** plays the scene as Play does and records it. The status bar shows Recording while it plays. The recording is kept until the next recorded Play.
+- **Replay the last recording** plays it again with its own scene and input, while the status bar shows Replaying. Diagnostics then says `The replay matches the recording: 1800 ticks, 30 checkpoints, and the final state`. A difference raises the notice "The replay differs", naming the tick. A refusal raises "Couldn't replay" with its reason.
+- **Save the last recording** writes it to `recordings/<scene>.recording` in the content folder.
+
+The player records with `--record` and replays with `--replay` ([the player](#the-player)). A recording made in either one replays in the other.
+
+**Reset.** Stop releases the play World, the physics world, and the script VM (`script_memory_in_use()` returns to 0). Nothing carries over into the next Play.
+
+**Cost.** Recording stores a tick's input only when it differs from the last change. The rest is measured by `maya_simulation_tests "Recording cost*"`, in Release on the M4 Pro reference machine (thermal state nominal), with one entity in ten a body:
+
+| Entities | Scene text, at start | State hash, every 60 ticks | Final state, at Stop |
+| --- | --- | --- | --- |
+| 1,000 | 1.8 ms | 0.18 ms | 2.4 ms |
+| 10,000 | 11 ms | 0.94 ms | 13 ms |
+| 50,000 | 30 ms | 3.1 ms | 51 ms |
+
+Writing scene text is most of it: the final state writes the play World as text. A replay pays the same, except the scene text. These are observations, not budgets.
+
 ## Cost
 
 Release measurements on this machine, for scenes with a spinning root and nine children per ten entities:
@@ -173,6 +231,11 @@ In the editor, Play also builds the document from the scene (2.7 ms at 50,000 en
   - **Session failures:** start failures stop systems in reverse order; invalid scenes and empty systems are refused; a failing tick keeps the last completed World.
   - **The built-in systems:** spin about a local axis, zero and negative speed, and normalized rotations; fly movement, speed, Shift, look, and the pitch limit.
   - **Determinism:** identical results for the same scene, inputs, and uneven frame times.
+- [replay_tests.cpp](../tests/replay_tests.cpp) (`maya_simulation_tests`, #1023) covers:
+  - **Files:** a recording round-trips through its file; empty, foreign, other-version, cut-short, and malformed files are refused.
+  - **Replay:** 1,800 ticks of stacked boxes, a trigger zone with a counting script, and a ball that a script kicks on Space, recorded at uneven frame times. It replays with 0 and 4 physics workers, matching all 30 checkpoints and the final state. Dropping one kick is found at the first checkpoint after it.
+  - **Refusals:** another build, other physics (including collision steps), a changed or missing asset, and a reload.
+  - **Cost:** a hidden case prints the cost of recording at 1,000, 10,000, and 50,000 entities.
 - [editor_play_tests.cpp](../tests/editor_play_tests.cpp) covers:
   - **Separate state:** Play shows unsaved edits, and the play World spins while the authored World does not change. Edits, undo, Delete, and inline rename are refused during play, while selection works. Stop restores the scene text, history, unsaved state, and selection.
   - **Parity with the player:** the sample scene run through the player's path (its file, straight into a session) and through the editor's Play button gives identical Worlds after 120 ticks.
@@ -183,5 +246,9 @@ In the editor, Play also builds the document from the scene (2.7 ms at 50,000 en
   - **No camera:** a scene without a camera plays through the editor camera and never hands the game the input.
   - The router's rules for the game owner, in [editor_tests.cpp](../tests/editor_tests.cpp).
   - **120 Hz display** (#1016): the shown spin advances every frame, evenly, while the World changes every other frame.
+- [editor_replay_tests.cpp](../tests/editor_replay_tests.cpp) covers (#1023):
+  - **Parity:** 1,800 ticks of Play and record in the editor, with a trigger zone, a kicked ball, and Space pressed through the Game view at uneven frame times. They replay through the player's path (the project's files and the recorded scene) with every checkpoint and the final state matching. They also replay in the editor, which reports the match. The saved recording reads back the same.
+  - **Reload:** a script reloaded during a recorded Play is recorded, and replaying it is refused with a notice.
+  - **Reset:** 100 rounds of Play and Stop with physics and scripts, recording nothing. Script memory returns to 0 after each Stop. Device buffers, textures, and pending retirements, and physics memory, return to where they were. The scene text, history, unsaved state, and selection are unchanged.
 - [renderer_gpu_tests.cpp](../tests/renderer_gpu_tests.cpp) renders a playing scene halfway between ticks on Metal and compares it byte for byte with the same cube authored at the pose between them (#1016).
-- CTest runs the player with bad arguments, a missing project, a missing scene, and a scene path outside the project. Each must exit with its code and message ([expect_exit.cmake](../cmake/expect_exit.cmake)). [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) runs the player through window resizes and covers splitting launch arguments.
+- CTest runs the player with bad arguments, a missing project, a missing scene, a scene path outside the project, and a missing recording. Each must exit with its code and message ([expect_exit.cmake](../cmake/expect_exit.cmake)). It also records a smoke run of physics.scene and replays it, which must report a match. [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) runs the player through window resizes and covers splitting launch arguments.

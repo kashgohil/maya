@@ -116,6 +116,13 @@ cmake --build build -j 4
 ./build/maya_player samples/basic_scene physics.scene
 ```
 
+The player can record a session and replay it exactly on the same build; the editor's scene menu has Play and record ([recording and replay](docs/play.md#recording-and-replay)):
+
+```bash
+./build/maya_player samples/basic_scene physics.scene --record kicks.recording
+./build/maya_player samples/basic_scene --replay kicks.recording
+```
+
 To check the milestone, run `tools/check_milestone.sh build`: CPU checks, then GPU and windowed checks where a Metal device and a desktop session are available ([acceptance](docs/acceptance.md)). To measure, build Release and run a benchmark manifest; the results are JSON ([performance](docs/performance.md)):
 
 ```bash
