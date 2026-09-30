@@ -6,6 +6,7 @@
 #include <bitset>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -107,17 +108,25 @@ struct SimulationMessage {
     uint64_t tick = 0;
 };
 
-/// What a system sees during one fixed tick.
+/// What a system sees during one fixed tick: in fixed_update (phase 3), before the step, and in
+/// late_fixed_update (phase 7), after it.
 struct TickContext {
     const World& world; // the state committed by the previous tick
-    WorldCommands& commands; // committed when every system has run, in system order
+    WorldCommands& commands; // committed at the end of the tick (the next tick's phase 1), in system order
     const InputFrame& input;
     uint64_t tick; // the index of this tick, from 0
     double time; // simulation seconds at the start of this tick
     float delta; // the fixed interval, in seconds
-    BodyCommands& bodies; // physics requests: applied before this tick's step, bodies at its commit
-    const PhysicsWorld& physics; // body state after the previous tick's step
+    /// Physics requests. In fixed_update they apply before this tick's step; in late_fixed_update,
+    /// before the next tick's. Created and removed bodies take effect when this tick commits.
+    BodyCommands& bodies;
+    const PhysicsWorld& physics; // bodies after the last completed step: the previous tick's, or in phase 7 this tick's
     std::vector<SimulationMessage>& messages; // reported with the host frame (PlayFrame::messages)
+    /// late_fixed_update only: this step's contact and trigger events, sorted (PhysicsEvent).
+    std::span<const PhysicsEvent> events = {};
+    /// late_fixed_update only: the session is stopping, the events end every contact still in
+    /// progress, and nothing the systems do is kept.
+    bool stopping = false;
 };
 
 /// What a system sees once per host frame, after the frame's ticks: read-only.
@@ -142,6 +151,10 @@ public:
     /// Once, before the first tick. A failure (an exception) stops the session from starting.
     virtual void start(const World&) {}
     virtual void fixed_update(TickContext& tick) = 0;
+    /// Phase 7, after the step: `tick.events` holds its contact and trigger events and `tick.physics`
+    /// its results. Changes go into this tick's batch; body requests apply before the next step.
+    /// Also once when the session stops, with the events that end every contact (`tick.stopping`).
+    virtual void late_fixed_update(TickContext&) {}
     /// Once per host frame after its ticks, also while paused. Read-only: effects wait for a tick.
     virtual void frame(FrameContext&) {}
     /// Once, if start was entered, including when it threw.

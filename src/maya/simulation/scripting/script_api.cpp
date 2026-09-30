@@ -469,6 +469,176 @@ int entity_destroy(lua_State* L, ScriptApi& api) {
     api.destroy(check_entity(L, 1));
     return 0;
 }
+// --- Bodies ----------------------------------------------------------------------------------------
+
+/// The entity's body after the last completed step, or nullopt without one.
+std::optional<BodyState> body(const ScriptApi& api, EntityId id) {
+    const auto* physics = api.physics();
+    return physics ? physics->state(live(api, id)) : std::nullopt;
+}
+int entity_velocity(lua_State* L, ScriptApi& api) {
+    if (const auto state = body(api, check_entity(L, 1))) push_vector(L, state->linear_velocity);
+    else lua_pushnil(L);
+    return 1;
+}
+int entity_angular_velocity(lua_State* L, ScriptApi& api) {
+    if (const auto state = body(api, check_entity(L, 1))) push_vector(L, state->angular_velocity);
+    else lua_pushnil(L);
+    return 1;
+}
+int entity_mass(lua_State* L, ScriptApi& api) {
+    if (const auto state = body(api, check_entity(L, 1))) lua_pushnumber(L, state->mass);
+    else lua_pushnil(L);
+    return 1;
+}
+int entity_sleeping(lua_State* L, ScriptApi& api) {
+    if (const auto state = body(api, check_entity(L, 1))) lua_pushboolean(L, state->sleeping);
+    else lua_pushnil(L);
+    return 1;
+}
+int entity_motion(lua_State* L, ScriptApi& api) {
+    if (const auto state = body(api, check_entity(L, 1))) lua_pushstring(L, motion_type_name(state->motion));
+    else lua_pushnil(L);
+    return 1;
+}
+/// A body request: checked now against the motion-authority rules, applied before the next step.
+template<void (BodyCommands::*Request)(EntityHandle, math::Vec3)>
+int body_request(lua_State* L, ScriptApi& api) {
+    require_writable(api, "push bodies");
+    (api.bodies().*Request)(live(api, check_entity(L, 1)), check_vector(L, 2));
+    return 0;
+}
+int entity_move_kinematic(lua_State* L, ScriptApi& api) {
+    require_writable(api, "move bodies");
+    const auto handle = live(api, check_entity(L, 1));
+    const auto state = body(api, check_entity(L, 1));
+    const auto rotation = lua_isnoneornil(L, 3) ? (state ? state->rotation : math::Quat{}) : check_quaternion(L, 3);
+    api.bodies().set_kinematic_target(handle, check_vector(L, 2), rotation);
+    return 0;
+}
+int entity_teleport(lua_State* L, ScriptApi& api) {
+    require_writable(api, "move bodies");
+    const auto handle = live(api, check_entity(L, 1));
+    const auto state = body(api, check_entity(L, 1));
+    const auto rotation = lua_isnoneornil(L, 3) ? (state ? state->rotation : math::Quat{}) : check_quaternion(L, 3);
+    api.bodies().teleport(handle, check_vector(L, 2), rotation);
+    return 0;
+}
+int entity_wake(lua_State* L, ScriptApi& api) {
+    require_writable(api, "wake bodies");
+    api.bodies().wake(live(api, check_entity(L, 1)));
+    return 0;
+}
+
+// --- Queries ---------------------------------------------------------------------------------------
+
+const PhysicsWorld& query_physics(const ScriptApi& api) {
+    if (!api.physics()) throw ScriptError("physics queries are not available here");
+    return *api.physics();
+}
+
+/// A query's options table: groups (a bit set), sensors (whether to hit them), ignore (an entity),
+/// and rotation (for a shape).
+QueryFilter check_filter(lua_State* L, int index, const ScriptApi& api, math::Quat* rotation = nullptr) {
+    auto filter = QueryFilter{};
+    if (lua_isnoneornil(L, index)) return filter;
+    luaL_checktype(L, index, LUA_TTABLE);
+    lua_getfield(L, index, "groups");
+    if (!lua_isnil(L, -1)) {
+        const auto groups = luaL_checkinteger(L, -1);
+        if (groups < 0 || groups > 0xFFFF) throw ScriptError("groups must be a bit set of the 16 collision groups, 0 to 0xFFFF");
+        filter.groups = uint16_t(groups);
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, index, "sensors");
+    filter.sensors = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, index, "ignore");
+    if (!lua_isnil(L, -1)) filter.ignore = api.world().find(check_entity(L, -1));
+    lua_pop(L, 1);
+    if (rotation) {
+        lua_getfield(L, index, "rotation");
+        if (!lua_isnil(L, -1)) *rotation = check_quaternion(L, -1);
+        lua_pop(L, 1);
+    }
+    return filter;
+}
+
+/// {sphere = radius}, {box = half extents}, or {capsule = radius, half_height = h}.
+ShapeGeometry check_shape(lua_State* L, int index) {
+    luaL_checktype(L, index, LUA_TTABLE);
+    const auto number = [&](const char* key) -> std::optional<float> {
+        lua_getfield(L, index, key);
+        const auto value = lua_isnumber(L, -1) ? std::optional(float(lua_tonumber(L, -1))) : std::nullopt;
+        lua_pop(L, 1);
+        return value;
+    };
+    lua_getfield(L, index, "box");
+    if (lua_isvector(L, -1)) {
+        const auto half = check_vector(L, -1);
+        lua_pop(L, 1);
+        return BoxShape{half};
+    }
+    lua_pop(L, 1);
+    if (const auto radius = number("sphere")) return SphereShape{*radius};
+    if (const auto radius = number("capsule")) {
+        const auto half_height = number("half_height");
+        if (!half_height) throw ScriptError("a capsule shape needs half_height");
+        return CapsuleShape{*radius, *half_height};
+    }
+    throw ScriptError("a shape is {sphere = radius}, {box = half extents}, or {capsule = radius, half_height = h}");
+}
+
+void push_hit(lua_State* L, const QueryHit& hit) {
+    lua_createtable(L, 0, 4);
+    push_entity(L, hit.id);
+    lua_setfield(L, -2, "entity");
+    push_vector(L, hit.point);
+    lua_setfield(L, -2, "point");
+    push_vector(L, hit.normal);
+    lua_setfield(L, -2, "normal");
+    lua_pushnumber(L, hit.distance);
+    lua_setfield(L, -2, "distance");
+}
+int push_hits(lua_State* L, const std::vector<QueryHit>& hits, bool all) {
+    if (!all) {
+        if (hits.empty()) lua_pushnil(L);
+        else push_hit(L, hits.front());
+        return 1;
+    }
+    lua_createtable(L, int(hits.size()), 0);
+    for (size_t i = 0; i < hits.size(); ++i) {
+        push_hit(L, hits[i]);
+        lua_rawseti(L, -2, int(i + 1));
+    }
+    return 1;
+}
+template<bool All>
+int maya_raycast(lua_State* L, ScriptApi& api) {
+    const auto hits = query_physics(api).raycast(check_vector(L, 1), check_vector(L, 2), float(luaL_checknumber(L, 3)),
+                                                  check_filter(L, 4, api));
+    return push_hits(L, hits, All);
+}
+template<bool All>
+int maya_shape_cast(lua_State* L, ScriptApi& api) {
+    auto rotation = math::Quat{};
+    const auto filter = check_filter(L, 5, api, &rotation);
+    const auto hits = query_physics(api).shape_cast(check_shape(L, 1), check_vector(L, 2), rotation, check_vector(L, 3),
+                                                     float(luaL_checknumber(L, 4)), filter);
+    return push_hits(L, hits, All);
+}
+int maya_overlap(lua_State* L, ScriptApi& api) {
+    auto rotation = math::Quat{};
+    const auto filter = check_filter(L, 3, api, &rotation);
+    const auto hits = query_physics(api).overlap(check_shape(L, 1), check_vector(L, 2), rotation, filter);
+    lua_createtable(L, int(hits.size()), 0);
+    for (size_t i = 0; i < hits.size(); ++i) {
+        push_entity(L, hits[i].id);
+        lua_rawseti(L, -2, int(i + 1));
+    }
+    return 1;
+}
+
 int entity_eq(lua_State* L) {
     lua_pushboolean(L, check_entity(L, 1) == check_entity(L, 2));
     return 1;
@@ -738,14 +908,27 @@ void open_maya_library(lua_State* L) {
                     {"world_rotation", guarded<entity_world_rotation>}, {"set_position", guarded<entity_set_position>},
                     {"set_rotation", guarded<entity_set_rotation>}, {"set_scale", guarded<entity_set_scale>},
                     {"has", guarded<entity_has>}, {"get", guarded<entity_get>}, {"set", guarded<entity_set>},
-                    {"destroy", guarded<entity_destroy>}});
+                    {"destroy", guarded<entity_destroy>}, {"velocity", guarded<entity_velocity>},
+                    {"angular_velocity", guarded<entity_angular_velocity>}, {"mass", guarded<entity_mass>},
+                    {"sleeping", guarded<entity_sleeping>}, {"motion", guarded<entity_motion>},
+                    {"add_force", guarded<body_request<&BodyCommands::add_force>>},
+                    {"add_torque", guarded<body_request<&BodyCommands::add_torque>>},
+                    {"add_impulse", guarded<body_request<&BodyCommands::add_impulse>>},
+                    {"add_angular_impulse", guarded<body_request<&BodyCommands::add_angular_impulse>>},
+                    {"set_velocity", guarded<body_request<&BodyCommands::set_linear_velocity>>},
+                    {"set_angular_velocity", guarded<body_request<&BodyCommands::set_angular_velocity>>},
+                    {"move_kinematic", guarded<entity_move_kinematic>}, {"teleport", guarded<entity_teleport>},
+                    {"wake", guarded<entity_wake>}});
     make_metatable(L, quaternion_tag, quaternion_index, quaternion_eq, quaternion_tostring,
                    {{"rotate", pure<quaternion_rotate>}, {"normalized", pure<quaternion_normalized>},
                     {"inverse", pure<quaternion_inverse>}},
                    quaternion_mul);
     lua_newtable(L);
     set_functions(L, {{"log", guarded<maya_log>}, {"tick", guarded<maya_tick>}, {"time", guarded<maya_time>},
-                      {"delta", guarded<maya_delta>}, {"find", guarded<maya_find>}, {"create", guarded<maya_create>}});
+                      {"delta", guarded<maya_delta>}, {"find", guarded<maya_find>}, {"create", guarded<maya_create>},
+                      {"raycast", guarded<maya_raycast<false>>}, {"raycast_all", guarded<maya_raycast<true>>},
+                      {"shape_cast", guarded<maya_shape_cast<false>>}, {"shape_cast_all", guarded<maya_shape_cast<true>>},
+                      {"overlap", guarded<maya_overlap>}});
     lua_newtable(L);
     set_functions(L, {{"down", guarded<input_down>}, {"pressed", guarded<input_pressed>}, {"released", guarded<input_released>},
                       {"look", guarded<input_look>}, {"scroll", guarded<input_scroll>}});

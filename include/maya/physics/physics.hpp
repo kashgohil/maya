@@ -91,6 +91,41 @@ struct BodyState {
     bool sleeping = false;
 };
 
+/// What a query hits: colliders in these groups, sensors only when asked, and never `ignore`.
+struct QueryFilter {
+    uint16_t groups = all_collision_groups; // bit n: hit colliders in group n
+    bool sensors = false;
+    std::optional<EntityHandle> ignore;
+};
+/// A query result against the last completed step: one per body, the nearest point.
+struct QueryHit {
+    EntityHandle entity;
+    EntityId id;
+    math::Vec3 point{0.0f}; // world space; for an overlap, a point where they touch
+    math::Vec3 normal{0.0f}; // the hit surface's outward normal
+    float distance = 0.0f; // along the ray or cast; 0 for an overlap, or a cast that starts touching
+};
+
+enum class PhysicsEventKind : uint8_t { contact_begin, contact_end, trigger_enter, trigger_exit };
+const char* physics_event_name(PhysicsEventKind kind) noexcept;
+/// A contact or trigger event from a step, delivered in phase 7 in order of kind, then `first`, then
+/// `second` (first < second). A trigger is a pair where either collider is a sensor. Events hold
+/// identities, never component pointers.
+struct PhysicsEvent {
+    PhysicsEventKind kind = PhysicsEventKind::contact_begin;
+    uint64_t tick = 0;
+    EntityId first, second;
+    /// The two entities, when they are still in the World and not being destroyed in this tick's
+    /// batch; a recipient without one is skipped (and counted in PhysicsStats::event_recipients_skipped).
+    std::optional<EntityHandle> first_entity, second_entity;
+    math::Vec3 point{0.0f}; // begin and enter: where they touched
+    math::Vec3 normal{0.0f}; // begin and enter: from first toward second
+    float speed = 0.0f; // begin and enter: how fast they approached along the normal, m/s
+    /// End and exit: because a body was removed (its entity destroyed, its body removed, or the
+    /// session stopping), not because the two separated.
+    bool removed = false;
+};
+
 /// Counts for diagnostics; the step flags count steps where Jolt reported the limit.
 struct PhysicsStats {
     size_t bodies = 0, static_bodies = 0, kinematic_bodies = 0, dynamic_bodies = 0;
@@ -99,8 +134,11 @@ struct PhysicsStats {
     uint64_t steps_with_errors = 0;
     uint64_t manifold_cache_full = 0, body_pair_cache_full = 0, contact_constraints_full = 0;
     uint64_t bodies_created = 0, bodies_removed = 0;
+    uint64_t events = 0; // contact and trigger events produced
+    uint64_t event_recipients_skipped = 0; // recipients already gone, or being destroyed, at delivery
+    uint64_t contact_records_dropped = 0; // contact changes Jolt reported that could not be stored (out of memory)
     // Wall time of the last tick's phases, in milliseconds.
-    double prepare_ms = 0.0, step_ms = 0.0, synchronize_ms = 0.0, commit_ms = 0.0;
+    double prepare_ms = 0.0, step_ms = 0.0, synchronize_ms = 0.0, events_ms = 0.0, commit_ms = 0.0;
 };
 
 /// Jolt's process-wide allocations, counted by Maya's allocator hooks.
@@ -147,6 +185,11 @@ public:
     /// Names the system making the following requests, for errors reported after the step.
     void set_source(std::string_view name) { m_source = name; }
     size_t size() const noexcept { return m_requests.size(); }
+    /// Drops the requests made after the first `size`, as if they were never made. Script hosts use
+    /// it to discard a failed call's requests.
+    void truncate(size_t size) {
+        if (size < m_requests.size()) m_requests.erase(m_requests.begin() + std::ptrdiff_t(size), m_requests.end());
+    }
 
 private:
     friend class PhysicsWorld;
@@ -190,13 +233,35 @@ public:
     /// transform of, removes the transform of, or reparents an entity with a kinematic or dynamic
     /// body, or puts any body under one.
     void check_world_commands(const World& world, const WorldCommands& commands, size_t first = 0) const;
-    /// Phase 4: moves static bodies whose committed transforms changed, then applies the requests.
-    /// Kinematic bodies reach their targets over `interval`; those without a target stop.
-    void prepare(const World& world, const BodyCommands& requests, float interval);
+    /// Phase 4: moves static bodies whose committed transforms changed, then applies the requests of
+    /// each list in turn, in the order they were made. Kinematic bodies reach their targets over
+    /// `interval`; those without a target stop.
+    void prepare(const World& world, std::span<const BodyCommands* const> requests, float interval);
+    void prepare(const World& world, const BodyCommands& requests, float interval) {
+        const BodyCommands* lists[] = {&requests};
+        prepare(world, lists, interval);
+    }
     /// Phase 5: one fixed interval.
     void step(float interval);
     /// Phase 6: appends the moved kinematic and dynamic poses to the tick's batch, in creation order.
     void synchronize(const World& world, WorldCommands& commands);
+    /// Phase 7: the contacts and triggers that began or ended in the last step, and the ends caused by
+    /// bodies removed since, sorted. Recipients destroyed in `commands` are left out of the events.
+    std::vector<PhysicsEvent> take_events(const World& world, const WorldCommands& commands, uint64_t tick);
+    /// When the session stops: ends every contact and trigger still in progress (`removed` set), sorted.
+    std::vector<PhysicsEvent> end_contacts(const World& world, uint64_t tick);
+
+    /// Queries against the last completed step, on the owner thread between steps. Results are one per
+    /// body, sorted by distance and then EntityId, and repeat exactly for the same state. They throw
+    /// std::invalid_argument for a direction that is zero or not finite, a negative distance, or a
+    /// shape a collider could not have.
+    std::vector<QueryHit> raycast(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
+    /// Sweeps a shape from `origin` along `direction` for `distance`.
+    std::vector<QueryHit> shape_cast(const ShapeGeometry& shape, math::Vec3 origin, math::Quat rotation, math::Vec3 direction,
+                                     float distance, const QueryFilter& filter = {}) const;
+    /// The bodies a shape at `position` touches, sorted by EntityId.
+    std::vector<QueryHit> overlap(const ShapeGeometry& shape, math::Vec3 position, math::Quat rotation,
+                                  const QueryFilter& filter = {}) const;
     /// Creates every body in order, or none: returns why the first refused one cannot be created,
     /// naming its entity, or empty. Play sessions use it for the bodies authored in a scene.
     std::string create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies);

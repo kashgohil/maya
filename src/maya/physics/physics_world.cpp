@@ -3,7 +3,15 @@
 
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
+#include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
@@ -13,8 +21,11 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <map>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -205,7 +216,95 @@ JPH::Ref<JPH::Shape> make_shape(const std::vector<ColliderDesc>& colliders, cons
     return result.Get();
 }
 
+/// A contact that began or ended in a step, as Jolt reported it from a worker thread.
+struct ContactRecord {
+    bool added = false;
+    JPH::BodyID a, b; // a < b
+    JPH::SubShapeID sub_a, sub_b;
+    math::Vec3 point{0.0f}, normal{0.0f}; // added: normal from a toward b
+    float speed = 0.0f; // added: approach speed along the normal
+    bool sensor = false; // added: either body is a sensor
+};
+
+/// Jolt's contact callbacks run on worker threads while every body is locked: they only append plain
+/// records, and never throw. The owner thread takes them after the step (PhysicsWorld::take_events).
+class ContactRecorder final : public JPH::ContactListener {
+public:
+    void OnContactAdded(const JPH::Body& a, const JPH::Body& b, const JPH::ContactManifold& manifold, JPH::ContactSettings&) override {
+        auto record = ContactRecord{true, a.GetID(), b.GetID(), manifold.mSubShapeID1, manifold.mSubShapeID2};
+        const auto point = manifold.GetWorldSpaceContactPointOn1(0);
+        const auto normal = manifold.mWorldSpaceNormal;
+        record.point = maya_vector(JPH::Vec3(point));
+        record.normal = maya_vector(normal);
+        record.speed = (a.GetPointVelocity(point) - b.GetPointVelocity(point)).Dot(normal);
+        record.sensor = a.IsSensor() || b.IsSensor();
+        append(record);
+    }
+    void OnContactRemoved(const JPH::SubShapeIDPair& pair) override {
+        append({false, pair.GetBody1ID(), pair.GetBody2ID(), pair.GetSubShapeID1(), pair.GetSubShapeID2()});
+    }
+    /// Swaps the recorded contacts into `into` (cleared first), keeping both buffers' capacity.
+    void take(std::vector<ContactRecord>& into) {
+        into.clear();
+        const auto lock = std::scoped_lock(m_mutex);
+        std::swap(into, m_records);
+    }
+    uint64_t dropped() const noexcept { return m_dropped; }
+
+private:
+    void append(const ContactRecord& record) noexcept {
+        try {
+            const auto lock = std::scoped_lock(m_mutex);
+            m_records.push_back(record);
+        } catch (...) {
+            ++m_dropped; // out of memory: the event is lost, never the step
+        }
+    }
+    std::mutex m_mutex;
+    std::vector<ContactRecord> m_records;
+    std::atomic<uint64_t> m_dropped = 0;
+};
+
+/// Queries hit the groups in the filter's mask.
+class QueryGroups final : public JPH::ObjectLayerFilter {
+public:
+    explicit QueryGroups(uint16_t groups) : m_groups(groups) {}
+    bool ShouldCollide(JPH::ObjectLayer layer) const override { return (uint32_t(m_groups) >> group_of(layer) & 1u) != 0; }
+
+private:
+    uint16_t m_groups;
+};
+
+/// Queries skip sensors unless asked, and the ignored body.
+class QueryBodies final : public JPH::BodyFilter {
+public:
+    QueryBodies(bool sensors, JPH::BodyID ignore) : m_sensors(sensors), m_ignore(ignore) {}
+    bool ShouldCollide(const JPH::BodyID& body) const override { return body != m_ignore; }
+    bool ShouldCollideLocked(const JPH::Body& body) const override { return m_sensors || !body.IsSensor(); }
+
+private:
+    bool m_sensors;
+    JPH::BodyID m_ignore;
+};
+
+std::optional<math::Vec3> unit(const math::Vec3& value) noexcept {
+    if (!finite(value)) return std::nullopt;
+    const auto length = value.length();
+    if (!(length > 1e-12f)) return std::nullopt;
+    return value * (1.0f / length);
+}
+
 } // namespace
+
+const char* physics_event_name(PhysicsEventKind kind) noexcept {
+    switch (kind) {
+    case PhysicsEventKind::contact_begin: return "contact_begin";
+    case PhysicsEventKind::contact_end: return "contact_end";
+    case PhysicsEventKind::trigger_enter: return "trigger_enter";
+    case PhysicsEventKind::trigger_exit: break;
+    }
+    return "trigger_exit";
+}
 
 const char* motion_type_name(MotionType type) noexcept {
     switch (type) {
@@ -241,6 +340,7 @@ std::string validate_body(const BodyDesc& body) {
 struct PhysicsWorld::Impl {
     struct Record {
         EntityHandle entity;
+        EntityId id; // for sorting query results and events
         JPH::BodyID body;
         MotionType motion = MotionType::static_body;
         bool alive = true;
@@ -258,6 +358,118 @@ struct PhysicsWorld::Impl {
         system.Init(settings.max_bodies, 0, settings.max_body_pairs, settings.max_contact_constraints, layers,
                     object_vs_broad_phase, object_pairs);
         system.SetGravity(jolt(settings.gravity));
+        system.SetContactListener(&contacts);
+    }
+
+    /// Two bodies in contact: how many of their sub-shape pairs touch, and whether the contact is
+    /// held while a body sleeps (Jolt removes a sleeping body's contacts; Maya keeps the pair).
+    struct Pair {
+        int touching = 0;
+        bool dormant = false;
+        bool sensor = false;
+    };
+    using PairKey = std::pair<uint32_t, uint32_t>; // the bodies' IDs, lower first
+    static PairKey key(JPH::BodyID a, JPH::BodyID b) noexcept {
+        const auto x = a.GetIndexAndSequenceNumber(), y = b.GetIndexAndSequenceNumber();
+        return x < y ? PairKey{x, y} : PairKey{y, x};
+    }
+    struct PairHash {
+        size_t operator()(const PairKey& key) const noexcept { return std::hash<uint64_t>{}(uint64_t(key.first) << 32 | key.second); }
+    };
+    void add_pair(const PairKey& key, Pair pair) {
+        pairs.emplace(key, pair);
+        pairs_of[key.first].push_back(key);
+        pairs_of[key.second].push_back(key);
+    }
+    void erase_pair(const PairKey& key) {
+        pairs.erase(key);
+        apart.erase(key);
+        for (const auto body : {key.first, key.second}) {
+            auto found = pairs_of.find(body);
+            if (found == pairs_of.end()) continue;
+            std::erase(found->second, key);
+            if (found->second.empty()) pairs_of.erase(found);
+        }
+    }
+    const Record* by_id(uint32_t body) const noexcept {
+        const auto it = by_body.find(body);
+        return it == by_body.end() ? nullptr : &records[it->second];
+    }
+    /// An event between two records, `first` the lower EntityId; the normal turns with the order.
+    PhysicsEvent event(bool begin, const Pair& pair, const Record& a, const Record& b, const ContactRecord* touch) const {
+        auto result = PhysicsEvent{};
+        result.kind = pair.sensor ? (begin ? PhysicsEventKind::trigger_enter : PhysicsEventKind::trigger_exit)
+                                  : (begin ? PhysicsEventKind::contact_begin : PhysicsEventKind::contact_end);
+        const auto swapped = b.id < a.id;
+        const auto& first = swapped ? b : a;
+        const auto& second = swapped ? a : b;
+        result.first = first.id;
+        result.second = second.id;
+        result.first_entity = first.entity;
+        result.second_entity = second.entity;
+        if (touch) {
+            result.point = touch->point;
+            result.normal = swapped ? touch->normal * -1.0f : touch->normal; // records run from the lower body ID
+            if (touch->a != a.body) result.normal = result.normal * -1.0f;
+            result.speed = touch->speed;
+        }
+        return result;
+    }
+    /// Ends every pair a body is part of, as `removed` events for the next delivery.
+    void end_pairs_of(const Record& record) {
+        const auto body = record.body.GetIndexAndSequenceNumber();
+        const auto found = pairs_of.find(body);
+        if (found == pairs_of.end()) return;
+        const auto keys = found->second; // erase_pair changes the list
+        for (const auto& key : keys) {
+            const auto other = key.first == body ? key.second : key.first;
+            if (const auto* partner = by_id(other)) {
+                auto ended = event(false, pairs.at(key), record, *partner, nullptr);
+                ended.removed = true;
+                pending.push_back(ended);
+            }
+            erase_pair(key);
+        }
+    }
+    /// Keeps a recipient only if its entity is still in the World and not destroyed in `destroyed`.
+    void resolve(std::optional<EntityHandle>& recipient, const World& world, const std::unordered_set<uint32_t>& destroyed) {
+        if (recipient && world.alive(*recipient) && !destroyed.contains(recipient->slot)) return;
+        recipient.reset();
+        ++stats.event_recipients_skipped;
+    }
+    std::vector<PhysicsEvent> finish(std::vector<PhysicsEvent> events, uint64_t tick, const World& world,
+                                     const std::unordered_set<uint32_t>& destroyed) {
+        for (auto& e : events) {
+            e.tick = tick;
+            resolve(e.first_entity, world, destroyed);
+            resolve(e.second_entity, world, destroyed);
+        }
+        std::ranges::sort(events, {}, [](const PhysicsEvent& e) { return std::tuple(e.kind, e.first, e.second); });
+        stats.events += events.size();
+        return events;
+    }
+
+    template<class Collector>
+    std::vector<QueryHit> hits(const Collector& collector, auto&& place) const {
+        auto nearest = std::map<uint32_t, QueryHit>{}; // one per body
+        for (const auto& hit : collector.mHits) {
+            const auto* record = by_id(hit.mBodyID2.GetIndexAndSequenceNumber());
+            if (!record) continue;
+            auto result = place(hit);
+            result.entity = record->entity;
+            result.id = record->id;
+            auto [it, added] = nearest.try_emplace(hit.mBodyID2.GetIndexAndSequenceNumber(), result);
+            if (!added && result.distance < it->second.distance) it->second = result;
+        }
+        auto results = std::vector<QueryHit>{};
+        for (auto& [body, hit] : nearest) results.push_back(hit);
+        std::ranges::sort(results, {}, [](const QueryHit& h) { return std::tuple(h.distance, h.id); });
+        return results;
+    }
+    const JPH::NarrowPhaseQuery& query() const { return system.GetNarrowPhaseQueryNoLock(); }
+    JPH::BodyID ignored(const QueryFilter& filter) const {
+        const auto* record = filter.ignore ? find(*filter.ignore) : nullptr;
+        return record ? record->body : JPH::BodyID();
     }
 
     JPH::BodyInterface& bodies() { return system.GetBodyInterfaceNoLock(); }
@@ -281,7 +493,9 @@ struct PhysicsWorld::Impl {
     void remove(Record& record) {
         bodies().RemoveBody(record.body);
         bodies().DestroyBody(record.body);
+        end_pairs_of(record);
         index.erase(record.entity.slot);
+        by_body.erase(record.body.GetIndexAndSequenceNumber());
         record.alive = false;
         (record.motion == MotionType::static_body ? live_static : live_moving) -= 1;
         ++stats.bodies_removed;
@@ -297,8 +511,10 @@ struct PhysicsWorld::Impl {
             if (record.alive) kept.push_back(std::move(record));
         records = std::move(kept);
         index.clear();
+        by_body.clear();
         for (uint32_t i = 0; i < records.size(); ++i) {
             index[records[i].entity.slot] = i;
+            by_body[records[i].body.GetIndexAndSequenceNumber()] = i;
             bodies().SetUserData(records[i].body, i);
         }
         dead = 0;
@@ -315,8 +531,17 @@ struct PhysicsWorld::Impl {
     ObjectPairs object_pairs;
     JPH::TempAllocatorImplWithMallocFallback temp;
     JPH::PhysicsSystem system;
+    ContactRecorder contacts;
     std::vector<Record> records; // creation order
     std::unordered_map<uint32_t, uint32_t> index; // entity slot -> record
+    std::unordered_map<uint32_t, uint32_t> by_body; // Jolt body ID (index and sequence) -> record
+    std::unordered_map<PairKey, Pair, PairHash> pairs; // bodies in contact; events are sorted, so their order does not matter
+    std::unordered_map<uint32_t, std::vector<PairKey>> pairs_of; // each body's pairs
+    std::unordered_set<PairKey, PairHash> apart; // pairs touching nowhere now: held while asleep, or about to end
+    // take_events' scratch, kept between steps: the step's records, and each pair's change.
+    std::vector<ContactRecord> taken;
+    std::unordered_map<PairKey, std::pair<int, const ContactRecord*>, PairHash> changes;
+    std::vector<PhysicsEvent> pending; // ends from removed bodies, for the next delivery
     size_t live_static = 0, live_moving = 0, dead = 0;
     PhysicsStats stats;
 };
@@ -386,6 +611,7 @@ void PhysicsWorld::Impl::create(const World& world, EntityHandle entity, const B
     if (!created) fail("the physics world is full (" + std::to_string(settings.max_bodies) + " bodies)");
     auto record = Record{};
     record.entity = entity;
+    record.id = world.persistent_id(entity).value_or(EntityId{});
     record.body = created->GetID();
     record.motion = body.motion;
     record.position = position;
@@ -402,6 +628,7 @@ void PhysicsWorld::Impl::create(const World& world, EntityHandle entity, const B
         ++live_moving;
     }
     index[entity.slot] = uint32_t(records.size());
+    by_body[record.body.GetIndexAndSequenceNumber()] = uint32_t(records.size());
     records.push_back(std::move(record));
     ++stats.bodies_created;
 }
@@ -536,6 +763,7 @@ std::optional<BodyState> PhysicsWorld::state(EntityHandle entity) const {
 
 PhysicsStats PhysicsWorld::stats() const {
     auto stats = m_impl->stats;
+    stats.contact_records_dropped = m_impl->contacts.dropped();
     for (const auto& record : m_impl->records) {
         if (!record.alive) continue;
         ++stats.bodies;
@@ -585,7 +813,7 @@ void PhysicsWorld::check_world_commands(const World& world, const WorldCommands&
     }
 }
 
-void PhysicsWorld::prepare(const World& world, const BodyCommands& requests, float interval) {
+void PhysicsWorld::prepare(const World& world, std::span<const BodyCommands* const> lists, float interval) {
     auto& impl = *m_impl;
     const auto timer = PhaseTimer(impl.stats.prepare_ms);
     auto& bodies = impl.bodies();
@@ -611,9 +839,10 @@ void PhysicsWorld::prepare(const World& world, const BodyCommands& requests, flo
             record.world = *matrix;
         }
     }
-    // This tick's requests, in the order they were made.
+    // The requests, list by list, in the order they were made.
     using Kind = BodyCommands::Kind;
-    for (const auto& request : requests.m_requests) {
+    for (const auto* requests : lists)
+    for (const auto& request : requests->m_requests) {
         if (request.kind == Kind::create || request.kind == Kind::remove) continue;
         auto* record = impl.find(std::get<EntityHandle>(request.entity));
         if (!record) continue; // checked when requested; nothing removes bodies before the commit
@@ -688,6 +917,170 @@ void PhysicsWorld::synchronize(const World& world, WorldCommands& commands) {
     }
 }
 
+std::vector<PhysicsEvent> PhysicsWorld::take_events(const World& world, const WorldCommands& commands, uint64_t tick) {
+    auto& impl = *m_impl;
+    const auto timer = PhaseTimer(impl.stats.events_ms);
+    auto events = std::exchange(impl.pending, {});
+    // Jolt's records, in whatever order its threads made them, become per-pair changes: how many
+    // sub-shape contacts each pair gained or lost, and the added record with the lowest sub-shape IDs.
+    auto& records = impl.taken;
+    impl.contacts.take(records);
+    auto& changes = impl.changes;
+    changes.clear();
+    for (const auto& record : records) {
+        auto& [delta, touch] = changes[Impl::key(record.a, record.b)];
+        delta += record.added ? 1 : -1;
+        if (record.added && (!touch || std::pair(record.sub_a.GetValue(), record.sub_b.GetValue()) <
+                                           std::pair(touch->sub_a.GetValue(), touch->sub_b.GetValue())))
+            touch = &record;
+    }
+    for (const auto& [key, change] : changes) {
+        const auto [delta, touch] = change;
+        const auto* a = impl.by_id(key.first);
+        const auto* b = impl.by_id(key.second);
+        if (!a || !b) continue; // a removed body's contact: its pair already ended
+        auto found = impl.pairs.find(key);
+        if (found == impl.pairs.end()) {
+            if (delta <= 0 || !touch) continue;
+            impl.add_pair(key, Impl::Pair{0, false, touch->sensor});
+            found = impl.pairs.find(key);
+        }
+        auto& pair = found->second;
+        const auto before = pair.touching;
+        pair.touching += delta;
+        if (pair.touching > 0 && before <= 0 && !pair.dormant) events.push_back(impl.event(true, pair, *a, *b, touch));
+        if (pair.touching > 0) {
+            pair.dormant = false;
+            impl.apart.erase(key);
+        } else {
+            impl.apart.insert(key);
+        }
+    }
+    // Pairs no longer touching: held while a moving body sleeps, ended once both are awake and apart.
+    const auto asleep = [&](const Impl::Record& record) {
+        return record.motion != MotionType::static_body && !impl.bodies().IsActive(record.body);
+    };
+    for (const auto key : std::vector(impl.apart.begin(), impl.apart.end())) {
+        auto& pair = impl.pairs.at(key);
+        const auto* a = impl.by_id(key.first);
+        const auto* b = impl.by_id(key.second);
+        if (!a || !b) continue;
+        if (asleep(*a) || asleep(*b)) {
+            pair.dormant = true;
+            continue;
+        }
+        events.push_back(impl.event(false, pair, *a, *b, nullptr));
+        impl.erase_pair(key);
+    }
+    // Recipients destroyed in this tick's batch: looked up only when there is something to deliver.
+    auto destroyed = std::unordered_set<uint32_t>{};
+    if (!events.empty())
+        for (const auto& staged : commands.staged())
+            if (staged.kind == WorldCommands::Kind::destroy)
+                if (const auto* entity = std::get_if<EntityHandle>(&staged.target)) destroyed.insert(entity->slot);
+    return impl.finish(std::move(events), tick, world, destroyed);
+}
+
+std::vector<PhysicsEvent> PhysicsWorld::end_contacts(const World& world, uint64_t tick) {
+    auto& impl = *m_impl;
+    auto events = std::exchange(impl.pending, {});
+    for (const auto& [key, pair] : impl.pairs) {
+        const auto* a = impl.by_id(key.first);
+        const auto* b = impl.by_id(key.second);
+        if (!a || !b) continue;
+        auto ended = impl.event(false, pair, *a, *b, nullptr);
+        ended.removed = true;
+        events.push_back(ended);
+    }
+    impl.pairs.clear();
+    impl.pairs_of.clear();
+    impl.apart.clear();
+    impl.contacts.take(impl.taken);
+    return impl.finish(std::move(events), tick, world, {});
+}
+
+std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter) const {
+    const auto& impl = *m_impl;
+    const auto along = unit(direction);
+    if (!along || !finite(origin)) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
+    if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A raycast's distance must be finite and not negative");
+    if (distance == 0.0f) return {};
+    const auto ray = JPH::RRayCast(JPH::RVec3(jolt(origin)), jolt(*along * distance));
+    auto collector = JPH::AllHitCollisionCollector<JPH::CastRayCollector>{};
+    const auto groups = QueryGroups(filter.groups);
+    const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
+    impl.query().CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
+    // A ray hit has no body ID named mBodyID2: adapt it to the shared collector reader.
+    struct Hit {
+        JPH::BodyID mBodyID2;
+        JPH::SubShapeID sub;
+        float fraction;
+    };
+    struct Hits {
+        std::vector<Hit> mHits;
+    } found;
+    for (const auto& hit : collector.mHits) found.mHits.push_back({hit.mBodyID, hit.mSubShapeID2, hit.mFraction});
+    return impl.hits(found, [&](const Hit& hit) {
+        auto result = QueryHit{};
+        result.distance = hit.fraction * distance;
+        result.point = origin + *along * result.distance;
+        const auto lock = JPH::BodyLockRead(impl.system.GetBodyLockInterfaceNoLock(), hit.mBodyID2);
+        if (lock.Succeeded()) result.normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.sub, JPH::RVec3(jolt(result.point))));
+        return result;
+    });
+}
+
+std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math::Vec3 origin, math::Quat rotation, math::Vec3 direction,
+                                               float distance, const QueryFilter& filter) const {
+    const auto& impl = *m_impl;
+    const auto along = unit(direction);
+    const auto turned = normalized(rotation);
+    if (!along || !finite(origin) || !turned)
+        throw std::invalid_argument("A shape cast needs a finite origin and rotation, and a finite, nonzero direction");
+    if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A shape cast's distance must be finite and not negative");
+    const auto collider = ColliderDesc{shape};
+    if (auto reason = validate_collider(collider); !reason.empty()) throw std::invalid_argument("A shape cast's shape is invalid: " + reason);
+    if (distance == 0.0f) return overlap(shape, origin, rotation, filter);
+    const auto swept = make_shape({collider}, math::Vec3(1.0f), 1000.0f);
+    const auto cast = JPH::RShapeCast::sFromWorldTransform(swept, JPH::Vec3::sReplicate(1.0f),
+                                                           JPH::RMat44::sRotationTranslation(jolt(*turned), JPH::RVec3(jolt(origin))),
+                                                           jolt(*along * distance));
+    auto settings = JPH::ShapeCastSettings();
+    settings.mReturnDeepestPoint = true;
+    auto collector = JPH::AllHitCollisionCollector<JPH::CastShapeCollector>{};
+    const auto groups = QueryGroups(filter.groups);
+    const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
+    impl.query().CastShape(cast, settings, JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
+    return impl.hits(collector, [&](const JPH::ShapeCastResult& hit) {
+        auto result = QueryHit{};
+        result.distance = hit.mFraction * distance;
+        result.point = maya_vector(hit.mContactPointOn2);
+        if (const auto axis = maya_vector(hit.mPenetrationAxis); const auto normal = unit(axis)) result.normal = *normal * -1.0f;
+        return result;
+    });
+}
+
+std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::Vec3 position, math::Quat rotation,
+                                            const QueryFilter& filter) const {
+    const auto& impl = *m_impl;
+    const auto turned = normalized(rotation);
+    if (!finite(position) || !turned) throw std::invalid_argument("An overlap needs a finite position and rotation");
+    const auto collider = ColliderDesc{shape};
+    if (auto reason = validate_collider(collider); !reason.empty()) throw std::invalid_argument("An overlap's shape is invalid: " + reason);
+    const auto probe = make_shape({collider}, math::Vec3(1.0f), 1000.0f);
+    auto collector = JPH::AllHitCollisionCollector<JPH::CollideShapeCollector>{};
+    const auto groups = QueryGroups(filter.groups);
+    const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
+    impl.query().CollideShape(probe, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sRotationTranslation(jolt(*turned), JPH::RVec3(jolt(position))),
+                              JPH::CollideShapeSettings(), JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
+    return impl.hits(collector, [&](const JPH::CollideShapeResult& hit) {
+        auto result = QueryHit{};
+        result.point = maya_vector(hit.mContactPointOn2);
+        if (const auto normal = unit(maya_vector(hit.mPenetrationAxis))) result.normal = *normal * -1.0f;
+        return result;
+    });
+}
+
 std::string PhysicsWorld::create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies) {
     auto& impl = *m_impl;
     const auto first = impl.records.size();
@@ -706,6 +1099,7 @@ std::string PhysicsWorld::create_bodies(const World& world, std::span<const std:
             const auto& record = impl.records[i];
             impl.bodies().DestroyBody(record.body);
             impl.index.erase(record.entity.slot);
+            impl.by_body.erase(record.body.GetIndexAndSequenceNumber());
             (record.motion == MotionType::static_body ? impl.live_static : impl.live_moving) -= 1;
             --impl.stats.bodies_created;
         }

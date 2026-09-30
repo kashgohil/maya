@@ -33,8 +33,9 @@ enum class CallMode {
     declare, // running a script's top level: no engine access
     start, // an instance's start hook, at the tick boundary
     fixed, // fixed_update, before physics
+    late, // after physics: event hooks and late_fixed_update
     update, // once per frame: read-only
-    stop, // an instance's stop hook
+    stop, // an instance's stop hook, and events at the end of play
 };
 
 /// The engine services a hook call reaches through the `maya` table and entity methods. The script
@@ -46,6 +47,8 @@ public:
     virtual const World& world() const = 0;
     virtual const PhysicsWorld* physics() const = 0;
     virtual const InputFrame* input() const = 0; // fixed-tick hooks only
+    /// This tick's body requests; throws ScriptError where bodies cannot be pushed.
+    virtual BodyCommands& bodies() = 0;
     virtual uint64_t tick() const = 0;
     virtual double time() const = 0;
     virtual float delta() const = 0;

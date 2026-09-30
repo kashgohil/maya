@@ -53,8 +53,30 @@ PlayStartResult PlaySession::start(SceneDocument document, const PropertyValidat
 }
 
 PlaySession::~PlaySession() {
+    end_contacts();
     // Systems stop before the World they read goes away.
     while (m_started > 0) m_systems[--m_started]->stop();
+}
+
+void PlaySession::end_contacts() noexcept {
+    // Every contact and trigger still in progress ends, marked as removed; nothing systems do is kept.
+    if (failed() || m_started < m_systems.size()) return;
+    try {
+        const auto events = m_physics->end_contacts(*m_world, m_clock.tick());
+        auto discarded = m_world->commands();
+        auto bodies = BodyCommands(*m_physics, *m_world);
+        auto messages = std::vector<SimulationMessage>{};
+        const auto input = InputFrame{};
+        auto context = TickContext{*m_world, discarded, input, m_clock.tick(), m_clock.time(), float(m_clock.interval()),
+                                   bodies, *m_physics, messages, events, true};
+        for (auto& system : m_systems) {
+            try {
+                system->late_fixed_update(context);
+            } catch (...) {
+            }
+        }
+    } catch (...) {
+    }
 }
 
 PlayFrame PlaySession::update(double wall_delta) {
@@ -113,11 +135,30 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
         }
     }
     try {
-        m_physics->prepare(*m_world, bodies, interval); // phase 4
+        // Phase 4: the requests of the last phase 7, then this tick's.
+        auto lists = std::vector<const BodyCommands*>{};
+        if (m_late_bodies) lists.push_back(m_late_bodies.get());
+        lists.push_back(&bodies);
+        m_physics->prepare(*m_world, lists, interval);
         m_physics->step(interval); // phase 5
         m_physics->synchronize(*m_world, commands); // phase 6
     } catch (const std::exception& error) {
         throw std::runtime_error(std::string("Physics failed: ") + error.what());
+    }
+    // Phase 7: the step's events, then late_fixed_update. Changes join this tick's batch; body
+    // requests wait for the next step, so the completed one cannot change.
+    const auto events = m_physics->take_events(*m_world, commands, m_clock.tick());
+    auto late = std::make_unique<BodyCommands>(*m_physics, *m_world);
+    auto late_context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, *late, *m_physics, messages, events};
+    for (auto& system : m_systems) {
+        const auto first = commands.size();
+        late->set_source(system->name());
+        try {
+            system->late_fixed_update(late_context);
+            m_physics->check_world_commands(*m_world, commands, first);
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string(system->name()) + " failed after the step: " + error.what());
+        }
     }
     // One atomic commit: a rejected batch leaves the World as the previous tick completed it.
     const auto result = m_world->commit(commands);
@@ -125,6 +166,8 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
         throw std::runtime_error("The World rejected the tick's changes at command " + std::to_string(result.command_index) +
                                  " (" + error_name(result.error) + ")");
     m_physics->commit(*m_world, bodies, result);
+    m_physics->commit(*m_world, *late, result); // bodies created or removed in phase 7
+    m_late_bodies = std::move(late);
     m_clock.count_tick();
 }
 

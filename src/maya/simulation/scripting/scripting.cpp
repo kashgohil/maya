@@ -9,7 +9,8 @@ namespace maya {
 namespace scripting {
 namespace {
 
-constexpr const char* hook_names[] = {"start", "fixed_update", "update", "stop"};
+constexpr const char* hook_names[] = {"start", "fixed_update", "late_fixed_update", "update", "stop",
+                                      "on_contact_begin", "on_contact_end", "on_trigger_enter", "on_trigger_exit"};
 
 ScriptValueData default_for(ScriptValueType type) {
     switch (type) {

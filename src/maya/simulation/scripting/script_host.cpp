@@ -63,10 +63,12 @@ public:
         m_tick_context = &tick;
         m_physics = &tick.physics;
         m_commands = &tick.commands;
+        m_bodies = &tick.bodies;
         m_messages = &tick.messages;
         const auto clear = Scope([this] {
             m_tick_context = nullptr;
             m_commands = nullptr;
+            m_bodies = nullptr;
             m_messages = nullptr;
         });
         // Phase 1: instances whose entity or script went away stop, new script versions replace their
@@ -91,6 +93,32 @@ public:
         emit();
         compact();
         if (m_settings.reloads) m_settings.reloads->set_memory(m_vm->memory());
+    }
+
+    /// Phase 7: each event goes to its two entities' instances (first, then second), then every
+    /// late_fixed_update runs. When the session stops, only the events, with nothing to change.
+    void late_fixed_update(TickContext& tick) override {
+        m_tick_context = &tick;
+        m_physics = &tick.physics;
+        m_commands = tick.stopping ? nullptr : &tick.commands;
+        m_bodies = tick.stopping ? nullptr : &tick.bodies;
+        m_messages = &tick.messages;
+        const auto clear = Scope([this] {
+            m_tick_context = nullptr;
+            m_commands = nullptr;
+            m_bodies = nullptr;
+            m_messages = nullptr;
+        });
+        const auto mode = tick.stopping ? CallMode::stop : CallMode::late;
+        for (const auto& event : tick.events) {
+            deliver(event, event.first_entity, event.first, event.second, 1.0f, mode);
+            deliver(event, event.second_entity, event.second, event.first, -1.0f, mode);
+        }
+        if (!tick.stopping)
+            for (auto& instance : m_instances)
+                if (instance.active && !instance.disabled) call_hook(instance, "late_fixed_update", CallMode::late, tick.delta);
+        if (tick.stopping) m_pending.clear();
+        else emit();
     }
 
     void frame(FrameContext& frame) override {
@@ -124,7 +152,13 @@ public:
     const World& world() const override { return *m_world; }
     const PhysicsWorld* physics() const override { return m_physics; }
     const InputFrame* input() const override {
-        return m_tick_context && (m_mode == CallMode::fixed || m_mode == CallMode::start) ? &m_tick_context->input : nullptr;
+        const auto ticking = m_mode == CallMode::fixed || m_mode == CallMode::start || m_mode == CallMode::late;
+        return m_tick_context && ticking ? &m_tick_context->input : nullptr;
+    }
+    BodyCommands& bodies() override {
+        if (m_mode == CallMode::update) throw ScriptError("update hooks cannot push bodies; make changes in fixed_update");
+        if (!m_bodies) throw ScriptError("bodies cannot be pushed at the end of play");
+        return *m_bodies;
     }
     uint64_t tick() const override {
         return m_tick_context ? m_tick_context->tick : m_frame_context ? m_frame_context->tick : 0;
@@ -146,7 +180,8 @@ public:
         if (component == ComponentId::transform && m_physics)
             if (const auto motion = m_physics->motion_type(*handle); motion && *motion != MotionType::static_body)
                 throw ScriptError("cannot set the transform of entity " + id_text(entity) + ": its " + motion_type_name(*motion) +
-                                  " body's pose is written by physics");
+                                  " body's pose is written by physics; use " +
+                                  (*motion == MotionType::kinematic ? "move_kinematic or teleport" : "add_force, add_impulse, set_velocity, or teleport"));
         const auto key = std::pair(entity, component);
         auto found = m_pending_index.find(key);
         auto base = found != m_pending_index.end() ? std::optional(m_pending[found->second].value)
@@ -303,6 +338,31 @@ private:
         start_instance(m_instances.back(), values);
     }
 
+    /// Calls a recipient's event hook with the other entity and the contact: its point, the normal
+    /// from the recipient toward the other, the approach speed, and whether a body was removed.
+    void deliver(const PhysicsEvent& event, const std::optional<EntityHandle>& recipient, EntityId self, EntityId other,
+                 float sign, CallMode mode) {
+        if (!recipient) return; // gone, or being destroyed: counted by the physics world
+        const auto found = m_by_entity.find(self);
+        if (found == m_by_entity.end()) return;
+        auto& instance = m_instances[found->second];
+        if (!instance.active || instance.disabled) return;
+        const char* hooks[] = {"on_contact_begin", "on_contact_end", "on_trigger_enter", "on_trigger_exit"};
+        call_hook_with(instance, hooks[size_t(event.kind)], mode, [&](lua_State* L) {
+            push_entity(L, other);
+            lua_createtable(L, 0, 4);
+            push_script_value(L, {"point", ScriptValueType::vector, event.point});
+            lua_setfield(L, -2, "point");
+            push_script_value(L, {"normal", ScriptValueType::vector, event.normal * sign});
+            lua_setfield(L, -2, "normal");
+            lua_pushnumber(L, event.speed);
+            lua_setfield(L, -2, "speed");
+            lua_pushboolean(L, event.removed);
+            lua_setfield(L, -2, "removed");
+            return 2;
+        });
+    }
+
     /// Builds an instance's self (its entity, and each declared property from `values` when one fits,
     /// else its default) and runs start.
     void start_instance(Instance& instance, const std::vector<ScriptValue>& values) {
@@ -412,11 +472,19 @@ private:
     /// Calls a hook if the script defines it. A failure discards the call's changes and disables the
     /// instance.
     void call_hook(Instance& instance, const char* hook, CallMode mode, std::optional<double> argument) {
+        call_hook_with(instance, hook, mode, [&](lua_State* L) {
+            if (argument) lua_pushnumber(L, *argument);
+            return argument ? 1 : 0;
+        });
+    }
+    /// Calls a hook with the arguments `push` places on the stack (it returns how many).
+    template<class Push> void call_hook_with(Instance& instance, const char* hook, CallMode mode, Push&& push) {
         auto& script = m_compiled[instance.compiled];
         if (!script.error.empty() || instance.self_ref == LUA_NOREF) return;
         if (std::ranges::find(script.description.hooks, std::string_view(hook)) == script.description.hooks.end()) return;
         // The call is a transaction over the tick's commands and pending edits.
         const auto commands = m_commands ? m_commands->size() : 0;
+        const auto body_requests = m_bodies ? m_bodies->size() : 0;
         const auto counter = m_id_counter;
         m_call_pending = m_pending.size();
         m_journal.clear();
@@ -432,8 +500,8 @@ private:
                 lua_getref(L, script.loaded.module_ref);
                 if (lua_rawgetfield(L, -1, hook) != LUA_TFUNCTION) return; // removed since the script loaded
                 lua_getref(L, instance.self_ref);
-                if (argument) lua_pushnumber(L, *argument);
-                error = m_vm->call(L, argument ? 2 : 1);
+                const auto arguments = push(L);
+                error = m_vm->call(L, 1 + arguments);
             });
             !failure.empty())
             error = std::move(failure);
@@ -441,6 +509,7 @@ private:
         m_mode = CallMode::declare;
         if (error.empty()) return;
         if (m_commands) m_commands->truncate(commands);
+        if (m_bodies) m_bodies->truncate(body_requests);
         for (auto it = m_journal.rbegin(); it != m_journal.rend(); ++it) m_pending[it->index].value = std::move(it->previous);
         for (auto i = m_call_pending; i < m_pending.size(); ++i)
             m_pending_index.erase(std::pair(m_pending[i].entity, m_pending[i].component));
@@ -505,6 +574,7 @@ private:
     TickContext* m_tick_context = nullptr;
     FrameContext* m_frame_context = nullptr;
     WorldCommands* m_commands = nullptr;
+    BodyCommands* m_bodies = nullptr;
     std::vector<SimulationMessage>* m_messages = nullptr;
     CallMode m_mode = CallMode::declare;
     Instance* m_current = nullptr;

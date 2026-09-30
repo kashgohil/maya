@@ -62,10 +62,12 @@ private:
     PlaySession(std::unique_ptr<World> world, std::vector<std::unique_ptr<SimulationSystem>> systems,
                 ClockSettings clock, PhysicsSettings physics, std::optional<EntityId> camera);
     void run_tick(std::vector<SimulationMessage>& messages);
+    void end_contacts() noexcept;
 
     std::unique_ptr<World> m_world;
     std::unique_ptr<PhysicsWorld> m_physics; // declared after the World, so it is destroyed first
     std::vector<std::unique_ptr<SimulationSystem>> m_systems;
+    std::unique_ptr<BodyCommands> m_late_bodies; // requests from the last phase 7, for the next step
     size_t m_started = 0; // systems whose start was entered
     FixedClock m_clock;
     GameInput m_input;
