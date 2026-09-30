@@ -568,3 +568,111 @@ return M
                         count, total / 120.0, total / 120.0 * 1e6 / count, worst);
         }
 }
+
+TEST_CASE("A reloaded script replaces its instances at the next tick and keeps their exposed values", "[scripting][reload]") {
+    auto scripts = Scripts{};
+    const auto counter = scripts.add(1, "counter", R"(
+local C = {}
+C.properties = { speed = { type = "number", default = 1 } }
+function C:start() maya.log("v1 start " .. self.speed) end
+function C:fixed_update(dt)
+    self.count = (self.count or 0) + 1
+    self.speed += 1
+end
+function C:stop() maya.log("v1 stop " .. self.count) end
+return C
+)");
+    const auto other = scripts.add(2, "other", "local O = {}\nfunction O:stop() maya.log('other stopped') end\nreturn O");
+    auto settings = ScriptSettings{};
+    settings.reloads = std::make_shared<ScriptReloads>();
+    auto session = play(scripts, {entity(1, {NameComponent{"A"}, script(counter, {{"speed", ScriptValueType::number, 10.0f}})}),
+                                  entity(2, {NameComponent{"B"}, script(counter)}), entity(3, {script(other)})},
+                        settings);
+    session.run(3); // A's speed is 13 and B's is 4
+    session.messages.clear();
+
+    // A new version: speed is kept, extra is new, and the rest of self (count) starts over.
+    const auto v2 = R"(
+local C = {}
+C.properties = { speed = { type = "number", default = 1 }, extra = { type = "integer", default = 7 } }
+function C:start() maya.log("v2 start " .. self.speed .. " " .. self.extra .. " " .. tostring(self.count)) end
+return C
+)";
+    REQUIRE(settings.reloads->offer(counter, {"counter.luau", v2}).empty());
+    CHECK(session.messages.empty()); // nothing happens until a tick runs
+    session.run();
+    CHECK(session.texts(SimulationMessage::Level::info) ==
+          std::vector<std::string>{"A (counter.luau): v1 stop 3", "B (counter.luau): v1 stop 3", "A (counter.luau): v2 start 13 7 nil",
+                                   "B (counter.luau): v2 start 4 7 nil", "Reloaded counter.luau (2 instances)"});
+    REQUIRE(settings.reloads->applied().size() == 1);
+    CHECK(settings.reloads->applied()[0].script == counter);
+    CHECK(settings.reloads->applied()[0].tick == 3);
+    CHECK(settings.reloads->applied()[0].instances == 2);
+
+    // A version that does not compile is refused; the running one stays.
+    session.messages.clear();
+    const auto refused = settings.reloads->offer(counter, {"counter.luau", "local C = {\nreturn C"});
+    CHECK(refused.starts_with("counter.luau:2:"));
+    session.run(2);
+    CHECK(session.messages.empty());
+    CHECK(settings.reloads->applied().size() == 1);
+
+    // While paused the swap waits for a step.
+    REQUIRE(settings.reloads->offer(counter, {"counter.luau", "local C = {}\nfunction C:start() maya.log('v3') end\nreturn C"}).empty());
+    session.play->clock().pause();
+    session.run(3);
+    CHECK_FALSE(session.said("v3"));
+    session.play->clock().step();
+    session.run();
+    CHECK(session.said("v3"));
+    CHECK(settings.reloads->applied().size() == 2);
+    CHECK_FALSE(session.said("other stopped")); // other scripts are untouched
+}
+
+TEST_CASE("A reload reaches scripts not used yet and repairs scripts that did not compile", "[scripting][reload]") {
+    auto scripts = Scripts{};
+    const auto later = scripts.add(1, "later", "local L = {}\nfunction L:start() maya.log('old') end\nreturn L");
+    const auto broken = scripts.add(2, "broken", "local B = {\nreturn B");
+    auto settings = ScriptSettings{};
+    settings.reloads = std::make_shared<ScriptReloads>();
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<Native>([&](TickContext& tick) {
+        if (tick.tick == 2) tick.commands.add(handle(tick.world, 1), script(later));
+    }));
+    auto session = play(scripts, {entity(1, {}), entity(2, {NameComponent{"Broken"}, script(broken)})}, settings, std::move(systems));
+    session.run();
+    CHECK(session.said("broken.luau:2:"));
+    REQUIRE(settings.reloads->offer(later, {"later.luau", "local L = {}\nfunction L:start() maya.log('new') end\nreturn L"}).empty());
+    REQUIRE(settings.reloads->offer(broken, {"broken.luau", "local B = {}\nfunction B:start() maya.log('fixed') end\nreturn B"}).empty());
+    session.run(3);
+    CHECK(session.said("new"));
+    CHECK_FALSE(session.said("old"));
+    CHECK(session.said("Broken (broken.luau): fixed"));
+}
+
+TEST_CASE("Two hundred reloads while playing keep the VM's memory flat", "[scripting][reload]") {
+    auto scripts = Scripts{};
+    const auto source = [](int version) {
+        return "local S = {}\nS.properties = { speed = { type = \"number\", default = 1 } }\nlocal names = {}\n"
+               "for i = 1, 200 do names[i] = 'version " + std::to_string(version) + " name ' .. i end\n"
+               "function S:fixed_update(dt) self.speed += #names end\nreturn S";
+    };
+    const auto changing = scripts.add(1, "changing", source(0));
+    auto settings = ScriptSettings{};
+    settings.limits.memory_bytes = size_t{4} << 20;
+    settings.reloads = std::make_shared<ScriptReloads>(settings.limits);
+    auto entities = std::vector<SceneEntity>{};
+    for (int i = 0; i < 20; ++i) entities.push_back(entity(10 + i, {script(changing)}));
+    auto session = play(scripts, std::move(entities), settings);
+    session.run(2);
+    auto early = size_t{0};
+    for (int version = 1; version <= 200; ++version) {
+        REQUIRE(settings.reloads->offer(changing, {"changing.luau", source(version)}).empty());
+        session.run(2);
+        if (version == 20) early = settings.reloads->memory();
+    }
+    CHECK(session.texts(SimulationMessage::Level::error).empty());
+    CHECK(settings.reloads->applied().size() == 200);
+    INFO("after 20 reloads " << early << " bytes, after 200 " << settings.reloads->memory());
+    CHECK(settings.reloads->memory() < early + early / 4);
+}

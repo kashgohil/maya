@@ -55,7 +55,11 @@ inline std::filesystem::path sample_project() {
 /// project unless told not to, and counts the close requests it makes to the host.
 struct Harness {
     explicit Harness(bool open_sample = true, DeviceOptions options = {3, size_t{16} << 20})
-        : device(options), shell(device, "renderer source", "ui source", {{}, {}, {}, [this] { ++close_requests; }}) {
+        : device(options), shell(device, "renderer source", "ui source",
+                                 {{}, {}, {}, [this] { ++close_requests; }, [this](const std::filesystem::path& file) {
+                                      opened.push_back(file);
+                                      return open_result;
+                                  }}) {
         if (open_sample) REQUIRE(shell.open_project(sample_project()));
         resize_window(metrics);
     }
@@ -99,6 +103,8 @@ struct Harness {
     TextureHandle window;
     bool captured = false;
     int close_requests = 0;
+    std::vector<std::filesystem::path> opened; // files the shell asked the system to open
+    std::string open_result; // what opening them returns: empty, or why not
 };
 
 /// Moves the pointer in one frame and presses a button in the next, as a person would. Hover state
