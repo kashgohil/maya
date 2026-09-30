@@ -73,7 +73,29 @@ Two built-in systems (`builtin_systems()`) run in this order, driven by two auth
 
 The sample's spinning pyramid and flying camera are now these components in [basic.scene](../samples/basic_scene/assets/basic.scene). They are no longer sample code: `basic_scene.cpp` and `MayaBasicScene` are gone.
 
-The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Animation arrives later. Presentation interpolation is not implemented yet. Views show the latest completed tick, and `alpha()` is computed for when it is. Recorded replay and capture modes are also still contracts.
+The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Animation arrives later. Since #1016, phase 2 keeps a pose history and views show [poses between ticks](#between-ticks). Recorded replay and capture modes are still contracts.
+
+## Between ticks
+
+Ticks come at 60 Hz, and frames at whatever rate the display runs. Showing only the latest completed tick makes motion judder whenever the two differ. [Issue #1016](https://work.rezee.app/kash/issues/1016) shows each frame at its place between the last two ticks instead ([scheduling](architecture/scheduling-contracts.md#transform-authority)).
+
+- **History (phase 2).** As each tick's batch commits, the session keeps the local transform each changed entity had before it. The World holds the current one.
+- **`PlaySession::presentation()`** returns the poses to show now as `PresentationPoses`: world matrices for the entities that moved in the last tick, and their descendants. Everything else shows the World's own. It takes the clock's `alpha()`, the progress towards the next tick. At a completed tick (alpha 0) the previous pose shows, so views run one interval behind the simulation, as the contract intends.
+- **Interpolation.** Translation and scale move linearly, and rotation turns along the shortest arc (`interpolate_transform`). World matrices are then composed down the hierarchy from the shown poses, so a child keeps its place on its parent; matrices are never blended.
+- **Resets.** A teleport, a reparent, or a new entity has no pose to come from: that entity and everything below it show their current pose until the next tick. Body-mode changes will reset too, once motion types can change during play.
+- **Pause and step** show the completed tick (alpha 1).
+- **Read-only.** Presentation never writes the World, physics, or the authored scene.
+- **One path.** The player and the editor's Play (Game and Scene views) pass the poses to extraction (`RenderExtractOptions::poses`) and to the camera's view (`extract_render_view`).
+
+Cost, Release on the M4 Pro reference machine (thermal state nominal), with every entity moving every tick:
+
+| Moving entities | History, per tick | `presentation()`, per frame |
+| --- | --- | --- |
+| 1,000 | < 0.05 ms | 0.04 ms |
+| 10,000 | about 0.2 ms | 0.42 ms |
+| 50,000 | about 1.4 ms | 2.15 ms |
+
+History is the difference from the same ticks without it (about 20–28 ns per moving entity). `maya_simulation_tests "[cost]"` prints them. Entities that do not move cost nothing per frame. These are observations, not budgets.
 
 ## The player
 
@@ -146,6 +168,7 @@ In the editor, Play also builds the document from the scene (2.7 ms at 50,000 en
 - [simulation_tests.cpp](../tests/simulation_tests.cpp) (`maya_simulation_tests`, CPU) covers:
   - **The clock:** exact multiples, fractional frames, the clamp and the catch-up cap with their reports, invalid deltas, pause, step, and resume without a burst.
   - **Game input:** one edge per tick, catch-up ticks, retained edges, key repeats, pointer baselines, and focus loss.
+  - **Between ticks** (#1016): interpolation (linear, the shortest arc through 180°, and q against −q); poses between the last two ticks composed down a hierarchy, one interval behind; uneven frame times showing exactly the accumulated time; pause and step showing the completed tick; resets for teleports, reparenting, and new entities; the World untouched; and a hidden cost case.
   - **Play sessions:** system order, and commits visible to the next tick; the first camera; the authored document left untouched; stop order.
   - **Session failures:** start failures stop systems in reverse order; invalid scenes and empty systems are refused; a failing tick keeps the last completed World.
   - **The built-in systems:** spin about a local axis, zero and negative speed, and normalized rotations; fly movement, speed, Shift, look, and the pitch limit.
@@ -159,4 +182,6 @@ In the editor, Play also builds the document from the scene (2.7 ms at 50,000 en
   - **Scene changes:** opening or creating a scene ends play, and closing is not held up by it.
   - **No camera:** a scene without a camera plays through the editor camera and never hands the game the input.
   - The router's rules for the game owner, in [editor_tests.cpp](../tests/editor_tests.cpp).
+  - **120 Hz display** (#1016): the shown spin advances every frame, evenly, while the World changes every other frame.
+- [renderer_gpu_tests.cpp](../tests/renderer_gpu_tests.cpp) renders a playing scene halfway between ticks on Metal and compares it byte for byte with the same cube authored at the pose between them (#1016).
 - CTest runs the player with bad arguments, a missing project, a missing scene, and a scene path outside the project. Each must exit with its code and message ([expect_exit.cmake](../cmake/expect_exit.cmake)). [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) runs the player through window resizes and covers splitting launch arguments.

@@ -46,7 +46,7 @@ Create/destroy/add/remove/replace, transform edits, and reparent operations are 
 
 `WorldCommands::replace<T>` atomically replaces an existing component in enqueue order without changing entity identity or component pool order. Transform replacement uses `set_transform`; other native replacements are trusted values. Use the [property validation API](properties.md) for authoring, imports, or scripting input.
 
-`WorldCommands::staged(first)` lists the staged commands from an index on, in order: each one's kind, target, component type, and new parent, without its value. It lets a caller check a batch before committing it; play sessions use it to refuse transform writes to [physics bodies](physics.md#requests-during-a-tick) (#1017).
+`WorldCommands::staged(first)` lists the staged commands from an index on, in order: each one's kind, target, component type, and new parent, without its value. It lets a caller check a batch before committing it; play sessions use it to refuse transform writes to [physics bodies](physics.md#requests-during-a-tick) (#1017). `for_each_staged(first, visit)` walks the same entries without copying the batch; play sessions use it to keep [pose history](play.md#between-ticks) (#1016).
 
 `WorldCommands::truncate(size)` drops the commands staged after the first `size` (from `size()`), as if they were never made; pending entities from dropped creates must not be used again. The [script host](scripting.md#errors) uses it to discard a failed hook call's commands (#1018).
 

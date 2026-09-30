@@ -58,7 +58,7 @@ Named numerical rules in `spatial.hpp`:
 | `quaternion_unit_tolerance` | 4e-7: a rotation whose length differs from one by at most this is kept unchanged. Float-normalized quaternions are well inside it; renormalizing them again could change the last bit (added by #995). |
 | Float representability | Double intermediate results must fit finite float storage. An inverse outside that range is rejected. No absolute scale clamp is imposed. |
 
-Spatial math expects affine matrices with an exact bottom row (0,0,0,1). `local_matrix` composes already-validated TRS; call `validated_transform` before using arbitrary external data. `inverse_affine`, `compose_affine`, and `decompose_transform` return optional results. Float storage still limits precision near extreme magnitudes. Small errors inside the named tolerances are accepted as rounding, not as support for authored camera scale/shear.
+Spatial math expects affine matrices with an exact bottom row (0,0,0,1). `local_matrix` composes already-validated TRS; `interpolate_transform(a, b, t)` gives the pose `t` of the way between two, with translation and scale linear and rotation along the shortest arc (#1016); call `validated_transform` before using arbitrary external data. `inverse_affine`, `compose_affine`, and `decompose_transform` return optional results. Float storage still limits precision near extreme magnitudes. Small errors inside the named tolerances are accepted as rounding, not as support for authored camera scale/shear.
 
 ## Camera data and controller boundary
 

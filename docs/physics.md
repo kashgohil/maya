@@ -121,7 +121,7 @@ Destroying an entity removes its body when the tick commits. A handle to a destr
 
 During phase 7 the World is still as the previous tick committed it, since the batch commits after it: a moving body's transform there lags its `state`, which is the completed step's.
 
-Pause and single step need nothing extra: a paused session runs no ticks, and a step runs one tick with one physics step. Pose interpolation for display arrives in #1016; a teleport will reset its pose history then.
+Pause and single step need nothing extra: a paused session runs no ticks, and a step runs one tick with one physics step. Views show poses between ticks ([play](play.md#between-ticks), #1016); a teleport resets the body's pose history, so it jumps rather than sliding.
 
 When a session stops, a last `late_fixed_update` runs with `TickContext::stopping` set and events that end every contact and trigger still in progress, marked `removed`. Nothing systems do then is kept.
 

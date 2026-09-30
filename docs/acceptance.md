@@ -160,7 +160,7 @@ The benchmarks are not part of CTest, so the timing and slope budgets are checke
 - **Scale.** The sample scene is not evidence of large-game readiness, and neither is I1: its 100,000 instances are a stress input, not a promised capacity.
   - At 100,000 instances a frame takes about 21 ms of CPU time, which is over the proposed 16.67 ms interactive target. The renderer encodes one draw with its own constants per instance and does not cull. On this machine, the full 100k protocol also runs into thermal throttling.
   - Instancing, batching, and culling are the known next steps.
-- **Not implemented, so not measured:** per-pass GPU timing, presentation interpolation, streaming (S1), physics, scripting, texture and PBR/shadow quality, import and cook times, and edit-to-preview latency.
+- **Not implemented, so not measured:** per-pass GPU timing, streaming (S1), physics, scripting, texture and PBR/shadow quality, import and cook times, and edit-to-preview latency.
 - **Present pacing** is not measured: benchmarks render offscreen. The editor's live display shows the frame interval, but it is not a controlled measurement.
 - **Retained footprint.** The ~200 MiB footprint plateau after the first load cycle is unattributed. Attributing it needs Instruments on the reference hardware.
 - **Cold-cache loads.** The OS file cache is not controlled, so every load time is a warm-cache time.
