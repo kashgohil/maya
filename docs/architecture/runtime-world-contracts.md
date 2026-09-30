@@ -81,7 +81,7 @@ Recorded for #1015; `MayaPhysics` ([#1017](https://work.rezee.app/kash/issues/10
 - **Body creation order.** Bodies are created in document order: roots in order, each followed by its descendants. Entities activated during play are added in activation order.
 - **Resources.** A world owns its temporary allocator and its body, body-pair, and contact limits, all configurable per project; the prototype used 16 MiB of scratch. One job pool serves all physics worlds in a process. Its worker count is configurable and does not change results. Exceeding a limit fails that body's creation, or reports the step's error flags as a diagnostic with a counter. It never corrupts the world.
 
-**Bodies and motion types.** A body is the `maya.rigid_body` component, and its shape is a `maya.collider` component on the same entity (#1019). Motion type is authored and has one pose writer, as in the [transform-authority table](scheduling-contracts.md#transform-authority):
+**Bodies and motion types.** A body is the `maya.rigid_body` component (#1019). An entity holds at most one component of each type, so a body's shape is the `maya.collider` on its own entity together with the colliders on its descendants that have no body of their own; more than one collider forms a compound shape. A collider with no body on its entity or any ancestor is static. Motion type is authored and has one pose writer, as in the [transform-authority table](scheduling-contracts.md#transform-authority):
 
 | Motion type | Pose writer | Scripts and systems may |
 | --- | --- | --- |
@@ -90,12 +90,12 @@ Recorded for #1015; `MayaPhysics` ([#1017](https://work.rezee.app/kash/issues/10
 | Dynamic | Physics | Add forces, impulses, and torques, set velocities, or teleport. Direct transform writes are refused. |
 
 - **Changing motion type.** A command applied at the next tick boundary. It resets the entity's pose history.
-- **Scale and hierarchy.** A static collider may sit anywhere in a hierarchy; its world scale is baked into its shape when it is created or moved. A kinematic or dynamic body must be a root entity with unit scale. Its descendants follow it as ordinary children, and they may not have bodies of their own.
+- **Scale and hierarchy.** A static collider may sit anywhere in a hierarchy that has no body; its world scale is baked into its shape when it is created or moved. A kinematic or dynamic body must be a root entity with unit scale. Its descendants follow it as ordinary children, their colliders join its compound shape with their scale baked in, and they may not have bodies of their own.
 - **Unsupported shape scale.** A sphere needs uniform scale, and a capsule needs uniform scale in its radius axes. A body or collider that breaks these rules stops Play from starting, with a message naming the entity, like a missing required asset.
 
 **Shapes for this milestone.**
 - **Primitives:** box (half extents), sphere (radius), and capsule (radius and half height along local Y), each with a local offset and rotation.
-- **One shape per collider component.** An entity with several colliders forms a compound shape.
+- **One shape per collider component.** Compound shapes come from colliders on a body's descendants, as above.
 - **Later:** mesh, convex-hull, and height-field shapes come with the content pipeline (Milestone 3) and streaming (Milestone 4).
 
 **Collision groups and masks.**
@@ -163,7 +163,7 @@ return Mover
 | --- | --- | --- | --- |
 | Own entity and others | Component properties through the property system; names; hierarchy; find by EntityId | Property edits through the same validation as the Inspector; create and destroy entities | #1018 |
 | Transforms | Local and world pose of any entity | Local transform of entities without a body, and of static colliders | #1018 |
-| Bodies | Velocity, mass, sleeping, motion type | Force, impulse, torque, velocity, kinematic target, teleport, and wake | #1019 |
+| Bodies | Velocity, mass, sleeping, motion type | Force, impulse, torque, velocity, kinematic target, teleport, and wake | #1021 |
 | Queries and events | Raycast, shape cast, and overlap against the last completed step | Event hooks receive contacts and triggers | #1021 |
 | Time and input | Tick, simulation time, fixed interval, this tick's input frame | None | #1018 |
 | Diagnostics | None | `maya.log(message)` | #1018 |
