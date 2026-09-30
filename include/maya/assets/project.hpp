@@ -1,5 +1,6 @@
 #pragma once
 #include "maya/assets/registry.hpp"
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <iosfwd>
@@ -11,12 +12,25 @@ inline constexpr uint32_t project_format_version = 1;
 /// The project file's name when a project is given as a directory.
 inline constexpr const char* project_file_name = "project.maya";
 
+inline constexpr size_t collision_group_names = 16;
+inline constexpr size_t max_collision_group_name = 32; // bytes
+/// Names of the physics collision groups, by index. Group 0 is the default group every collider starts
+/// in; an empty name is an unnamed group, shown as "Group <n>".
+using CollisionGroupNames = std::array<std::string, collision_group_names>;
+CollisionGroupNames default_collision_groups();
+/// Why a name cannot name a collision group, or empty: names are 1 to 32 bytes of printable text,
+/// without quotes, backslashes, or surrounding spaces.
+std::string validate_collision_group_name(std::string_view name);
+/// The name to show for group `index`: its name, or "Group <n>" when it has none.
+std::string collision_group_label(const CollisionGroupNames& groups, size_t index);
+
 /// A project file's settings. Every path is relative and stays inside its base, so a project keeps
 /// working wherever its directory is moved or copied.
 struct ProjectSettings {
     std::filesystem::path content = "."; // content root, relative to the project file's directory
     std::filesystem::path catalog = "catalog.maya"; // asset catalog, relative to the content root
     std::filesystem::path startup_scene; // optional scene to open first, relative to the content root
+    CollisionGroupNames collision_groups = default_collision_groups();
 };
 struct ProjectSettingsResult {
     ProjectSettings settings;
@@ -29,14 +43,17 @@ struct ProjectSettingsResult {
 ///     content "assets"
 ///     catalog "catalog.maya"
 ///     startup "basic.scene"
+///     group 1 "Player"
 ///
-/// `content` and `catalog` are required and `startup` is optional, in that order.
+/// `content` and `catalog` are required and `startup` is optional, in that order. Any number of
+/// `group <index> "<name>"` lines follow, one per named collision group other than the default names.
 ProjectSettingsResult read_project(std::istream& input);
 void write_project(std::ostream& output, const ProjectSettings& settings);
 
 /// An opened project: canonical absolute locations derived from its file, never from the working
 /// directory or application search roots.
 struct Project {
+    ProjectSettings settings; // as read from the file; written back when project settings change
     std::filesystem::path file; // the project file
     std::filesystem::path content_root; // an existing directory
     std::filesystem::path catalog; // may not exist; reading it reports that
@@ -64,6 +81,9 @@ struct ProjectAssetsResult {
 /// Reads the project's catalog into a new registry rooted at its content root. Nothing is loaded yet.
 /// A catalog that cannot be read, parsed, or registered produces no registry.
 ProjectAssetsResult open_project_assets(const Project& project, std::unique_ptr<AssetProvider> provider);
+
+/// Writes the project's settings back to its file, replacing it atomically.
+std::string save_project(const Project& project);
 
 /// Opens a project from its file, or from a directory that contains project.maya. A relative path is
 /// taken from the working directory. Fails when the file is unreadable or invalid, or its content root

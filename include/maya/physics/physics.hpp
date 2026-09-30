@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -36,11 +37,14 @@ struct CapsuleShape {
 };
 using ShapeGeometry = std::variant<BoxShape, SphereShape, CapsuleShape>;
 
-/// One shape, placed in the body entity's local space.
+/// One shape, placed in the body entity's local space. `scale` stretches the shape along its own axes
+/// before the rotation and offset place it (a collider on a scaled child entity); a sphere needs it
+/// uniform and a capsule needs X and Z to match.
 struct ColliderDesc {
     ShapeGeometry shape = BoxShape{};
     math::Vec3 offset{0.0f};
     math::Quat rotation{};
+    math::Vec3 scale{1.0f};
 };
 
 inline constexpr uint32_t collision_group_count = 16;
@@ -61,6 +65,7 @@ struct BodyDesc {
     math::Vec3 angular_velocity{0.0f}; // initial, rad/s
     uint8_t group = 0; // 0 to 15
     uint16_t mask = all_collision_groups; // bit n: collides with group n
+    bool sensor = false; // detects overlaps without a contact response
 };
 /// Why a description cannot make a body, or empty. Structural rules (root entity, scale) are
 /// checked when the body is created.
@@ -192,6 +197,9 @@ public:
     void step(float interval);
     /// Phase 6: appends the moved kinematic and dynamic poses to the tick's batch, in creation order.
     void synchronize(const World& world, WorldCommands& commands);
+    /// Creates every body in order, or none: returns why the first refused one cannot be created,
+    /// naming its entity, or empty. Play sessions use it for the bodies authored in a scene.
+    std::string create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies);
     /// After the batch commits: removes the bodies of destroyed entities and applies created and
     /// removed bodies in request order. Throws std::runtime_error naming the source and the entity if
     /// a body cannot be created; bodies created before it stay.

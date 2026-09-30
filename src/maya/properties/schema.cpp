@@ -18,9 +18,16 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, float>) return PropertyType::scalar;
     else if constexpr (std::same_as<T, math::Vec3>) return PropertyType::vector3;
     else if constexpr (std::same_as<T, math::Quat>) return PropertyType::quaternion;
-    else if constexpr (std::same_as<T, LightKind>) return PropertyType::light_kind;
+    else if constexpr (std::is_enum_v<T>) return PropertyType::choice;
     else if constexpr (std::same_as<T, AssetRef<MeshAsset>>) return PropertyType::mesh_ref;
+    else if constexpr (std::same_as<T, int32_t>) return PropertyType::integer;
+    else if constexpr (std::same_as<T, uint32_t>) return PropertyType::flags;
     else { static_assert(std::same_as<T, AssetRef<MaterialAsset>>); return PropertyType::material_ref; }
+}
+/// Enumerations are held in PropertyValue as ChoiceValue; everything else as itself.
+template<class V> PropertyValue property_value(const V& value) {
+    if constexpr (std::is_enum_v<V>) return ChoiceValue{static_cast<uint32_t>(value)};
+    else return value;
 }
 template<auto Member>
 Binding bind(PropertyId id, std::string_view name, std::string_view label,
@@ -31,12 +38,18 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
     constexpr auto type = property_type<V>();
     constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref
         ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
-    return {{id, name, label, type, C{}.*Member, range, units, presentation, encoding, choices, description},
-        [](const ComponentValue& value) -> PropertyValue { return std::get<C>(value).*Member; },
+    return {{id, name, label, type, property_value(C{}.*Member), range, units, presentation, encoding, choices, description},
+        [](const ComponentValue& value) -> PropertyValue { return property_value(std::get<C>(value).*Member); },
         [](ComponentValue& value, const PropertyValue& input) {
-            const auto typed = std::get_if<V>(&input);
-            if (!typed) return false;
-            std::get<C>(value).*Member = *typed;
+            if constexpr (std::is_enum_v<V>) {
+                const auto choice = std::get_if<ChoiceValue>(&input);
+                if (!choice) return false;
+                std::get<C>(value).*Member = static_cast<V>(choice->value); // validation checks the choices
+            } else {
+                const auto typed = std::get_if<V>(&input);
+                if (!typed) return false;
+                std::get<C>(value).*Member = *typed;
+            }
             return true;
         }};
 }
@@ -45,10 +58,23 @@ constexpr auto positive = NumericRange{0.0f, {}, false, true};
 constexpr auto nonnegative = NumericRange{0.0f, {}, true, true};
 constexpr auto angle = NumericRange{0.0f, math::PI, false, false};
 constexpr auto cone = NumericRange{0.0f, math::PI, true, false};
+constexpr auto unit_interval = NumericRange{0.0f, 1.0f, true, true};
+constexpr auto collision_groups = NumericRange{0.0f, 15.0f, true, true};
+constexpr auto collision_mask = NumericRange{0.0f, 65535.0f, true, true};
+template<class E> constexpr EnumOption option(E value, std::string_view name, std::string_view label) {
+    return {static_cast<uint32_t>(value), name, label};
+}
 constexpr auto light_options = std::array{
-    EnumOption{LightKind::directional, "directional", "Directional"},
-    EnumOption{LightKind::point, "point", "Point"},
-    EnumOption{LightKind::spot, "spot", "Spot"}};
+    option(LightKind::directional, "directional", "Directional"),
+    option(LightKind::point, "point", "Point"),
+    option(LightKind::spot, "spot", "Spot")};
+constexpr auto shape_options = std::array{
+    option(ColliderShape::box, "box", "Box"),
+    option(ColliderShape::sphere, "sphere", "Sphere"),
+    option(ColliderShape::capsule, "capsule", "Capsule")};
+constexpr auto motion_options = std::array{
+    option(BodyMotion::dynamic, "dynamic", "Dynamic"),
+    option(BodyMotion::kinematic, "kinematic", "Kinematic")};
 const auto& name_bindings() {
     static const auto values = std::array{
         bind<&NameComponent::value>(1, "value", "Name", Hint::text)};
@@ -100,6 +126,48 @@ const auto& fly_bindings() {
     return values;
 }
 
+const auto& collider_bindings() {
+    static const auto values = std::array{
+        bind<&ColliderComponent::shape>(1, "shape", "Shape", Hint::choice, {}, {}, {}, shape_options),
+        bind<&ColliderComponent::half_extents>(2, "half_extents", "Half extents", Hint::vector, positive, "m", "Box only."),
+        bind<&ColliderComponent::radius>(3, "radius", "Radius", Hint::number, positive, "m", "Sphere and capsule."),
+        bind<&ColliderComponent::half_height>(4, "half_height", "Half height", Hint::number, positive, "m",
+            "Capsule only: half the straight section along local Y, excluding the caps."),
+        bind<&ColliderComponent::offset>(5, "offset", "Offset", Hint::vector, {}, "m", "In the entity's local space."),
+        bind<&ColliderComponent::rotation>(6, "rotation", "Rotation", Hint::rotation, {}, {}, "In the entity's local space."),
+        bind<&ColliderComponent::friction>(7, "friction", "Friction", Hint::number, nonnegative, {},
+            "A body with several colliders uses its first collider's friction."),
+        bind<&ColliderComponent::restitution>(8, "restitution", "Restitution", Hint::number, unit_interval, {},
+            "Bounciness, 0 to 1. A body with several colliders uses its first collider's."),
+        bind<&ColliderComponent::sensor>(9, "sensor", "Sensor", Hint::toggle, {}, {},
+            "Detects overlaps without a contact response."),
+        bind<&ColliderComponent::group>(10, "group", "Collision group", Hint::collision_group, collision_groups, {},
+            "Named in the project."),
+        bind<&ColliderComponent::mask>(11, "mask", "Collides with", Hint::collision_mask, collision_mask, {},
+            "Two colliders collide only when each one's group is in the other's mask.")};
+    return values;
+}
+const auto& rigid_body_bindings() {
+    static const auto values = std::array{
+        bind<&RigidBodyComponent::motion>(1, "motion", "Motion", Hint::choice, {}, {},
+            "Dynamic bodies are moved by physics; kinematic bodies follow targets set while playing.", motion_options),
+        bind<&RigidBodyComponent::mass>(2, "mass", "Mass", Hint::number, nonnegative, "kg", "0 derives the mass from the density."),
+        bind<&RigidBodyComponent::density>(3, "density", "Density", Hint::number, positive, "kg/m\xC2\xB3"),
+        bind<&RigidBodyComponent::linear_damping>(4, "linear_damping", "Linear damping", Hint::number, nonnegative, "1/s"),
+        bind<&RigidBodyComponent::angular_damping>(5, "angular_damping", "Angular damping", Hint::number, nonnegative, "1/s"),
+        bind<&RigidBodyComponent::gravity_factor>(6, "gravity_factor", "Gravity factor", Hint::number),
+        bind<&RigidBodyComponent::linear_velocity>(7, "linear_velocity", "Initial velocity", Hint::vector, {}, "m/s",
+            "Dynamic bodies only."),
+        bind<&RigidBodyComponent::angular_velocity>(8, "angular_velocity", "Initial spin", Hint::vector, {}, "rad/s",
+            "Dynamic bodies only.")};
+    return values;
+}
+const auto& physics_settings_bindings() {
+    static const auto values = std::array{
+        bind<&PhysicsSettingsComponent::gravity>(1, "gravity", "Gravity", Hint::vector, {}, "m/s\xC2\xB2")};
+    return values;
+}
+
 template<size_t N> auto descriptors(const std::array<Binding, N>& bindings) {
     auto result = std::array<PropertyDescriptor, N>{};
     for (size_t i = 0; i < N; ++i) result[i] = bindings[i].descriptor;
@@ -114,6 +182,9 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::light: return light_bindings();
     case ComponentId::spin: return spin_bindings();
     case ComponentId::fly_control: return fly_bindings();
+    case ComponentId::collider: return collider_bindings();
+    case ComponentId::rigid_body: return rigid_body_bindings();
+    case ComponentId::physics_settings: return physics_settings_bindings();
     }
     return {};
 }
@@ -137,10 +208,14 @@ PropertyResult validate(ComponentValue& value, const PropertyValidationContext& 
             if (!in_range(*scalar, d.range)) return invalid();
         } else if (const auto vector = std::get_if<math::Vec3>(&input)) {
             if (!in_range(vector->x, d.range) || !in_range(vector->y, d.range) || !in_range(vector->z, d.range)) return invalid();
-        } else if (const auto kind = std::get_if<LightKind>(&input)) {
+        } else if (const auto choice = std::get_if<ChoiceValue>(&input)) {
             auto found = false;
-            for (const auto& option : d.choices) found |= option.value == *kind;
-            if (!found) return {PropertyError::invalid_value, d.id, "Unknown light kind"};
+            for (const auto& option : d.choices) found |= option.value == choice->value;
+            if (!found) return {PropertyError::invalid_value, d.id, "Value is not one of the property's choices"};
+        } else if (const auto whole = std::get_if<int32_t>(&input)) {
+            if (!in_range(float(*whole), d.range)) return invalid();
+        } else if (const auto bits = std::get_if<uint32_t>(&input)) {
+            if (d.range.maximum && float(*bits) > *d.range.maximum) return invalid();
         } else if (d.encoding == PropertyEncoding::persistent_asset_id) {
             const auto mesh = std::get_if<AssetRef<MeshAsset>>(&input);
             const auto asset = mesh ? mesh->id : std::get<AssetRef<MaterialAsset>>(input).id;
@@ -162,6 +237,16 @@ PropertyResult validate(ComponentValue& value, const PropertyValidationContext& 
     } else if (const auto light = std::get_if<LightComponent>(&value)) {
         if (light->inner_cone > light->outer_cone)
             return {PropertyError::invalid_value, 5, "Inner cone must not exceed outer cone"};
+    } else if (const auto collider = std::get_if<ColliderComponent>(&value)) {
+        const auto& q = collider->rotation;
+        const auto length = std::sqrt(double(q.x) * q.x + double(q.y) * q.y + double(q.z) * q.z + double(q.w) * q.w);
+        if (!std::isfinite(length) || !(length > 1e-12)) return {PropertyError::invalid_value, 6, "Rotation needs a finite nonzero quaternion"};
+        if (std::abs(length - 1.0) > quaternion_unit_tolerance)
+            collider->rotation = {float(q.x / length), float(q.y / length), float(q.z / length), float(q.w / length)};
+    } else if (const auto body = std::get_if<RigidBodyComponent>(&value)) {
+        if (body->motion == BodyMotion::kinematic &&
+            (body->linear_velocity.length_squared() != 0.0f || body->angular_velocity.length_squared() != 0.0f))
+            return {PropertyError::invalid_value, 7, "A kinematic body has no initial velocity; it follows targets set while playing"};
     }
     return {};
 }
@@ -175,6 +260,9 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto lights = descriptors(light_bindings());
     static const auto spins = descriptors(spin_bindings());
     static const auto flights = descriptors(fly_bindings());
+    static const auto colliders = descriptors(collider_bindings());
+    static const auto bodies = descriptors(rigid_body_bindings());
+    static const auto physics = descriptors(physics_settings_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
@@ -182,7 +270,10 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 1, cameras},
         ComponentDescriptor{ComponentId::light, "maya.light", "Light", 1, lights},
         ComponentDescriptor{ComponentId::spin, "maya.spin", "Spin", 1, spins},
-        ComponentDescriptor{ComponentId::fly_control, "maya.fly_control", "Fly control", 1, flights}};
+        ComponentDescriptor{ComponentId::fly_control, "maya.fly_control", "Fly control", 1, flights},
+        ComponentDescriptor{ComponentId::collider, "maya.collider", "Collider", 1, colliders},
+        ComponentDescriptor{ComponentId::rigid_body, "maya.rigid_body", "Rigid body", 1, bodies},
+        ComponentDescriptor{ComponentId::physics_settings, "maya.physics_settings", "Physics settings", 1, physics}};
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -211,7 +302,10 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, CameraComponent>) return ComponentId::camera;
         else if constexpr (std::same_as<T, LightComponent>) return ComponentId::light;
         else if constexpr (std::same_as<T, SpinComponent>) return ComponentId::spin;
-        else { static_assert(std::same_as<T, FlyControlComponent>); return ComponentId::fly_control; }
+        else if constexpr (std::same_as<T, FlyControlComponent>) return ComponentId::fly_control;
+        else if constexpr (std::same_as<T, ColliderComponent>) return ComponentId::collider;
+        else if constexpr (std::same_as<T, RigidBodyComponent>) return ComponentId::rigid_body;
+        else { static_assert(std::same_as<T, PhysicsSettingsComponent>); return ComponentId::physics_settings; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -223,6 +317,9 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::light: return LightComponent{};
     case ComponentId::spin: return SpinComponent{};
     case ComponentId::fly_control: return FlyControlComponent{};
+    case ComponentId::collider: return ColliderComponent{};
+    case ComponentId::rigid_body: return RigidBodyComponent{};
+    case ComponentId::physics_settings: return PhysicsSettingsComponent{};
     }
     return std::nullopt;
 }

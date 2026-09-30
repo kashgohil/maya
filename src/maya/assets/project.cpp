@@ -26,6 +26,27 @@ bool inside(const std::filesystem::path& root, const std::filesystem::path& path
 }
 } // namespace
 
+CollisionGroupNames default_collision_groups() {
+    auto names = CollisionGroupNames{};
+    names[0] = "Default";
+    return names;
+}
+
+std::string validate_collision_group_name(std::string_view name) {
+    if (name.empty()) return "A collision group name cannot be empty";
+    if (name.size() > max_collision_group_name) return "A collision group name has at most 32 bytes";
+    if (name.front() == ' ' || name.back() == ' ') return "A collision group name cannot start or end with a space";
+    for (const auto c : name)
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f || c == '"' || c == '\\')
+            return "A collision group name cannot contain quotes, backslashes, or control characters";
+    return {};
+}
+
+std::string collision_group_label(const CollisionGroupNames& groups, size_t index) {
+    if (index >= groups.size()) return "Group " + std::to_string(index);
+    return groups[index].empty() ? "Group " + std::to_string(index) : groups[index];
+}
+
 ProjectSettingsResult read_project(std::istream& input) {
     auto magic = std::string{};
     auto version = 0u;
@@ -64,7 +85,21 @@ ProjectSettingsResult read_project(std::istream& input) {
         if (!names_file(settings.startup_scene))
             return {{}, "The startup scene \"" + value + "\" must be a relative file path inside the content root"};
     }
-    if (input >> key) return {{}, "Unexpected '" + key + "' after the project settings"};
+    auto named = std::array<bool, collision_group_names>{};
+    while (input >> key) {
+        if (key != "group") return {{}, "Unexpected '" + key + "' after the project settings"};
+        auto index = 0u;
+        if (!(input >> index) || index >= collision_group_names)
+            return {{}, "'group' needs a collision group number from 0 to 15"};
+        input >> std::ws;
+        if (input.peek() != '"' || !(input >> std::quoted(value)))
+            return {{}, "'group " + std::to_string(index) + "' needs a quoted name"};
+        if (named[index]) return {{}, "Collision group " + std::to_string(index) + " is named twice"};
+        if (auto error = validate_collision_group_name(value); !error.empty())
+            return {{}, "Collision group " + std::to_string(index) + ": " + error};
+        named[index] = true;
+        settings.collision_groups[index] = value;
+    }
     return {settings, {}};
 }
 
@@ -74,6 +109,10 @@ void write_project(std::ostream& output, const ProjectSettings& settings) {
          << "content " << std::quoted(settings.content.generic_string()) << '\n'
          << "catalog " << std::quoted(settings.catalog.generic_string()) << '\n';
     if (!settings.startup_scene.empty()) text << "startup " << std::quoted(settings.startup_scene.generic_string()) << '\n';
+    const auto defaults = default_collision_groups();
+    for (size_t i = 0; i < collision_group_names; ++i)
+        if (settings.collision_groups[i] != defaults[i] && !settings.collision_groups[i].empty())
+            text << "group " << i << ' ' << std::quoted(settings.collision_groups[i]) << '\n';
     output << text.str();
     if (!output) throw std::runtime_error("Cannot write project settings");
 }
@@ -115,6 +154,27 @@ ProjectAssetsResult open_project_assets(const Project& project, std::unique_ptr<
     return {std::move(registry), {}};
 }
 
+std::string save_project(const Project& project) {
+    // Written beside the file, then renamed over it, so a failed write leaves the old file intact.
+    auto temporary = project.file;
+    temporary += ".saving";
+    try {
+        {
+            auto output = std::ofstream(temporary, std::ios::trunc);
+            if (!output) return "Cannot write " + temporary.string();
+            write_project(output, project.settings);
+            output.flush();
+            if (!output) return "Cannot write " + temporary.string();
+        }
+        std::filesystem::rename(temporary, project.file);
+    } catch (const std::exception& failure) {
+        auto ignored = std::error_code{};
+        std::filesystem::remove(temporary, ignored);
+        return "Cannot save " + project.file.string() + ": " + failure.what();
+    }
+    return {};
+}
+
 ProjectResult open_project(const std::filesystem::path& file_or_directory) {
     auto error = std::error_code{};
     auto file = std::filesystem::absolute(file_or_directory, error);
@@ -125,6 +185,7 @@ ProjectResult open_project(const std::filesystem::path& file_or_directory) {
     const auto settings = read_project(stream);
     if (!settings) return {{}, file.string() + ": " + settings.error};
     auto project = Project{};
+    project.settings = settings.settings;
     project.file = std::filesystem::canonical(file, error);
     if (error) return {{}, "Cannot resolve project file " + file.string()};
     const auto root = project.file.parent_path() / settings.settings.content.lexically_normal();

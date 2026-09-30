@@ -85,6 +85,61 @@ void muted_text(const std::string& text, ImU32 tone = theme::color::muted) {
 
 // Projects and scene files --------------------------------------------------------------------------
 
+std::string EditorShell::rename_collision_group(size_t index, const std::string& name) {
+    if (!m_project) return "No project is open";
+    if (index >= collision_group_names) return "Collision groups are numbered 0 to 15";
+    if (!name.empty())
+        if (auto error = validate_collision_group_name(name); !error.empty()) return error;
+    auto& groups = m_project->settings.collision_groups;
+    if (groups[index] == name) return {};
+    const auto previous = groups[index];
+    groups[index] = name;
+    if (auto error = save_project(*m_project); !error.empty()) {
+        groups[index] = previous;
+        return error;
+    }
+    m_log.add(DiagnosticSource::project, "Collision group " + std::to_string(index) + " is now " +
+              collision_group_label(groups, index), m_frame);
+    return {};
+}
+
+void EditorShell::draw_collision_groups() {
+    if (!m_groups_open || !m_project) return;
+    ImGui::SetNextWindowSize({320.0f, 0.0f}, ImGuiCond_Appearing);
+    if (!ImGui::Begin((std::string(icon::stack) + "  Collision groups###collision_groups").c_str(), &m_groups_open,
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+    ImGui::TextWrapped("Colliders choose a group and the groups they collide with. Names are saved in %s.",
+                       m_project->file.filename().string().c_str());
+    ImGui::PopStyleColor();
+    const auto& groups = m_project->settings.collision_groups;
+    if (theme::begin_properties("groups")) {
+        for (size_t group = 0; group < collision_group_names; ++group) {
+            auto& buffer = m_group_names[group];
+            ImGui::PushID(int(group));
+            theme::property(std::to_string(group).c_str());
+            if (!ImGui::IsAnyItemActive()) // otherwise a field being typed in keeps its text
+                std::snprintf(buffer.data(), buffer.size(), "%s", groups[group].c_str());
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputTextWithHint("##name", ("Group " + std::to_string(group)).c_str(), buffer.data(), buffer.size());
+            m_layout.controls.push_back({"group." + std::to_string(group), ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_groups_error = rename_collision_group(group, buffer.data());
+            ImGui::PopID();
+        }
+        theme::end_properties();
+    }
+    if (!m_groups_error.empty()) {
+        icon_text(icon::warning, theme::color::danger, 6.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::danger);
+        ImGui::TextWrapped("%s", m_groups_error.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::End();
+}
+
 std::string EditorShell::read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry) {
     auto opened = open_project_assets(project, std::make_unique<FileAssetProvider>(m_device));
     registry = std::move(opened.registry);

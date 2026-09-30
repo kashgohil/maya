@@ -23,8 +23,39 @@ const char* component_icon(ComponentId id) {
     case ComponentId::name: return icon::pencil;
     case ComponentId::spin: return icon::rotate;
     case ComponentId::fly_control: return icon::game_controller;
+    case ComponentId::collider: return icon::bounding_box;
+    case ComponentId::rigid_body: return icon::atom;
+    case ComponentId::physics_settings: return icon::planet;
     }
     return icon::circle_dashed;
+}
+
+/// Whether a component's property applies to its current settings; others stay hidden (see their
+/// descriptions): a light's range and cones, a collider's size for other shapes, a kinematic body's
+/// initial velocities.
+bool property_applies(const ComponentValue& value, std::string_view property) {
+    if (const auto* light = std::get_if<LightComponent>(&value)) {
+        if (property == "range") return light->kind != LightKind::directional;
+        if (property == "inner_cone" || property == "outer_cone") return light->kind == LightKind::spot;
+    } else if (const auto* collider = std::get_if<ColliderComponent>(&value)) {
+        if (property == "half_extents") return collider->shape == ColliderShape::box;
+        if (property == "radius") return collider->shape != ColliderShape::box;
+        if (property == "half_height") return collider->shape == ColliderShape::capsule;
+    } else if (const auto* body = std::get_if<RigidBodyComponent>(&value)) {
+        if (property == "linear_velocity" || property == "angular_velocity") return body->motion == BodyMotion::dynamic;
+    }
+    return true;
+}
+
+/// "All groups", "None", one group's name, or how many groups a collision mask includes.
+std::string mask_summary(uint32_t mask, const CollisionGroupNames& groups) {
+    if ((mask & 0xFFFFu) == 0xFFFFu) return "All groups";
+    if ((mask & 0xFFFFu) == 0) return "None";
+    auto count = 0;
+    auto last = size_t{0};
+    for (size_t i = 0; i < collision_group_names; ++i)
+        if (mask >> i & 1u) { ++count; last = i; }
+    return count == 1 ? collision_group_label(groups, last) : std::to_string(count) + " groups";
 }
 
 /// True while the last drag field is in text-entry mode (command-click or double-click). Its value is
@@ -133,12 +164,7 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
         for (const auto& property : schema->properties) {
             const auto current = read_property(value, property.id);
             if (!current) continue;
-            // Light properties that the light's kind does not use stay hidden (see their descriptions).
-            if (component == ComponentId::light) {
-                const auto kind = std::get<LightComponent>(value).kind;
-                if (property.name == "range" && kind == LightKind::directional) continue;
-                if ((property.name == "inner_cone" || property.name == "outer_cone") && kind != LightKind::spot) continue;
-            }
+            if (!property_applies(value, property.name)) continue;
             const auto key = std::string(schema->name.substr(schema->name.rfind('.') + 1)) + "." + std::string(property.name);
             theme::property(std::string(property.label).c_str());
             ImGui::PushID(static_cast<int>(property.id));
@@ -219,14 +245,61 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
                 if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
                 break;
             }
-            case PropertyType::light_kind: {
-                const auto kind = std::get<LightKind>(*current);
-                const auto selected = std::ranges::find(property.choices, kind, &EnumOption::value);
+            case PropertyType::choice: {
+                const auto choice = std::get<ChoiceValue>(*current).value;
+                const auto selected = std::ranges::find(property.choices, choice, &EnumOption::value);
                 const auto preview = selected != property.choices.end() ? std::string(selected->label) : "?";
                 if (ImGui::BeginCombo("##choice", preview.c_str())) {
                     for (const auto& option : property.choices)
-                        if (ImGui::Selectable(std::string(option.label).c_str(), option.value == kind))
-                            edit_property(id, value, property.id, option.value);
+                        if (ImGui::Selectable(std::string(option.label).c_str(), option.value == choice))
+                            edit_property(id, value, property.id, ChoiceValue{option.value});
+                    ImGui::EndCombo();
+                }
+                remember();
+                break;
+            }
+            case PropertyType::integer: {
+                auto number = std::get<int32_t>(*current);
+                if (property.presentation == PropertyPresentation::collision_group) {
+                    const auto groups = collision_groups();
+                    if (ImGui::BeginCombo("##group", collision_group_label(groups, size_t(number)).c_str())) {
+                        for (int32_t group = 0; group < int32_t(collision_group_names); ++group) {
+                            ImGui::PushID(group);
+                            if (ImGui::Selectable(collision_group_label(groups, size_t(group)).c_str(), group == number))
+                                edit_property(id, value, property.id, group);
+                            ImGui::PopID();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    remember();
+                    break;
+                }
+                const auto minimum = property.range.minimum ? int(*property.range.minimum) : INT32_MIN;
+                const auto maximum = property.range.maximum ? int(*property.range.maximum) : INT32_MAX;
+                if (ImGui::DragInt("##integer", &number, 0.1f, minimum, maximum, "%d", ImGuiSliderFlags_AlwaysClamp) &&
+                    !typing_into_last_item())
+                    edit_property(id, value, property.id, number);
+                remember();
+                track_edit(group);
+                break;
+            }
+            case PropertyType::flags: {
+                // Collision masks: one check box per group, named as in the project.
+                const auto mask = std::get<uint32_t>(*current);
+                const auto groups = collision_groups();
+                if (ImGui::BeginCombo("##mask", mask_summary(mask, groups).c_str())) {
+                    for (size_t group = 0; group < collision_group_names; ++group) {
+                        ImGui::PushID(int(group));
+                        auto included = (mask >> group & 1u) != 0;
+                        if (ImGui::Checkbox(collision_group_label(groups, group).c_str(), &included))
+                            edit_property(id, value, property.id, included ? mask | (1u << group) : mask & ~(1u << group));
+                        ImGui::PopID();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::Selectable("All groups", false, ImGuiSelectableFlags_NoAutoClosePopups))
+                        edit_property(id, value, property.id, uint32_t{0xFFFF});
+                    if (ImGui::Selectable("None", false, ImGuiSelectableFlags_NoAutoClosePopups))
+                        edit_property(id, value, property.id, uint32_t{0});
                     ImGui::EndCombo();
                 }
                 remember();
@@ -290,7 +363,49 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
         }
         theme::end_properties();
     }
+    if (const auto note = physics_note(id, component); !note.text.empty()) {
+        icon_text(note.warning ? icon::warning : icon::info, note.warning ? theme::color::warning : theme::color::faint, 6.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+        ImGui::TextWrapped("%s", note.text.c_str());
+        ImGui::PopStyleColor();
+    }
     ImGui::PopID();
+}
+
+CollisionGroupNames EditorShell::collision_groups() const {
+    return m_project ? m_project->settings.collision_groups : default_collision_groups();
+}
+
+EditorShell::PhysicsNote EditorShell::physics_note(EntityId id, ComponentId component) const {
+    if (!m_scene) return {};
+    const auto has = [&](EntityId entity, ComponentId wanted) {
+        const auto* record = m_scene->record(entity);
+        return record && std::ranges::any_of(record->components, [&](const ComponentValue& v) { return component_id(v) == wanted; });
+    };
+    if (component == ComponentId::rigid_body) {
+        // Its shape is its collider and the colliders below it that have no rigid body of their own.
+        const auto collider_below = [&](auto&& self, EntityId parent) -> bool {
+            for (const auto child : m_scene->children(parent)) {
+                if (has(child, ComponentId::rigid_body)) continue;
+                if (has(child, ComponentId::collider) || self(self, child)) return true;
+            }
+            return false;
+        };
+        if (!has(id, ComponentId::collider) && !collider_below(collider_below, id))
+            return {"Add a collider to this entity or an entity below it; Play needs one to make the body.", true};
+        if (m_scene->record(id)->parent)
+            return {"A rigid body must be on a root entity; Play refuses it here.", true};
+        const auto* record = m_scene->record(id);
+        for (const auto& value : record->components)
+            if (const auto* transform = std::get_if<TransformComponent>(&value); transform && !unit_scale(transform->scale))
+                return {"A rigid body needs unit scale; Play refuses it. Size its colliders instead, or put the scaled "
+                        "mesh on an entity below it.", true};
+    } else if (component == ComponentId::collider && !has(id, ComponentId::rigid_body)) {
+        for (auto parent = m_scene->record(id)->parent; parent; parent = m_scene->record(*parent)->parent)
+            if (has(*parent, ComponentId::rigid_body))
+                return {"Part of the rigid body on " + m_scene->display_name(*parent) + ".", false};
+    }
+    return {};
 }
 
 void EditorShell::draw_inspector() {

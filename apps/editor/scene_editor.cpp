@@ -52,6 +52,9 @@ void remove_command(WorldCommands& commands, EntityTarget target, ComponentId id
     case ComponentId::light: commands.remove<LightComponent>(target); break;
     case ComponentId::spin: commands.remove<SpinComponent>(target); break;
     case ComponentId::fly_control: commands.remove<FlyControlComponent>(target); break;
+    case ComponentId::collider: commands.remove<ColliderComponent>(target); break;
+    case ComponentId::rigid_body: commands.remove<RigidBodyComponent>(target); break;
+    case ComponentId::physics_settings: commands.remove<PhysicsSettingsComponent>(target); break;
     }
 }
 

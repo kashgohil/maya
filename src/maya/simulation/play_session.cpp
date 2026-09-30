@@ -1,4 +1,5 @@
 #include "maya/simulation/play_session.hpp"
+#include "maya/simulation/authored_physics.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -21,14 +22,22 @@ PlayStartResult PlaySession::start(SceneDocument document, const PropertyValidat
             camera = entity.id;
             break;
         }
+    auto order = std::vector<EntityId>{};
+    order.reserve(document.entities.size());
+    for (const auto& entity : document.entities) order.push_back(entity.id);
     auto built = instantiate_scene(std::move(document), context);
     if (!built) return {nullptr, std::move(built.diagnostics), {}};
+    // The scene's colliders and rigid bodies become bodies before any system starts, all or none.
+    auto authored = authored_physics(*built.world, order, physics);
+    if (!authored) return {nullptr, {}, "Physics: " + authored.error};
     auto session = std::unique_ptr<PlaySession>{};
     try {
-        session.reset(new PlaySession(std::move(built.world), std::move(systems), clock, physics, camera));
+        session.reset(new PlaySession(std::move(built.world), std::move(systems), clock, authored.settings, camera));
     } catch (const std::invalid_argument& error) {
         return {nullptr, {}, std::string("Physics could not start: ") + error.what()};
     }
+    if (auto error = session->m_physics->create_bodies(*session->m_world, authored.bodies); !error.empty())
+        return {nullptr, {}, "Physics: " + error};
     for (auto& system : session->m_systems) {
         ++session->m_started; // stop runs for a system whose start threw, too
         try {

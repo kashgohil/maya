@@ -1,0 +1,270 @@
+maya-scene 1
+
+entity 6d617961 400
+  component maya.name 1
+    value "Camera"
+  component maya.transform 1
+    translation 0 3 11
+    rotation -0.12467473 0 0 0.9921977
+    scale 1 1 1
+  component maya.camera 1
+    vertical_fov 1.0471976
+    near_clip 0.1
+    far_clip 200
+  component maya.fly_control 1
+    speed 3
+    look_sensitivity 0.0025
+end
+
+entity 6d617961 401
+  component maya.name 1
+    value "Sun"
+  component maya.transform 1
+    translation 0 6 0
+    rotation -0.5161719 0.2429044 0 0.82131857
+    scale 1 1 1
+  component maya.light 1
+    kind directional
+    color 1 1 1
+    intensity 1
+    range 10
+    inner_cone 0.5235988
+    outer_cone 0.7853982
+    enabled true
+end
+
+entity 6d617961 402
+  component maya.name 1
+    value "Physics"
+  component maya.physics_settings 1
+    gravity 0 -9.81 0
+end
+
+entity 6d617961 410
+  component maya.name 1
+    value "Floor"
+  component maya.transform 1
+    translation 0 -0.1 0
+    rotation 0 0 0 1
+    scale 20 0.2 20
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 13
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+end
+
+entity 6d617961 420
+  component maya.name 1
+    value "Crate 1"
+  component maya.transform 1
+    translation 0 0.5 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 10
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity 0 0 0
+    angular_velocity 0 0 0
+end
+
+entity 6d617961 421
+  component maya.name 1
+    value "Crate 2"
+  component maya.transform 1
+    translation 0 1.5 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity 0 0 0
+    angular_velocity 0 0 0
+end
+
+entity 6d617961 422
+  component maya.name 1
+    value "Crate 3"
+  component maya.transform 1
+    translation 0 2.5 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 10
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity 0 0 0
+    angular_velocity 0 0 0
+end
+
+entity 6d617961 423
+  component maya.name 1
+    value "Crate 4"
+  component maya.transform 1
+    translation 0 3.5 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity 0 0 0
+    angular_velocity 0 0 0
+end
+
+entity 6d617961 424
+  component maya.name 1
+    value "Crate 5"
+  component maya.transform 1
+    translation 0 4.5 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 10
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity 0 0 0
+    angular_velocity 0 0 0
+end
+
+entity 6d617961 430
+  component maya.name 1
+    value "Falling crate"
+  component maya.transform 1
+    translation 2.2 7 0.3
+    rotation 0.20896688 0 0.20896688 0.9553365
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+  component maya.collider 1
+    shape box
+    half_extents 0.5 0.5 0.5
+    radius 0.5
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity -1.5 0 0
+    angular_velocity 0 0 0
+end

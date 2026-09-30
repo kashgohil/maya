@@ -50,7 +50,7 @@ public:
 }
 
 TEST_CASE("Property schemas have stable identities, discoverable defaults, and typed access", "[properties]") {
-    REQUIRE(component_schemas().size() == 7);
+    REQUIRE(component_schemas().size() == 10);
     auto ids = std::set<ComponentId>{};
     auto names = std::set<std::string_view>{};
     for (const auto& schema : component_schemas()) {
@@ -170,8 +170,9 @@ TEST_CASE("Transform edits normalize rotation and preserve positive-scale rules"
 
 TEST_CASE("Light edits enforce HDR color, physical ranges, enum identity and cone relationships", "[properties]") {
     auto value = ComponentValue{LightComponent{}};
-    REQUIRE(edit(value, 1, LightKind::spot));
-    REQUIRE(edit(value, 1, static_cast<LightKind>(99)).error == PropertyError::invalid_value);
+    REQUIRE(edit(value, 1, ChoiceValue{uint32_t(LightKind::spot)}));
+    REQUIRE(std::get<LightComponent>(value).kind == LightKind::spot);
+    REQUIRE(edit(value, 1, ChoiceValue{99}).error == PropertyError::invalid_value);
     REQUIRE(edit(value, 2, math::Vec3{2, 0, 10}));
     REQUIRE(edit(value, 2, math::Vec3{-1, 0, 0}).error == PropertyError::invalid_value);
     REQUIRE(edit(value, 3, 0.0f));
@@ -328,3 +329,4 @@ TEST_CASE("Replacement handles move-only ownership and releases staged resources
     REQUIRE_FALSE(world.commit(bad));
     REQUIRE(world.with<Owned>(entity, [](const auto& value) { REQUIRE(*value.value == 2); }));
 }
+

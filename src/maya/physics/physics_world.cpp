@@ -38,11 +38,15 @@ private:
     std::chrono::steady_clock::time_point m_start;
 };
 
+/// "entity 70 2", followed by the entity's name in quotes when it has one.
 std::string entity_text(const World& world, EntityHandle entity) {
     auto text = std::ostringstream{};
     text << "entity ";
     if (const auto id = world.persistent_id(entity)) text << std::hex << id->high << ' ' << id->low;
     else text << "(slot " << entity.slot << ')';
+    world.with<NameComponent>(entity, [&](const NameComponent& name) {
+        if (!name.value.empty()) text << " \"" << name.value << '"';
+    });
     return text.str();
 }
 
@@ -128,6 +132,8 @@ JPH::EMotionType jolt_motion(MotionType type) noexcept {
 
 std::string validate_collider(const ColliderDesc& collider) {
     if (!finite(collider.offset)) return "a collider offset is not finite";
+    if (!finite(collider.scale) || !(collider.scale.x > 0.0f && collider.scale.y > 0.0f && collider.scale.z > 0.0f))
+        return "a collider scale must be finite and positive";
     if (!normalized(collider.rotation)) return "a collider rotation is not a finite, nonzero quaternion";
     return std::visit([](const auto& shape) -> std::string {
         using T = std::decay_t<decltype(shape)>;
@@ -144,16 +150,21 @@ std::string validate_collider(const ColliderDesc& collider) {
     }, collider.shape);
 }
 
-/// Checks the scale rules of the physics contract for a shape scaled by `scale` (the entity's world
-/// scale for a static body, 1 for a moving one).
+math::Vec3 times(const math::Vec3& a, const math::Vec3& b) noexcept { return {a.x * b.x, a.y * b.y, a.z * b.z}; }
+bool uniform(const math::Vec3& scale) noexcept {
+    return nearly_equal(scale.x, scale.y) && nearly_equal(scale.y, scale.z);
+}
+
+/// Checks the scale rules of the physics contract for shapes placed in an entity scaled by `scale`
+/// (the entity's world scale for a static body, 1 for a moving one).
 std::string check_scale(const std::vector<ColliderDesc>& colliders, const math::Vec3& scale) {
-    const auto uniform = nearly_equal(scale.x, scale.y) && nearly_equal(scale.y, scale.z);
     for (const auto& collider : colliders) {
-        if (!uniform && !near_identity(*normalized(collider.rotation)))
+        if (!uniform(scale) && !near_identity(*normalized(collider.rotation)))
             return "a rotated collider cannot take its entity's nonuniform scale";
-        if (std::holds_alternative<SphereShape>(collider.shape) && !uniform)
+        const auto shape = times(collider.scale, scale);
+        if (std::holds_alternative<SphereShape>(collider.shape) && !uniform(shape))
             return "a sphere needs uniform scale";
-        if (std::holds_alternative<CapsuleShape>(collider.shape) && !nearly_equal(scale.x, scale.z))
+        if (std::holds_alternative<CapsuleShape>(collider.shape) && !nearly_equal(shape.x, shape.z))
             return "a capsule needs the same scale on X and Z";
     }
     return {};
@@ -161,15 +172,16 @@ std::string check_scale(const std::vector<ColliderDesc>& colliders, const math::
 
 JPH::Ref<JPH::Shape> make_shape(const std::vector<ColliderDesc>& colliders, const math::Vec3& scale, float density) {
     const auto convex = [&](const ColliderDesc& collider) -> JPH::Ref<JPH::ConvexShape> {
+        const auto size = times(collider.scale, scale);
         auto shape = std::visit([&](const auto& value) -> JPH::Ref<JPH::ConvexShape> {
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, BoxShape>) {
-                const auto half = JPH::Vec3(value.half_extents.x * scale.x, value.half_extents.y * scale.y, value.half_extents.z * scale.z);
+                const auto half = JPH::Vec3(value.half_extents.x * size.x, value.half_extents.y * size.y, value.half_extents.z * size.z);
                 return new JPH::BoxShape(half, std::min(JPH::cDefaultConvexRadius, 0.25f * half.ReduceMin()));
             } else if constexpr (std::is_same_v<T, SphereShape>) {
-                return new JPH::SphereShape(value.radius * scale.x);
+                return new JPH::SphereShape(value.radius * size.x);
             } else {
-                return new JPH::CapsuleShape(value.half_height * scale.y, value.radius * scale.x);
+                return new JPH::CapsuleShape(value.half_height * size.y, value.radius * size.x);
             }
         }, collider.shape);
         shape->SetDensity(density);
@@ -182,7 +194,7 @@ JPH::Ref<JPH::Shape> make_shape(const std::vector<ColliderDesc>& colliders, cons
         const auto& collider = colliders.front();
         auto shape = JPH::Ref<JPH::Shape>(convex(collider).GetPtr());
         const auto rotation = *normalized(collider.rotation);
-        if (collider.offset.length_squared() == 0.0f && near_identity(rotation)) return shape;
+        if (collider.offset.length_squared() == 0.0f && near_identity(rotation)) return shape; // centred, unrotated
         return new JPH::RotatedTranslatedShape(offset(collider), jolt(rotation), shape);
     }
     auto compound = JPH::StaticCompoundShapeSettings();
@@ -363,6 +375,7 @@ void PhysicsWorld::Impl::create(const World& world, EntityHandle entity, const B
     creation.mLinearDamping = body.linear_damping;
     creation.mAngularDamping = body.angular_damping;
     creation.mGravityFactor = body.gravity_factor;
+    creation.mIsSensor = body.sensor;
     creation.mLinearVelocity = jolt(body.linear_velocity);
     creation.mAngularVelocity = jolt(body.angular_velocity);
     if (body.motion == MotionType::dynamic && body.mass > 0.0f) {
@@ -673,6 +686,40 @@ void PhysicsWorld::synchronize(const World& world, WorldCommands& commands) {
         record.position = moved;
         record.rotation = turned;
     }
+}
+
+std::string PhysicsWorld::create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies) {
+    auto& impl = *m_impl;
+    const auto first = impl.records.size();
+    auto activate = std::vector<JPH::BodyID>{};
+    auto resting = std::vector<JPH::BodyID>{};
+    try {
+        for (const auto& [entity, body] : bodies) {
+            if (auto reason = validate_body(body); !reason.empty())
+                throw std::runtime_error("cannot create a " + std::string(motion_type_name(body.motion)) + " body for " +
+                                         entity_text(world, entity) + ": " + reason);
+            impl.create(world, entity, body, {}, activate, resting);
+        }
+    } catch (const std::exception& error) {
+        // None of these bodies was added to the physics system yet: destroy them and forget them.
+        for (auto i = impl.records.size(); i-- > first;) {
+            const auto& record = impl.records[i];
+            impl.bodies().DestroyBody(record.body);
+            impl.index.erase(record.entity.slot);
+            (record.motion == MotionType::static_body ? impl.live_static : impl.live_moving) -= 1;
+            --impl.stats.bodies_created;
+        }
+        impl.records.resize(first);
+        return error.what();
+    }
+    for (auto* ids : {&resting, &activate}) {
+        if (ids->empty()) continue;
+        const auto mode = ids == &activate ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+        auto state = impl.bodies().AddBodiesPrepare(ids->data(), int(ids->size()));
+        impl.bodies().AddBodiesFinalize(ids->data(), int(ids->size()), state, mode);
+    }
+    if (activate.size() + resting.size() >= 256) impl.system.OptimizeBroadPhase();
+    return {};
 }
 
 void PhysicsWorld::commit(const World& world, const BodyCommands& requests, const WorldCommitResult& result) {

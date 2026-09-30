@@ -55,4 +55,41 @@ struct FlyControlComponent {
     float speed = 3.0f; // metres per second
     float look_sensitivity = 0.0025f; // radians per point of mouse movement
 };
+
+// Physics (docs/physics.md). Authored data only: play sessions turn these into physics bodies.
+
+enum class ColliderShape { box, sphere, capsule };
+/// A collision shape in the entity's local space. Without a rigid body on the entity or an ancestor,
+/// it is a static collider; otherwise it is part of that body's shape.
+struct ColliderComponent {
+    ColliderShape shape = ColliderShape::box;
+    math::Vec3 half_extents{0.5f}; // box, metres
+    float radius = 0.5f; // sphere and capsule
+    float half_height = 0.5f; // capsule: half the straight section along local Y, excluding the caps
+    math::Vec3 offset{0.0f};
+    math::Quat rotation{};
+    float friction = 0.5f;
+    float restitution = 0.0f; // 0 to 1
+    bool sensor = false; // reports overlaps (#1021) without a contact response
+    int32_t group = 0; // collision group 0 to 15, named in the project
+    uint32_t mask = 0xFFFF; // bit n set: collides with group n
+};
+
+enum class BodyMotion { dynamic, kinematic };
+/// Makes the entity a moving body. Its shape is its own collider and the colliders below it.
+struct RigidBodyComponent {
+    BodyMotion motion = BodyMotion::dynamic;
+    float mass = 0.0f; // kg; 0 derives it from the density
+    float density = 1000.0f; // kg/m³
+    float linear_damping = 0.05f; // 1/s
+    float angular_damping = 0.05f;
+    float gravity_factor = 1.0f;
+    math::Vec3 linear_velocity{0.0f}; // initial, m/s; dynamic bodies only
+    math::Vec3 angular_velocity{0.0f}; // initial, rad/s
+};
+
+/// The scene's physics settings; at most one per scene. Without one, the defaults apply.
+struct PhysicsSettingsComponent {
+    math::Vec3 gravity{0.0f, -9.81f, 0.0f}; // m/s²
+};
 } // namespace maya

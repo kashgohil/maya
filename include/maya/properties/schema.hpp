@@ -8,14 +8,27 @@
 
 namespace maya {
 // Explicit persistent IDs. Never derive identity from RTTI, ordering, labels, or hashes.
-enum class ComponentId : uint32_t { name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5, spin = 6, fly_control = 7 };
+enum class ComponentId : uint32_t {
+    name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5, spin = 6, fly_control = 7,
+    collider = 8, rigid_body = 9, physics_settings = 10
+};
 using PropertyId = uint32_t; // scoped to ComponentId; zero is reserved
 using ComponentValue = std::variant<NameComponent, TransformComponent, MeshRendererComponent,
-                                    CameraComponent, LightComponent, SpinComponent, FlyControlComponent>;
-using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat,
-                                  LightKind, AssetRef<MeshAsset>, AssetRef<MaterialAsset>>;
-enum class PropertyType { text, boolean, scalar, vector3, quaternion, light_kind, mesh_ref, material_ref };
-enum class PropertyPresentation { text, toggle, number, vector, rotation, color, choice, asset };
+                                    CameraComponent, LightComponent, SpinComponent, FlyControlComponent,
+                                    ColliderComponent, RigidBodyComponent, PhysicsSettingsComponent>;
+/// One of a property's named choices (an enumeration such as a light's kind), by its value.
+struct ChoiceValue {
+    uint32_t value = 0;
+    auto operator<=>(const ChoiceValue&) const = default;
+};
+using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat, ChoiceValue,
+                                  AssetRef<MeshAsset>, AssetRef<MaterialAsset>, int32_t, uint32_t>;
+/// integer is a whole number within the range; flags is a bit set no greater than range.maximum.
+enum class PropertyType { text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags };
+enum class PropertyPresentation {
+    text, toggle, number, vector, rotation, color, choice, asset,
+    collision_group, collision_mask // an integer or flags shown with the project's collision group names
+};
 enum class PropertyEncoding { value, persistent_asset_id };
 struct NumericRange {
     std::optional<float> minimum;
@@ -23,7 +36,7 @@ struct NumericRange {
     bool minimum_inclusive = true;
     bool maximum_inclusive = true;
 };
-struct EnumOption { LightKind value; std::string_view name; std::string_view label; };
+struct EnumOption { uint32_t value; std::string_view name; std::string_view label; };
 struct PropertyDescriptor {
     PropertyId id;
     std::string_view name; // stable serialization key

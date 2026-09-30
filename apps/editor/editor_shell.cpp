@@ -287,6 +287,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     // (the panel created last).
     if (std::exchange(m_focus_viewport, false)) ImGui::SetWindowFocus(viewport_title.c_str());
     draw_prompts();
+    draw_collision_groups();
     handle_shortcuts();
     // An edit group whose control is no longer active (e.g. it was removed mid-drag) must not stay open.
     if (m_edit_group_open && !ImGui::IsAnyItemActive()) {
@@ -352,9 +353,18 @@ void EditorShell::draw_top_bar() {
         ImGui::PopStyleColor();
         ImGui::SameLine(0.0f, 14.0f);
         if (m_project) {
+            // The project's name opens the project menu: its settings.
+            ImGui::PushStyleColor(ImGuiCol_Button, 0u);
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
-            ImGui::TextUnformatted(m_project->name().c_str());
-            ImGui::PopStyleColor();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6.0f, 3.0f});
+            if (ImGui::Button((m_project->name() + "###project_menu_button").c_str())) ImGui::OpenPopup("project_menu");
+            m_layout.controls.push_back({"project_menu", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(2);
+            if (ImGui::BeginPopup("project_menu")) {
+                if (ImGui::MenuItem((std::string(icon::stack) + "  Collision groups").c_str())) m_groups_open = true;
+                ImGui::EndPopup();
+            }
             ImGui::SameLine(0.0f, 14.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
             ImGui::TextUnformatted("/");

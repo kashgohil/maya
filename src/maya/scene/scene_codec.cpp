@@ -73,9 +73,13 @@ void append_value(std::string& output, const PropertyValue& value, const Propert
                 output += ' ';
             }
             output.pop_back();
-        } else if constexpr (std::same_as<T, LightKind>) {
-            const auto choice = std::ranges::find(property.choices, typed, &EnumOption::value);
+        } else if constexpr (std::same_as<T, ChoiceValue>) {
+            const auto choice = std::ranges::find(property.choices, typed.value, &EnumOption::value);
             output += choice->name;
+        } else if constexpr (std::same_as<T, int32_t>) {
+            output += std::to_string(typed);
+        } else if constexpr (std::same_as<T, uint32_t>) {
+            output += "0x" + hex(typed);
         } else {
             output += typed.valid() ? hex(typed.id.high) + ' ' + hex(typed.id.low) : std::string("none");
         }
@@ -191,13 +195,15 @@ std::string expectation(const PropertyDescriptor& property) {
     case PropertyType::scalar: return "one finite number";
     case PropertyType::vector3: return "three finite numbers";
     case PropertyType::quaternion: return "four finite numbers (x y z w)";
-    case PropertyType::light_kind: {
+    case PropertyType::choice: {
         auto names = std::string("one of");
         for (const auto& choice : property.choices) names += " " + std::string(choice.name);
         return names;
     }
     case PropertyType::mesh_ref:
     case PropertyType::material_ref: return "'none' or two hexadecimal asset ID words";
+    case PropertyType::integer: return "one whole number";
+    case PropertyType::flags: return "a hexadecimal bit set such as 0xffff";
     }
     return "a value";
 }
@@ -224,10 +230,26 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::spa
     case PropertyType::quaternion:
         if (math::Quat value; floats(value.x, value.y, value.z, value.w)) return value;
         return std::nullopt;
-    case PropertyType::light_kind:
+    case PropertyType::choice:
         if (!single_word) return std::nullopt;
-        for (const auto& choice : property.choices) if (choice.name == tokens[0].text) return choice.value;
+        for (const auto& choice : property.choices) if (choice.name == tokens[0].text) return ChoiceValue{choice.value};
         return std::nullopt;
+    case PropertyType::integer: {
+        if (!single_word) return std::nullopt;
+        const auto& text = tokens[0].text;
+        auto value = int32_t{};
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return std::nullopt;
+        return value;
+    }
+    case PropertyType::flags: {
+        if (!single_word || !tokens[0].text.starts_with("0x") || tokens[0].text.size() < 3) return std::nullopt;
+        auto digits = tokens[0];
+        digits.text.erase(0, 2);
+        auto value = uint64_t{};
+        if (!parse_word(digits, value) || value > UINT32_MAX) return std::nullopt;
+        return uint32_t(value);
+    }
     case PropertyType::mesh_ref:
     case PropertyType::material_ref: {
         auto id = AssetId{};

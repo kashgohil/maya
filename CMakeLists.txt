@@ -130,6 +130,7 @@ maya_target_options(MayaPhysics)
 # editor's play mode. CPU-only, on top of World and scene data.
 add_library(MayaSimulation STATIC
     src/maya/simulation/simulation.cpp
+    src/maya/simulation/authored_physics.cpp
     src/maya/simulation/play_session.cpp)
 add_library(Maya::Simulation ALIAS MayaSimulation)
 target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics)

@@ -107,6 +107,11 @@ public:
     /// logged. Returns whether it opened.
     bool open_project(const std::filesystem::path& path);
     const Project* project() const noexcept { return m_project ? &*m_project : nullptr; }
+    /// Names collision group `index` (0 to 15) and saves the project file; an empty name leaves the
+    /// group unnamed. Returns why it could not, or empty. Not an undoable scene edit.
+    std::string rename_collision_group(size_t index, const std::string& name);
+    /// Shows or hides the Collision groups window.
+    void show_collision_groups(bool shown) { m_groups_open = shown; }
     /// Opens a scene of the open project (content-relative, or absolute inside the content root) with
     /// fresh history and selection. It does not ask about unsaved changes; request_open_scene does.
     /// On failure the current scene stays open, and the problems are shown and logged.
@@ -200,6 +205,15 @@ public:
     bool gizmo_active() const noexcept { return m_gizmo_using; }
     /// The latest inspector or gizmo rejection, shown under the edited component; empty when none.
     const std::string& edit_error() const noexcept { return m_edit_error; }
+    /// The open project's collision group names, or the defaults without a project.
+    CollisionGroupNames collision_groups() const;
+    /// A note under a physics component in the Inspector: what Play will refuse (a warning), or which
+    /// body a collider belongs to. Empty when there is nothing to say.
+    struct PhysicsNote {
+        std::string text;
+        bool warning = false;
+    };
+    PhysicsNote physics_note(EntityId id, ComponentId component) const;
     /// Applies a gizmo's new world matrix to an entity as a validated local transform. Returns false
     /// (and changes nothing) when the parent cannot represent the pose, e.g. it would need shear.
     bool apply_world_matrix(EntityId id, const math::Mat4& world);
@@ -264,6 +278,7 @@ private:
     void request(Pending action, std::filesystem::path path);
     void perform_pending();
     void replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path);
+    void draw_collision_groups();
     std::string read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry);
     void scan_project();
     void draw_diagnostics();
@@ -292,6 +307,9 @@ private:
     EntityId m_euler_entity{}; // rotation shown as Euler angles, kept stable while dragging
     math::Vec3 m_euler{0.0f};
     bool m_edit_group_open = false;
+    bool m_groups_open = false; // the Collision groups window
+    std::array<std::array<char, 40>, collision_group_names> m_group_names{}; // its text fields
+    std::string m_groups_error;
     char m_name_buffer[256] = {};
     EntityId m_name_entity{};
     // Viewport tools
