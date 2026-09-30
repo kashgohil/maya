@@ -4,6 +4,8 @@
 #include "editor_icons.hpp"
 #include "editor_theme.hpp"
 #include "maya/assets/asset.hpp"
+#include <imgui_internal.h>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -56,6 +58,22 @@ inline void icon_text(const char* glyph, ImU32 color, float spacing = 8.0f) {
     ImGui::SameLine(0.0f, spacing);
 }
 
+
+/// Where to draw `glyph` so its drawn shape, not its line box, is centred on `center`. Icons are
+/// merged into the text font with a baseline offset that suits inline text, so their line box is
+/// off-centre for a glyph standing on its own.
+inline ImVec2 glyph_origin(const char* glyph, ImVec2 center) {
+    auto codepoint = 0u;
+    ImTextCharFromUtf8(&codepoint, glyph, nullptr);
+    auto* font = ImGui::GetFont();
+    const auto* found = font->FindGlyph(ImWchar(codepoint));
+    if (!found) {
+        const auto size = ImGui::CalcTextSize(glyph);
+        return {center.x - size.x * 0.5f, center.y - size.y * 0.5f};
+    }
+    const auto scale = ImGui::GetFontSize() / font->FontSize;
+    return {std::round(center.x - (found->X0 + found->X1) * 0.5f * scale), std::round(center.y - (found->Y0 + found->Y1) * 0.5f * scale)};
+}
 
 /// Applies the theme's colors and line weights to ImGuizmo (viewport_tools.cpp).
 void style_gizmo();

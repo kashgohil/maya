@@ -81,7 +81,7 @@ A left click in the viewport, away from the gizmo and tool bar, selects what is 
 
 - **Meshes.** Picking uses the snapshot the viewport last rendered, so it matches exactly what is on screen. It is a documented bounded technique, sketched in code after this list: a ray from the editor camera through the pixel, then a linear pass over the snapshot's instances. Each instance's local bounding box is tested with the ray transformed into its space; exact two-sided triangle tests run only for instances whose box the ray enters.
 - **Overlaps.** Hits are sorted nearest first. Clicking the same spot again (within 4 pt) steps to the next object behind, then wraps around.
-- **Cameras and lights.** These have no mesh, so they appear as small icons at their positions. The icons take precedence within 13 pt, since they are drawn on top.
+- **Cameras and lights.** These have no mesh, so they appear as small icons at their positions: 24 pt rounded squares styled like the viewport's tool bar, outlined in the selection colour when selected. The icons take precedence anywhere on their square, since they are drawn on top.
 - **Outline.** Selected meshes are outlined with their oriented bounding box: gold for the primary, dimmer for the rest.
 
 ```text

@@ -10,7 +10,7 @@
 namespace maya::editor {
 using namespace detail;
 namespace {
-constexpr float icon_radius = 13.0f; // points; also the pick radius of camera and light icons
+constexpr float icon_half = 12.0f; // points: half the side of a camera or light icon, which is also where it is picked
 
 ImVec4 v(ImU32 color, float alpha = 1.0f) {
     auto value = ImGui::ColorConvertU32ToFloat4(color);
@@ -104,12 +104,10 @@ void EditorShell::frame_selection() {
 void EditorShell::pick_at(ImVec2 point, const RenderView& view, ImVec2 min, ImVec2 max) {
     auto& scene = *m_scene;
     const auto additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
-    // Camera and light icons sit on top of the scene, so they win within their radius.
+    // Camera and light icons sit on top of the scene, so they win anywhere on their square.
     auto hits = std::vector<EntityId>{};
-    for (const auto& [id, at] : m_layout.icons) {
-        const auto dx = at.x - point.x, dy = at.y - point.y;
-        if (dx * dx + dy * dy <= icon_radius * icon_radius) hits.push_back(id);
-    }
+    for (const auto& [id, at] : m_layout.icons)
+        if (std::abs(at.x - point.x) <= icon_half && std::abs(at.y - point.y) <= icon_half) hits.push_back(id);
     if (hits.empty() && m_snapshot) {
         const auto x = (point.x - min.x) / (max.x - min.x) * 2.0f - 1.0f;
         const auto y = 1.0f - (point.y - min.y) / (max.y - min.y) * 2.0f;
@@ -163,7 +161,8 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
                 if (corners[from] && corners[to]) draw->AddLine(*corners[from], *corners[to], tone, 1.5f);
         }
 
-    // Camera and light icons at their entities' positions.
+    // Camera and light icons at their entities' positions, styled like the tool bar's buttons; a
+    // selected one takes the selection outline's colour.
     m_layout.icons.clear();
     scene.world().for_each_entity([&](EntityHandle entity) {
         const auto camera = scene.world().has<CameraComponent>(entity), light = scene.world().has<LightComponent>(entity);
@@ -173,12 +172,14 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
         if (!at || at->x < min.x || at->x >= max.x || at->y < min.y || at->y >= max.y) return; // off-screen
         const auto id = *scene.world().persistent_id(entity);
         const auto selected = scene.selected(id);
-        draw->AddCircleFilled(*at, icon_radius, theme::color::rgb(0x0B0C0E, 200), 24);
-        draw->AddCircle(*at, icon_radius, selected ? theme::color::rgb(0xFFD166) : theme::color::border, 24, 1.5f);
+        const auto corner = ImVec2{std::round(at->x) - icon_half, std::round(at->y) - icon_half};
+        const auto far = ImVec2{corner.x + icon_half * 2.0f, corner.y + icon_half * 2.0f};
+        draw->AddRectFilled(corner, far, theme::color::rgb(0x0B0C0E, 200), 6.0f);
+        draw->AddRect(corner, far, selected ? theme::color::rgb(0xFFD166) : theme::color::rgb(0xFFFFFF, 28), 6.0f, 0,
+                      selected ? 1.5f : 1.0f);
         const auto* glyph = camera ? icon::video_camera : icon::sun;
-        const auto size = ImGui::CalcTextSize(glyph);
-        draw->AddText({at->x - size.x * 0.5f, at->y - size.y * 0.5f - 1.0f},
-                      camera ? theme::color::accent : theme::color::warning, glyph);
+        draw->AddText(glyph_origin(glyph, {corner.x + icon_half, corner.y + icon_half}),
+                      selected ? theme::color::rgb(0xFFD166) : theme::color::text, glyph);
         m_layout.icons.emplace_back(id, *at);
     });
     draw->PopClipRect();
