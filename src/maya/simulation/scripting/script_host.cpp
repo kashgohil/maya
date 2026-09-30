@@ -69,7 +69,8 @@ public:
             m_commands = nullptr;
             m_messages = nullptr;
         });
-        // Phase 1: instances whose entity or script went away stop, then new ones start.
+        // Phase 1: instances whose entity or script went away stop, new script versions replace their
+        // instances, and then new instances start.
         for (auto& instance : m_instances) {
             if (!instance.active) continue;
             const auto handle = tick.world.find(instance.entity);
@@ -77,6 +78,7 @@ public:
             if (handle) tick.world.with<ScriptComponent>(*handle, [&](const ScriptComponent& value) { current = value; });
             if (!current || current->script.id != instance.script) retire(instance);
         }
+        apply_reloads();
         auto arriving = std::vector<std::pair<EntityHandle, AssetId>>{};
         tick.world.for_each<ScriptComponent>([&](EntityHandle entity, const ScriptComponent& component) {
             const auto id = tick.world.persistent_id(entity);
@@ -88,6 +90,7 @@ public:
             if (instance.active && !instance.disabled) call_hook(instance, "fixed_update", CallMode::fixed, tick.delta);
         emit();
         compact();
+        if (m_settings.reloads) m_settings.reloads->set_memory(m_vm->memory());
     }
 
     void frame(FrameContext& frame) override {
@@ -238,9 +241,17 @@ private:
             script.error = "script " + script.name + " cannot be read: " + source.error;
             return script;
         }
-        script.name = source.source->name;
+        script = load(asset, source.source->name, compile(source.source->text));
+        return script;
+    }
+
+    /// Loads a script version into the session's VM: its module, declarations, and instance metatable.
+    Compiled load(AssetId asset, std::string name, const std::string& bytecode) {
+        auto script = Compiled{};
+        script.asset = asset;
+        script.name = std::move(name);
         const auto previous = std::exchange(m_mode, CallMode::declare);
-        script.loaded = m_vm->load(script.name, source.source->text);
+        script.loaded = m_vm->load_bytecode(script.name, bytecode);
         m_mode = previous;
         if (!script.loaded.error.empty()) {
             script.error = script.loaded.error;
@@ -257,6 +268,13 @@ private:
         });
         script.error = !error.empty() ? script.name + ": " + error : script.description.error;
         return script;
+    }
+
+    void release(Compiled& script) {
+        if (script.metatable_ref != LUA_NOREF) lua_unref(m_vm->state(), script.metatable_ref);
+        m_vm->release(script.loaded);
+        script.metatable_ref = LUA_NOREF;
+        script.loaded = {};
     }
 
     void activate(EntityHandle entity, AssetId asset) {
@@ -277,14 +295,21 @@ private:
             m_instances.push_back(std::move(instance));
             return;
         }
-        // self: the entity and the property values, falling back to the script's hooks.
         auto values = std::vector<ScriptValue>{};
         m_world->with<ScriptComponent>(entity, [&](const ScriptComponent& component) { values = component.values; });
         for (const auto& problem : script_value_problems(script.description, values))
             report(SimulationMessage::Level::warning, instance.label + ": " + problem);
+        m_instances.push_back(std::move(instance));
+        start_instance(m_instances.back(), values);
+    }
+
+    /// Builds an instance's self (its entity, and each declared property from `values` when one fits,
+    /// else its default) and runs start.
+    void start_instance(Instance& instance, const std::vector<ScriptValue>& values) {
+        const auto& script = m_compiled[instance.compiled];
         const auto error = m_vm->protect(script.loaded.thread, [&](lua_State* L) {
             lua_newtable(L);
-            push_entity(L, id);
+            push_entity(L, instance.entity);
             lua_setfield(L, -2, "entity");
             for (const auto& declared : script.description.properties) {
                 auto chosen = ScriptValue{declared.name, declared.type, declared.default_value};
@@ -297,16 +322,76 @@ private:
             lua_setmetatable(L, -2);
             instance.self_ref = lua_ref(L, -1);
         });
-        m_instances.push_back(std::move(instance));
-        auto& added = m_instances.back();
         if (!error.empty()) { // it never starts, so it never stops
-            added.self_ref = LUA_NOREF;
-            added.disabled = true;
-            report(SimulationMessage::Level::error, added.label + ": " + error + " (in start; the instance is stopped)");
+            instance.self_ref = LUA_NOREF;
+            instance.disabled = true;
+            report(SimulationMessage::Level::error, instance.label + ": " + error + " (in start; the instance is stopped)");
             return;
         }
-        added.started = true;
-        call_hook(added, "start", CallMode::start, std::nullopt);
+        instance.started = true;
+        call_hook(instance, "start", CallMode::start, std::nullopt);
+    }
+
+    /// Swaps in the script versions the host offered: each instance of a script keeps its exposed
+    /// properties' current values, its old version stops, and then the new version starts, both in
+    /// activation order. A version that cannot load here leaves the running one in place.
+    void apply_reloads() {
+        if (!m_settings.reloads) return;
+        for (auto& version : m_settings.reloads->take()) {
+            auto fresh = load(version.script, version.name, version.bytecode);
+            if (!fresh.error.empty()) {
+                report(SimulationMessage::Level::error, fresh.error + " (the running version stays)");
+                release(fresh);
+                continue;
+            }
+            const auto found = std::ranges::find(m_compiled, version.script, &Compiled::asset);
+            if (found == m_compiled.end()) { // not used yet: later instances start from this version
+                m_compiled.push_back(std::move(fresh));
+                m_settings.reloads->record({version.script, version.name, tick(), 0});
+                continue;
+            }
+            const auto index = size_t(found - m_compiled.begin());
+            auto replaced = std::vector<std::pair<size_t, std::vector<ScriptValue>>>{};
+            for (size_t i = 0; i < m_instances.size(); ++i)
+                if (m_instances[i].active && m_instances[i].compiled == index) replaced.emplace_back(i, current_values(m_instances[i], fresh));
+            for (const auto& [i, kept] : replaced) {
+                auto& instance = m_instances[i];
+                if (instance.started) call_hook(instance, "stop", CallMode::stop, std::nullopt);
+                if (instance.self_ref != LUA_NOREF) lua_unref(m_vm->state(), instance.self_ref);
+                instance.self_ref = LUA_NOREF;
+                instance.started = instance.disabled = false;
+            }
+            release(m_compiled[index]);
+            m_compiled[index] = std::move(fresh);
+            for (const auto& [i, kept] : replaced) {
+                // The authored values, then the kept play values, which win (the last fitting value is used).
+                auto values = std::vector<ScriptValue>{};
+                if (const auto handle = m_world->find(m_instances[i].entity))
+                    m_world->with<ScriptComponent>(*handle, [&](const ScriptComponent& component) { values = component.values; });
+                values.insert(values.end(), kept.begin(), kept.end());
+                start_instance(m_instances[i], values);
+            }
+            m_settings.reloads->record({version.script, version.name, tick(), replaced.size()});
+            report(SimulationMessage::Level::info, "Reloaded " + version.name + " (" + std::to_string(replaced.size()) +
+                                                       (replaced.size() == 1 ? " instance)" : " instances)"));
+        }
+    }
+
+    /// The values of an instance's exposed properties that `next` also declares, with the same type.
+    std::vector<ScriptValue> current_values(const Instance& instance, const Compiled& next) {
+        auto values = std::vector<ScriptValue>{};
+        if (instance.self_ref == LUA_NOREF) return values;
+        const auto& script = m_compiled[instance.compiled];
+        m_vm->protect(script.loaded.thread, [&](lua_State* L) {
+            lua_getref(L, instance.self_ref);
+            for (const auto& declared : next.description.properties) {
+                lua_rawgetfield(L, -1, declared.name.c_str());
+                if (auto data = to_script_value(L, -1, declared.type))
+                    values.push_back({declared.name, declared.type, std::move(*data)});
+                lua_pop(L, 1);
+            }
+        });
+        return values;
     }
 
     static bool fits(const ScriptPropertyDeclaration& declared, const ScriptValue& value) {

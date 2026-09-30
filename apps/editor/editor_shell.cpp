@@ -256,6 +256,8 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     io.DisplaySize = {metrics.width, metrics.height};
     io.DisplayFramebufferScale = {scale_x, scale_y};
     io.DeltaTime = std::isfinite(delta_time) && delta_time > 0.0f ? delta_time : 1.0f / 60.0f;
+    // A few times a second, changed script files are reloaded (the player never watches files).
+    if ((m_script_check_timer += io.DeltaTime) >= 0.25f) check_script_files();
 
     const auto routed = m_router.route(events, {m_viewport_hovered, showing_game()});
     if (routed.capture) m_capture_request = routed.capture;
@@ -808,6 +810,8 @@ void EditorShell::draw_diagnostics() {
                 const auto& clock = m_play->clock();
                 row("Play", format("tick %llu   %.2f s rejected   %llu ticks dropped", static_cast<unsigned long long>(clock.tick()),
                                    clock.total_rejected_time(), static_cast<unsigned long long>(clock.total_discarded_ticks())));
+                row("Scripts", format("%.0f KiB   %zu reloads", double(play_script_memory()) / 1024.0,
+                                      m_play_reloads ? m_play_reloads->applied().size() : size_t{0}));
             }
             theme::end_properties();
         }

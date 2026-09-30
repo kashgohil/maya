@@ -133,20 +133,37 @@ ScriptDescription describe_module(lua_State* L, int index, std::string_view name
 
 } // namespace scripting
 
-ScriptDescription describe_script(std::string_view name, std::string_view source, ScriptLimits limits) {
+namespace scripting {
+ScriptDescription describe_bytecode(std::string_view name, const std::string& bytecode, ScriptLimits limits) {
     try {
-        auto vm = scripting::Vm(limits, 0);
-        auto loaded = vm.load(name, source);
+        auto vm = Vm(limits, 0);
+        auto loaded = vm.load_bytecode(name, bytecode);
         if (!loaded.error.empty()) return {{}, {}, loaded.error};
         auto* T = loaded.thread;
         lua_getref(T, loaded.module_ref);
-        auto description = scripting::describe_module(T, -1, name);
+        auto description = describe_module(T, -1, name);
         lua_pop(T, 1);
         vm.release(loaded);
         return description;
     } catch (const std::exception& error) {
         return {{}, {}, std::string(name) + ": " + error.what()};
     }
+}
+} // namespace scripting
+
+ScriptDescription describe_script(std::string_view name, std::string_view source, ScriptLimits limits) {
+    return scripting::describe_bytecode(name, scripting::compile(source), limits);
+}
+
+std::string ScriptReloads::offer(AssetId script, ScriptSource source) {
+    // Compiled and described here, off the tick; the session only loads the bytecode.
+    auto bytecode = scripting::compile(source.text);
+    if (const auto description = scripting::describe_bytecode(source.name, bytecode, m_limits); !description)
+        return description.error;
+    // A newer offer for the same script replaces one the session has not taken yet.
+    std::erase_if(m_offered, [&](const Version& version) { return version.script == script; });
+    m_offered.push_back({script, std::move(source.name), std::move(bytecode)});
+    return {};
 }
 
 std::vector<std::string> script_value_problems(const ScriptDescription& description, const std::vector<ScriptValue>& values) {

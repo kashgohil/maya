@@ -602,7 +602,11 @@ std::string take_error(lua_State* L) {
 }
 } // namespace
 
-Vm::Loaded Vm::load(std::string_view name, std::string_view source) {
+std::string compile(std::string_view source) {
+    return Luau::compile(std::string(source));
+}
+
+Vm::Loaded Vm::load_bytecode(std::string_view name, const std::string& bytecode) {
     // Everything here that allocates in the VM runs protected, so running out of memory is this
     // script's error, not the session's.
     auto loaded = Loaded{};
@@ -615,7 +619,6 @@ Vm::Loaded Vm::load(std::string_view name, std::string_view source) {
         loaded.error = std::string(name) + ": " + error;
         return loaded;
     }
-    const auto bytecode = Luau::compile(std::string(source));
     const auto chunk = "=" + std::string(name);
     if (auto error = protect(loaded.thread, [&](lua_State* L) {
             luaL_sandboxthread(L); // its own globals, falling through to the read-only ones

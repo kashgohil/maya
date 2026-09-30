@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -63,6 +64,9 @@ struct PlatformServices {
     std::function<void(CursorShape)> set_cursor;
     /// Closes the window as its close button does, so Application::on_close_requested is asked.
     std::function<void()> request_close;
+    /// Opens a file in the application the system uses for it, such as an editor for a script.
+    /// Returns why it could not, or empty.
+    std::function<std::string(const std::filesystem::path&)> open_file;
 };
 
 /// Per-window input shared by the desktop host and applications (main thread only). The host

@@ -12,8 +12,39 @@
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char** environ;
 
 namespace maya {
+namespace {
+/// Opens a file with macOS's `open`: in the application registered for it, or else in the default
+/// text editor. Runs /usr/bin/open directly, without a shell, and waits for it (it returns at once).
+std::string open_with_system(const std::filesystem::path& file) {
+    for (const bool text_editor : {false, true}) {
+        auto arguments = std::vector<std::string>{"open"};
+        if (text_editor) arguments.emplace_back("-t");
+        arguments.push_back(file.string());
+        auto argv = std::vector<char*>{};
+        for (auto& argument : arguments) argv.push_back(argument.data());
+        argv.push_back(nullptr);
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0); // its "no application" message
+        auto process = pid_t{};
+        const auto spawned = posix_spawn(&process, "/usr/bin/open", &actions, nullptr, argv.data(), environ);
+        posix_spawn_file_actions_destroy(&actions);
+        if (spawned != 0) return "cannot run /usr/bin/open";
+        auto status = 0;
+        if (waitpid(process, &status, 0) == process && WIFEXITED(status) && WEXITSTATUS(status) == 0) return {};
+    }
+    return "no application opens " + file.filename().string();
+}
+} // namespace
 
 LaunchArguments split_arguments(int argc, char** argv) {
     auto arguments = LaunchArguments{};
@@ -73,7 +104,7 @@ int run_desktop(int argc, char** argv, std::unique_ptr<Application> application,
     Input::instance().set_services({[&window] { return window.clipboard_text(); },
                                     [&window](const std::string& text) { window.set_clipboard_text(text); },
                                     [&window](CursorShape shape) { window.set_cursor_shape(shape); },
-                                    [&window] { window.set_should_close(true); }});
+                                    [&window] { window.set_should_close(true); }, open_with_system});
     const auto publish_metrics = [&window] {
         const auto [points_width, points_height] = window.window_size();
         const auto [pixels_width, pixels_height] = window.framebuffer_size();

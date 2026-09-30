@@ -273,6 +273,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/play_mode.cpp
         apps/editor/project_files.cpp
         apps/editor/scene_editor.cpp
+        apps/editor/script_files.cpp
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)

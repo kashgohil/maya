@@ -15,9 +15,16 @@ bool EditorShell::start_play() {
     if (m_play || !m_scene || !m_assets) return false;
     if (m_scene->group_open()) m_scene->end_group(); // a control mid-drag finishes its step first
     m_edit_group_open = false;
-    const auto scripts = m_project ? project_script_settings(m_project->settings) : ScriptSettings{};
-    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets),
-                                      play_systems(registry_script_sources(*m_assets), scripts));
+    // Scripts play their last good versions; changed files reach the session through the reloads.
+    auto scripts = m_project ? project_script_settings(m_project->settings) : ScriptSettings{};
+    scripts.reloads = std::make_shared<ScriptReloads>(scripts.limits);
+    const auto sources = [this](AssetId script) -> ScriptSourceResult {
+        const auto& version = script_version(script);
+        if (version.good) return {*version.good, {}};
+        // Never compiled: the session gets the file as it is and reports why, under the script's name.
+        return m_assets ? registry_script_sources(*m_assets)(script) : ScriptSourceResult{std::nullopt, version.error};
+    };
+    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets), play_systems(sources, scripts));
     if (!started) {
         auto reason = started.error;
         for (const auto& problem : started.diagnostics) {
@@ -29,6 +36,7 @@ bool EditorShell::start_play() {
         return false;
     }
     m_play = std::move(started.session);
+    m_play_reloads = scripts.reloads;
     m_play_selection = m_scene->selection();
     m_scene->lock(play_lock);
     m_renaming.reset();
@@ -44,6 +52,7 @@ void EditorShell::stop_play() {
     if (const auto release = m_router.cancel()) m_capture_request = release; // give the mouse back
     const auto ticks = m_play->clock().tick();
     m_play.reset(); // the play World, its systems, and the snapshot's leases on it go now
+    m_play_reloads.reset();
     m_snapshot.reset();
     m_frame_problems.clear();
     if (m_scene) {

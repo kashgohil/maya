@@ -62,6 +62,9 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+/// Luau bytecode for `source`. A syntax error is encoded in it, and reported when it is loaded.
+std::string compile(std::string_view source);
+
 /// A Luau VM with Maya's sandbox, limits, and `maya` library. Single thread.
 class Vm {
 public:
@@ -83,7 +86,9 @@ public:
         int module_ref = LUA_NOREF;
         std::string error;
     };
-    Loaded load(std::string_view name, std::string_view source);
+    Loaded load(std::string_view name, std::string_view source) { return load_bytecode(name, compile(source)); }
+    /// Loads what compile() made; a compile error is reported here, as "name:line: message".
+    Loaded load_bytecode(std::string_view name, const std::string& bytecode);
     void release(const Loaded& loaded);
 
     /// Calls the function below `arguments` on `thread`'s stack, within the work budget, replacing it
@@ -117,6 +122,9 @@ private:
     uint64_t m_work = 0;
     int m_runner = LUA_NOREF; // the C function protect runs tasks in
 };
+
+/// What a script declares, from its bytecode, run in a fresh VM within `limits` (scripting.cpp).
+ScriptDescription describe_bytecode(std::string_view name, const std::string& bytecode, ScriptLimits limits);
 
 /// Reads `properties` and the defined hooks from a script's module table at `index` (scripting.cpp).
 ScriptDescription describe_module(lua_State* L, int index, std::string_view name);

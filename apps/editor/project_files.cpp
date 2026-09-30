@@ -162,6 +162,8 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     scan_project();
     m_log.add(DiagnosticSource::project, "Opened project " + m_project->name() + " (" +
         std::to_string(m_assets->records().size()) + " assets, content in " + m_project->content_root.string() + ")", m_frame);
+    m_scripts.clear();
+    check_script_files(); // compile errors are reported now, before anything plays
     // A startup scene that cannot be opened leaves a new scene, with the reason in a notice.
     if (!m_project->startup_scene || !open_scene(*m_project->startup_scene)) new_scene();
     return true;
@@ -317,6 +319,8 @@ void EditorShell::refresh_project() {
         notice("Couldn't reload the catalog", error + "\nThe previous catalog stays in use.");
     } else {
         m_assets = std::move(registry); // loaded versions are reloaded from their files on next use
+        m_scripts.clear();
+        check_script_files();
     }
     scan_project();
     m_log.add(DiagnosticSource::project, "Refreshed: " + std::to_string(m_assets->records().size()) + " assets, " +
@@ -555,6 +559,22 @@ EditResult EditorShell::assign_asset(EntityId entity, AssetId asset) {
     if (!info) return {false, "That asset is not in the project's catalog"};
     const auto* record = m_scene->record(entity);
     if (!record) return {false, "The entity no longer exists"};
+    if (info->record.kind == AssetKind::script) {
+        // Values the new script declares, with the same type, carry over; the rest belonged to the old one.
+        auto script = ScriptComponent{AssetRef<ScriptAsset>{asset}, {}};
+        const auto existing = std::ranges::find(record->components, ComponentId::script,
+                                                [](const ComponentValue& value) { return component_id(value); });
+        if (existing != record->components.end()) {
+            const auto& previous = std::get<ScriptComponent>(*existing);
+            const auto* description = script_description(asset);
+            for (const auto& value : previous.values)
+                if (previous.script.id == asset || (description && std::ranges::any_of(description->properties, [&](const auto& declared) {
+                                                        return declared.name == value.name && declared.type == value.type;
+                                                    })))
+                    script.values.push_back(value);
+        }
+        return m_scene->set_component(entity, script);
+    }
     auto renderer = MeshRendererComponent{};
     const auto existing = std::ranges::find(record->components, ComponentId::mesh_renderer,
                                             [](const ComponentValue& value) { return component_id(value); });
@@ -637,8 +657,8 @@ void EditorShell::accept_viewport_drop() {
         auto asset = AssetPayload{};
         std::memcpy(&asset, dragged->Data, sizeof(asset));
         const auto point = ImGui::GetIO().MousePos;
-        // Meshes land where they are dropped; materials go to the object under the pointer.
-        const auto target = asset.kind == AssetKind::material ? mesh_at(point) : std::nullopt;
+        // Meshes land where they are dropped; materials and scripts go to the object under the pointer.
+        const auto target = asset.kind != AssetKind::mesh ? mesh_at(point) : std::nullopt;
         if (ImGui::AcceptDragDropPayload("MAYA_ASSET", ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
             const auto name = asset_name(asset.id);
             if (asset.kind == AssetKind::mesh) {
@@ -659,12 +679,16 @@ void EditorShell::accept_viewport_drop() {
 void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto& record = row.record;
     const auto info = m_assets->info(record.id);
-    const auto missing = row.missing;
     const auto mesh = record.kind == AssetKind::mesh;
+    const auto script = record.kind == AssetKind::script;
+    // Scripts are watched, so their state is current; the others are as the last scan found them.
+    const auto* version = script ? &script_version(record.id) : nullptr;
+    const auto missing = version ? !version->present : row.missing;
+    const auto problem = version ? version->error : info && info->diagnostic ? info->diagnostic.message : std::string{};
     // Materials are small CPU data, so they load for their swatch (or the reason they cannot); meshes
     // load when first drawn.
     auto swatch = std::optional<ImU32>{};
-    if (!mesh)
+    if (record.kind == AssetKind::material)
         if (const auto material = m_assets->acquire(AssetRef<MaterialAsset>{record.id})) {
             const auto& color = material.lease.value().base_color;
             const auto channel = [](float linear) { // linear to display (sRGB-like) 8-bit
@@ -673,7 +697,8 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             swatch = IM_COL32(channel(color.x), channel(color.y), channel(color.z), 255);
         }
     const auto state = info ? info->state : AssetState::unloaded;
-    const auto failed = state == AssetState::failed || (info && info->diagnostic);
+    const auto failed = version ? !missing && !problem.empty() : state == AssetState::failed || (info && info->diagnostic);
+    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : icon::circle_half;
     ImGui::PushID(static_cast<int>(record.id.low ^ (record.id.high << 7)));
     const auto selected = m_selected_asset == record.id;
     if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()}))
@@ -683,15 +708,16 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto hovered = ImGui::IsItemHovered();
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         if (mesh) place_in_view(record.id);
+        else if (script) open_script(record.id);
         else assign_to_selection(record.id);
     }
     if (ImGui::BeginDragDropSource()) {
         const auto payload = AssetPayload{record.id, record.kind};
         ImGui::SetDragDropPayload("MAYA_ASSET", &payload, sizeof(payload));
-        icon_text(mesh ? icon::cube : icon::circle_half, theme::color::muted);
+        icon_text(glyph, theme::color::muted);
         ImGui::TextUnformatted(record.path.stem().string().c_str());
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
-        ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : "Drop on an object to assign it");
+        ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : script ? "Drop on an object to attach it" : "Drop on an object to assign it");
         ImGui::PopStyleColor();
         ImGui::EndDragDropSource();
     }
@@ -699,11 +725,15 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     if (ImGui::BeginPopupContextItem("asset")) {
         if (mesh && ImGui::MenuItem((std::string(icon::plus) + "  Place in scene").c_str(), nullptr, false, m_scene != nullptr))
             place_in_view(record.id);
+        if (script && ImGui::MenuItem((std::string(icon::file_code) + "  Open").c_str(), nullptr, false, !missing))
+            open_script(record.id);
         const auto assign = std::string(icon::arrows_move) + "  Assign to selection" +
                             (selection ? " (" + std::to_string(selection) + ")" : std::string{});
         if (ImGui::MenuItem(assign.c_str(), nullptr, false, selection > 0)) assign_to_selection(record.id);
         ImGui::Separator();
-        if (ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str())) {
+        if (script && ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str())) {
+            reload_script(record.id);
+        } else if (!script && ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str())) {
             const auto diagnostic = mesh ? m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic
                                          : m_assets->reload(AssetRef<MaterialAsset>{record.id}).diagnostic;
             m_log.add(DiagnosticSource::asset, diagnostic ? record.path.generic_string() + ": " + diagnostic.message
@@ -723,10 +753,11 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             ImGui::TextUnformatted("The file is missing from the content folder.");
             ImGui::PopStyleColor();
         }
-        if (info && info->diagnostic) {
+        if (!missing && !problem.empty()) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::danger);
             ImGui::PushTextWrapPos(420.0f);
-            ImGui::TextUnformatted(info->diagnostic.message.c_str());
+            ImGui::TextUnformatted(problem.c_str());
+            if (version && version->good) ImGui::TextUnformatted("The last version that compiled stays in use.");
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
         }
@@ -740,10 +771,10 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         draw->AddCircleFilled({min.x + 12.0f, middle}, 5.5f, *swatch);
         draw->AddCircle({min.x + 12.0f, middle}, 5.5f, theme::color::rgb(0xFFFFFF, 40));
     } else {
-        draw->AddText({min.x + 5.0f, text_y}, theme::color::muted, mesh ? icon::cube : icon::circle_half);
+        draw->AddText({min.x + 5.0f, text_y}, theme::color::muted, glyph);
     }
     const auto tone = failed ? theme::color::danger : missing ? theme::color::warning : theme::color::text;
-    const auto status = missing ? "missing" : failed ? "failed" : state == AssetState::ready ? "" : mesh ? "not loaded" : "";
+    const auto status = missing ? "missing" : failed ? (script ? "error" : "failed") : state == AssetState::ready ? "" : mesh ? "not loaded" : "";
     const auto status_width = ImGui::CalcTextSize(status).x;
     draw->PushClipRect(min, {max.x - status_width - 12.0f, max.y}, true);
     draw->AddText({min.x + 26.0f, text_y}, tone, record.path.stem().string().c_str());
@@ -783,15 +814,15 @@ void EditorShell::draw_assets() {
             for (size_t i = 0; i < m_scene_files.size(); ++i)
                 if (passes(lowercase(m_scene_files[i].generic_string()))) m_shown_rows[0].push_back(i);
             for (size_t i = 0; i < m_asset_rows.size(); ++i) {
-                // Scripts are assigned in the Inspector; their Assets panel column comes with #1020.
-                if (m_asset_rows[i].record.kind == AssetKind::script) continue;
-                if (passes(m_asset_rows[i].search)) m_shown_rows[m_asset_rows[i].record.kind == AssetKind::mesh ? 1 : 2].push_back(i);
+                const auto kind = m_asset_rows[i].record.kind;
+                if (passes(m_asset_rows[i].search))
+                    m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : 3].push_back(i);
             }
             m_shown_filter = std::move(filter);
             m_shown_stale = false;
         }
         constexpr auto table_flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
-        if (ImGui::BeginTable("asset_columns", 3, table_flags, ImGui::GetContentRegionAvail())) {
+        if (ImGui::BeginTable("asset_columns", 4, table_flags, ImGui::GetContentRegionAvail())) {
             // Each column scrolls on its own and draws only its visible rows.
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {
                 ImGui::TableNextColumn();
@@ -827,6 +858,7 @@ void EditorShell::draw_assets() {
             });
             column("meshes", "MESHES", m_shown_rows[1], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("materials", "MATERIALS", m_shown_rows[2], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
+            column("scripts", "SCRIPTS", m_shown_rows[3], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             ImGui::EndTable();
         }
         if (std::exchange(m_rescan, false)) scan_project();

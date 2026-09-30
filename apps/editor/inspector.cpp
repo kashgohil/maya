@@ -382,23 +382,6 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
     ImGui::PopID();
 }
 
-const ScriptDescription* EditorShell::script_description(AssetId script) {
-    if (!m_assets || !script.valid()) return nullptr;
-    const auto loaded = m_assets->acquire(AssetRef<ScriptAsset>{script});
-    if (!loaded) {
-        auto& entry = m_script_descriptions[script];
-        entry = {0, ScriptDescription{{}, {}, loaded.diagnostic.message}};
-        return &entry.second;
-    }
-    const auto generation = loaded.lease.handle().generation;
-    auto& entry = m_script_descriptions[script];
-    if (entry.first != generation || generation == 0) {
-        const auto info = m_assets->info(script);
-        entry = {generation, describe_script(info ? info->record.path.generic_string() : "script", loaded.lease.value().source)};
-    }
-    return &entry.second;
-}
-
 void EditorShell::draw_script_properties(EntityId id, const ComponentValue& value, const ScriptComponent& script) {
     const auto* description = script_description(script.script.id);
     if (!description || !*description) return;
@@ -514,10 +497,14 @@ void EditorShell::draw_script_notes(EntityId id, const ComponentValue& value, co
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
     };
+    if (ImGui::SmallButton((std::string(icon::file_code) + "  Open script").c_str())) open_script(script.script.id);
+    m_layout.controls.push_back({"script.open", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
     if (!*description) {
         note(icon::warning, theme::color::danger, description->error);
         return;
     }
+    if (const auto error = script_error(script.script.id); !error.empty())
+        note(icon::warning, theme::color::danger, error + " (the last version that compiled stays in use)");
     const auto problems = script_value_problems(*description, script.values);
     for (const auto& problem : problems) note(icon::warning, theme::color::warning, problem);
     const auto unused = std::ranges::any_of(script.values, [&](const ScriptValue& stored) {

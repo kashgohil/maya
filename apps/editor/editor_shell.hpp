@@ -170,7 +170,7 @@ public:
     /// Places an instance of a mesh asset at a world position, named after its file, as one undo step.
     EditResult place_mesh(AssetId mesh, const math::Vec3& position);
     /// Assigns a mesh or material asset to an entity's mesh renderer, adding one to an entity with a
-    /// transform when it has none, as one undo step.
+    /// transform when it has none, or a script to its script component, as one undo step.
     EditResult assign_asset(EntityId entity, AssetId asset);
     /// Where a mesh dropped at a viewport point lands: on the surface under it, else on the ground
     /// plane, else in front of the camera. Null when the viewport is not shown.
@@ -215,8 +215,19 @@ public:
         bool warning = false;
     };
     PhysicsNote physics_note(EntityId id, ComponentId component) const;
-    /// What the script asset declares, compiled once per asset version; null without a project.
+    /// What the script asset declares: its last good version's description, or why it has none (its
+    /// error); null without a project.
     const ScriptDescription* script_description(AssetId script);
+    /// Why the script file's current contents cannot be used (a compile error, or a missing file), or
+    /// empty. With a last good version, that version stays in use.
+    std::string script_error(AssetId script);
+    /// Checks the project's script files for changes and reloads the changed ones, into play too. The
+    /// editor checks every quarter second; this checks now.
+    void check_script_files();
+    /// Opens a script's file in the application the system uses for it.
+    void open_script(AssetId script);
+    /// While playing, the script VM's memory in use; 0 otherwise.
+    size_t play_script_memory() const noexcept { return m_play_reloads ? m_play_reloads->memory() : 0; }
     /// Applies a gizmo's new world matrix to an entity as a validated local transform. Returns false
     /// (and changes nothing) when the parent cannot represent the pose, e.g. it would need shear.
     bool apply_world_matrix(EntityId id, const math::Mat4& world);
@@ -315,7 +326,21 @@ private:
     bool m_groups_open = false; // the Collision groups window
     std::array<std::array<char, 40>, collision_group_names> m_group_names{}; // its text fields
     std::string m_groups_error;
-    std::unordered_map<AssetId, std::pair<uint64_t, ScriptDescription>, PersistentIdHash> m_script_descriptions;
+    /// A script as the editor knows it (script_files.cpp).
+    struct ScriptVersion {
+        std::optional<ScriptSource> good; // the last version that compiled
+        ScriptDescription description; // good's, or the error while there is none
+        std::string error; // why the file's current contents cannot be used
+        bool present = false; // what the file looked like when last read
+        std::filesystem::file_time_type stamp;
+        uintmax_t size = 0;
+    };
+    ScriptVersion& script_version(AssetId script); // read on first use
+    void read_script(AssetId script, ScriptVersion& version);
+    void reload_script(AssetId script);
+    ScriptLimits script_limits() const;
+    std::unordered_map<AssetId, ScriptVersion, PersistentIdHash> m_scripts;
+    float m_script_check_timer = 0.0f;
     std::array<char, 256> m_script_text{}; // the script string property being typed into
     std::string m_script_text_key;
     char m_name_buffer[256] = {};
@@ -332,6 +357,7 @@ private:
     std::optional<EntityId> m_reveal; // expand and scroll the hierarchy to this entity
     // Play
     std::unique_ptr<PlaySession> m_play;
+    std::shared_ptr<ScriptReloads> m_play_reloads; // changed scripts for the play session
     std::vector<EntityId> m_play_selection; // the selection at Play, restored at Stop
     bool m_game_view = true;
     // Project and scene files
@@ -340,7 +366,7 @@ private:
     std::vector<std::filesystem::path> m_scene_files;
     std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
     std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
-    std::array<std::vector<size_t>, 3> m_shown_rows; // scenes, meshes, and materials passing the filter
+    std::array<std::vector<size_t>, 4> m_shown_rows; // scenes, meshes, materials, and scripts passing the filter
     std::string m_shown_filter;
     bool m_shown_stale = true; // the rows or scene files changed
     bool m_rescan = false; // recheck the rows once they are drawn

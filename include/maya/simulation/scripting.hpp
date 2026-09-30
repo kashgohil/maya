@@ -2,9 +2,11 @@
 
 #include "maya/simulation/simulation.hpp"
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Luau scripts for play sessions (docs/scripting.md). Luau stays inside the scripting host: nothing
@@ -29,10 +31,13 @@ struct ScriptLimits {
     uint64_t work_per_call = 1'000'000;
     size_t memory_bytes = size_t{64} << 20; // the play session's VM
 };
+class ScriptReloads;
 struct ScriptSettings {
     ScriptLimits limits;
     /// Seeds math.random and the IDs of entities scripts create, so a session repeats exactly.
     uint64_t seed = 0x6d617961;
+    /// New script versions from the host while the session plays; none when empty.
+    std::shared_ptr<ScriptReloads> reloads;
 };
 
 /// A property a script declares in its `properties` table.
@@ -56,6 +61,47 @@ ScriptDescription describe_script(std::string_view name, std::string_view source
 /// Why `values` do not fit `description`, per value (a type mismatch, a value out of range, or a
 /// property the script does not declare); empty when they all fit.
 std::vector<std::string> script_value_problems(const ScriptDescription& description, const std::vector<ScriptValue>& values);
+
+/// New versions of scripts for a playing session (docs/scripting.md#reload). The host offers a changed
+/// script, which is compiled and described here, off the tick. The session's script system, which
+/// shares this object through ScriptSettings::reloads, swaps that script's instances at its next tick:
+/// each old instance stops, then the new version starts, in activation order, keeping the exposed
+/// properties' current values. Host and session use it on one thread.
+class ScriptReloads {
+public:
+    explicit ScriptReloads(ScriptLimits limits = {}) : m_limits(limits) {}
+
+    /// Offers `source` as the new version of `script`. When it cannot be compiled or described, nothing
+    /// changes, the running version stays, and the error is returned ("name:line: message").
+    std::string offer(AssetId script, ScriptSource source);
+
+    /// A reload a session applied. Replays of a session that reloaded are not promised to match.
+    struct Applied {
+        AssetId script;
+        std::string name;
+        uint64_t tick = 0; // the tick whose boundary swapped it
+        size_t instances = 0; // how many instances restarted
+    };
+    const std::vector<Applied>& applied() const noexcept { return m_applied; }
+    /// The session VM's memory in use after its last tick, in bytes.
+    size_t memory() const noexcept { return m_memory; }
+
+    // For the script system.
+    struct Version {
+        AssetId script;
+        std::string name;
+        std::string bytecode;
+    };
+    std::vector<Version> take() { return std::exchange(m_offered, {}); }
+    void record(Applied applied) { m_applied.push_back(std::move(applied)); }
+    void set_memory(size_t bytes) noexcept { m_memory = bytes; }
+
+private:
+    ScriptLimits m_limits;
+    std::vector<Version> m_offered;
+    std::vector<Applied> m_applied;
+    size_t m_memory = 0;
+};
 
 /// The system that runs maya.script components: one sandboxed Luau VM for the session, instances
 /// started in activation order, hooks in the fixed tick and once per frame. A failing script instance
