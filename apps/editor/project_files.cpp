@@ -785,7 +785,12 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
 }
 
 void EditorShell::draw_assets() {
-    const auto open = begin_panel(assets_title);
+    // No bottom padding: the columns' lists run to the panel's bottom edge and scroll on their own.
+    const auto padding = ImGui::GetStyle().WindowPadding;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {padding.x, 0.0f});
+    const auto open = begin_panel(assets_title, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padding.y); // the usual space at the top
     if (open && !m_project) {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
         ImGui::TextWrapped("No project is open.");
@@ -827,7 +832,9 @@ void EditorShell::draw_assets() {
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {
                 ImGui::TableNextColumn();
                 theme::caption(m_fonts, caption, std::to_string(shown.size()).c_str());
-                ImGui::BeginChild(id, {0.0f, 0.0f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+                // Through the cell's bottom padding, to the table's edge.
+                const auto height = ImGui::GetContentRegionAvail().y + ImGui::GetStyle().CellPadding.y;
+                ImGui::BeginChild(id, {0.0f, height}, ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
                 auto clipper = ImGuiListClipper{};
                 clipper.Begin(int(shown.size()));
                 while (clipper.Step())
