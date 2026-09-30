@@ -83,6 +83,7 @@ const char* source_name(DiagnosticSource source) {
     case DiagnosticSource::project: return "project";
     case DiagnosticSource::asset: return "asset";
     case DiagnosticSource::play: return "play";
+    case DiagnosticSource::script: return "script";
     }
     return "?";
 }

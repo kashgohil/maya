@@ -21,6 +21,7 @@ struct PlayFrame {
     ClockAdvance clock;
     uint32_t ticks_run = 0;
     std::string error; // a system failed; the session has stopped simulating
+    std::vector<SimulationMessage> messages; // problems systems reported without stopping, in order
 };
 
 /// A running scene: its own World built from a scene document, a fixed clock, gameplay input, and
@@ -60,7 +61,7 @@ public:
 private:
     PlaySession(std::unique_ptr<World> world, std::vector<std::unique_ptr<SimulationSystem>> systems,
                 ClockSettings clock, PhysicsSettings physics, std::optional<EntityId> camera);
-    void run_tick();
+    void run_tick(std::vector<SimulationMessage>& messages);
 
     std::unique_ptr<World> m_world;
     std::unique_ptr<PhysicsWorld> m_physics; // declared after the World, so it is destroyed first

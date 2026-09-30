@@ -1,3 +1,4 @@
+#include "maya/simulation/script_assets.hpp"
 #include "player_application.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
@@ -36,7 +37,7 @@ public:
         const auto context = asset_property_context(*m_assets);
         auto loaded = load_scene_file(*scene_path, context);
         if (!loaded) return fail(*scene_path, loaded.diagnostics);
-        auto started = PlaySession::start(std::move(loaded.document), context, builtin_systems());
+        auto started = PlaySession::start(std::move(loaded.document), context, play_systems(registry_script_sources(*m_assets)));
         if (!started) return started.diagnostics.empty() ? fail(started.error) : fail(*scene_path, started.diagnostics);
         m_session = std::move(started.session);
         if (!m_session->camera()) return fail(scene_path->filename().string() + " has no camera to show; add one in the editor");
@@ -51,8 +52,10 @@ public:
     void on_update(float delta_time, bool input_enabled) override {
         // Every window event belongs to the game in the player.
         if (input_enabled) m_session->input().feed(Input::instance().events());
-        if (const auto frame = m_session->update(delta_time); !frame.error.empty())
-            throw std::runtime_error("[Player] " + frame.error);
+        const auto frame = m_session->update(delta_time);
+        for (const auto& message : frame.messages) // script logs and failed script instances
+            std::cerr << "[" << message.source << "] " << message.text << '\n';
+        if (!frame.error.empty()) throw std::runtime_error("[Player] " + frame.error);
     }
 
     void on_render(GraphicsDevice& device) override {

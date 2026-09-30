@@ -3,6 +3,8 @@
 #include "maya/assets/asset_ref.hpp"
 #include "maya/math/quaternion.hpp"
 #include <string>
+#include <variant>
+#include <vector>
 
 namespace maya {
 struct NameComponent {
@@ -91,5 +93,25 @@ struct RigidBodyComponent {
 /// The scene's physics settings; at most one per scene. Without one, the defaults apply.
 struct PhysicsSettingsComponent {
     math::Vec3 gravity{0.0f, -9.81f, 0.0f}; // m/s²
+};
+
+// Scripting (docs/scripting.md).
+
+enum class ScriptValueType { number, integer, boolean, string, vector, color, entity };
+/// number: float; integer: int32_t; boolean: bool; string; vector and color: Vec3; entity: EntityId
+/// (zero for none).
+using ScriptValueData = std::variant<float, int32_t, bool, std::string, math::Vec3, EntityId>;
+/// One value for a property a script declares, stored by the property's name.
+struct ScriptValue {
+    std::string name;
+    ScriptValueType type = ScriptValueType::number;
+    ScriptValueData data = 0.0f;
+    bool operator==(const ScriptValue& other) const;
+};
+/// Attaches a script asset to the entity, with values for the properties the script declares.
+/// Properties without a value use the script's defaults.
+struct ScriptComponent {
+    AssetRef<ScriptAsset> script{};
+    std::vector<ScriptValue> values;
 };
 } // namespace maya

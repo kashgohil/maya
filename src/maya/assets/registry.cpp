@@ -1,4 +1,5 @@
 #include "maya/assets/registry.hpp"
+#include <fstream>
 #include <charconv>
 #include <iomanip>
 #include <sstream>
@@ -36,10 +37,28 @@ std::optional<std::filesystem::path> AssetRegistry::resolve_path(const std::file
     return full;
 }
 
+const char* asset_kind_name(AssetKind kind) noexcept {
+    switch (kind) {
+    case AssetKind::mesh: return "mesh";
+    case AssetKind::material: return "material";
+    case AssetKind::script: break;
+    }
+    return "script";
+}
+
+AssetLoadResult<ScriptAsset> AssetProvider::load_script(const std::filesystem::path& path) {
+    auto file = std::ifstream(path, std::ios::binary);
+    if (!file) return {nullptr, {AssetError::missing_file, "Cannot read script " + path.string()}};
+    auto script = std::make_shared<ScriptAsset>();
+    script->source.assign(std::istreambuf_iterator<char>(file), {});
+    if (file.bad()) return {nullptr, {AssetError::load_failed, "Cannot read script " + path.string()}};
+    return {std::move(script), {}};
+}
+
 AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
     if (m_loading) return {AssetError::busy,"Cannot change the asset catalog during a provider load"};
     if (!record.id.valid()) return {AssetError::invalid_id,"Asset ID must be nonzero"};
-    if (record.kind != AssetKind::mesh && record.kind != AssetKind::material)
+    if (record.kind != AssetKind::mesh && record.kind != AssetKind::material && record.kind != AssetKind::script)
         return {AssetError::wrong_type,"Unsupported asset kind"};
     if (m_ids.contains(record.id)) return {AssetError::duplicate_id,"Duplicate asset ID " + id_text(record.id)};
     const auto full = resolve_path(record.path);
@@ -80,8 +99,10 @@ AssetResidency AssetRegistry::residency() const noexcept {
                 result.mesh_gpu_bytes += value->mesh().gpu_bytes();
                 const auto& geometry = value->geometry();
                 result.mesh_cpu_bytes += geometry.positions.size() * sizeof(math::Vec3) + geometry.indices.size() * sizeof(uint32_t);
-            } else {
+            } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const MaterialAsset>) {
                 ++result.materials;
+            } else {
+                ++result.scripts;
             }
         }, entry.payload);
     }
@@ -140,8 +161,11 @@ AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind,
         if (kind == AssetKind::mesh) {
             auto result = m_provider->load_mesh(*path);
             candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else {
+        } else if (kind == AssetKind::material) {
             auto result = m_provider->load_material(*path);
+            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+        } else {
+            auto result = m_provider->load_script(*path);
             candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
         }
     } catch (const std::bad_alloc&) { throw; }
@@ -190,11 +214,11 @@ AssetCatalogResult read_asset_catalog(std::istream& input) {
     };
     while (input >> kind) {
         AssetId id;
-        if ((kind != "mesh" && kind != "material") ||
+        if ((kind != "mesh" && kind != "material" && kind != "script") ||
             !(input >> high >> low >> std::quoted(path)) ||
             !parse_word(high,id.high) || !parse_word(low,id.low) || !id.valid())
             return {{},{AssetError::invalid_data,"Invalid catalog entry " + std::to_string(records.size()+1)}};
-        records.push_back({id,kind == "mesh" ? AssetKind::mesh : AssetKind::material,path});
+        records.push_back({id,kind == "mesh" ? AssetKind::mesh : kind == "material" ? AssetKind::material : AssetKind::script,path});
     }
     if (input.bad() || !input.eof()) return {{},{AssetError::invalid_data,"I/O failure reading catalog"}};
     return {std::move(records),{}};
@@ -204,7 +228,7 @@ void write_asset_catalog(std::ostream& output, const std::vector<AssetRecord>& r
     auto text = std::ostringstream{};
     text << "maya-assets 1\n";
     for (const auto& record : records)
-        text << (record.kind == AssetKind::mesh ? "mesh" : "material") << ' ' << std::hex
+        text << asset_kind_name(record.kind) << ' ' << std::hex
              << record.id.high << ' ' << record.id.low << ' ' << std::quoted(record.path.generic_string()) << '\n';
     output << text.str();
     if (!output) throw std::runtime_error("Cannot write asset catalog");

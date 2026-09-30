@@ -10,24 +10,29 @@ namespace maya {
 // Explicit persistent IDs. Never derive identity from RTTI, ordering, labels, or hashes.
 enum class ComponentId : uint32_t {
     name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5, spin = 6, fly_control = 7,
-    collider = 8, rigid_body = 9, physics_settings = 10
+    collider = 8, rigid_body = 9, physics_settings = 10, script = 11
 };
 using PropertyId = uint32_t; // scoped to ComponentId; zero is reserved
 using ComponentValue = std::variant<NameComponent, TransformComponent, MeshRendererComponent,
                                     CameraComponent, LightComponent, SpinComponent, FlyControlComponent,
-                                    ColliderComponent, RigidBodyComponent, PhysicsSettingsComponent>;
+                                    ColliderComponent, RigidBodyComponent, PhysicsSettingsComponent, ScriptComponent>;
 /// One of a property's named choices (an enumeration such as a light's kind), by its value.
 struct ChoiceValue {
     uint32_t value = 0;
     auto operator<=>(const ChoiceValue&) const = default;
 };
 using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat, ChoiceValue,
-                                  AssetRef<MeshAsset>, AssetRef<MaterialAsset>, int32_t, uint32_t>;
-/// integer is a whole number within the range; flags is a bit set no greater than range.maximum.
-enum class PropertyType { text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags };
+                                  AssetRef<MeshAsset>, AssetRef<MaterialAsset>, int32_t, uint32_t,
+                                  AssetRef<ScriptAsset>, std::vector<ScriptValue>>;
+/// integer is a whole number within the range; flags is a bit set no greater than range.maximum;
+/// script_values is the named values of a script component's declared properties.
+enum class PropertyType {
+    text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags, script_ref, script_values
+};
 enum class PropertyPresentation {
     text, toggle, number, vector, rotation, color, choice, asset,
-    collision_group, collision_mask // an integer or flags shown with the project's collision group names
+    collision_group, collision_mask, // an integer or flags shown with the project's collision group names
+    script_values // the properties the attached script declares
 };
 enum class PropertyEncoding { value, persistent_asset_id };
 struct NumericRange {
@@ -58,7 +63,7 @@ struct ComponentDescriptor {
     std::span<const PropertyDescriptor> properties;
 };
 
-enum class ReferenceKind { mesh, material };
+enum class ReferenceKind { mesh, material, script };
 enum class ReferenceStatus { valid, missing, wrong_type };
 struct PropertyValidationContext {
     // Synchronous, read-only callback. Must not mutate/re-enter World or asset services.
@@ -79,6 +84,12 @@ struct PropertyResult {
 };
 struct PropertyEdit { PropertyId property; PropertyValue value; };
 
+/// "number", "integer", "boolean", "string", "vector", "color", or "entity".
+const char* script_value_type_name(ScriptValueType type) noexcept;
+std::optional<ScriptValueType> script_value_type(std::string_view name) noexcept;
+/// Why a script component's values are invalid, or empty: names are identifiers of at most 64
+/// characters and unique, and each value's data matches its type and is finite.
+std::string script_values_problem(const std::vector<ScriptValue>& values);
 std::span<const ComponentDescriptor> component_schemas();
 const ComponentDescriptor* component_schema(ComponentId id);
 const ComponentDescriptor* component_schema(std::string_view name);

@@ -8,7 +8,8 @@
 #include <string>
 
 namespace maya {
-enum class AssetKind { mesh, material };
+enum class AssetKind { mesh, material, script };
+const char* asset_kind_name(AssetKind kind) noexcept; // "mesh", "material", or "script"
 enum class AssetState { unloaded, loading, ready, failed };
 enum class AssetError {
     none, invalid_id, duplicate_id, duplicate_path, invalid_path, not_registered,
@@ -39,8 +40,13 @@ struct MaterialAsset {
     float metallic = 0;
     float roughness = 1;
 };
-template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset>;
-template<Asset T> inline constexpr AssetKind asset_kind = std::same_as<T,MeshAsset> ? AssetKind::mesh : AssetKind::material;
+/// Luau source text (docs/scripting.md). Play sessions compile it; bytecode is never stored or loaded.
+struct ScriptAsset {
+    std::string source;
+};
+template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset> || std::same_as<T,ScriptAsset>;
+template<Asset T> inline constexpr AssetKind asset_kind =
+    std::same_as<T,MeshAsset> ? AssetKind::mesh : std::same_as<T,MaterialAsset> ? AssetKind::material : AssetKind::script;
 
 template<Asset T> struct AssetHandle {
     uint64_t registry = 0;
@@ -92,6 +98,8 @@ public:
     virtual ~AssetProvider() = default;
     virtual AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& absolute_path) = 0;
     virtual AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& absolute_path) = 0;
+    /// Reads the file as UTF-8 text; providers need not override it.
+    virtual AssetLoadResult<ScriptAsset> load_script(const std::filesystem::path& absolute_path);
 };
 /// Initial adapter: existing OBJ loader and a small versioned material-factor file.
 class FileAssetProvider final : public AssetProvider {

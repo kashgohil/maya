@@ -1,6 +1,7 @@
 #include "maya/simulation/play_session.hpp"
 #include "maya/simulation/authored_physics.hpp"
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -65,7 +66,7 @@ PlayFrame PlaySession::update(double wall_delta) {
     frame.clock = m_clock.advance(wall_delta);
     for (uint32_t i = 0; i < frame.clock.ticks; ++i) {
         try {
-            run_tick();
+            run_tick(frame.messages);
             ++frame.ticks_run;
         } catch (const std::exception& error) {
             m_error = "Tick " + std::to_string(m_clock.tick()) + ": " + error.what();
@@ -77,17 +78,30 @@ PlayFrame PlaySession::update(double wall_delta) {
             break;
         }
     }
+    if (!failed()) {
+        const auto admitted = std::isfinite(wall_delta) ? std::clamp(wall_delta, 0.0, m_clock.settings().max_frame_delta) : 0.0;
+        auto context = FrameContext{*m_world, *m_physics, admitted, m_clock.alpha(), m_clock.tick(), m_clock.time(), frame.messages};
+        for (auto& system : m_systems) {
+            try {
+                system->frame(context);
+            } catch (const std::exception& error) {
+                m_error = std::string(system->name()) + " failed after tick " + std::to_string(m_clock.tick()) + ": " + error.what();
+                frame.error = m_error;
+                break;
+            }
+        }
+    }
     return frame;
 }
 
 // The fixed-tick phases of docs/architecture/scheduling-contracts.md. This tick's commit is the next
 // tick's phase 1: the World batch, then bodies for destroyed entities go and requested ones arrive.
-void PlaySession::run_tick() {
+void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     const auto input = m_input.latch(); // phase 2
     const auto interval = float(m_clock.interval());
     auto commands = m_world->commands();
     auto bodies = BodyCommands(*m_physics, *m_world);
-    auto context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, bodies, *m_physics};
+    auto context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, bodies, *m_physics, messages};
     for (auto& system : m_systems) { // phase 3
         const auto first = commands.size();
         bodies.set_source(system->name());

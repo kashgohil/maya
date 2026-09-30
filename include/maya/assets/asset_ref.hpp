@@ -5,6 +5,7 @@
 namespace maya {
 class MeshAsset;
 struct MaterialAsset;
+struct ScriptAsset;
 
 /// A serializable reference, not a residency lease. AssetRegistry issues explicit residency leases.
 template<class Asset>

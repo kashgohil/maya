@@ -1,9 +1,21 @@
 #include "maya/properties/schema.hpp"
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <string>
 #include <utility>
 
 namespace maya {
+bool ScriptValue::operator==(const ScriptValue& other) const {
+    if (name != other.name || type != other.type || data.index() != other.data.index()) return false;
+    return std::visit([&]<class T>(const T& value) {
+        const auto& that = std::get<T>(other.data);
+        if constexpr (std::same_as<T, math::Vec3>) return value.x == that.x && value.y == that.y && value.z == that.z;
+        else return value == that;
+    }, data);
+}
+
 namespace {
 struct Binding {
     PropertyDescriptor descriptor;
@@ -22,6 +34,8 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, AssetRef<MeshAsset>>) return PropertyType::mesh_ref;
     else if constexpr (std::same_as<T, int32_t>) return PropertyType::integer;
     else if constexpr (std::same_as<T, uint32_t>) return PropertyType::flags;
+    else if constexpr (std::same_as<T, AssetRef<ScriptAsset>>) return PropertyType::script_ref;
+    else if constexpr (std::same_as<T, std::vector<ScriptValue>>) return PropertyType::script_values;
     else { static_assert(std::same_as<T, AssetRef<MaterialAsset>>); return PropertyType::material_ref; }
 }
 /// Enumerations are held in PropertyValue as ChoiceValue; everything else as itself.
@@ -36,7 +50,7 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
     using C = typename MemberTraits<decltype(Member)>::Owner;
     using V = typename MemberTraits<decltype(Member)>::Value;
     constexpr auto type = property_type<V>();
-    constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref
+    constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::script_ref
         ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
     return {{id, name, label, type, property_value(C{}.*Member), range, units, presentation, encoding, choices, description},
         [](const ComponentValue& value) -> PropertyValue { return property_value(std::get<C>(value).*Member); },
@@ -168,6 +182,67 @@ const auto& physics_settings_bindings() {
     return values;
 }
 
+const auto& script_bindings() {
+    static const auto values = std::array{
+        bind<&ScriptComponent::script>(1, "script", "Script", Hint::asset),
+        bind<&ScriptComponent::values>(2, "values", "Properties", Hint::script_values, {}, {},
+            "Values for the properties the script declares, by name; the rest use the script's defaults.")};
+    return values;
+}
+
+} // namespace
+
+const char* script_value_type_name(ScriptValueType type) noexcept {
+    switch (type) {
+    case ScriptValueType::number: return "number";
+    case ScriptValueType::integer: return "integer";
+    case ScriptValueType::boolean: return "boolean";
+    case ScriptValueType::string: return "string";
+    case ScriptValueType::vector: return "vector";
+    case ScriptValueType::color: return "color";
+    case ScriptValueType::entity: break;
+    }
+    return "entity";
+}
+
+std::optional<ScriptValueType> script_value_type(std::string_view name) noexcept {
+    for (const auto type : {ScriptValueType::number, ScriptValueType::integer, ScriptValueType::boolean, ScriptValueType::string,
+                            ScriptValueType::vector, ScriptValueType::color, ScriptValueType::entity})
+        if (name == script_value_type_name(type)) return type;
+    return std::nullopt;
+}
+
+std::string script_values_problem(const std::vector<ScriptValue>& values) {
+    for (size_t i = 0; i < values.size(); ++i) {
+        const auto& value = values[i];
+        const auto& name = value.name;
+        const auto identifier = !name.empty() && name.size() <= 64 &&
+            (std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_') &&
+            std::all_of(name.begin(), name.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
+        if (!identifier) return "Script property names are identifiers of at most 64 letters, digits, and underscores";
+        for (size_t j = 0; j < i; ++j)
+            if (values[j].name == name) return "Script property '" + name + "' has more than one value";
+        const auto matches = [&] {
+            switch (value.type) {
+            case ScriptValueType::number: return std::holds_alternative<float>(value.data) && std::isfinite(std::get<float>(value.data));
+            case ScriptValueType::integer: return std::holds_alternative<int32_t>(value.data);
+            case ScriptValueType::boolean: return std::holds_alternative<bool>(value.data);
+            case ScriptValueType::string: return std::holds_alternative<std::string>(value.data);
+            case ScriptValueType::vector:
+            case ScriptValueType::color: {
+                const auto* v = std::get_if<math::Vec3>(&value.data);
+                return v && std::isfinite(v->x) && std::isfinite(v->y) && std::isfinite(v->z);
+            }
+            case ScriptValueType::entity: return std::holds_alternative<EntityId>(value.data);
+            }
+            return false;
+        }();
+        if (!matches) return "Script property '" + name + "' does not hold a finite value of its type";
+    }
+    return {};
+}
+
+namespace {
 template<size_t N> auto descriptors(const std::array<Binding, N>& bindings) {
     auto result = std::array<PropertyDescriptor, N>{};
     for (size_t i = 0; i < N; ++i) result[i] = bindings[i].descriptor;
@@ -185,6 +260,7 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::collider: return collider_bindings();
     case ComponentId::rigid_body: return rigid_body_bindings();
     case ComponentId::physics_settings: return physics_settings_bindings();
+    case ComponentId::script: return script_bindings();
     }
     return {};
 }
@@ -216,12 +292,17 @@ PropertyResult validate(ComponentValue& value, const PropertyValidationContext& 
             if (!in_range(float(*whole), d.range)) return invalid();
         } else if (const auto bits = std::get_if<uint32_t>(&input)) {
             if (d.range.maximum && float(*bits) > *d.range.maximum) return invalid();
+        } else if (const auto values = std::get_if<std::vector<ScriptValue>>(&input)) {
+            if (!script_values_problem(*values).empty())
+                return {PropertyError::invalid_value, d.id,
+                        "Script property values need identifier names, one value each, and finite values of their type"};
         } else if (d.encoding == PropertyEncoding::persistent_asset_id) {
             const auto mesh = std::get_if<AssetRef<MeshAsset>>(&input);
-            const auto asset = mesh ? mesh->id : std::get<AssetRef<MaterialAsset>>(input).id;
+            const auto script = std::get_if<AssetRef<ScriptAsset>>(&input);
+            const auto asset = mesh ? mesh->id : script ? script->id : std::get<AssetRef<MaterialAsset>>(input).id;
             if (!asset.valid()) continue;
             if (!context.resolve_asset) return {PropertyError::validation_context_required, d.id, "A catalog resolver is required for nonempty asset references"};
-            const auto status = context.resolve_asset(asset, mesh ? ReferenceKind::mesh : ReferenceKind::material);
+            const auto status = context.resolve_asset(asset, mesh ? ReferenceKind::mesh : script ? ReferenceKind::script : ReferenceKind::material);
             if (status == ReferenceStatus::missing) return {PropertyError::missing_reference, d.id, "Asset ID is not registered in this project"};
             if (status != ReferenceStatus::valid) return {PropertyError::wrong_reference_type, d.id, "Asset catalog kind does not match the property"};
         }
@@ -263,6 +344,7 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto colliders = descriptors(collider_bindings());
     static const auto bodies = descriptors(rigid_body_bindings());
     static const auto physics = descriptors(physics_settings_bindings());
+    static const auto scripts = descriptors(script_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
@@ -273,7 +355,8 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::fly_control, "maya.fly_control", "Fly control", 1, flights},
         ComponentDescriptor{ComponentId::collider, "maya.collider", "Collider", 1, colliders},
         ComponentDescriptor{ComponentId::rigid_body, "maya.rigid_body", "Rigid body", 1, bodies},
-        ComponentDescriptor{ComponentId::physics_settings, "maya.physics_settings", "Physics settings", 1, physics}};
+        ComponentDescriptor{ComponentId::physics_settings, "maya.physics_settings", "Physics settings", 1, physics},
+        ComponentDescriptor{ComponentId::script, "maya.script", "Script", 1, scripts}};
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -305,7 +388,8 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, FlyControlComponent>) return ComponentId::fly_control;
         else if constexpr (std::same_as<T, ColliderComponent>) return ComponentId::collider;
         else if constexpr (std::same_as<T, RigidBodyComponent>) return ComponentId::rigid_body;
-        else { static_assert(std::same_as<T, PhysicsSettingsComponent>); return ComponentId::physics_settings; }
+        else if constexpr (std::same_as<T, PhysicsSettingsComponent>) return ComponentId::physics_settings;
+        else { static_assert(std::same_as<T, ScriptComponent>); return ComponentId::script; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -320,6 +404,7 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::collider: return ColliderComponent{};
     case ComponentId::rigid_body: return RigidBodyComponent{};
     case ComponentId::physics_settings: return PhysicsSettingsComponent{};
+    case ComponentId::script: return ScriptComponent{};
     }
     return std::nullopt;
 }

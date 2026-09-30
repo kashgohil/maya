@@ -46,6 +46,9 @@ public:
     /// nullopt detaches to the root. Both targets may be pending in this batch.
     void reparent(EntityTarget target, std::optional<EntityTarget> parent, ReparentPolicy policy);
     size_t size() const noexcept { return m_commands.size(); }
+    /// Drops the commands staged after the first `size`, as if they were never made. Pending entities
+    /// from dropped creates must not be used again. Script hosts use it to discard a failed call's work.
+    void truncate(size_t size);
 
     enum class Kind { create, destroy, add, remove, replace, set_transform, reparent };
     /// What a staged command changes, without its value. The pending entity of a create is its target.

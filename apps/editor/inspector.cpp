@@ -26,6 +26,7 @@ const char* component_icon(ComponentId id) {
     case ComponentId::collider: return icon::bounding_box;
     case ComponentId::rigid_body: return icon::atom;
     case ComponentId::physics_settings: return icon::planet;
+    case ComponentId::script: return icon::code;
     }
     return icon::circle_dashed;
 }
@@ -165,6 +166,7 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
             const auto current = read_property(value, property.id);
             if (!current) continue;
             if (!property_applies(value, property.name)) continue;
+            if (property.type == PropertyType::script_values) continue; // drawn after the others
             const auto key = std::string(schema->name.substr(schema->name.rfind('.') + 1)) + "." + std::string(property.name);
             theme::property(std::string(property.label).c_str());
             ImGui::PushID(static_cast<int>(property.id));
@@ -306,9 +308,19 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
                 break;
             }
             case PropertyType::mesh_ref:
-            case PropertyType::material_ref: {
-                const auto mesh = property.type == PropertyType::mesh_ref;
-                const auto asset = mesh ? std::get<AssetRef<MeshAsset>>(*current).id : std::get<AssetRef<MaterialAsset>>(*current).id;
+            case PropertyType::material_ref:
+            case PropertyType::script_ref: {
+                const auto kind = property.type == PropertyType::mesh_ref ? AssetKind::mesh
+                                : property.type == PropertyType::material_ref ? AssetKind::material : AssetKind::script;
+                const auto asset = std::visit([]<class T>(const T& reference) -> AssetId {
+                    if constexpr (requires { reference.id; }) return reference.id;
+                    else return {};
+                }, *current);
+                const auto reference = [&](AssetId chosen) -> PropertyValue {
+                    if (kind == AssetKind::mesh) return AssetRef<MeshAsset>{chosen};
+                    if (kind == AssetKind::material) return AssetRef<MaterialAsset>{chosen};
+                    return AssetRef<ScriptAsset>{chosen};
+                };
                 auto preview = std::string("None");
                 auto missing = false;
                 auto problem = std::string{}; // why a cataloged asset cannot be used
@@ -330,22 +342,17 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
                     if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
                         auto payload = AssetPayload{};
                         std::memcpy(&payload, dragged->Data, sizeof(payload));
-                        if ((payload.kind == AssetKind::mesh) == mesh && ImGui::AcceptDragDropPayload("MAYA_ASSET")) {
-                            if (mesh) edit_property(id, value, property.id, AssetRef<MeshAsset>{payload.id});
-                            else edit_property(id, value, property.id, AssetRef<MaterialAsset>{payload.id});
-                        }
+                        if (payload.kind == kind && ImGui::AcceptDragDropPayload("MAYA_ASSET"))
+                            edit_property(id, value, property.id, reference(payload.id));
                     }
                     ImGui::EndDragDropTarget();
                 }
                 if (open) {
-                    const auto choose = [&](AssetId chosen) {
-                        if (mesh) edit_property(id, value, property.id, AssetRef<MeshAsset>{chosen});
-                        else edit_property(id, value, property.id, AssetRef<MaterialAsset>{chosen});
-                    };
+                    const auto choose = [&](AssetId chosen) { edit_property(id, value, property.id, reference(chosen)); };
                     if (ImGui::Selectable("None", !asset.valid())) choose({});
                     if (m_assets)
                         for (const auto& record : m_assets->records()) {
-                            if ((record.kind == AssetKind::mesh) != mesh) continue;
+                            if (record.kind != kind) continue;
                             ImGui::PushID(static_cast<int>(record.id.low));
                             if (ImGui::Selectable(record.path.stem().string().c_str(), record.id == asset)) choose(record.id);
                             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", record.path.generic_string().c_str());
@@ -356,13 +363,16 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
                 remember();
                 break;
             }
+            case PropertyType::script_values: break; // drawn below, one row per declared property
             }
             if (!property.description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("%s", std::string(property.description).c_str());
             ImGui::PopID();
         }
+        if (const auto* script = std::get_if<ScriptComponent>(&value)) draw_script_properties(id, value, *script);
         theme::end_properties();
     }
+    if (const auto* script = std::get_if<ScriptComponent>(&value)) draw_script_notes(id, value, *script);
     if (const auto note = physics_note(id, component); !note.text.empty()) {
         icon_text(note.warning ? icon::warning : icon::info, note.warning ? theme::color::warning : theme::color::faint, 6.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
@@ -370,6 +380,157 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
         ImGui::PopStyleColor();
     }
     ImGui::PopID();
+}
+
+const ScriptDescription* EditorShell::script_description(AssetId script) {
+    if (!m_assets || !script.valid()) return nullptr;
+    const auto loaded = m_assets->acquire(AssetRef<ScriptAsset>{script});
+    if (!loaded) {
+        auto& entry = m_script_descriptions[script];
+        entry = {0, ScriptDescription{{}, {}, loaded.diagnostic.message}};
+        return &entry.second;
+    }
+    const auto generation = loaded.lease.handle().generation;
+    auto& entry = m_script_descriptions[script];
+    if (entry.first != generation || generation == 0) {
+        const auto info = m_assets->info(script);
+        entry = {generation, describe_script(info ? info->record.path.generic_string() : "script", loaded.lease.value().source)};
+    }
+    return &entry.second;
+}
+
+void EditorShell::draw_script_properties(EntityId id, const ComponentValue& value, const ScriptComponent& script) {
+    const auto* description = script_description(script.script.id);
+    if (!description || !*description) return;
+    const auto group = std::string("Edit Script");
+    for (const auto& declared : description->properties) {
+        auto current = ScriptValue{declared.name, declared.type, declared.default_value};
+        for (const auto& stored : script.values)
+            if (stored.name == declared.name && stored.type == declared.type) current = stored;
+        const auto set = [&](ScriptValueData data) {
+            auto values = script.values;
+            const auto found = std::ranges::find(values, declared.name, &ScriptValue::name);
+            if (found != values.end()) *found = {declared.name, declared.type, std::move(data)};
+            else values.push_back({declared.name, declared.type, std::move(data)});
+            edit_property(id, value, 2, std::move(values));
+        };
+        const auto key = "script." + declared.name;
+        const auto label = declared.label.empty() ? declared.name : declared.label;
+        theme::property(label.c_str());
+        ImGui::PushID(declared.name.c_str());
+        const auto remember = [&] { m_layout.inspector_fields.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()}); };
+        switch (declared.type) {
+        case ScriptValueType::number: {
+            auto number = std::get<float>(current.data);
+            const auto minimum = declared.minimum.value_or(-FLT_MAX), maximum = declared.maximum.value_or(FLT_MAX);
+            const auto format = declared.unit.empty() ? std::string("%.3f") : "%.3f " + declared.unit;
+            if (ImGui::DragFloat("##number", &number, 0.01f, minimum, maximum, format.c_str(), ImGuiSliderFlags_AlwaysClamp) &&
+                !typing_into_last_item())
+                set(number);
+            remember();
+            track_edit(group);
+            break;
+        }
+        case ScriptValueType::integer: {
+            auto number = int(std::get<int32_t>(current.data));
+            const auto minimum = declared.minimum ? int(*declared.minimum) : INT32_MIN;
+            const auto maximum = declared.maximum ? int(*declared.maximum) : INT32_MAX;
+            if (ImGui::DragInt("##integer", &number, 0.1f, minimum, maximum, "%d", ImGuiSliderFlags_AlwaysClamp) &&
+                !typing_into_last_item())
+                set(int32_t(number));
+            remember();
+            track_edit(group);
+            break;
+        }
+        case ScriptValueType::boolean: {
+            auto checked = std::get<bool>(current.data);
+            if (ImGui::Checkbox("##toggle", &checked)) set(checked);
+            remember();
+            break;
+        }
+        case ScriptValueType::string: {
+            const auto text_key = id_text(id.high, id.low) + "." + declared.name;
+            if (m_script_text_key != text_key || !ImGui::IsAnyItemActive()) {
+                std::snprintf(m_script_text.data(), m_script_text.size(), "%s", std::get<std::string>(current.data).c_str());
+                m_script_text_key = text_key;
+            }
+            ImGui::InputText("##text", m_script_text.data(), m_script_text.size());
+            if (ImGui::IsItemDeactivatedAfterEdit()) set(std::string(m_script_text.data()));
+            remember();
+            break;
+        }
+        case ScriptValueType::vector: {
+            const auto vector = std::get<math::Vec3>(current.data);
+            float values[3] = {vector.x, vector.y, vector.z};
+            auto activated = false, deactivated = false;
+            const auto changed = axis_fields("vector", values, 0.01f, -FLT_MAX, FLT_MAX, "%.3f", m_layout, key, activated, deactivated);
+            if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
+            if (changed) set(math::Vec3{values[0], values[1], values[2]});
+            if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
+            break;
+        }
+        case ScriptValueType::color: {
+            const auto color = std::get<math::Vec3>(current.data);
+            float rgb[3] = {color.x, color.y, color.z};
+            if (ImGui::ColorEdit3("##color", rgb, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_NoLabel))
+                set(math::Vec3{rgb[0], rgb[1], rgb[2]});
+            remember();
+            track_edit(group);
+            break;
+        }
+        case ScriptValueType::entity: {
+            const auto target = std::get<EntityId>(current.data);
+            const auto preview = !target.valid() ? std::string("None")
+                               : m_scene->record(target) ? m_scene->display_name(target) : "Missing " + id_text(target.high, target.low);
+            if (ImGui::BeginCombo("##entity", preview.c_str())) {
+                if (ImGui::Selectable("None", !target.valid())) set(EntityId{});
+                const auto list = [&](auto&& self, EntityId parent, int depth) -> void {
+                    for (const auto child : m_scene->children(parent)) {
+                        ImGui::PushID(int(child.low));
+                        const auto name = std::string(size_t(depth) * 2, ' ') + m_scene->display_name(child);
+                        if (ImGui::Selectable(name.c_str(), child == target)) set(child);
+                        ImGui::PopID();
+                        self(self, child, depth + 1);
+                    }
+                };
+                list(list, EntityId{}, 0);
+                ImGui::EndCombo();
+            }
+            remember();
+            break;
+        }
+        }
+        ImGui::PopID();
+    }
+}
+
+void EditorShell::draw_script_notes(EntityId id, const ComponentValue& value, const ScriptComponent& script) {
+    if (!script.script.valid()) return;
+    const auto* description = script_description(script.script.id);
+    if (!description) return;
+    const auto note = [&](const char* glyph, ImU32 color, const std::string& text) {
+        icon_text(glyph, color, 6.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+        ImGui::TextWrapped("%s", text.c_str());
+        ImGui::PopStyleColor();
+    };
+    if (!*description) {
+        note(icon::warning, theme::color::danger, description->error);
+        return;
+    }
+    const auto problems = script_value_problems(*description, script.values);
+    for (const auto& problem : problems) note(icon::warning, theme::color::warning, problem);
+    const auto unused = std::ranges::any_of(script.values, [&](const ScriptValue& stored) {
+        return std::ranges::none_of(description->properties, [&](const auto& declared) { return declared.name == stored.name; });
+    });
+    if (unused && ImGui::SmallButton("Remove unused values")) {
+        auto kept = std::vector<ScriptValue>{};
+        for (const auto& stored : script.values)
+            if (std::ranges::any_of(description->properties, [&](const auto& declared) { return declared.name == stored.name; }))
+                kept.push_back(stored);
+        edit_property(id, value, 2, std::move(kept));
+    }
+    if (unused) m_layout.controls.push_back({"script.remove_unused", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
 }
 
 CollisionGroupNames EditorShell::collision_groups() const {

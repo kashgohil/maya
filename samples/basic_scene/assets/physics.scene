@@ -268,3 +268,19 @@ entity 6d617961 430
     linear_velocity -1.5 0 0
     angular_velocity 0 0 0
 end
+
+entity 6d617961 440
+  component maya.name 1
+    value "Beacon"
+  component maya.transform 1
+    translation -3 0 0
+    rotation 0 0 0 1
+    scale 1 1.5 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 12
+    visible true
+  component maya.script 1
+    script 6d617961 20
+    values 1 speed number 1.5
+end

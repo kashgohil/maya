@@ -38,6 +38,13 @@ void WorldCommands::set_transform(EntityTarget target, TransformComponent value)
     m_commands.push_back(std::move(command));
 }
 
+void WorldCommands::truncate(size_t size) {
+    require_active();
+    if (size >= m_commands.size()) return;
+    m_commands.erase(m_commands.begin() + std::ptrdiff_t(size), m_commands.end());
+    m_created = uint32_t(std::ranges::count(m_commands, Kind::create, &Command::kind));
+}
+
 std::vector<WorldCommands::Staged> WorldCommands::staged(size_t first) const {
     auto result = std::vector<Staged>{};
     for (auto i = first; i < m_commands.size(); ++i) {

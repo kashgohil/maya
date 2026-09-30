@@ -3,6 +3,7 @@
 #include "editor_shell.hpp"
 #include "shell_detail.hpp"
 #include "maya/assets/property_context.hpp"
+#include "maya/simulation/script_assets.hpp"
 
 namespace maya::editor {
 using namespace detail;
@@ -14,7 +15,7 @@ bool EditorShell::start_play() {
     if (m_play || !m_scene || !m_assets) return false;
     if (m_scene->group_open()) m_scene->end_group(); // a control mid-drag finishes its step first
     m_edit_group_open = false;
-    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets), builtin_systems());
+    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets), play_systems(registry_script_sources(*m_assets)));
     if (!started) {
         auto reason = started.error;
         for (const auto& problem : started.diagnostics) {
@@ -74,6 +75,11 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
     m_play->input().feed(routed.game);
     if (routed.game_ended) m_play->input().release_all();
     const auto frame = m_play->update(delta_time);
+    // Scripts report without stopping play: logs to Diagnostics; a failed instance also as a notice.
+    for (const auto& message : frame.messages) {
+        m_log.add(DiagnosticSource::script, message.text, m_frame);
+        if (message.level == SimulationMessage::Level::error) notice("A script stopped", message.text);
+    }
     if (!frame.error.empty()) {
         m_log.add(DiagnosticSource::play, frame.error, m_frame);
         stop_play();

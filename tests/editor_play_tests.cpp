@@ -1,6 +1,7 @@
 #include "editor_harness.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
+#include "maya/simulation/script_assets.hpp"
 #include <catch2/catch_approx.hpp>
 #include <sstream>
 
@@ -99,7 +100,8 @@ TEST_CASE("The same scene plays the same in the player's path and in the editor"
     REQUIRE(assets);
     auto loaded = load_scene_file(*project.project.startup_scene, asset_property_context(*assets.registry));
     REQUIRE(loaded);
-    auto player = PlaySession::start(std::move(loaded.document), asset_property_context(*assets.registry), builtin_systems());
+    auto player = PlaySession::start(std::move(loaded.document), asset_property_context(*assets.registry),
+                                     play_systems(registry_script_sources(*assets.registry)));
     REQUIRE(player);
     // The editor's path: the open scene's document, through the Play button.
     Harness harness;

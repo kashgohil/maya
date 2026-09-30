@@ -17,7 +17,6 @@ option(MAYA_BUILD_EDITOR "Build the editor application" ON)
 option(MAYA_BUILD_PLAYER "Build the standalone player with the basic-scene project" ON)
 option(MAYA_BUILD_SAMPLES "Build sample executables" ON)
 option(MAYA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(MAYA_BUILD_PROTOTYPES "Build the scripting library prototypes (#1015)" OFF)
 set(MAYA_SANITIZERS "address,undefined" CACHE STRING "Comma-separated Clang sanitizers when enabled")
 include(CTest)
 include(FetchContent)
@@ -117,8 +116,21 @@ FetchContent_MakeAvailable(jolt)
 set_property(DIRECTORY ${jolt_SOURCE_DIR}/Build PROPERTY EXCLUDE_FROM_ALL TRUE)
 maya_system_headers(Jolt)
 
+# Luau (MIT), pinned (docs/architecture/physics-scripting-decision.md#luau): the VM and the bytecode
+# compiler only. The type checker, native code generation, and command-line tools are not built.
+FetchContent_Declare(luau
+    GIT_REPOSITORY https://github.com/luau-lang/luau.git
+    GIT_TAG 0.740
+    GIT_SHALLOW TRUE)
+set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(luau)
+set_property(DIRECTORY ${luau_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
+maya_system_headers(Luau.VM)
+maya_system_headers(Luau.Compiler)
+
 # Rigid-body physics for play sessions (docs/physics.md). The only target that includes Jolt's
-# headers; its public headers carry no Jolt types (checked by maya_physics_headers in CTest).
+# headers; its public headers carry no Jolt types (checked by maya_library_headers in CTest).
 add_library(MayaPhysics STATIC
     src/maya/physics/jolt_runtime.cpp
     src/maya/physics/physics_world.cpp)
@@ -131,9 +143,13 @@ maya_target_options(MayaPhysics)
 add_library(MayaSimulation STATIC
     src/maya/simulation/simulation.cpp
     src/maya/simulation/authored_physics.cpp
-    src/maya/simulation/play_session.cpp)
+    src/maya/simulation/play_session.cpp
+    src/maya/simulation/scripting/script_host.cpp
+    src/maya/simulation/scripting/script_api.cpp
+    src/maya/simulation/scripting/scripting.cpp)
 add_library(Maya::Simulation ALIAS MayaSimulation)
-target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics)
+# Luau is private to the scripting host (src/maya/simulation/scripting/); checked by maya_library_headers.
+target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics PRIVATE Luau.VM Luau.Compiler)
 maya_target_options(MayaSimulation)
 
 add_library(MayaRuntime STATIC
@@ -274,53 +290,6 @@ if(MAYA_BUILD_SAMPLES)
     maya_target_options(maya_sample)
 endif()
 
-if(MAYA_BUILD_PROTOTYPES)
-    # Scripting prototypes for the language decision (docs/architecture/physics-scripting-decision.md).
-    # They are not engine code: the scripting host (#1018) replaces them. Dependency sources are
-    # pinned, and none of their targets are part of `all` unless a prototype links them.
-    # Lua 5.4 (MIT), from the release archive. Compiled as C++, so errors unwind with exceptions
-    # instead of longjmp and destructors in native functions run.
-    FetchContent_Declare(lua
-        URL https://www.lua.org/ftp/lua-5.4.9.tar.gz
-        URL_HASH SHA256=2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(lua)
-    file(GLOB lua_sources ${lua_SOURCE_DIR}/src/*.c)
-    list(FILTER lua_sources EXCLUDE REGEX "/(lua|luac)\\.c$")
-    set_source_files_properties(${lua_sources} PROPERTIES LANGUAGE CXX)
-    add_library(MayaPrototypeLua STATIC ${lua_sources})
-    target_include_directories(MayaPrototypeLua SYSTEM PUBLIC ${lua_SOURCE_DIR}/src)
-    target_compile_options(MayaPrototypeLua PRIVATE -w)
-
-    # Luau (MIT): the VM and the bytecode compiler. The type checker, native code generation, and
-    # the command-line tools are not built.
-    FetchContent_Declare(luau
-        GIT_REPOSITORY https://github.com/luau-lang/luau.git
-        GIT_TAG 0.740
-        GIT_SHALLOW TRUE)
-    set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
-    set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(luau)
-    set_property(DIRECTORY ${luau_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
-    maya_system_headers(Luau.VM)
-    maya_system_headers(Luau.Compiler)
-
-    # Lua and Luau export the same C API names, so each language has its own host library and
-    # executable, and the two are never linked together.
-    add_library(MayaPrototypeLuaHost STATIC prototypes/scripting/lua_host.cpp)
-    target_link_libraries(MayaPrototypeLuaHost PUBLIC MayaPrototypeLua)
-    add_library(MayaPrototypeLuauHost STATIC prototypes/scripting/luau_host.cpp)
-    target_link_libraries(MayaPrototypeLuauHost PUBLIC Luau.VM Luau.Compiler)
-    foreach(language Lua Luau)
-        string(TOLOWER ${language} name)
-        target_include_directories(MayaPrototype${language}Host PUBLIC prototypes/scripting)
-        maya_target_options(MayaPrototype${language}Host)
-        add_executable(maya_${name}_prototype prototypes/scripting/main.cpp)
-        target_link_libraries(maya_${name}_prototype PRIVATE MayaPrototype${language}Host)
-        maya_target_options(maya_${name}_prototype)
-    endforeach()
-endif()
-
 if(BUILD_TESTING)
     FetchContent_Declare(catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
@@ -373,29 +342,17 @@ if(BUILD_TESTING)
     add_test(NAME maya_simulation COMMAND maya_simulation_tests)
     set_tests_properties(maya_simulation PROPERTIES LABELS "cpu;simulation" TIMEOUT 60)
 
-    # The #1015 scripting prototypes: the same checks for each language.
-    if(MAYA_BUILD_PROTOTYPES)
-        foreach(language Lua Luau)
-            string(TOLOWER ${language} name)
-            add_executable(maya_prototype_${name}_tests tests/prototype_scripting_tests.cpp)
-            target_link_libraries(maya_prototype_${name}_tests PRIVATE MayaPrototype${language}Host Catch2::Catch2WithMain)
-            maya_target_options(maya_prototype_${name}_tests)
-            add_test(NAME maya_prototype_${name} COMMAND maya_prototype_${name}_tests)
-            set_tests_properties(maya_prototype_${name} PROPERTIES LABELS "cpu;prototype" TIMEOUT 60)
-        endforeach()
-    endif()
-
     add_executable(maya_physics_tests tests/physics_tests.cpp)
     target_link_libraries(maya_physics_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_physics_tests)
     add_test(NAME maya_physics COMMAND maya_physics_tests)
     set_tests_properties(maya_physics PROPERTIES LABELS "cpu;physics" TIMEOUT 120)
 
-    # Only MayaPhysics includes Jolt: no other source, header, or test may, and its public headers
-    # carry no Jolt types (docs/architecture/runtime-world-contracts.md#physics-boundary).
-    add_test(NAME maya_physics_headers COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_physics_headers.cmake)
-    set_tests_properties(maya_physics_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
+    # Only MayaPhysics includes Jolt and only the scripting host includes Luau; public headers carry
+    # neither library's types (docs/architecture/runtime-world-contracts.md#physics-boundary).
+    add_test(NAME maya_library_headers COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_library_headers.cmake)
+    set_tests_properties(maya_library_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
 
     add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp)
     target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain)

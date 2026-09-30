@@ -1,6 +1,7 @@
 #include "editor_harness.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
+#include "maya/simulation/script_assets.hpp"
 #include <catch2/catch_approx.hpp>
 #include <sstream>
 
@@ -182,7 +183,8 @@ TEST_CASE("The physics sample plays the same in the player's path and in the edi
     const auto file = project.project.content_root / "physics.scene";
     auto loaded = load_scene_file(file, asset_property_context(*assets.registry));
     REQUIRE(loaded);
-    auto player = PlaySession::start(std::move(loaded.document), asset_property_context(*assets.registry), builtin_systems());
+    auto player = PlaySession::start(std::move(loaded.document), asset_property_context(*assets.registry),
+                                     play_systems(registry_script_sources(*assets.registry)));
     INFO(player.error);
     REQUIRE(player);
     // The editor's path: the same scene opened, then Play.

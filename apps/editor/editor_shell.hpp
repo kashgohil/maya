@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/simulation/scripting.hpp"
 #include "editor_camera.hpp"
 #include "editor_theme.hpp"
 #include "input_router.hpp"
@@ -68,7 +69,7 @@ struct EditorLayout {
 
 enum class GizmoOperation { translate, rotate, scale };
 
-enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit, project, asset, play };
+enum class DiagnosticSource { scene, viewport, renderer, gpu, ui, edit, project, asset, play, script };
 
 /// A modal dialog the editor is showing.
 enum class EditorPrompt { none, unsaved_changes, save_as, notice };
@@ -214,6 +215,8 @@ public:
         bool warning = false;
     };
     PhysicsNote physics_note(EntityId id, ComponentId component) const;
+    /// What the script asset declares, compiled once per asset version; null without a project.
+    const ScriptDescription* script_description(AssetId script);
     /// Applies a gizmo's new world matrix to an entity as a validated local transform. Returns false
     /// (and changes nothing) when the parent cannot represent the pose, e.g. it would need shear.
     bool apply_world_matrix(EntityId id, const math::Mat4& world);
@@ -279,6 +282,8 @@ private:
     void perform_pending();
     void replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path);
     void draw_collision_groups();
+    void draw_script_properties(EntityId id, const ComponentValue& value, const ScriptComponent& script);
+    void draw_script_notes(EntityId id, const ComponentValue& value, const ScriptComponent& script);
     std::string read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry);
     void scan_project();
     void draw_diagnostics();
@@ -310,6 +315,9 @@ private:
     bool m_groups_open = false; // the Collision groups window
     std::array<std::array<char, 40>, collision_group_names> m_group_names{}; // its text fields
     std::string m_groups_error;
+    std::unordered_map<AssetId, std::pair<uint64_t, ScriptDescription>, PersistentIdHash> m_script_descriptions;
+    std::array<char, 256> m_script_text{}; // the script string property being typed into
+    std::string m_script_text_key;
     char m_name_buffer[256] = {};
     EntityId m_name_entity{};
     // Viewport tools

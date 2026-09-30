@@ -6,6 +6,7 @@
 #include <bitset>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -96,6 +97,16 @@ private:
     std::optional<math::Vec2> m_pointer;
 };
 
+/// Something a system reports without stopping the session: a failed script instance (an error), a
+/// value it could not use (a warning), or a script's own log line (info).
+struct SimulationMessage {
+    enum class Level { info, warning, error };
+    Level level = Level::error;
+    std::string source; // the system's name
+    std::string text;
+    uint64_t tick = 0;
+};
+
 /// What a system sees during one fixed tick.
 struct TickContext {
     const World& world; // the state committed by the previous tick
@@ -106,6 +117,18 @@ struct TickContext {
     float delta; // the fixed interval, in seconds
     BodyCommands& bodies; // physics requests: applied before this tick's step, bodies at its commit
     const PhysicsWorld& physics; // body state after the previous tick's step
+    std::vector<SimulationMessage>& messages; // reported with the host frame (PlayFrame::messages)
+};
+
+/// What a system sees once per host frame, after the frame's ticks: read-only.
+struct FrameContext {
+    const World& world;
+    const PhysicsWorld& physics;
+    double frame_delta; // wall seconds admitted for this frame
+    float alpha; // progress towards the next tick
+    uint64_t tick; // ticks completed
+    double time; // simulation seconds
+    std::vector<SimulationMessage>& messages;
 };
 
 /// One step of play simulation, run in a fixed order with the others. Systems keep their own state;
@@ -119,6 +142,8 @@ public:
     /// Once, before the first tick. A failure (an exception) stops the session from starting.
     virtual void start(const World&) {}
     virtual void fixed_update(TickContext& tick) = 0;
+    /// Once per host frame after its ticks, also while paused. Read-only: effects wait for a tick.
+    virtual void frame(FrameContext&) {}
     /// Once, if start was entered, including when it threw.
     virtual void stop() noexcept {}
 };

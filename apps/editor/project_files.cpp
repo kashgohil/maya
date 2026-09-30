@@ -782,8 +782,11 @@ void EditorShell::draw_assets() {
             const auto passes = [&](const std::string& text) { return filter.empty() || text.find(filter) != std::string::npos; };
             for (size_t i = 0; i < m_scene_files.size(); ++i)
                 if (passes(lowercase(m_scene_files[i].generic_string()))) m_shown_rows[0].push_back(i);
-            for (size_t i = 0; i < m_asset_rows.size(); ++i)
+            for (size_t i = 0; i < m_asset_rows.size(); ++i) {
+                // Scripts are assigned in the Inspector; their Assets panel column comes with #1020.
+                if (m_asset_rows[i].record.kind == AssetKind::script) continue;
                 if (passes(m_asset_rows[i].search)) m_shown_rows[m_asset_rows[i].record.kind == AssetKind::mesh ? 1 : 2].push_back(i);
+            }
             m_shown_filter = std::move(filter);
             m_shown_stale = false;
         }

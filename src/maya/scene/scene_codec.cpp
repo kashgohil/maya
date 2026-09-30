@@ -80,6 +80,27 @@ void append_value(std::string& output, const PropertyValue& value, const Propert
             output += std::to_string(typed);
         } else if constexpr (std::same_as<T, uint32_t>) {
             output += "0x" + hex(typed);
+        } else if constexpr (std::same_as<T, std::vector<ScriptValue>>) {
+            // values <count> then <name> <type> <data> for each: one line keeps one property per line.
+            output += std::to_string(typed.size());
+            for (const auto& value : typed) {
+                output += ' ' + value.name + ' ' + script_value_type_name(value.type) + ' ';
+                std::visit([&]<class V>(const V& data) {
+                    if constexpr (std::same_as<V, float>) append_float(output, data);
+                    else if constexpr (std::same_as<V, int32_t>) output += std::to_string(data);
+                    else if constexpr (std::same_as<V, bool>) output += data ? "true" : "false";
+                    else if constexpr (std::same_as<V, std::string>) append_quoted(output, data);
+                    else if constexpr (std::same_as<V, math::Vec3>) {
+                        append_float(output, data.x);
+                        output += ' ';
+                        append_float(output, data.y);
+                        output += ' ';
+                        append_float(output, data.z);
+                    } else {
+                        output += data.valid() ? hex(data.high) + ' ' + hex(data.low) : std::string("none");
+                    }
+                }, value.data);
+            }
         } else {
             output += typed.valid() ? hex(typed.id.high) + ' ' + hex(typed.id.low) : std::string("none");
         }
@@ -188,6 +209,81 @@ template<class Tag> bool parse_id(std::span<const Token> tokens, PersistentId<Ta
     return tokens.size() == 2 && parse_word(tokens[0], id.high) && parse_word(tokens[1], id.low) && id.valid();
 }
 
+std::optional<PropertyValue> decode_script_values(std::span<const Token> tokens) {
+    auto count = uint32_t{};
+    if (tokens.empty() || !parse_decimal(tokens[0], count) || count > 4096) return std::nullopt;
+    auto values = std::vector<ScriptValue>{};
+    size_t at = 1;
+    const auto take = [&](size_t n) -> std::optional<std::span<const Token>> {
+        if (at + n > tokens.size()) return std::nullopt;
+        auto result = tokens.subspan(at, n);
+        at += n;
+        return result;
+    };
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto head = take(2);
+        if (!head || (*head)[0].quoted || (*head)[1].quoted) return std::nullopt;
+        const auto type = script_value_type((*head)[1].text);
+        if (!type) return std::nullopt;
+        auto value = ScriptValue{(*head)[0].text, *type};
+        switch (*type) {
+        case ScriptValueType::number: {
+            auto number = 0.0f;
+            const auto data = take(1);
+            if (!data || !parse_float((*data)[0], number)) return std::nullopt;
+            value.data = number;
+            break;
+        }
+        case ScriptValueType::integer: {
+            const auto data = take(1);
+            if (!data || (*data)[0].quoted) return std::nullopt;
+            const auto& text = (*data)[0].text;
+            auto whole = int32_t{};
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), whole);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return std::nullopt;
+            value.data = whole;
+            break;
+        }
+        case ScriptValueType::boolean: {
+            const auto data = take(1);
+            if (!data || (*data)[0].quoted || ((*data)[0].text != "true" && (*data)[0].text != "false")) return std::nullopt;
+            value.data = (*data)[0].text == "true";
+            break;
+        }
+        case ScriptValueType::string: {
+            const auto data = take(1);
+            if (!data || !(*data)[0].quoted) return std::nullopt;
+            value.data = (*data)[0].text;
+            break;
+        }
+        case ScriptValueType::vector:
+        case ScriptValueType::color: {
+            auto v = math::Vec3{};
+            const auto data = take(3);
+            if (!data || !parse_float((*data)[0], v.x) || !parse_float((*data)[1], v.y) || !parse_float((*data)[2], v.z))
+                return std::nullopt;
+            value.data = v;
+            break;
+        }
+        case ScriptValueType::entity: {
+            if (at < tokens.size() && !tokens[at].quoted && tokens[at].text == "none") {
+                ++at;
+                value.data = EntityId{};
+                break;
+            }
+            auto id = EntityId{};
+            const auto data = take(2);
+            if (!data || !parse_id(*data, id)) return std::nullopt;
+            value.data = id;
+            break;
+        }
+        }
+        values.push_back(std::move(value));
+    }
+    if (at != tokens.size()) return std::nullopt;
+    return values;
+}
+
 std::string expectation(const PropertyDescriptor& property) {
     switch (property.type) {
     case PropertyType::text: return "one quoted string";
@@ -204,6 +300,10 @@ std::string expectation(const PropertyDescriptor& property) {
     case PropertyType::material_ref: return "'none' or two hexadecimal asset ID words";
     case PropertyType::integer: return "one whole number";
     case PropertyType::flags: return "a hexadecimal bit set such as 0xffff";
+    case PropertyType::script_ref: return "'none' or two hexadecimal asset ID words";
+    case PropertyType::script_values:
+        return "a count, then for each value a name, a type (number integer boolean string vector color entity), and "
+               "its data";
     }
     return "a value";
 }
@@ -242,6 +342,12 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::spa
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return std::nullopt;
         return value;
     }
+    case PropertyType::script_ref: {
+        auto id = AssetId{};
+        if (!(single_word && tokens[0].text == "none") && !parse_id(tokens, id)) return std::nullopt;
+        return AssetRef<ScriptAsset>{id};
+    }
+    case PropertyType::script_values: return decode_script_values(tokens);
     case PropertyType::flags: {
         if (!single_word || !tokens[0].text.starts_with("0x") || tokens[0].text.size() < 3) return std::nullopt;
         auto digits = tokens[0];
