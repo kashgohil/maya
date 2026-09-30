@@ -383,6 +383,18 @@ if(BUILD_TESTING)
         endforeach()
     endif()
 
+    add_executable(maya_physics_tests tests/physics_tests.cpp)
+    target_link_libraries(maya_physics_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
+    maya_target_options(maya_physics_tests)
+    add_test(NAME maya_physics COMMAND maya_physics_tests)
+    set_tests_properties(maya_physics PROPERTIES LABELS "cpu;physics" TIMEOUT 120)
+
+    # Only MayaPhysics includes Jolt: no other source, header, or test may, and its public headers
+    # carry no Jolt types (docs/architecture/runtime-world-contracts.md#physics-boundary).
+    add_test(NAME maya_physics_headers COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_physics_headers.cmake)
+    set_tests_properties(maya_physics_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
+
     add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp)
     target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain)
     target_include_directories(maya_asset_tests PRIVATE tests)
