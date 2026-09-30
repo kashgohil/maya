@@ -1,6 +1,9 @@
 #include "maya/simulation/play_session.hpp"
 #include "maya/simulation/authored_physics.hpp"
+#include "maya/scene/scene_io.hpp"
 #include "maya/world/spatial.hpp"
+#include <cstring>
+#include <sstream>
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -87,7 +90,12 @@ PlayFrame PlaySession::update(double wall_delta) {
         return frame;
     }
     frame.clock = m_clock.advance(wall_delta);
-    for (uint32_t i = 0; i < frame.clock.ticks; ++i) {
+    auto due = frame.clock.ticks;
+    if (m_replay.replaying) { // no further than the recorded input
+        const auto left = m_replay_inputs.size() > m_clock.tick() ? m_replay_inputs.size() - m_clock.tick() : 0;
+        due = uint32_t(std::min<uint64_t>(due, left));
+    }
+    for (uint32_t i = 0; i < due; ++i) {
         try {
             run_tick(frame.messages);
             ++frame.ticks_run;
@@ -100,6 +108,10 @@ PlayFrame PlaySession::update(double wall_delta) {
             frame.error = m_error;
             break;
         }
+    }
+    if (m_replay.replaying && !m_replay.finished && m_clock.tick() >= m_replay_inputs.size()) {
+        m_replay.finished = true;
+        m_clock.pause();
     }
     if (!failed()) {
         const auto admitted = std::isfinite(wall_delta) ? std::clamp(wall_delta, 0.0, m_clock.settings().max_frame_delta) : 0.0;
@@ -120,7 +132,11 @@ PlayFrame PlaySession::update(double wall_delta) {
 // The fixed-tick phases of docs/architecture/scheduling-contracts.md. This tick's commit is the next
 // tick's phase 1: the World batch, then bodies for destroyed entities go and requested ones arrive.
 void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
-    const auto input = m_input.latch(); // phase 2
+    // Phase 2: this tick's input, live or replayed, and recorded when recording.
+    auto input = m_input.latch();
+    if (m_replay.replaying) input = m_replay_inputs.at(m_clock.tick());
+    if (m_recording) m_recorded.push(input);
+    const auto first_message = messages.size();
     const auto interval = float(m_clock.interval());
     auto commands = m_world->commands();
     auto bodies = BodyCommands(*m_physics, *m_world);
@@ -149,6 +165,16 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     // Phase 7: the step's events, then late_fixed_update. Changes join this tick's batch; body
     // requests wait for the next step, so the completed one cannot change.
     const auto events = m_physics->take_events(*m_world, commands, m_clock.tick());
+    const auto fold = [this](const void* data, size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i) m_trace = (m_trace ^ bytes[i]) * 1099511628211ull;
+    };
+    for (const auto& e : events) {
+        const uint64_t words[] = {uint64_t(e.kind), e.tick, e.first.high, e.first.low, e.second.high, e.second.low, uint64_t(e.removed)};
+        fold(words, sizeof words);
+        const float values[] = {e.point.x, e.point.y, e.point.z, e.normal.x, e.normal.y, e.normal.z, e.speed};
+        fold(values, sizeof values);
+    }
     auto late = std::make_unique<BodyCommands>(*m_physics, *m_world);
     auto late_context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, *late, *m_physics, messages, events};
     for (auto& system : m_systems) {
@@ -173,7 +199,27 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     m_physics->commit(*m_world, bodies, result);
     m_physics->commit(*m_world, *late, result); // bodies created or removed in phase 7
     m_late_bodies = std::move(late);
+    // The tick's messages (not the per-frame ones, which depend on the frame rate) join the trace.
+    for (auto i = first_message; i < messages.size(); ++i) {
+        const auto& message = messages[i];
+        const uint64_t words[] = {uint64_t(message.level), message.tick};
+        fold(words, sizeof words);
+        fold(message.source.data(), message.source.size());
+        fold(message.text.data(), message.text.size());
+    }
     m_clock.count_tick();
+    // Checkpoints: recorded, or compared with the recording being replayed.
+    if (m_clock.tick() % m_checkpoint_every == 0 && (m_recording || m_replay.replaying)) {
+        const auto checkpoint = PlayCheckpoint{m_clock.tick(), state_hash()};
+        if (m_recording) m_checkpoints.push_back(checkpoint);
+        if (m_replay.replaying) {
+            const auto expected = std::ranges::find(m_replay_expected, checkpoint.tick, &PlayCheckpoint::tick);
+            if (expected != m_replay_expected.end()) {
+                ++m_replay.checked;
+                if (expected->state != checkpoint.state && !m_replay.first_difference) m_replay.first_difference = checkpoint.tick;
+            }
+        }
+    }
 }
 
 } // namespace maya
@@ -280,6 +326,65 @@ PresentationPoses PlaySession::presentation() const {
         if (const auto parent_world = m_world->world_matrix(*parent)) descend(descend, entity, *parent_world);
     }
     return poses;
+}
+
+void PlaySession::start_recording(uint32_t every) {
+    m_recording = true;
+    m_checkpoint_every = std::max<uint32_t>(every, 1);
+    m_recorded = {};
+    m_checkpoints.clear();
+}
+
+void PlaySession::start_replay(InputTrack inputs, std::vector<PlayCheckpoint> checkpoints) {
+    m_replay_inputs = std::move(inputs);
+    m_replay_expected = std::move(checkpoints);
+    m_replay = ReplayStatus{true, m_replay_inputs.size() == 0, 0, std::nullopt};
+    if (m_replay.finished) m_clock.pause();
+}
+
+uint64_t PlaySession::state_hash() const {
+    auto hash = uint64_t{14695981039346656037ull};
+    const auto fold = [&](const void* data, size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
+    };
+    // By EntityId, so the order entities were stored in cannot matter.
+    auto entities = std::vector<std::pair<EntityId, EntityHandle>>{};
+    m_world->for_each<TransformComponent>([&](EntityHandle entity, const TransformComponent&) {
+        if (const auto id = m_world->persistent_id(entity)) entities.emplace_back(*id, entity);
+    });
+    std::ranges::sort(entities, {}, &std::pair<EntityId, EntityHandle>::first);
+    for (const auto& [id, entity] : entities) {
+        const uint64_t words[] = {id.high, id.low};
+        fold(words, sizeof words);
+        m_world->with<TransformComponent>(entity, [&](const TransformComponent& t) {
+            const float values[] = {t.translation.x, t.translation.y, t.translation.z, t.rotation.x, t.rotation.y,
+                                    t.rotation.z, t.rotation.w, t.scale.x, t.scale.y, t.scale.z};
+            fold(values, sizeof values);
+        });
+        if (const auto body = m_physics->state(entity)) {
+            const float values[] = {body->position.x, body->position.y, body->position.z, body->rotation.x, body->rotation.y,
+                                    body->rotation.z, body->rotation.w, body->linear_velocity.x, body->linear_velocity.y,
+                                    body->linear_velocity.z, body->angular_velocity.x, body->angular_velocity.y,
+                                    body->angular_velocity.z};
+            fold(values, sizeof values);
+            const auto sleeping = uint8_t(body->sleeping);
+            fold(&sleeping, 1);
+        }
+    }
+    fold(&m_trace, sizeof m_trace);
+    return hash;
+}
+
+uint64_t PlaySession::full_state_hash() const {
+    // The World was built from a validated scene, so its references need no catalog to be written.
+    const auto any_asset = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    auto text = std::ostringstream{};
+    write_scene(text, capture_scene(*m_world), any_asset);
+    const auto scene = text.str();
+    auto hash = state_hash();
+    for (const auto c : scene) hash = (hash ^ uint8_t(c)) * 1099511628211ull;
+    return hash;
 }
 
 } // namespace maya

@@ -148,6 +148,9 @@ struct PhysicsMemory {
     uint64_t allocations = 0;
 };
 PhysicsMemory physics_memory() noexcept;
+/// The Jolt build this process simulates with: version, precision, layer bits, and the options that
+/// change results. Play recordings name it; a replay under another configuration is refused.
+std::string physics_configuration();
 void reset_physics_peak() noexcept;
 
 /// Worker threads in the process's one physics job pool; the calling thread also runs jobs. -1

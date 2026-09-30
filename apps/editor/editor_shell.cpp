@@ -474,7 +474,8 @@ void EditorShell::draw_status_bar() {
             glyph = icon::game_controller;
         } else if (m_play) {
             const auto paused = m_play->clock().paused();
-            state = format("%s  \xC2\xB7  tick %llu  \xC2\xB7  %.2f s", paused ? "Paused" : "Playing",
+            const auto mode = m_play_recording ? "  \xC2\xB7  Recording" : m_play->replay().replaying ? "  \xC2\xB7  Replaying" : "";
+            state = format("%s%s  \xC2\xB7  tick %llu  \xC2\xB7  %.2f s", paused ? "Paused" : "Playing", mode,
                            static_cast<unsigned long long>(m_play->clock().tick()), m_play->clock().time());
             tone = theme::color::accent;
             glyph = paused ? icon::pause : icon::play;

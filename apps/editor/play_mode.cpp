@@ -3,7 +3,9 @@
 #include "editor_shell.hpp"
 #include "shell_detail.hpp"
 #include "maya/assets/property_context.hpp"
+#include "maya/simulation/project_recording.hpp"
 #include "maya/simulation/script_assets.hpp"
+#include <fstream>
 
 namespace maya::editor {
 using namespace detail;
@@ -11,20 +13,69 @@ namespace {
 constexpr auto play_lock = "Stop playing to edit the scene";
 } // namespace
 
-bool EditorShell::start_play() {
+bool EditorShell::start_play(bool record) {
     if (m_play || !m_scene || !m_assets) return false;
+    return begin_play(m_scene->document(), nullptr, record);
+}
+
+// The assets a scene plays with, hashed; scripts by the last version that compiled, which is what plays.
+std::vector<RecordedAsset> EditorShell::played_assets(const SceneDocument& document) {
+    return recorded_assets(*m_assets, document, [this](AssetId script) -> std::optional<std::string> {
+        const auto& version = script_version(script);
+        return version.good ? std::optional(version.good->text) : std::nullopt;
+    });
+}
+
+bool EditorShell::replay_last_play() {
+    if (m_play || !m_scene || !m_assets || !m_last_recording) return false;
+    auto read = read_scene(m_last_recording->scene, asset_property_context(*m_assets));
+    if (!read) {
+        notice("Couldn't replay", "The recorded scene no longer loads: " + (read.diagnostics.empty() ? std::string() : read.diagnostics.front().message));
+        return false;
+    }
+    if (auto refused = replay_refusal(*m_last_recording, played_assets(read.document), {}); !refused.empty()) {
+        m_log.add(DiagnosticSource::play, "Couldn't replay: " + refused, m_frame);
+        notice("Couldn't replay", refused);
+        return false;
+    }
+    const auto recording = *m_last_recording; // a replay records nothing
+    return begin_play(read.document, &recording, false);
+}
+
+std::string EditorShell::save_recording() {
+    if (!m_last_recording || !m_project) return "Nothing has been recorded yet";
+    const auto stem = m_scene_path.empty() ? std::string("untitled") : m_scene_path.stem().string();
+    const auto path = m_project->content_root / "recordings" / (stem + ".recording");
+    auto error = std::error_code{};
+    std::filesystem::create_directories(path.parent_path(), error);
+    auto file = std::ofstream(path);
+    write_recording(file, *m_last_recording);
+    file.flush();
+    if (error || !file) {
+        const auto reason = "Cannot write " + path.string();
+        m_log.add(DiagnosticSource::play, reason, m_frame);
+        notice("Couldn't save the recording", reason);
+        return reason;
+    }
+    m_log.add(DiagnosticSource::play, "Saved the recording of " + std::to_string(m_last_recording->inputs.size()) + " ticks to " +
+        m_project->relative(path).generic_string(), m_frame);
+    return {};
+}
+
+bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording* replay, bool record) {
     if (m_scene->group_open()) m_scene->end_group(); // a control mid-drag finishes its step first
     m_edit_group_open = false;
     // Scripts play their last good versions; changed files reach the session through the reloads.
     auto scripts = m_project ? project_script_settings(m_project->settings) : ScriptSettings{};
     scripts.reloads = std::make_shared<ScriptReloads>(scripts.limits);
+    if (replay) scripts.seed = replay->seed;
     const auto sources = [this](AssetId script) -> ScriptSourceResult {
         const auto& version = script_version(script);
         if (version.good) return {*version.good, {}};
         // Never compiled: the session gets the file as it is and reports why, under the script's name.
         return m_assets ? registry_script_sources(*m_assets)(script) : ScriptSourceResult{std::nullopt, version.error};
     };
-    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets), play_systems(sources, scripts));
+    auto started = PlaySession::start(document, asset_property_context(*m_assets), play_systems(sources, scripts));
     if (!started) {
         auto reason = started.error;
         for (const auto& problem : started.diagnostics) {
@@ -37,6 +88,17 @@ bool EditorShell::start_play() {
     }
     m_play = std::move(started.session);
     m_play_reloads = scripts.reloads;
+    // A replay checks itself against its recording; a recorded Play records.
+    m_play_recording.reset();
+    m_replay_final.reset();
+    if (replay) {
+        m_play->start_replay(replay->inputs, replay->checkpoints);
+        m_replay_final = replay->final_state;
+    } else if (record) {
+        const auto name = m_scene_path.empty() || !m_project ? std::string("an unsaved scene") : m_project->relative(m_scene_path).generic_string();
+        m_play_recording = begin_recording(name, document, played_assets(document), scripts.seed, {}, {});
+        m_play->start_recording();
+    }
     m_play_selection = m_scene->selection();
     m_scene->lock(play_lock);
     m_renaming.reset();
@@ -51,6 +113,13 @@ void EditorShell::stop_play() {
     if (!m_play) return;
     if (const auto release = m_router.cancel()) m_capture_request = release; // give the mouse back
     const auto ticks = m_play->clock().tick();
+    if (m_play_recording) {
+        finish_recording(*m_play_recording, *m_play);
+        if (m_play_reloads)
+            for (const auto& reload : m_play_reloads->applied()) m_play_recording->reloads.push_back({reload.tick, reload.script, reload.name});
+        m_last_recording = std::move(m_play_recording);
+        m_play_recording.reset();
+    }
     m_play.reset(); // the play World, its systems, and the snapshot's leases on it go now
     m_play_reloads.reset();
     m_snapshot.reset();
@@ -95,6 +164,21 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
         m_log.add(DiagnosticSource::play, frame.error, m_frame);
         stop_play();
         notice("Play stopped", frame.error);
+        return;
+    }
+    // A replay that has run all its ticks says whether it matched, and stays paused on its last frame.
+    const auto& replay = m_play->replay();
+    if (replay.replaying && replay.finished && m_replay_final) {
+        const auto final = *m_replay_final;
+        m_replay_final.reset();
+        if (replay.first_difference || m_play->full_state_hash() != final) {
+            const auto where = replay.first_difference ? "at tick " + std::to_string(*replay.first_difference) : std::string("in its final state");
+            m_log.add(DiagnosticSource::play, "The replay differs from the recording " + where, m_frame);
+            notice("The replay differs", "The replay differs from the recording " + where + ".");
+        } else {
+            m_log.add(DiagnosticSource::play, "The replay matches the recording: " + std::to_string(m_play->clock().tick()) + " ticks, " +
+                std::to_string(replay.checked) + " checkpoints, and the final state", m_frame);
+        }
     }
 }
 

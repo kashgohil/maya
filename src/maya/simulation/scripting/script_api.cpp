@@ -2,6 +2,8 @@
 // (docs/scripting.md#the-engine-api).
 #include "luau.hpp"
 
+#include <atomic>
+
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -727,19 +729,38 @@ Vm::~Vm() {
     if (m_state) lua_close(m_state);
 }
 
+namespace {
+std::atomic<size_t> g_script_bytes{0}; // every VM's, for script_memory_in_use
+} // namespace
+
 void* Vm::allocate(void* user, void* block, size_t old_size, size_t new_size) {
     auto& vm = *static_cast<Vm*>(user);
     if (!block) old_size = 0;
     if (new_size == 0) {
         std::free(block);
         vm.m_bytes -= old_size;
+        g_script_bytes.fetch_sub(old_size, std::memory_order_relaxed);
         return nullptr;
     }
     if (new_size > old_size && vm.m_bytes - old_size + new_size > vm.m_limits.memory_bytes) return nullptr;
     auto* moved = std::realloc(block, new_size);
-    if (moved) vm.m_bytes = vm.m_bytes - old_size + new_size;
+    if (moved) {
+        vm.m_bytes = vm.m_bytes - old_size + new_size;
+        g_script_bytes.fetch_add(new_size, std::memory_order_relaxed);
+        g_script_bytes.fetch_sub(old_size, std::memory_order_relaxed);
+    }
     return moved;
 }
+
+} // namespace maya::scripting
+
+namespace maya {
+size_t script_memory_in_use() noexcept {
+    return scripting::g_script_bytes.load(std::memory_order_relaxed);
+}
+} // namespace maya
+
+namespace maya::scripting {
 
 void Vm::interrupt(lua_State* L, int gc) {
     if (gc >= 0) return; // a garbage collection step, not script work

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/simulation/recording.hpp"
 #include "maya/simulation/scripting.hpp"
 #include "editor_camera.hpp"
 #include "editor_theme.hpp"
@@ -149,8 +150,18 @@ public:
 
     /// Plays the open scene: a new World, built from its current state (saved or not), runs the
     /// built-in systems on a fixed clock. The authored scene is locked and untouched until stop_play.
-    /// Returns whether play started; a scene that cannot be built reports why.
-    bool start_play();
+    /// Returns whether play started; a scene that cannot be built reports why. With `record`, the Play
+    /// is recorded for saving and replay (docs/play.md#recording-and-replay); plain Play records nothing,
+    /// since a recording costs time at Play, every 60 ticks, and at Stop.
+    bool start_play(bool record = false);
+    /// The last recorded Play's recording; none yet.
+    const std::optional<PlayRecording>& last_recording() const noexcept { return m_last_recording; }
+    /// Writes the last recording to recordings/<scene>.recording in the content folder. Returns why
+    /// not, or empty.
+    std::string save_recording();
+    /// Plays the last recording again, from its scene with its input, and checks that it matches.
+    /// A recording this build or the project's scripts and assets cannot replay is refused.
+    bool replay_last_play();
     /// Drops the play World and its resources, unlocks the authored scene, and restores the selection
     /// it had at Play. The editor camera and panels stay as they are.
     void stop_play();
@@ -363,6 +374,11 @@ private:
     // Play
     std::unique_ptr<PlaySession> m_play;
     std::shared_ptr<ScriptReloads> m_play_reloads; // changed scripts for the play session
+    std::optional<PlayRecording> m_play_recording; // the running Play's, finished at Stop
+    std::optional<PlayRecording> m_last_recording;
+    std::optional<uint64_t> m_replay_final; // the state a replay should end in
+    bool begin_play(const SceneDocument& document, const PlayRecording* replay, bool record);
+    std::vector<RecordedAsset> played_assets(const SceneDocument& document);
     std::vector<EntityId> m_play_selection; // the selection at Play, restored at Stop
     bool m_game_view = true;
     // Project and scene files

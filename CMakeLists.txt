@@ -138,18 +138,39 @@ add_library(Maya::Physics ALIAS MayaPhysics)
 target_link_libraries(MayaPhysics PUBLIC MayaWorld PRIVATE Jolt)
 maya_target_options(MayaPhysics)
 
+# How this build was made (revision, configuration, compiler), regenerated on every build so benchmark
+# results and play recordings name the build they came from.
+set(MAYA_BUILD_INFO "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.cpp")
+string(REPLACE ";" "," maya_sanitizers "${MAYA_SANITIZERS}")
+if(NOT MAYA_ENABLE_SANITIZERS)
+    set(maya_sanitizers "none")
+endif()
+add_custom_target(maya_build_info
+    COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR} -DOUTPUT=${MAYA_BUILD_INFO}
+        -DBUILD_TYPE=${CMAKE_BUILD_TYPE} -DSANITIZERS=${maya_sanitizers}
+        "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
+    BYPRODUCTS ${MAYA_BUILD_INFO}
+    COMMENT "Recording the build's revision and configuration"
+    VERBATIM)
+add_library(MayaBuildInfo STATIC ${MAYA_BUILD_INFO})
+add_dependencies(MayaBuildInfo maya_build_info)
+target_include_directories(MayaBuildInfo PUBLIC include)
+maya_target_options(MayaBuildInfo)
+
 # Play sessions: the fixed clock, gameplay input, and simulation systems shared by the player and the
 # editor's play mode. CPU-only, on top of World and scene data.
 add_library(MayaSimulation STATIC
     src/maya/simulation/simulation.cpp
     src/maya/simulation/authored_physics.cpp
     src/maya/simulation/play_session.cpp
+    src/maya/simulation/recording.cpp
     src/maya/simulation/scripting/script_host.cpp
     src/maya/simulation/scripting/script_api.cpp
     src/maya/simulation/scripting/scripting.cpp)
 add_library(Maya::Simulation ALIAS MayaSimulation)
 # Luau is private to the scripting host (src/maya/simulation/scripting/); checked by maya_library_headers.
-target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics PRIVATE Luau.VM Luau.Compiler)
+target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics MayaBuildInfo PRIVATE Luau.VM Luau.Compiler)
 maya_target_options(MayaSimulation)
 
 add_library(MayaRuntime STATIC
@@ -213,24 +234,9 @@ endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
-    # Its build information is regenerated on every build, so results name the revision they measured.
-    set(MAYA_BUILD_INFO "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.cpp")
-    string(REPLACE ";" "," maya_sanitizers "${MAYA_SANITIZERS}")
-    if(NOT MAYA_ENABLE_SANITIZERS)
-        set(maya_sanitizers "none")
-    endif()
-    add_custom_target(maya_build_info
-        COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR} -DOUTPUT=${MAYA_BUILD_INFO}
-            -DBUILD_TYPE=${CMAKE_BUILD_TYPE} -DSANITIZERS=${maya_sanitizers}
-            "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
-        BYPRODUCTS ${MAYA_BUILD_INFO}
-        COMMENT "Recording the build's revision and configuration"
-        VERBATIM)
-    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp ${MAYA_BUILD_INFO})
-    add_dependencies(MayaBenchmark maya_build_info)
+    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp)
     target_include_directories(MayaBenchmark PUBLIC apps/benchmark)
-    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime)
+    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaBuildInfo)
     maya_target_options(MayaBenchmark)
     add_executable(maya_benchmark apps/benchmark/main.cpp)
     target_link_libraries(maya_benchmark PRIVATE MayaBenchmark)

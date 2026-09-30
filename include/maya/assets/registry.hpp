@@ -36,6 +36,8 @@ public:
     /// Counts and bytes of what is resident; O(catalog size).
     AssetResidency residency() const noexcept;
     uint64_t token() const noexcept { return m_token; }
+    /// The project directory that catalog paths are relative to.
+    const std::filesystem::path& root() const noexcept { return m_root; }
 
     template<Asset T> AssetResult<T> acquire(AssetRef<T> ref) { return load<T>(ref, false); }
     /// Failed reload preserves the previously published version and runtime generation.

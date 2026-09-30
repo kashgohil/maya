@@ -103,6 +103,9 @@ private:
     size_t m_memory = 0;
 };
 
+/// Memory held by every script VM in the process, in bytes: 0 once every play session has stopped.
+size_t script_memory_in_use() noexcept;
+
 /// The system that runs maya.script components: one sandboxed Luau VM for the session, instances
 /// started in activation order, hooks in the fixed tick and once per frame. A failing script instance
 /// is reported (TickContext::messages) and disabled; the session keeps running.

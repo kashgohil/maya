@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/scene/scene_io.hpp"
+#include "maya/simulation/recording.hpp"
 #include "maya/simulation/simulation.hpp"
 #include "maya/world/presentation.hpp"
 #include <memory>
@@ -61,6 +62,28 @@ public:
     /// reparenting, and new entities reset an entity's history (and its descendants'), so nothing is
     /// shown between two poses across a discontinuity. Nothing here is written to the World.
     PresentationPoses presentation() const;
+    /// Records the session from its next tick (recording.hpp): each tick's input, and a checkpoint of
+    /// state_hash() every `every` ticks.
+    void start_recording(uint32_t every = recording_checkpoint_interval);
+    const InputTrack& recorded_inputs() const noexcept { return m_recorded; }
+    const std::vector<PlayCheckpoint>& recorded_checkpoints() const noexcept { return m_checkpoints; }
+    /// Replays recorded input from the next tick, which must be tick 0: tick n takes `inputs.at(n)`
+    /// instead of the live input. When the input runs out, no more ticks run and the clock pauses.
+    /// Each checkpoint reached is compared with this session's state.
+    void start_replay(InputTrack inputs, std::vector<PlayCheckpoint> checkpoints);
+    struct ReplayStatus {
+        bool replaying = false;
+        bool finished = false; // every recorded tick has run
+        size_t checked = 0; // checkpoints compared
+        std::optional<uint64_t> first_difference; // the first checkpoint's tick that differed
+    };
+    const ReplayStatus& replay() const noexcept { return m_replay; }
+    /// What the session has done so far, as a hash: every entity's transform and every body's state,
+    /// by EntityId, and a running trace of the tick's events and messages. The same scene, inputs, and
+    /// build give the same hash, whatever the frame times and worker count.
+    uint64_t state_hash() const;
+    /// state_hash, and every component value of the World (the scene as it stands).
+    uint64_t full_state_hash() const;
     /// The first camera in document order (roots in order, each followed by its descendants), when
     /// the scene has one. It is the view the player shows.
     std::optional<EntityId> camera() const noexcept { return m_camera; }
@@ -88,6 +111,15 @@ private:
     std::vector<History> m_previous; // in batch order
     std::vector<uint32_t> m_history_index; // by entity slot: 1 + its index in m_previous, or 0
     std::vector<EntityHandle> m_resets; // entities whose history the last tick resets
+    // Recording and replay.
+    uint64_t m_trace = 14695981039346656037ull; // FNV-1a over each tick's events and messages
+    bool m_recording = false;
+    uint32_t m_checkpoint_every = recording_checkpoint_interval;
+    InputTrack m_recorded;
+    std::vector<PlayCheckpoint> m_checkpoints;
+    InputTrack m_replay_inputs;
+    std::vector<PlayCheckpoint> m_replay_expected;
+    ReplayStatus m_replay;
     size_t m_started = 0; // systems whose start was entered
     FixedClock m_clock;
     GameInput m_input;

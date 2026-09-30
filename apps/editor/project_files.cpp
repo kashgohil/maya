@@ -532,6 +532,13 @@ void EditorShell::draw_scene_menu() {
     if (ImGui::MenuItem((std::string(icon::pencil) + "  Save as\xE2\x80\xA6").c_str(), "\xE2\x87\xA7\xE2\x8C\x98S")) ask_save_as();
     ImGui::Separator();
     if (ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Refresh project").c_str())) refresh_project();
+    ImGui::Separator();
+    // Recorded Play (docs/play.md#recording-and-replay).
+    const auto recorded = m_last_recording.has_value();
+    if (ImGui::MenuItem((std::string(icon::play) + "  Play and record").c_str(), nullptr, false, !m_play)) start_play(true);
+    if (ImGui::MenuItem((std::string(icon::skip_forward) + "  Replay the last recording").c_str(), nullptr, false, recorded && !m_play))
+        replay_last_play();
+    if (ImGui::MenuItem((std::string(icon::floppy_disk) + "  Save the last recording").c_str(), nullptr, false, recorded)) save_recording();
     ImGui::EndPopup();
 }
 

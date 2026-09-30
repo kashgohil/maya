@@ -3,6 +3,7 @@
 
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
+#include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/RegisterTypes.h>
 
@@ -123,6 +124,24 @@ JPH::JobSystem& physics_jobs() {
 }
 
 } // namespace detail
+
+std::string physics_configuration() {
+    auto text = "Jolt " + std::to_string(JPH_VERSION_MAJOR) + "." + std::to_string(JPH_VERSION_MINOR) + "." +
+                std::to_string(JPH_VERSION_PATCH);
+#ifdef JPH_DOUBLE_PRECISION
+    text += ", double precision";
+#else
+    text += ", single precision";
+#endif
+    text += ", " + std::to_string(sizeof(JPH::ObjectLayer) * 8) + "-bit object layers";
+#ifdef JPH_CROSS_PLATFORM_DETERMINISTIC
+    text += ", cross-platform deterministic";
+#endif
+#ifdef JPH_ENABLE_ASSERTS
+    text += ", asserts";
+#endif
+    return text;
+}
 
 PhysicsMemory physics_memory() noexcept {
     return {g_live.load(std::memory_order_relaxed), g_peak.load(std::memory_order_relaxed),

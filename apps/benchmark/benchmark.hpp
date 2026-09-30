@@ -1,6 +1,6 @@
 #pragma once
 
-#include "build_info.hpp"
+#include "maya/core/build_info.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/system_info.hpp"
 #include "maya/metrics/metrics.hpp"

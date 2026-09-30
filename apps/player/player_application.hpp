@@ -12,6 +12,10 @@ struct PlayerOptions {
     std::optional<std::filesystem::path> project;
     /// A scene relative to the project's content root; the project's startup scene when empty.
     std::optional<std::filesystem::path> scene;
+    /// Records the session, written to this file when the player stops.
+    std::optional<std::filesystem::path> record;
+    /// Replays this recording (its scene, with its input) instead of a scene, and checks the result.
+    std::optional<std::filesystem::path> replay;
 };
 
 /// Runs a saved scene: opens the project and scene, starts a play session with the built-in systems,
