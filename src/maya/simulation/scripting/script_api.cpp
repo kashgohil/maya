@@ -540,6 +540,17 @@ Vm::Vm(ScriptLimits limits, uint64_t seed) : m_limits(limits) {
     lua_pop(m_state, 1);
     open_maya_library(m_state);
     luaL_sandbox(m_state); // the global table and every library become read-only
+    // Made once, so that protect allocates nothing of its own per call.
+    lua_pushcfunction(
+        m_state,
+        [](lua_State* L) -> int {
+            auto* task = static_cast<Task*>(lua_touserdata(L, 1));
+            task->run(L, task->data);
+            return 0;
+        },
+        "protect");
+    m_runner = lua_ref(m_state, -1);
+    lua_pop(m_state, 1);
 }
 
 Vm::~Vm() {
@@ -592,29 +603,39 @@ std::string take_error(lua_State* L) {
 } // namespace
 
 Vm::Loaded Vm::load(std::string_view name, std::string_view source) {
+    // Everything here that allocates in the VM runs protected, so running out of memory is this
+    // script's error, not the session's.
     auto loaded = Loaded{};
-    loaded.thread = lua_newthread(m_state);
-    luaL_sandboxthread(loaded.thread); // its own globals, falling through to the read-only ones
-    loaded.thread_ref = lua_ref(m_state, -1);
-    lua_pop(m_state, 1);
-    auto* T = loaded.thread;
+    if (auto error = protect(m_state, [&](lua_State* L) {
+            loaded.thread = lua_newthread(L);
+            loaded.thread_ref = lua_ref(L, -1);
+        });
+        !error.empty()) {
+        loaded.thread = nullptr;
+        loaded.error = std::string(name) + ": " + error;
+        return loaded;
+    }
     const auto bytecode = Luau::compile(std::string(source));
     const auto chunk = "=" + std::string(name);
-    if (luau_load(T, chunk.c_str(), bytecode.data(), bytecode.size(), 0) != 0) {
-        loaded.error = take_error(T);
-        return loaded;
-    }
-    if (auto error = call(T, 0, 1); !error.empty()) { // the chunk returns its module
+    if (auto error = protect(loaded.thread, [&](lua_State* L) {
+            luaL_sandboxthread(L); // its own globals, falling through to the read-only ones
+            if (luau_load(L, chunk.c_str(), bytecode.data(), bytecode.size(), 0) != 0) {
+                loaded.error = take_error(L);
+                return;
+            }
+            loaded.error = call(L, 0, 1); // the chunk returns its module
+            if (!loaded.error.empty()) return;
+            if (!lua_istable(L, -1)) {
+                loaded.error = std::string(name) + ": a script must return a table of hooks and properties";
+                return;
+            }
+            loaded.module_ref = lua_ref(L, -1);
+        });
+        !error.empty())
         loaded.error = error;
-        return loaded;
-    }
-    if (!lua_istable(T, -1)) {
-        loaded.error = std::string(name) + ": a script must return a table of hooks and properties";
-        lua_settop(T, 0);
-        return loaded;
-    }
-    loaded.module_ref = lua_ref(T, -1);
-    lua_settop(T, 0);
+    // Compile and runtime errors start with "name:line:"; others, such as running out of memory, get the name.
+    if (!loaded.error.empty() && !loaded.error.starts_with(std::string(name) + ":"))
+        loaded.error = std::string(name) + ": " + loaded.error;
     return loaded;
 }
 
@@ -637,6 +658,14 @@ std::string Vm::call(lua_State* thread, int arguments, int results) {
     }
     lua_remove(thread, base);
     return {};
+}
+
+std::string Vm::run_protected(lua_State* thread, Task& task) {
+    // Pushing the runner and its task needs no allocation; the call's own stack growth is protected.
+    lua_getref(thread, m_runner);
+    lua_pushlightuserdata(thread, &task);
+    const auto status = lua_pcall(thread, 1, 0, 0);
+    return status == LUA_OK ? std::string{} : take_error(thread);
 }
 
 // --- Values shared with the host ---------------------------------------------------------------------

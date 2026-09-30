@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace maya::scripting {
 
@@ -89,10 +90,23 @@ public:
     /// and its arguments with `results` values. Returns the error ("name:line: message" and a short
     /// traceback), or empty.
     std::string call(lua_State* thread, int arguments, int results = 0);
+    /// Runs `work` on `thread` as a protected call, so a Luau error inside it (running out of memory,
+    /// above all) is returned as its message instead of escaping to the session. What `work` leaves on
+    /// the stack is discarded; keep values with references.
+    template<class F> std::string protect(lua_State* thread, F&& work) {
+        auto task = Task{[](lua_State* L, void* data) { (*static_cast<std::remove_reference_t<F>*>(data))(L); },
+                         const_cast<void*>(static_cast<const void*>(&work))};
+        return run_protected(thread, task);
+    }
 
     static Vm& of(lua_State* L) { return *static_cast<Vm*>(lua_callbacks(L)->userdata); }
 
 private:
+    struct Task {
+        void (*run)(lua_State*, void*);
+        void* data;
+    };
+    std::string run_protected(lua_State* thread, Task& task);
     static void* allocate(void* user, void* block, size_t old_size, size_t new_size);
     static void interrupt(lua_State* L, int gc);
 
@@ -101,6 +115,7 @@ private:
     ScriptApi* m_api = nullptr;
     size_t m_bytes = 0;
     uint64_t m_work = 0;
+    int m_runner = LUA_NOREF; // the C function protect runs tasks in
 };
 
 /// Reads `properties` and the defined hooks from a script's module table at `index` (scripting.cpp).

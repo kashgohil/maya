@@ -246,19 +246,16 @@ private:
             script.error = script.loaded.error;
             return script;
         }
-        auto* T = script.loaded.thread;
-        lua_getref(T, script.loaded.module_ref);
-        script.description = describe_module(T, -1, script.name);
-        lua_pop(T, 1);
-        if (!script.description.error.empty()) {
-            script.error = script.description.error;
-            return script;
-        }
-        lua_newtable(T);
-        lua_getref(T, script.loaded.module_ref);
-        lua_setfield(T, -2, "__index");
-        script.metatable_ref = lua_ref(T, -1);
-        lua_pop(T, 1);
+        const auto error = m_vm->protect(script.loaded.thread, [&](lua_State* L) {
+            lua_getref(L, script.loaded.module_ref);
+            script.description = describe_module(L, -1, script.name);
+            if (!script.description.error.empty()) return;
+            lua_newtable(L);
+            lua_getref(L, script.loaded.module_ref);
+            lua_setfield(L, -2, "__index");
+            script.metatable_ref = lua_ref(L, -1);
+        });
+        script.error = !error.empty() ? script.name + ": " + error : script.description.error;
         return script;
     }
 
@@ -285,23 +282,29 @@ private:
         m_world->with<ScriptComponent>(entity, [&](const ScriptComponent& component) { values = component.values; });
         for (const auto& problem : script_value_problems(script.description, values))
             report(SimulationMessage::Level::warning, instance.label + ": " + problem);
-        auto* T = script.loaded.thread;
-        lua_newtable(T);
-        push_entity(T, id);
-        lua_setfield(T, -2, "entity");
-        for (const auto& declared : script.description.properties) {
-            auto chosen = ScriptValue{declared.name, declared.type, declared.default_value};
-            for (const auto& value : values)
-                if (value.name == declared.name && value.type == declared.type && fits(declared, value)) chosen = value;
-            push_script_value(T, chosen);
-            lua_setfield(T, -2, declared.name.c_str());
-        }
-        lua_getref(T, script.metatable_ref);
-        lua_setmetatable(T, -2);
-        instance.self_ref = lua_ref(T, -1);
-        lua_pop(T, 1);
+        const auto error = m_vm->protect(script.loaded.thread, [&](lua_State* L) {
+            lua_newtable(L);
+            push_entity(L, id);
+            lua_setfield(L, -2, "entity");
+            for (const auto& declared : script.description.properties) {
+                auto chosen = ScriptValue{declared.name, declared.type, declared.default_value};
+                for (const auto& value : values)
+                    if (value.name == declared.name && value.type == declared.type && fits(declared, value)) chosen = value;
+                push_script_value(L, chosen);
+                lua_setfield(L, -2, declared.name.c_str());
+            }
+            lua_getref(L, script.metatable_ref);
+            lua_setmetatable(L, -2);
+            instance.self_ref = lua_ref(L, -1);
+        });
         m_instances.push_back(std::move(instance));
         auto& added = m_instances.back();
+        if (!error.empty()) { // it never starts, so it never stops
+            added.self_ref = LUA_NOREF;
+            added.disabled = true;
+            report(SimulationMessage::Level::error, added.label + ": " + error + " (in start; the instance is stopped)");
+            return;
+        }
         added.started = true;
         call_hook(added, "start", CallMode::start, std::nullopt);
     }
@@ -326,16 +329,7 @@ private:
     void call_hook(Instance& instance, const char* hook, CallMode mode, std::optional<double> argument) {
         auto& script = m_compiled[instance.compiled];
         if (!script.error.empty() || instance.self_ref == LUA_NOREF) return;
-        auto* T = script.loaded.thread;
-        lua_getref(T, script.loaded.module_ref);
-        lua_rawgetfield(T, -1, hook);
-        lua_remove(T, -2);
-        if (!lua_isfunction(T, -1)) {
-            lua_pop(T, 1);
-            return;
-        }
-        lua_getref(T, instance.self_ref);
-        if (argument) lua_pushnumber(T, *argument);
+        if (std::ranges::find(script.description.hooks, std::string_view(hook)) == script.description.hooks.end()) return;
         // The call is a transaction over the tick's commands and pending edits.
         const auto commands = m_commands ? m_commands->size() : 0;
         const auto counter = m_id_counter;
@@ -348,7 +342,16 @@ private:
         m_mode = mode;
         m_current = &instance;
         m_current_index = size_t(&instance - m_instances.data());
-        const auto error = m_vm->call(T, argument ? 2 : 1);
+        auto error = std::string{};
+        if (auto failure = m_vm->protect(script.loaded.thread, [&](lua_State* L) {
+                lua_getref(L, script.loaded.module_ref);
+                if (lua_rawgetfield(L, -1, hook) != LUA_TFUNCTION) return; // removed since the script loaded
+                lua_getref(L, instance.self_ref);
+                if (argument) lua_pushnumber(L, *argument);
+                error = m_vm->call(L, argument ? 2 : 1);
+            });
+            !failure.empty())
+            error = std::move(failure);
         m_current = nullptr;
         m_mode = CallMode::declare;
         if (error.empty()) return;
