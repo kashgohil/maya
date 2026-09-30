@@ -317,6 +317,56 @@ return S
     CHECK(errors[1].find("(in fixed_update; the instance is stopped)") != std::string::npos);
 }
 
+TEST_CASE("Errors in start, update, and stop stop only their instance, and stop follows a failed start", "[scripting]") {
+    auto scripts = Scripts{};
+    const auto bad_start = scripts.add(1, "bad_start", R"(
+local B = {}
+function B:start() error("cannot start") end
+function B:fixed_update(dt) maya.log("start failed but fixed_update ran") end
+function B:stop() maya.log("stopped after a failed start") end
+return B
+)");
+    const auto bad_update = scripts.add(2, "bad_update", R"(
+local B = {}
+function B:fixed_update(dt) maya.log("fixed " .. maya.tick()) end
+function B:update(dt) error("cannot update") end
+return B
+)");
+    const auto bad_stop = scripts.add(3, "bad_stop", R"(
+local B = {}
+function B:stop() error("cannot stop") end
+return B
+)");
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<Native>([](TickContext& tick) {
+        if (tick.tick == 2) tick.commands.destroy(handle(tick.world, 3));
+        if (tick.tick == 3) tick.commands.destroy(handle(tick.world, 1)); // its stop runs though start failed
+    }));
+    auto session = play(scripts, {entity(1, {script(bad_start)}), entity(2, {script(bad_update)}), entity(3, {script(bad_stop)})}, {},
+                        std::move(systems));
+    session.run(5);
+    CHECK(session.texts(SimulationMessage::Level::info) ==
+          std::vector<std::string>{"entity 70 2 (bad_update.luau): fixed 0", "entity 70 1 (bad_start.luau): stopped after a failed start"});
+    const auto errors = session.texts(SimulationMessage::Level::error);
+    REQUIRE(errors.size() == 3);
+    CHECK(errors[0].find("bad_start.luau:3: cannot start") != std::string::npos);
+    CHECK(errors[0].find("(in start;") != std::string::npos);
+    CHECK(errors[1].find("bad_update.luau:4: cannot update") != std::string::npos);
+    CHECK(errors[1].find("(in update;") != std::string::npos);
+    CHECK(errors[2].find("bad_stop.luau:3: cannot stop") != std::string::npos);
+    CHECK(errors[2].find("(in stop;") != std::string::npos);
+    CHECK(session.world().size() == 1); // both destroys went through
+    // A failing native system still stops the session, scripts or not.
+    auto natives = std::vector<std::unique_ptr<SimulationSystem>>{};
+    natives.push_back(std::make_unique<Native>([](TickContext& tick) {
+        if (tick.tick == 1) throw std::runtime_error("native failure");
+    }));
+    auto failing = play(scripts, {entity(2, {script(bad_update)})}, {}, std::move(natives));
+    failing.run();
+    const auto stopped = failing.play->update(frame);
+    CHECK(stopped.error == "Tick 1: Native failed: native failure");
+}
+
 TEST_CASE("Budgets stop runaway scripts; memory limits stop hoarding ones", "[scripting]") {
     auto scripts = Scripts{};
     const auto spinner = scripts.add(1, "spinner", "local S = {}\nfunction S:fixed_update(dt) while true do end end\nreturn S");
@@ -343,6 +393,28 @@ return C
     hoarding.run(4);
     CHECK(hoarding.said("not enough memory"));
     CHECK(hoarding.said("2002000")); // the other script is unaffected
+    // Setting up a script and its instances runs within the limit too. Here one script fills the VM,
+    // then another arrives: it cannot be set up, which is its error, and play goes on.
+    const auto filler = scripts.add(4, "filler", R"(
+local F = {}
+function F:start()
+    for _, size in {4096, 256, 16, 1, 0} do
+        pcall(function() while true do self.hoard = {self.hoard, table.create(size, 0)} end end)
+    end
+end
+return F
+)");
+    settings.limits.memory_bytes = size_t{2} << 20;
+    auto ticks = 0;
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<Native>([&](TickContext& tick) {
+        if (tick.tick == 1) tick.commands.add(handle(tick.world, 3), script(counter));
+        ++ticks;
+    }));
+    auto full = play(scripts, {entity(4, {script(filler)}), entity(3, {})}, settings, std::move(systems));
+    full.run(4);
+    CHECK(full.texts(SimulationMessage::Level::error) == std::vector<std::string>{"entity 70 3 (counter.luau): counter.luau: not enough memory"});
+    CHECK(ticks == 4);
 }
 
 TEST_CASE("Scripts cannot move physics bodies, and update hooks cannot change the simulation", "[scripting]") {
