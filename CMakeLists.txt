@@ -17,7 +17,7 @@ option(MAYA_BUILD_EDITOR "Build the editor application" ON)
 option(MAYA_BUILD_PLAYER "Build the standalone player with the basic-scene project" ON)
 option(MAYA_BUILD_SAMPLES "Build sample executables" ON)
 option(MAYA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(MAYA_BUILD_PROTOTYPES "Build the physics and scripting library prototypes (#1015)" OFF)
+option(MAYA_BUILD_PROTOTYPES "Build the scripting library prototypes (#1015)" OFF)
 set(MAYA_SANITIZERS "address,undefined" CACHE STRING "Comma-separated Clang sanitizers when enabled")
 include(CTest)
 include(FetchContent)
@@ -86,13 +86,53 @@ add_library(Maya::Metrics ALIAS MayaMetrics)
 target_include_directories(MayaMetrics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaMetrics)
 
+# Dependency headers are system headers, so Maya's warnings apply to Maya code only.
+function(maya_system_headers target)
+    get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
+    set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
+endfunction()
+
+# Jolt Physics (MIT), pinned (docs/architecture/physics-scripting-decision.md). Single precision,
+# 32-bit object layers, no GPU compute, no serialization, no install rules. Jolt builds without
+# exceptions and with its own warnings. RTTI is on so UndefinedBehaviorSanitizer's vptr check can see
+# Jolt's classes, as in the rest of Maya. Only the Jolt library itself is part of `all`.
+FetchContent_Declare(jolt
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG v5.6.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR Build)
+set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
+set(CPP_RTTI_ENABLED ON CACHE BOOL "" FORCE)
+set(OBJECT_LAYER_BITS 32 CACHE STRING "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)
+set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(GENERATE_DEBUG_SYMBOLS OFF CACHE BOOL "" FORCE)
+foreach(backend JPH_USE_DX12 JPH_USE_VK JPH_USE_MTL JPH_USE_CPU_COMPUTE)
+    set(${backend} OFF CACHE BOOL "" FORCE)
+endforeach()
+FetchContent_MakeAvailable(jolt)
+set_property(DIRECTORY ${jolt_SOURCE_DIR}/Build PROPERTY EXCLUDE_FROM_ALL TRUE)
+maya_system_headers(Jolt)
+
+# Rigid-body physics for play sessions (docs/physics.md). The only target that includes Jolt's
+# headers; its public headers carry no Jolt types (checked by maya_physics_headers in CTest).
+add_library(MayaPhysics STATIC
+    src/maya/physics/jolt_runtime.cpp
+    src/maya/physics/physics_world.cpp)
+add_library(Maya::Physics ALIAS MayaPhysics)
+target_link_libraries(MayaPhysics PUBLIC MayaWorld PRIVATE Jolt)
+maya_target_options(MayaPhysics)
+
 # Play sessions: the fixed clock, gameplay input, and simulation systems shared by the player and the
 # editor's play mode. CPU-only, on top of World and scene data.
 add_library(MayaSimulation STATIC
     src/maya/simulation/simulation.cpp
     src/maya/simulation/play_session.cpp)
 add_library(Maya::Simulation ALIAS MayaSimulation)
-target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene)
+target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics)
 maya_target_options(MayaSimulation)
 
 add_library(MayaRuntime STATIC
@@ -106,7 +146,7 @@ add_library(MayaRuntime STATIC
 )
 add_library(Maya::Runtime ALIAS MayaRuntime)
 target_include_directories(MayaRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer MayaSimulation MayaMetrics PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
+target_link_libraries(MayaRuntime PUBLIC MayaRHI MayaWorld MayaAssets MayaScene MayaRenderer MayaPhysics MayaSimulation MayaMetrics PRIVATE ${METAL_LIBRARY} ${QUARTZ_LIBRARY} ${COCOA_LIBRARY})
 target_compile_options(MayaRuntime PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 maya_target_options(MayaRuntime)
 
@@ -234,39 +274,9 @@ if(MAYA_BUILD_SAMPLES)
 endif()
 
 if(MAYA_BUILD_PROTOTYPES)
-    # Library prototypes for the physics and behavior decisions (docs/architecture/physics-scripting-decision.md).
-    # They are not engine code: MayaPhysics (#1017) and the scripting host (#1018) replace them.
-    # Dependency sources are pinned, and none of their targets are part of `all` unless a prototype
-    # links them. Their headers are system headers, so Maya's warnings apply to Maya code only.
-    function(maya_prototype_dependency_headers target)
-        get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
-        set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
-    endfunction()
-
-    # Jolt Physics (MIT). Single precision, 16 collision groups with masks, no GPU compute, no
-    # serialization, no install rules. Jolt builds without exceptions and with its own warnings. RTTI
-    # is on so UndefinedBehaviorSanitizer's vptr check can see Jolt's classes, as in the rest of Maya.
-    FetchContent_Declare(jolt
-        GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
-        GIT_TAG v5.6.0
-        GIT_SHALLOW TRUE
-        SOURCE_SUBDIR Build)
-    set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
-    set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
-    set(CPP_RTTI_ENABLED ON CACHE BOOL "" FORCE)
-    set(OBJECT_LAYER_BITS 32 CACHE STRING "" FORCE)
-    set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
-    set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)
-    set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-    set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
-    set(GENERATE_DEBUG_SYMBOLS OFF CACHE BOOL "" FORCE)
-    foreach(backend JPH_USE_DX12 JPH_USE_VK JPH_USE_MTL JPH_USE_CPU_COMPUTE)
-        set(${backend} OFF CACHE BOOL "" FORCE)
-    endforeach()
-    FetchContent_MakeAvailable(jolt)
-    set_property(DIRECTORY ${jolt_SOURCE_DIR}/Build PROPERTY EXCLUDE_FROM_ALL TRUE)
-    maya_prototype_dependency_headers(Jolt)
-
+    # Scripting prototypes for the language decision (docs/architecture/physics-scripting-decision.md).
+    # They are not engine code: the scripting host (#1018) replaces them. Dependency sources are
+    # pinned, and none of their targets are part of `all` unless a prototype links them.
     # Lua 5.4 (MIT), from the release archive. Compiled as C++, so errors unwind with exceptions
     # instead of longjmp and destructors in native functions run.
     FetchContent_Declare(lua
@@ -291,16 +301,8 @@ if(MAYA_BUILD_PROTOTYPES)
     set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(luau)
     set_property(DIRECTORY ${luau_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
-    maya_prototype_dependency_headers(Luau.VM)
-    maya_prototype_dependency_headers(Luau.Compiler)
-
-    add_library(MayaPrototypePhysics STATIC prototypes/physics/jolt_prototype.cpp)
-    target_include_directories(MayaPrototypePhysics PUBLIC prototypes/physics)
-    target_link_libraries(MayaPrototypePhysics PUBLIC Jolt)
-    maya_target_options(MayaPrototypePhysics)
-    add_executable(maya_physics_prototype prototypes/physics/main.cpp)
-    target_link_libraries(maya_physics_prototype PRIVATE MayaPrototypePhysics)
-    maya_target_options(maya_physics_prototype)
+    maya_system_headers(Luau.VM)
+    maya_system_headers(Luau.Compiler)
 
     # Lua and Luau export the same C API names, so each language has its own host library and
     # executable, and the two are never linked together.
@@ -369,13 +371,8 @@ if(BUILD_TESTING)
     add_test(NAME maya_simulation COMMAND maya_simulation_tests)
     set_tests_properties(maya_simulation PROPERTIES LABELS "cpu;simulation" TIMEOUT 60)
 
-    # The #1015 library prototypes: Jolt Physics, and the same scripting checks for each language.
+    # The #1015 scripting prototypes: the same checks for each language.
     if(MAYA_BUILD_PROTOTYPES)
-        add_executable(maya_prototype_physics_tests tests/prototype_physics_tests.cpp)
-        target_link_libraries(maya_prototype_physics_tests PRIVATE MayaPrototypePhysics Catch2::Catch2WithMain)
-        maya_target_options(maya_prototype_physics_tests)
-        add_test(NAME maya_prototype_physics COMMAND maya_prototype_physics_tests)
-        set_tests_properties(maya_prototype_physics PROPERTIES LABELS "cpu;prototype" TIMEOUT 120)
         foreach(language Lua Luau)
             string(TOLOWER ${language} name)
             add_executable(maya_prototype_${name}_tests tests/prototype_scripting_tests.cpp)

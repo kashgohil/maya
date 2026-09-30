@@ -6,11 +6,13 @@
 namespace maya {
 
 PlaySession::PlaySession(std::unique_ptr<World> world, std::vector<std::unique_ptr<SimulationSystem>> systems,
-                         ClockSettings clock, std::optional<EntityId> camera)
-    : m_world(std::move(world)), m_systems(std::move(systems)), m_clock(clock), m_camera(camera) {}
+                         ClockSettings clock, PhysicsSettings physics, std::optional<EntityId> camera)
+    : m_world(std::move(world)), m_physics(std::make_unique<PhysicsWorld>(physics)), m_systems(std::move(systems)),
+      m_clock(clock), m_camera(camera) {}
 
 PlayStartResult PlaySession::start(SceneDocument document, const PropertyValidationContext& context,
-                                   std::vector<std::unique_ptr<SimulationSystem>> systems, ClockSettings clock) {
+                                   std::vector<std::unique_ptr<SimulationSystem>> systems, ClockSettings clock,
+                                   PhysicsSettings physics) {
     for (const auto& system : systems)
         if (!system) return {nullptr, {}, "A play session cannot run an empty system"};
     auto camera = std::optional<EntityId>{};
@@ -21,7 +23,12 @@ PlayStartResult PlaySession::start(SceneDocument document, const PropertyValidat
         }
     auto built = instantiate_scene(std::move(document), context);
     if (!built) return {nullptr, std::move(built.diagnostics), {}};
-    auto session = std::unique_ptr<PlaySession>(new PlaySession(std::move(built.world), std::move(systems), clock, camera));
+    auto session = std::unique_ptr<PlaySession>{};
+    try {
+        session.reset(new PlaySession(std::move(built.world), std::move(systems), clock, physics, camera));
+    } catch (const std::invalid_argument& error) {
+        return {nullptr, {}, std::string("Physics could not start: ") + error.what()};
+    }
     for (auto& system : session->m_systems) {
         ++session->m_started; // stop runs for a system whose start threw, too
         try {
@@ -64,21 +71,37 @@ PlayFrame PlaySession::update(double wall_delta) {
     return frame;
 }
 
+// The fixed-tick phases of docs/architecture/scheduling-contracts.md. This tick's commit is the next
+// tick's phase 1: the World batch, then bodies for destroyed entities go and requested ones arrive.
 void PlaySession::run_tick() {
-    const auto input = m_input.latch();
+    const auto input = m_input.latch(); // phase 2
+    const auto interval = float(m_clock.interval());
     auto commands = m_world->commands();
-    auto context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), float(m_clock.interval())};
-    for (auto& system : m_systems) {
+    auto bodies = BodyCommands(*m_physics, *m_world);
+    auto context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, bodies, *m_physics};
+    for (auto& system : m_systems) { // phase 3
+        const auto first = commands.size();
+        bodies.set_source(system->name());
         try {
             system->fixed_update(context);
+            m_physics->check_world_commands(*m_world, commands, first);
         } catch (const std::exception& error) {
             throw std::runtime_error(std::string(system->name()) + " failed: " + error.what());
         }
     }
+    try {
+        m_physics->prepare(*m_world, bodies, interval); // phase 4
+        m_physics->step(interval); // phase 5
+        m_physics->synchronize(*m_world, commands); // phase 6
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string("Physics failed: ") + error.what());
+    }
     // One atomic commit: a rejected batch leaves the World as the previous tick completed it.
-    if (const auto result = m_world->commit(commands); !result)
+    const auto result = m_world->commit(commands);
+    if (!result)
         throw std::runtime_error("The World rejected the tick's changes at command " + std::to_string(result.command_index) +
                                  " (" + error_name(result.error) + ")");
+    m_physics->commit(*m_world, bodies, result);
     m_clock.count_tick();
 }
 

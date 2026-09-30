@@ -31,19 +31,23 @@ public:
     /// Validates the document and builds a new World from it (as a scene file is loaded), then
     /// starts the systems in order. On failure everything started is stopped again.
     static PlayStartResult start(SceneDocument document, const PropertyValidationContext& context,
-                                 std::vector<std::unique_ptr<SimulationSystem>> systems, ClockSettings clock = {});
+                                 std::vector<std::unique_ptr<SimulationSystem>> systems, ClockSettings clock = {},
+                                 PhysicsSettings physics = {});
     ~PlaySession(); // stops the systems in reverse order, then releases the World
     PlaySession(const PlaySession&) = delete;
     PlaySession& operator=(const PlaySession&) = delete;
 
     /// One host frame: admits `wall_delta` seconds and runs the ticks that are due. Each tick latches
-    /// input, runs every system, and commits their commands. If a system throws or its commands are
-    /// rejected, the session stops simulating, keeps the World as of the last completed tick, and
-    /// reports the error (again in error()).
+    /// input, runs every system, steps physics once, and commits the systems' commands together with
+    /// the moved body poses, then adds and removes bodies. If a system throws, breaks the physics
+    /// authority rules, or its commands are rejected, the session stops simulating and reports the
+    /// error (again in error()); the World keeps the last tick that committed.
     PlayFrame update(double wall_delta);
 
     World& world() noexcept { return *m_world; }
     const World& world() const noexcept { return *m_world; }
+    /// The session's physics, created with it and destroyed before its World.
+    const PhysicsWorld& physics() const noexcept { return *m_physics; }
     FixedClock& clock() noexcept { return m_clock; }
     const FixedClock& clock() const noexcept { return m_clock; }
     GameInput& input() noexcept { return m_input; }
@@ -55,10 +59,11 @@ public:
 
 private:
     PlaySession(std::unique_ptr<World> world, std::vector<std::unique_ptr<SimulationSystem>> systems,
-                ClockSettings clock, std::optional<EntityId> camera);
+                ClockSettings clock, PhysicsSettings physics, std::optional<EntityId> camera);
     void run_tick();
 
     std::unique_ptr<World> m_world;
+    std::unique_ptr<PhysicsWorld> m_physics; // declared after the World, so it is destroyed first
     std::vector<std::unique_ptr<SimulationSystem>> m_systems;
     size_t m_started = 0; // systems whose start was entered
     FixedClock m_clock;

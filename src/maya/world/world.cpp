@@ -38,6 +38,16 @@ void WorldCommands::set_transform(EntityTarget target, TransformComponent value)
     m_commands.push_back(std::move(command));
 }
 
+std::vector<WorldCommands::Staged> WorldCommands::staged(size_t first) const {
+    auto result = std::vector<Staged>{};
+    for (auto i = first; i < m_commands.size(); ++i) {
+        const auto& command = m_commands[i];
+        result.push_back({command.kind, command.target, command.type,
+                          command.kind == Kind::reparent ? command.parent : std::nullopt});
+    }
+    return result;
+}
+
 void WorldCommands::reparent(EntityTarget target, std::optional<EntityTarget> parent,
                              ReparentPolicy policy) {
     require_active();

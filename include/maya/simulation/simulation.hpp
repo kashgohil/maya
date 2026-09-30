@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/physics/physics.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/world/world.hpp"
 #include <bitset>
@@ -103,11 +104,14 @@ struct TickContext {
     uint64_t tick; // the index of this tick, from 0
     double time; // simulation seconds at the start of this tick
     float delta; // the fixed interval, in seconds
+    BodyCommands& bodies; // physics requests: applied before this tick's step, bodies at its commit
+    const PhysicsWorld& physics; // body state after the previous tick's step
 };
 
 /// One step of play simulation, run in a fixed order with the others. Systems keep their own state;
 /// they read the World and write through the tick's commands, so one system's writes are visible to
-/// the next tick, not to later systems in the same tick. Each transform should have one writer.
+/// the next tick, not to later systems in the same tick. Each transform should have one writer: a
+/// system that sets the transform of a kinematic or dynamic body fails, since physics writes it.
 class SimulationSystem {
 public:
     virtual ~SimulationSystem() = default;

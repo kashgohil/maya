@@ -47,11 +47,22 @@ public:
     void reparent(EntityTarget target, std::optional<EntityTarget> parent, ReparentPolicy policy);
     size_t size() const noexcept { return m_commands.size(); }
 
+    enum class Kind { create, destroy, add, remove, replace, set_transform, reparent };
+    /// What a staged command changes, without its value. The pending entity of a create is its target.
+    struct Staged {
+        Kind kind;
+        EntityTarget target;
+        std::type_index component; // add, remove, replace, set_transform; void otherwise
+        std::optional<EntityTarget> parent; // reparent only; nullopt detaches to the root
+    };
+    /// The staged commands from index `first` on, in order, so a caller can check a batch before it
+    /// commits (the play session refuses transform writes to physics bodies this way).
+    std::vector<Staged> staged(size_t first = 0) const;
+
 private:
     friend class World;
     explicit WorldCommands(uint64_t world)
         : m_world(world), m_batch(detail::next_lifetime_token()) {}
-    enum class Kind { create, destroy, add, remove, replace, set_transform, reparent };
     struct AdditionBase {
         virtual ~AdditionBase() = default;
         virtual std::unique_ptr<detail::ComponentPoolBase> make_pool() const = 0;
