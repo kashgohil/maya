@@ -14,6 +14,9 @@ inline constexpr double quaternion_unit_tolerance = 4.0e-7;
 /// Validates finite TRS and normalizes any finite, nonzero quaternion.
 std::optional<TransformComponent> validated_transform(TransformComponent value) noexcept;
 math::Mat4 local_matrix(const TransformComponent& value) noexcept;
+/// The pose `t` of the way from `a` to `b` (0 to 1): translation and scale linearly, rotation along
+/// the shortest arc (the rotations are normalized first).
+TransformComponent interpolate_transform(const TransformComponent& a, const TransformComponent& b, float t) noexcept;
 /// Rejects singular, numerically degenerate, or unrepresentable inverses.
 std::optional<math::Mat4> inverse_affine(const math::Mat4& value) noexcept;
 /// Positive-scale TRS only: shear/reflection is rejected, not silently discarded.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/assets/registry.hpp"
+#include "maya/world/presentation.hpp"
 #include "maya/world/world.hpp"
 #include <array>
 #include <optional>
@@ -43,6 +44,8 @@ struct RenderDirectionalLight {
 };
 struct RenderExtractOptions {
     math::Vec3 ambient{0.06f, 0.07f, 0.09f}; // linear RGB added to every surface
+    /// Poses shown in place of the World's, e.g. a play session's between ticks; none when null.
+    const PresentationPoses* poses = nullptr;
 };
 struct RenderSnapshotStats {
     size_t mesh_renderers = 0;
@@ -84,8 +87,8 @@ struct RenderView {
 /// Returns nullopt for a zero size or an invalid camera/pose.
 std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Mat4& pose,
                                            uint32_t width, uint32_t height);
-/// A view from a camera entity. Returns nullopt for a zero size, a missing camera component, or an
-/// invalid pose (see World::camera).
+/// A view from a camera entity, at its pose in `poses` when it has one there. Returns nullopt for a
+/// zero size, a missing camera component, or an invalid pose (see World::camera).
 std::optional<RenderView> extract_render_view(const World& world, EntityHandle camera,
-                                              uint32_t width, uint32_t height);
+                                              uint32_t width, uint32_t height, const PresentationPoses* poses = nullptr);
 } // namespace maya

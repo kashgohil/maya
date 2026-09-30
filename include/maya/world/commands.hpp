@@ -61,6 +61,13 @@ public:
     /// The staged commands from index `first` on, in order, so a caller can check a batch before it
     /// commits (the play session refuses transform writes to physics bodies this way).
     std::vector<Staged> staged(size_t first = 0) const;
+    /// The same, one at a time and without copying the batch: `visit(const Staged&)` for each.
+    template<class F> void for_each_staged(size_t first, F&& visit) const {
+        for (auto i = first; i < m_commands.size(); ++i) {
+            const auto& command = m_commands[i];
+            visit(Staged{command.kind, command.target, command.type, command.kind == Kind::reparent ? command.parent : std::nullopt});
+        }
+    }
 
 private:
     friend class World;

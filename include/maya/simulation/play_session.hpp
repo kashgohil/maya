@@ -2,9 +2,12 @@
 
 #include "maya/scene/scene_io.hpp"
 #include "maya/simulation/simulation.hpp"
+#include "maya/world/presentation.hpp"
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace maya {
 
@@ -52,6 +55,12 @@ public:
     FixedClock& clock() noexcept { return m_clock; }
     const FixedClock& clock() const noexcept { return m_clock; }
     GameInput& input() noexcept { return m_input; }
+    /// The poses to show now: between the last two completed ticks, at the clock's alpha. Entities
+    /// whose transform changed in the last tick, and their descendants, are listed; the rest show the
+    /// World's own. Paused (alpha 1), or after a tick that moved nothing, it is empty. Teleports,
+    /// reparenting, and new entities reset an entity's history (and its descendants'), so nothing is
+    /// shown between two poses across a discontinuity. Nothing here is written to the World.
+    PresentationPoses presentation() const;
     /// The first camera in document order (roots in order, each followed by its descendants), when
     /// the scene has one. It is the view the player shows.
     std::optional<EntityId> camera() const noexcept { return m_camera; }
@@ -63,11 +72,22 @@ private:
                 ClockSettings clock, PhysicsSettings physics, std::optional<EntityId> camera);
     void run_tick(std::vector<SimulationMessage>& messages);
     void end_contacts() noexcept;
+    void keep_history(const WorldCommands& commands, std::span<const BodyCommands* const> stepped);
+    void reset_history(const std::vector<EntityHandle>& entities);
 
     std::unique_ptr<World> m_world;
     std::unique_ptr<PhysicsWorld> m_physics; // declared after the World, so it is destroyed first
     std::vector<std::unique_ptr<SimulationSystem>> m_systems;
     std::unique_ptr<BodyCommands> m_late_bodies; // requests from the last phase 7, for the next step
+    // Phase 2's pose history: each entity's local transform before the last tick changed it.
+    struct History {
+        EntityHandle entity;
+        TransformComponent before;
+        bool reset = false; // shows its current pose
+    };
+    std::vector<History> m_previous; // in batch order
+    std::vector<uint32_t> m_history_index; // by entity slot: 1 + its index in m_previous, or 0
+    std::vector<EntityHandle> m_resets; // entities whose history the last tick resets
     size_t m_started = 0; // systems whose start was entered
     FixedClock m_clock;
     GameInput m_input;

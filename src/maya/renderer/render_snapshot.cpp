@@ -104,6 +104,9 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
     snapshot.world = world.token();
     snapshot.ambient = options.ambient;
     auto extraction = Extraction(assets, snapshot);
+    const auto world_matrix = [&](EntityHandle entity) {
+        return options.poses ? options.poses->world_matrix(world, entity) : world.world_matrix(entity);
+    };
 
     world.for_each<MeshRendererComponent>([&](EntityHandle entity, const MeshRendererComponent& renderer) {
         ++snapshot.stats.mesh_renderers;
@@ -118,7 +121,7 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
         };
         if (!world.has<TransformComponent>(entity))
             return skip(RenderIssue::missing_transform, "Entity " + id_text(id) + " skipped: a mesh renderer needs a transform");
-        const auto matrix = world.world_matrix(entity);
+        const auto matrix = world_matrix(entity);
         const auto normals = matrix ? normal_matrix(*matrix) : std::nullopt;
         if (!normals)
             return skip(RenderIssue::invalid_transform, "Entity " + id_text(id) + " skipped: its world transform is degenerate or unrepresentable");
@@ -136,7 +139,7 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
         if (light.kind != LightKind::directional)
             return extraction.report(RenderIssue::unsupported_light, id, {},
                 "Light " + id_text(id) + " ignored: only directional lights are rendered so far");
-        const auto matrix = world.world_matrix(entity);
+        const auto matrix = world_matrix(entity);
         if (!matrix)
             return extraction.report(RenderIssue::missing_transform, id, {},
                 "Light " + id_text(id) + " ignored: a directional light needs a valid transform");
@@ -163,8 +166,13 @@ std::optional<RenderView> make_render_view(const CameraComponent& camera, const 
 }
 
 std::optional<RenderView> extract_render_view(const World& world, EntityHandle camera,
-                                              uint32_t width, uint32_t height) {
+                                              uint32_t width, uint32_t height, const PresentationPoses* poses) {
     if (width == 0 || height == 0) return std::nullopt;
+    if (const auto pose = poses ? poses->find(camera) : std::nullopt) {
+        auto component = std::optional<CameraComponent>{};
+        world.with<CameraComponent>(camera, [&](const CameraComponent& value) { component = value; });
+        return component ? make_render_view(*component, *pose, width, height) : std::nullopt;
+    }
     const auto matrices = world.camera(camera, float(width) / float(height));
     if (!matrices) return std::nullopt;
     const auto pose = *world.world_matrix(camera);

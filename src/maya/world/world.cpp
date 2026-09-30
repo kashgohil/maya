@@ -47,6 +47,7 @@ void WorldCommands::truncate(size_t size) {
 
 std::vector<WorldCommands::Staged> WorldCommands::staged(size_t first) const {
     auto result = std::vector<Staged>{};
+    result.reserve(m_commands.size() > first ? m_commands.size() - first : 0);
     for (auto i = first; i < m_commands.size(); ++i) {
         const auto& command = m_commands[i];
         result.push_back({command.kind, command.target, command.type,

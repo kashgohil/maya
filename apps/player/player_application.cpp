@@ -66,9 +66,13 @@ public:
         const auto camera = world.find(*m_session->camera());
         if (!camera) throw std::runtime_error("[Player] the camera entity no longer exists");
         if (auto error = m_view->resize(target.width, target.height)) throw std::runtime_error(error.message);
-        const auto view = extract_render_view(world, *camera, target.width, target.height);
+        // Poses between the last two ticks, so motion is smooth at any display rate.
+        const auto poses = m_session->presentation();
+        const auto view = extract_render_view(world, *camera, target.width, target.height, &poses);
         if (!view) throw std::runtime_error("[Player] the camera entity has no valid view");
-        const auto snapshot = extract_render_snapshot(world, *m_assets);
+        auto options = RenderExtractOptions{};
+        options.poses = &poses;
+        const auto snapshot = extract_render_snapshot(world, *m_assets, options);
         if (snapshot.diagnostics.size() != m_reported) { // report changes, not every frame
             for (const auto& problem : snapshot.diagnostics) std::cerr << "[Player] " << problem.message << '\n';
             m_reported = snapshot.diagnostics.size();

@@ -929,10 +929,12 @@ void EditorShell::render_viewport() {
         m_log.add(DiagnosticSource::viewport, "Viewport target reallocated for a new panel size", m_frame);
     // While playing, the play World is shown, through its camera in the game view.
     const auto& world = m_play ? m_play->world() : m_scene->world();
+    // While playing, poses between the last two ticks; the player draws the same way.
+    const auto poses = m_play ? m_play->presentation() : PresentationPoses{};
     auto view = std::optional<RenderView>{};
     if (showing_game())
         if (const auto camera = world.find(*m_play->camera()))
-            view = extract_render_view(world, *camera, m_viewport.width(), m_viewport.height());
+            view = extract_render_view(world, *camera, m_viewport.width(), m_viewport.height(), &poses);
     if (!view) view = make_render_view(m_camera.camera, m_camera.pose(), m_viewport.width(), m_viewport.height());
     if (!view) {
         m_viewport_error = true;
@@ -940,7 +942,9 @@ void EditorShell::render_viewport() {
         return;
     }
     auto clock = Stopwatch{};
-    auto snapshot = extract_render_snapshot(world, *m_assets);
+    auto options = RenderExtractOptions{};
+    options.poses = &poses;
+    auto snapshot = extract_render_snapshot(world, *m_assets, options);
     m_performance.extract.add(clock.milliseconds());
     m_extraction = snapshot.stats;
     m_frame_problems = snapshot.diagnostics;

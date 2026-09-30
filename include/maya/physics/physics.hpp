@@ -185,6 +185,13 @@ public:
     /// Names the system making the following requests, for errors reported after the step.
     void set_source(std::string_view name) { m_source = name; }
     size_t size() const noexcept { return m_requests.size(); }
+    /// The entities these requests teleport, in request order: a teleport resets their pose history.
+    std::vector<EntityHandle> teleports() const {
+        auto entities = std::vector<EntityHandle>{};
+        for (const auto& request : m_requests)
+            if (request.kind == Kind::teleport) entities.push_back(std::get<EntityHandle>(request.entity));
+        return entities;
+    }
     /// Drops the requests made after the first `size`, as if they were never made. Script hosts use
     /// it to discard a failed call's requests.
     void truncate(size_t size) {

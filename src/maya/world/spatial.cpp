@@ -21,6 +21,32 @@ bool representable(double v) noexcept {
 }
 } // namespace
 
+TransformComponent interpolate_transform(const TransformComponent& a, const TransformComponent& b, float t) noexcept {
+    const auto unit = [](const math::Quat& q) {
+        const auto length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+        return length > 0.0f ? math::Quat(q.x / length, q.y / length, q.z / length, q.w / length) : math::Quat{};
+    };
+    const auto from = unit(a.rotation);
+    auto to = unit(b.rotation);
+    auto cosine = from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w;
+    if (cosine < 0.0f) { // q and -q are the same rotation: take the shorter way round
+        to = math::Quat(-to.x, -to.y, -to.z, -to.w);
+        cosine = -cosine;
+    }
+    auto wa = 1.0f - t, wb = t;
+    if (cosine < 0.9995f) { // slerp; nearly equal rotations blend linearly, then normalize
+        const auto angle = std::acos(std::min(cosine, 1.0f));
+        const auto sine = std::sin(angle);
+        wa = std::sin((1.0f - t) * angle) / sine;
+        wb = std::sin(t * angle) / sine;
+    }
+    auto result = TransformComponent{};
+    result.translation = a.translation + (b.translation - a.translation) * t;
+    result.scale = a.scale + (b.scale - a.scale) * t;
+    result.rotation = unit(math::Quat(from.x * wa + to.x * wb, from.y * wa + to.y * wb, from.z * wa + to.z * wb, from.w * wa + to.w * wb));
+    return result;
+}
+
 math::Mat4 local_matrix(const TransformComponent& v) noexcept {
     // Scale the basis directly to avoid intermediate products for TRS.
     auto m = v.rotation.to_mat4();
