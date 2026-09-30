@@ -412,3 +412,33 @@ TEST_CASE("Residency counts resident versions, outside leases, and mesh bytes", 
     CHECK(evicted.meshes == 0); CHECK(evicted.materials == 0); CHECK(evicted.mesh_gpu_bytes == 0);
     CHECK(evicted.unloaded == 2); CHECK(evicted.failed == 1);
 }
+
+TEST_CASE("Script assets are cataloged and read as source text", "[assets][scripting]") {
+    Project project; CountingDevice device;
+    const auto spin = AssetRef<ScriptAsset>{{0x5c, 1}};
+    project.write("spin.luau", "return {}\n");
+    AssetRegistry registry(project.root, std::make_unique<FileAssetProvider>(device));
+    REQUIRE_FALSE(registry.register_asset(spin, "spin.luau"));
+    const auto loaded = registry.acquire(spin);
+    REQUIRE(loaded);
+    CHECK(loaded.lease.value().source == "return {}\n");
+    CHECK(registry.residency().scripts == 1);
+    CHECK(registry.acquire(AssetRef<MeshAsset>{spin.id}).diagnostic.code == AssetError::wrong_type);
+    CHECK(device.counts->application.empty()); // scripts never touch the device
+    // Catalogs name the kind "script".
+    auto catalog = std::stringstream{};
+    write_asset_catalog(catalog, registry.records());
+    CHECK(catalog.str() == "maya-assets 1\nscript 5c 1 \"spin.luau\"\n");
+    const auto parsed = read_asset_catalog(catalog);
+    REQUIRE(parsed);
+    CHECK(parsed.records[0].kind == AssetKind::script);
+    CHECK(std::string(asset_kind_name(AssetKind::script)) == "script");
+    // A missing file is a diagnostic, and reload picks up an edit.
+    project.write("spin.luau", "return { edited = true }\n");
+    const auto reloaded = registry.reload(spin);
+    REQUIRE(reloaded);
+    CHECK(reloaded.lease.value().source.find("edited") != std::string::npos);
+    CHECK(loaded.lease.value().source == "return {}\n"); // the old lease keeps its version
+    REQUIRE_FALSE(registry.register_asset(AssetRef<ScriptAsset>{{0x5c, 2}}, "gone.luau"));
+    CHECK(registry.acquire(AssetRef<ScriptAsset>{{0x5c, 2}}).diagnostic.code == AssetError::missing_file);
+}

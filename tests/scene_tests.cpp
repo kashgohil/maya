@@ -649,3 +649,37 @@ TEST_CASE("The sample project's scenes load, including the physics scene", "[sce
         }
     }
 }
+
+TEST_CASE("Script components round-trip with their typed values", "[scene][scripting]") {
+    Project project;
+    const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    auto component = ScriptComponent{AssetRef<ScriptAsset>{{0x5c, 1}},
+                                     {{"speed", ScriptValueType::number, 2.5f}, {"jumps", ScriptValueType::integer, int32_t{-3}},
+                                      {"on", ScriptValueType::boolean, true}, {"greeting", ScriptValueType::string, std::string("hi \"there\"")},
+                                      {"push", ScriptValueType::vector, math::Vec3{1.0f, 0.5f, -2.0f}},
+                                      {"tint", ScriptValueType::color, math::Vec3{1.0f, 0.0f, 0.25f}},
+                                      {"target", ScriptValueType::entity, EntityId{0x70, 2}}, {"none", ScriptValueType::entity, EntityId{}}}};
+    auto document = SceneDocument{};
+    document.entities = {SceneEntity{EntityId{1, 1}, {}, {component}}};
+    const auto text = encode(document, any);
+    CHECK(text.find("    script 5c 1\n    values 8 speed number 2.5 jumps integer -3 on boolean true greeting string \"hi \\\"there\\\"\" "
+                    "push vector 1 0.5 -2 tint color 1 0 0.25 target entity 70 2 none entity none\n") != std::string::npos);
+    auto loaded = read_scene(std::string_view(text), any);
+    REQUIRE(loaded);
+    CHECK(std::get<ScriptComponent>(loaded.document.entities[0].components[0]).values == component.values);
+    CHECK(encode(loaded.document, any) == text);
+    const auto bad = [&](std::string_view from, std::string_view to) {
+        INFO(to);
+        const auto result = read_scene(std::string_view(replace(text, from, to)), any);
+        REQUIRE_FALSE(result);
+        CHECK(result.diagnostics.front().message.find("a count, then for each value") != std::string::npos);
+    };
+    bad("values 8", "values 9"); // fewer values than counted
+    bad("values 8", "values 7"); // more
+    bad("jumps integer -3", "jumps integer 2.5");
+    bad("on boolean true", "on boolean yes");
+    bad("speed number 2.5", "speed table 2.5");
+    bad("greeting string \"hi \\\"there\\\"\"", "greeting string hi");
+    const auto empty = read_scene(std::string_view(replace(text, text.substr(text.find("values 8"), text.find('\n', text.find("values 8")) - text.find("values 8")), "values 0")), any);
+    CHECK(empty);
+}

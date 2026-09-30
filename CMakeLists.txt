@@ -348,6 +348,12 @@ if(BUILD_TESTING)
     add_test(NAME maya_physics COMMAND maya_physics_tests)
     set_tests_properties(maya_physics PROPERTIES LABELS "cpu;physics" TIMEOUT 120)
 
+    add_executable(maya_scripting_tests tests/scripting_tests.cpp)
+    target_link_libraries(maya_scripting_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
+    maya_target_options(maya_scripting_tests)
+    add_test(NAME maya_scripting COMMAND maya_scripting_tests)
+    set_tests_properties(maya_scripting PROPERTIES LABELS "cpu;scripting" TIMEOUT 120)
+
     # Only MayaPhysics includes Jolt and only the scripting host includes Luau; public headers carry
     # neither library's types (docs/architecture/runtime-world-contracts.md#physics-boundary).
     add_test(NAME maya_library_headers COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
@@ -391,7 +397,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/acceptance_tests.cpp)
+            tests/editor_scripting_tests.cpp tests/acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.

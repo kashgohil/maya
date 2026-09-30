@@ -402,3 +402,24 @@ TEST_CASE("Packed storage stays consistent across growth removal and slot reuse"
     }
 }
 } // namespace
+
+TEST_CASE("Command batches can drop their newest commands", "[world]") {
+    World world;
+    auto commands = world.commands();
+    const auto kept = commands.create(EntityId{1, 1});
+    commands.add(kept, NameComponent{"kept"});
+    const auto size = commands.size();
+    const auto dropped = commands.create(EntityId{1, 2});
+    commands.add(dropped, NameComponent{"dropped"});
+    commands.truncate(size);
+    CHECK(commands.size() == size);
+    commands.truncate(size + 10); // nothing beyond the end to drop
+    const auto next = commands.create(EntityId{1, 3}); // the dropped create's index is reused
+    CHECK(next.index == dropped.index);
+    const auto result = world.commit(commands);
+    REQUIRE(result);
+    CHECK(world.size() == 2);
+    CHECK(world.find(EntityId{1, 1}));
+    CHECK_FALSE(world.find(EntityId{1, 2}));
+    CHECK(world.find(EntityId{1, 3}));
+}

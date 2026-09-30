@@ -388,3 +388,36 @@ TEST_CASE("Physics components have stable schemas and validate their values", "[
     REQUIRE(edit(settings, 1, math::Vec3{0, -1.62f, 0}));
     REQUIRE(edit(settings, 1, math::Vec3{0, std::nanf(""), 0}).error == PropertyError::invalid_value);
 }
+
+TEST_CASE("Script components hold a script and named values for its properties", "[properties][scripting]") {
+    REQUIRE(static_cast<uint32_t>(ComponentId::script) == 11);
+    REQUIRE(component_schema("maya.script")->id == ComponentId::script);
+    REQUIRE(property_schema(ComponentId::script, "script")->type == PropertyType::script_ref);
+    REQUIRE(property_schema(ComponentId::script, "script")->encoding == PropertyEncoding::persistent_asset_id);
+    REQUIRE(property_schema(ComponentId::script, "values")->type == PropertyType::script_values);
+    CHECK(std::string(script_value_type_name(ScriptValueType::color)) == "color");
+    CHECK(script_value_type("entity") == ScriptValueType::entity);
+    CHECK_FALSE(script_value_type("table"));
+
+    auto value = ComponentValue{ScriptComponent{}};
+    const auto good = std::vector<ScriptValue>{{"speed", ScriptValueType::number, 3.0f}, {"name", ScriptValueType::string, std::string("x")},
+                                               {"_target2", ScriptValueType::entity, EntityId{}}, {"tint", ScriptValueType::color, math::Vec3(1.0f)}};
+    REQUIRE(edit(value, 2, good));
+    CHECK(std::get<ScriptComponent>(value).values == good);
+    const auto refused = [&](std::vector<ScriptValue> values) { return edit(value, 2, std::move(values)).error; };
+    CHECK(refused({{"two words", ScriptValueType::number, 1.0f}}) == PropertyError::invalid_value);
+    CHECK(refused({{"9lives", ScriptValueType::number, 1.0f}}) == PropertyError::invalid_value);
+    CHECK(refused({{"a", ScriptValueType::number, 1.0f}, {"a", ScriptValueType::number, 2.0f}}) == PropertyError::invalid_value);
+    CHECK(refused({{"a", ScriptValueType::number, std::string("x")}}) == PropertyError::invalid_value);
+    CHECK(refused({{"a", ScriptValueType::number, std::numeric_limits<float>::infinity()}}) == PropertyError::invalid_value);
+    CHECK(refused({{"a", ScriptValueType::vector, 1.0f}}) == PropertyError::invalid_value);
+    CHECK(script_values_problem({{"a", ScriptValueType::number, 1.0f}, {"a", ScriptValueType::number, 2.0f}}) ==
+          "Script property 'a' has more than one value");
+    // The script reference is checked against the catalog like any asset.
+    const auto kinds = PropertyValidationContext{[](AssetId id, ReferenceKind kind) {
+        return id.low == 1 && kind == ReferenceKind::script ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+    }};
+    CHECK(edit(value, 1, AssetRef<ScriptAsset>{{9, 1}}, kinds));
+    CHECK(edit(value, 1, AssetRef<ScriptAsset>{{9, 2}}, kinds).error == PropertyError::wrong_reference_type);
+    CHECK(edit(value, 1, AssetRef<MeshAsset>{{9, 1}}, kinds).error == PropertyError::type_mismatch);
+}
