@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace maya::editor::detail {
 
@@ -73,6 +74,42 @@ inline ImVec2 glyph_origin(const char* glyph, ImVec2 center) {
     }
     const auto scale = ImGui::GetFontSize() / font->FontSize;
     return {std::round(center.x - (found->X0 + found->X1) * 0.5f * scale), std::round(center.y - (found->Y0 + found->Y1) * 0.5f * scale)};
+}
+
+/// One item of a hint line: optional text before an icon (such as "Alt"), the icon, and its label.
+struct HintItem {
+    std::string prefix;
+    const char* icon = nullptr;
+    std::string label;
+};
+/// Lays out hint items on one line from `origin` (the top of the text line), each icon centred on
+/// the text's capital height rather than sitting on its baseline. Draws them when `draw` is given;
+/// returns the line's width either way.
+inline float hint_line(ImDrawList* draw, ImVec2 origin, const std::vector<HintItem>& items, ImU32 color) {
+    constexpr float icon_gap = 6.0f, item_gap = 18.0f;
+    auto* font = ImGui::GetFont();
+    const auto scale = ImGui::GetFontSize() / font->FontSize;
+    const auto* capital = font->FindGlyph('H');
+    const auto middle = origin.y + (capital ? (capital->Y0 + capital->Y1) * 0.5f * scale : ImGui::GetTextLineHeight() * 0.5f);
+    auto x = origin.x;
+    for (size_t i = 0; i < items.size(); ++i) {
+        const auto& item = items[i];
+        if (i > 0) x += item_gap;
+        if (!item.prefix.empty()) {
+            if (draw) draw->AddText({x, origin.y}, color, item.prefix.c_str());
+            x += ImGui::CalcTextSize(item.prefix.c_str()).x + icon_gap;
+        }
+        if (item.icon) {
+            const auto width = ImGui::CalcTextSize(item.icon).x;
+            if (draw) draw->AddText(glyph_origin(item.icon, {x + width * 0.5f, middle}), color, item.icon);
+            x += width + (item.label.empty() ? 0.0f : icon_gap);
+        }
+        if (!item.label.empty()) {
+            if (draw) draw->AddText({x, origin.y}, color, item.label.c_str());
+            x += ImGui::CalcTextSize(item.label.c_str()).x;
+        }
+    }
+    return x - origin.x;
 }
 
 /// Applies the theme's colors and line weights to ImGuizmo (viewport_tools.cpp).

@@ -5,7 +5,7 @@ namespace maya::editor {
 
 std::optional<bool> InputRouter::cancel() {
     auto output = RoutedInput{};
-    if (m_navigating) end_navigation(output);
+    if (navigating()) end_navigation(output);
     if (m_game) end_game(output);
     return output.capture;
 }
@@ -18,7 +18,7 @@ void InputRouter::end_game(RoutedInput& output) {
 }
 
 void InputRouter::end_navigation(RoutedInput& output) {
-    m_navigating = false;
+    m_mode = NavigationMode::none;
     m_forward = m_back = m_left = m_right = m_up = m_down = m_fast = false;
     output.capture = false;
     // The UI saw no pointer motion while the cursor was captured; give it the current position.
@@ -34,6 +34,7 @@ NavigationInput InputRouter::held() const {
     input.up = m_up;
     input.down = m_down;
     input.fast = m_fast;
+    input.mode = m_mode;
     return input;
 }
 
@@ -58,28 +59,41 @@ RoutedInput InputRouter::route(const std::vector<InputEvent>& events, const Rout
         std::visit([&](const auto& e) {
             using T = std::decay_t<decltype(e)>;
             if constexpr (std::is_same_v<T, MouseMoveEvent>) {
-                if (m_navigating) look += math::Vec2{e.x - m_pointer.x, e.y - m_pointer.y};
+                if (navigating()) look += math::Vec2{e.x - m_pointer.x, e.y - m_pointer.y};
                 else output.ui.push_back(e);
                 m_pointer = {e.x, e.y};
             } else if constexpr (std::is_same_v<T, MouseButtonEvent>) {
-                if (m_navigating) {
-                    if (e.button == MouseButton::right && !e.down) end_navigation(output);
+                const auto alt = has_modifier(e.modifiers, KeyModifiers::alt);
+                const auto over_scene = e.down && context.viewport_hovered && !context.game_view;
+                auto mode = NavigationMode::none;
+                if (over_scene && e.button == MouseButton::right) mode = alt ? NavigationMode::zoom : NavigationMode::fly;
+                if (over_scene && e.button == MouseButton::left && alt) mode = NavigationMode::orbit;
+                if (over_scene && e.button == MouseButton::middle) mode = NavigationMode::pan;
+                if (navigating()) {
+                    if (e.button == m_button && !e.down) end_navigation(output);
                 } else if (e.button == MouseButton::left && e.down && context.viewport_hovered && context.game_view) {
                     m_game = true; // the click itself only hands over the input
                     output.capture = true;
                     output.game_started = true;
-                } else if (e.button == MouseButton::right && e.down && context.viewport_hovered && !context.game_view) {
-                    m_navigating = true;
+                } else if (mode != NavigationMode::none) {
+                    m_mode = mode;
+                    m_button = e.button;
                     output.capture = true;
                     output.navigation_started = true;
+                    output.navigation_point = m_pointer;
                 } else {
                     output.ui.push_back(e);
                 }
             } else if constexpr (std::is_same_v<T, KeyEvent>) {
-                if (!m_navigating) {
+                if (!navigating()) {
                     output.ui.push_back(e);
                     return;
                 }
+                if (e.key == KeyCode::Escape) {
+                    if (e.down) end_navigation(output);
+                    return;
+                }
+                if (m_mode != NavigationMode::fly) return; // only flying moves with keys
                 switch (e.key) {
                 case KeyCode::W: m_forward = e.down; break;
                 case KeyCode::S: m_back = e.down; break;
@@ -88,21 +102,21 @@ RoutedInput InputRouter::route(const std::vector<InputEvent>& events, const Rout
                 case KeyCode::E: m_up = e.down; break;
                 case KeyCode::Q: m_down = e.down; break;
                 case KeyCode::LeftShift: case KeyCode::RightShift: m_fast = e.down; break;
-                case KeyCode::Escape: if (e.down) end_navigation(output); break;
                 default: break; // other keys are neither UI shortcuts nor text while navigating
                 }
             } else if constexpr (std::is_same_v<T, TextEvent>) {
-                if (!m_navigating) output.ui.push_back(e);
+                if (!navigating()) output.ui.push_back(e);
             } else if constexpr (std::is_same_v<T, ScrollEvent>) {
-                if (m_navigating || (context.viewport_hovered && !context.game_view)) dolly += e.y;
+                if (navigating() || (context.viewport_hovered && !context.game_view)) dolly += e.y;
                 else output.ui.push_back(e);
             } else if constexpr (std::is_same_v<T, FocusEvent>) {
-                if (!e.focused && m_navigating) end_navigation(output);
+                if (!e.focused && navigating()) end_navigation(output);
                 output.ui.push_back(e);
             }
         }, event);
     }
-    output.navigation = m_navigating ? held() : NavigationInput{};
+    output.navigation = navigating() ? held() : NavigationInput{};
+    if (!navigating()) output.navigation.mode = NavigationMode::none;
     output.navigation.look = look;
     output.navigation.dolly = dolly;
     return output;

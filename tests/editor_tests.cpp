@@ -186,6 +186,135 @@ TEST_CASE("The editor camera flies relative to its view and keeps a rigid pose",
     CHECK(std::isfinite(camera.position.x));
 }
 
+namespace {
+/// Where a point lies in the camera's view: its direction from the camera, in camera axes.
+math::Vec3 seen(const EditorCamera& camera, const math::Vec3& point) {
+    const auto pose = camera.pose();
+    const auto axis = [&](int c) { return math::Vec3(pose.at(0, c), pose.at(1, c), pose.at(2, c)); };
+    const auto d = (point - camera.position).normalized();
+    return {math::Vec3::dot(d, axis(0)), math::Vec3::dot(d, axis(1)), math::Vec3::dot(d, axis(2))};
+}
+} // namespace
+
+TEST_CASE("The editor camera orbits, pans, and zooms around its pivot", "[editor]") {
+    auto camera = EditorCamera::looking_at({0, 2, 6}, {0, 0, 0});
+    camera.pivot = {1.0f, 0.0f, 0.0f}; // off the view's centre: orbiting must not snap to it
+    const auto distance = (camera.position - camera.pivot).length();
+    const auto on_screen = seen(camera, camera.pivot);
+    auto orbit = NavigationInput{};
+    orbit.mode = NavigationMode::orbit;
+    orbit.look = {120.0f, -40.0f};
+    camera.update(orbit, 0.0f);
+    CHECK((camera.position - camera.pivot).length() == Approx(distance).epsilon(1e-4));
+    CHECK(seen(camera, camera.pivot).x == Approx(on_screen.x).margin(1e-4));
+    CHECK(seen(camera, camera.pivot).y == Approx(on_screen.y).margin(1e-4));
+    CHECK(camera.yaw != Approx(0.0f).margin(1e-3)); // it turned
+    // Orbiting over the top stops at the pitch limit, still at the same distance.
+    orbit.look = {0.0f, 1e5f};
+    camera.update(orbit, 0.0f);
+    CHECK(camera.pitch > -math::PI / 2.0f);
+    CHECK((camera.position - camera.pivot).length() == Approx(distance).epsilon(1e-4));
+
+    // Pan: the view keeps its direction and the pivot moves with the camera.
+    const auto yaw = camera.yaw, pitch = camera.pitch;
+    const auto before = camera.position, pivot = camera.pivot;
+    camera.pan_scale = 0.01f;
+    auto pan = NavigationInput{};
+    pan.mode = NavigationMode::pan;
+    pan.look = {100.0f, 0.0f}; // drag right: the camera moves left, one metre
+    camera.update(pan, 0.0f);
+    CHECK(camera.yaw == yaw);
+    CHECK(camera.pitch == pitch);
+    CHECK((camera.position - before).length() == Approx(1.0f).epsilon(1e-4));
+    CHECK((camera.pivot - pivot).length() == Approx(1.0f).epsilon(1e-4));
+    CHECK(math::Vec3::dot(camera.position - before, math::Vec3(std::cos(yaw), 0.0f, -std::sin(yaw))) == Approx(-1.0f).epsilon(1e-4));
+
+    // Zoom: dragging right moves toward the pivot, and stops just short of it.
+    auto zoom = NavigationInput{};
+    zoom.mode = NavigationMode::zoom;
+    zoom.look = {100.0f, 0.0f};
+    const auto far = (camera.position - camera.pivot).length();
+    camera.update(zoom, 0.0f);
+    CHECK((camera.position - camera.pivot).length() < far);
+    zoom.look = {1e5f, 0.0f};
+    camera.update(zoom, 0.0f);
+    CHECK((camera.position - camera.pivot).length() == Approx(0.05f).epsilon(1e-3));
+    CHECK(make_render_view(camera.camera, camera.pose(), 16, 9));
+}
+
+TEST_CASE("Alt and left drag orbits, the middle button pans, and Alt and right drag zooms", "[editor]") {
+    const auto over_viewport = RouterContext{true};
+    const auto press = [](MouseButton button, bool down, KeyModifiers modifiers = KeyModifiers::none) {
+        return MouseButtonEvent{button, down, modifiers};
+    };
+    const struct {
+        MouseButton button;
+        KeyModifiers modifiers;
+        NavigationMode mode;
+    } cases[] = {{MouseButton::left, KeyModifiers::alt, NavigationMode::orbit}, {MouseButton::middle, KeyModifiers::none, NavigationMode::pan},
+                 {MouseButton::right, KeyModifiers::alt, NavigationMode::zoom}, {MouseButton::right, KeyModifiers::none, NavigationMode::fly}};
+    for (const auto& [button, modifiers, mode] : cases) {
+        INFO(int(mode));
+        InputRouter router;
+        auto routed = router.route({MouseMoveEvent{40, 30}, press(button, true, modifiers), MouseMoveEvent{50, 25}}, over_viewport);
+        CHECK(router.navigation() == mode);
+        CHECK(routed.navigation.mode == mode);
+        CHECK(routed.capture == true);
+        REQUIRE(routed.navigation_point);
+        CHECK(routed.navigation_point->x == 40.0f); // where the drag started, for the pivot
+        CHECK(routed.navigation.look.x == 10.0f);
+        CHECK(routed.ui.size() == 1); // only the move before the press; the press is not a click
+        // WASD moves only while flying, and never reaches the UI while navigating.
+        routed = router.route({KeyEvent{KeyCode::W, true, KeyModifiers::none}}, over_viewport);
+        CHECK(routed.navigation.forward == (mode == NavigationMode::fly));
+        CHECK(routed.ui.empty());
+        // Another button's release does not end it; its own does.
+        routed = router.route({press(button == MouseButton::middle ? MouseButton::left : MouseButton::middle, false)}, over_viewport);
+        CHECK(router.navigating());
+        routed = router.route({press(button, false)}, over_viewport);
+        CHECK_FALSE(router.navigating());
+        CHECK(routed.capture == false);
+        CHECK(routed.navigation.mode == NavigationMode::none);
+    }
+    // A plain left click still selects, and none of these start outside the viewport.
+    InputRouter router;
+    auto routed = router.route({press(MouseButton::left, true)}, over_viewport);
+    CHECK_FALSE(router.navigating());
+    CHECK(routed.ui.size() == 1);
+    routed = router.route({press(MouseButton::left, false), press(MouseButton::middle, true)}, RouterContext{false});
+    CHECK_FALSE(router.navigating());
+}
+
+TEST_CASE("Orbiting in the viewport turns around the selection without changing it", "[editor]") {
+    Harness harness;
+    harness.frames(3);
+    auto& scene = *harness.shell.scene();
+    const auto cube = find_named(scene, "Red cube");
+    scene.select(cube);
+    harness.frames(2);
+    const auto pivot = harness.shell.navigation_pivot(harness.viewport_center());
+    const auto distance = (harness.shell.camera().position - pivot).length();
+    const auto start = harness.viewport_center();
+    harness.frame({MouseMoveEvent{start.x, start.y}});
+    harness.frame({MouseButtonEvent{MouseButton::left, true, KeyModifiers::alt}});
+    for (int i = 1; i <= 10; ++i) harness.frame({MouseMoveEvent{start.x + i * 12.0f, start.y + i * 3.0f}});
+    CHECK(harness.shell.camera().pivot.x == Approx(pivot.x));
+    CHECK((harness.shell.camera().position - pivot).length() == Approx(distance).epsilon(1e-3));
+    harness.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::alt}});
+    CHECK(scene.selection() == std::vector<EntityId>{cube}); // the drag did not pick
+    // With nothing selected, a middle drag pans: the view keeps its direction.
+    scene.clear_selection();
+    harness.frames(2);
+    const auto yaw = harness.shell.camera().yaw;
+    const auto before = harness.shell.camera().position;
+    harness.frame({MouseMoveEvent{start.x, start.y}});
+    harness.frame({MouseButtonEvent{MouseButton::middle, true, KeyModifiers::none}});
+    for (int i = 1; i <= 5; ++i) harness.frame({MouseMoveEvent{start.x + i * 10.0f, start.y}});
+    harness.frame({MouseButtonEvent{MouseButton::middle, false, KeyModifiers::none}});
+    CHECK(harness.shell.camera().yaw == yaw);
+    CHECK((harness.shell.camera().position - before).length() > 0.1f);
+}
+
 TEST_CASE("The dock layout leaves room for panels and the viewport matches its panel at Retina scale", "[editor]") {
     Harness harness;
     harness.frames(3);

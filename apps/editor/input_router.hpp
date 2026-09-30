@@ -19,15 +19,20 @@ struct RoutedInput {
     std::vector<InputEvent> game; // events for the playing scene, in order
     std::optional<bool> capture; // cursor capture to request from the host, when it changes
     bool navigation_started = false; // the UI should drop keyboard focus (e.g. an active text field)
+    std::optional<math::Vec2> navigation_point; // where the pointer was when navigation started
     bool game_started = false; // the game took the input; the UI should drop keyboard focus too
     bool game_ended = false; // the game gave the input back; release what it held
 };
 
 /// Sends each window event to exactly one owner. Normally everything goes to the UI, so typing
-/// into a field never reaches the camera. Holding the right mouse button over the viewport starts
-/// navigation: the cursor is captured and movement keys, pointer motion, and scrolling drive the
-/// camera until the button is released, Escape is pressed, or the window loses focus. Scrolling
-/// over the viewport dollies the camera without starting navigation.
+/// into a field never reaches the camera. A drag that starts over the viewport navigates:
+/// - right button: fly (the pointer turns the camera; WASD, Q, and E move it; Shift is faster);
+/// - Alt and left button: orbit around the pivot;
+/// - middle button: pan;
+/// - Alt and right button: zoom toward the pivot.
+/// The cursor is captured and pointer motion and scrolling drive the camera until that button is
+/// released, Escape is pressed, or the window loses focus. Scrolling over the viewport dollies the
+/// camera without starting navigation.
 ///
 /// While the scene plays in the game view, a left click on the viewport gives the game the input:
 /// the cursor is captured and every event goes to the game until Escape is pressed or the window
@@ -35,7 +40,8 @@ struct RoutedInput {
 class InputRouter {
 public:
     RoutedInput route(const std::vector<InputEvent>& events, const RouterContext& context);
-    bool navigating() const noexcept { return m_navigating; }
+    bool navigating() const noexcept { return m_mode != NavigationMode::none; }
+    NavigationMode navigation() const noexcept { return m_mode; }
     bool game_has_input() const noexcept { return m_game; }
     /// Ends navigation or the game's input (e.g. when the viewport disappears or play stops);
     /// returns the release request.
@@ -46,7 +52,8 @@ private:
     void end_game(RoutedInput& output);
     NavigationInput held() const;
 
-    bool m_navigating = false;
+    NavigationMode m_mode = NavigationMode::none;
+    MouseButton m_button = MouseButton::right; // the button whose release ends navigation
     bool m_game = false;
     bool m_forward = false, m_back = false, m_left = false, m_right = false, m_up = false, m_down = false;
     bool m_fast = false;

@@ -79,6 +79,45 @@ bool EditorShell::apply_world_matrix(EntityId id, const math::Mat4& world) {
     return true;
 }
 
+math::Vec3 EditorShell::navigation_pivot(ImVec2 point) const {
+    // While playing, the Scene view shows the play World; the selection's IDs name entities in both.
+    const auto* world = m_play ? &m_play->world() : m_scene ? &m_scene->world() : nullptr;
+    if (world && m_scene && !m_scene->selection().empty()) {
+        auto sum = math::Vec3(0.0f);
+        auto count = 0;
+        for (const auto id : m_scene->selection()) {
+            const auto handle = world->find(id);
+            const auto matrix = handle ? world->world_matrix(*handle) : std::nullopt;
+            if (!matrix) continue;
+            auto center = transform_point(*matrix, {0.0f, 0.0f, 0.0f});
+            if (m_snapshot && !m_play)
+                for (const auto& instance : m_snapshot->instances)
+                    if (instance.entity == id)
+                        if (const auto& geometry = m_snapshot->meshes[instance.mesh].value().geometry(); !geometry.empty())
+                            center = (transform_point(*matrix, geometry.min) + transform_point(*matrix, geometry.max)) * 0.5f;
+            sum += center;
+            ++count;
+        }
+        if (count > 0) return sum * (1.0f / float(count));
+    }
+    if (const auto ray = viewport_ray(point)) {
+        if (m_snapshot && !m_play)
+            if (const auto hits = pick_meshes(*m_snapshot, *ray); !hits.empty()) return ray->origin + ray->direction * hits.front().distance;
+        if (ray->direction.y < -1e-3f) // the ground plane, y = 0, within reach
+            if (const auto t = -ray->origin.y / ray->direction.y; t > 0.0f && t < 500.0f) return ray->origin + ray->direction * t;
+    }
+    return m_camera.position + m_camera.forward() * m_pivot_distance;
+}
+
+void EditorShell::start_navigation(NavigationMode mode, ImVec2 point) {
+    if (mode == NavigationMode::fly || mode == NavigationMode::none) return;
+    m_camera.pivot = navigation_pivot(point);
+    // A pan moves what is at the pivot's depth exactly with the pointer.
+    const auto depth = std::max(math::Vec3::dot(m_camera.pivot - m_camera.position, m_camera.forward()), 0.05f);
+    const auto height = m_layout.viewport_max.y - m_layout.viewport_min.y;
+    m_camera.pan_scale = height > 0.0f ? 2.0f * depth * std::tan(m_camera.camera.vertical_fov * 0.5f) / height : 0.01f;
+}
+
 void EditorShell::frame_selection() {
     const auto primary = m_scene ? m_scene->primary() : std::nullopt;
     if (!primary) return;
@@ -99,6 +138,7 @@ void EditorShell::frame_selection() {
             }
     const auto distance = radius / std::sin(m_camera.camera.vertical_fov * 0.5f) * 1.1f;
     m_camera.position = center - m_camera.forward() * distance;
+    m_pivot_distance = distance;
 }
 
 void EditorShell::pick_at(ImVec2 point, const RenderView& view, ImVec2 min, ImVec2 max) {

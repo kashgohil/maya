@@ -64,16 +64,27 @@ The router gives each event one owner. Its context is whether the viewport image
 
 | State | Event | Goes to |
 | --- | --- | --- |
-| Not navigating | Right button pressed over the viewport | Starts navigation: the cursor is captured, and any active text field loses focus. |
+| Not navigating | A navigation button pressed over the viewport (see below) | Starts navigation: the cursor is captured, and any active text field loses focus. The press is not a click. |
 | Not navigating | Scroll over the viewport | Dollies the camera along its view. |
 | Not navigating | Everything else: keys, text, clicks, motion, scrolling elsewhere, focus | The UI. |
-| Navigating | W/A/S/D, Q/E (down/up), Shift (4× speed) | Held camera movement. |
-| Navigating | Pointer motion | Camera look. |
+| Flying | W/A/S/D, Q/E (down/up), Shift (4× speed) | Held camera movement. |
+| Navigating | Pointer motion | The camera, as the navigation's mode says. |
 | Navigating | Scroll | Dolly. |
-| Navigating | Right button released, Escape, or loss of window focus | Ends navigation: the cursor is released, held keys are cleared, and the UI gets the current pointer position. |
-| Navigating | Other keys and text | Dropped. They are neither shortcuts nor text while flying. |
+| Navigating | The starting button released, Escape, or loss of window focus | Ends navigation: the cursor is released, held keys are cleared, and the UI gets the current pointer position. |
+| Navigating | Other keys and text (and W/A/S/D while not flying) | Dropped. They are neither shortcuts nor text while navigating. |
 | Playing, Game view | Left click on the viewport | Gives the game the input ([play](play.md#who-gets-the-input)); the right button and scrolling do nothing there. |
 | The game has the input | Everything, including shortcuts and text | The play session, until Escape or loss of focus takes it back. |
+
+The navigation buttons follow Unity and Unreal:
+
+| Drag over the viewport | Mode | The pointer |
+| --- | --- | --- |
+| Right button | Fly | Turns the camera in place; W/A/S/D, Q/E, and Shift move it. |
+| Alt + left button | Orbit | Turns the camera around the pivot, which stays where it is on screen. |
+| Middle button | Pan | Slides the camera and the pivot sideways; what is at the pivot's depth follows the pointer. |
+| Alt + right button | Zoom | Drag right or up to move toward the pivot, left or down to move away; it stops 5 cm short. |
+
+The pivot is chosen when orbit, pan, or zoom starts: the centre of the selection; else the surface under the pointer, or the ground (y = 0) within 500 m; else a point ahead at the distance of the last pivot (or of the last framed selection). A plain left click still selects. The status bar shows Flying, Orbiting, Panning, or Zooming, and the viewport's hint lists the buttons.
 
 Keyboard input therefore reaches the camera only while the right button is held over the viewport. Typing into a field, even with the pointer over the viewport, never moves the camera. Keys held when navigation starts do not count until pressed again, and keys still held when it ends stop moving the camera. The viewport disappearing (minimized, hidden, or zero-sized) also ends navigation. Escape does not quit the editor (`DesktopOptions::escape_closes = false`); close the window instead.
 

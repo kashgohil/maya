@@ -191,6 +191,9 @@ public:
     bool viewport_hovered() const noexcept { return m_viewport_hovered; }
     const EditorCamera& camera() const noexcept { return m_camera; }
     EditorCamera& camera() noexcept { return m_camera; }
+    /// What orbit and zoom turn around, chosen when they start at a viewport point: the selection's
+    /// centre; else the surface or ground under the point; else a point ahead at the last distance.
+    math::Vec3 navigation_pivot(ImVec2 point) const;
     PixelSize viewport_request() const noexcept { return m_viewport_request; }
     const RenderTarget& viewport() const noexcept { return m_viewport; }
     const EditorLayout& layout() const noexcept { return m_layout; }
@@ -259,6 +262,8 @@ private:
     void draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2 max);
     void pick_at(ImVec2 point, const RenderView& view, ImVec2 min, ImVec2 max);
     void frame_selection();
+    /// Sets the camera's pivot and pan scale as orbit, pan, or zoom starts at a viewport point.
+    void start_navigation(NavigationMode mode, ImVec2 point);
     void draw_hierarchy_row(EntityId id);
     void draw_create_menu(std::optional<EntityId> parent);
     void handle_shortcuts();
@@ -383,6 +388,7 @@ private:
     std::optional<AssetId> m_selected_asset;
     char m_asset_filter[128] = {};
     EditorCamera m_camera;
+    float m_pivot_distance = 5.0f; // metres from the camera to the last pivot
     InputRouter m_router;
     std::optional<bool> m_capture_request;
     EditorLayout m_layout{};

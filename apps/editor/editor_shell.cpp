@@ -262,7 +262,11 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     const auto routed = m_router.route(events, {m_viewport_hovered, showing_game()});
     if (routed.capture) m_capture_request = routed.capture;
     apply_input(routed);
+    if (routed.navigation_started && routed.navigation_point)
+        start_navigation(m_router.navigation(), {routed.navigation_point->x, routed.navigation_point->y});
     m_camera.update(routed.navigation, io.DeltaTime);
+    if (const auto mode = m_router.navigation(); mode == NavigationMode::orbit || mode == NavigationMode::pan || mode == NavigationMode::zoom)
+        m_pivot_distance = std::max((m_camera.pivot - m_camera.position).length(), 0.05f);
     update_play(routed, io.DeltaTime); // before the UI, so it shows this frame's ticks
 
     ImGui::NewFrame();
@@ -457,7 +461,13 @@ void EditorShell::draw_status_bar() {
         auto state = std::string("Ready");
         auto tone = theme::color::success;
         auto glyph = icon::check_circle;
-        if (m_router.navigating()) { state = "Flying"; tone = theme::color::accent; glyph = icon::arrows_move; }
+        if (m_router.navigating()) {
+            const auto mode = m_router.navigation();
+            state = mode == NavigationMode::orbit ? "Orbiting" : mode == NavigationMode::pan ? "Panning"
+                    : mode == NavigationMode::zoom ? "Zooming" : "Flying";
+            tone = theme::color::accent;
+            glyph = mode == NavigationMode::orbit ? icon::rotate : icon::arrows_move;
+        }
         else if (m_router.game_has_input()) {
             state = "The game has the mouse and keyboard  \xC2\xB7  Esc to take them back";
             tone = theme::color::accent;
@@ -732,18 +742,26 @@ void EditorShell::draw_viewport() {
             // Hint: a quiet pill in the corner, brighter while flying or while the game has the input.
             const auto flying = m_router.navigating() || m_router.game_has_input();
             const auto game = showing_game();
-            const auto hint = m_router.game_has_input()
-                ? std::string(icon::game_controller) + "  The game has the mouse and keyboard  \xC2\xB7  Esc to take them back"
-                : game ? std::string(icon::game_controller) + "  Click to play with the mouse and keyboard"
-                : m_router.navigating()
-                ? std::string(icon::arrows_move) + "  WASD move  \xC2\xB7  Q/E down/up  \xC2\xB7  Shift faster  \xC2\xB7  Esc stop"
-                : std::string(m_play ? "" : "Click to select     ") + icon::mouse_right + "  Hold to fly     " + icon::mouse_scroll + "  Scroll to dolly";
+            const auto mode = m_router.navigation();
+            auto hint = std::vector<HintItem>{};
+            if (m_router.game_has_input()) hint = {{"", icon::game_controller, "The game has the mouse and keyboard  \xC2\xB7  Esc to take them back"}};
+            else if (game) hint = {{"", icon::game_controller, "Click to play with the mouse and keyboard"}};
+            else if (mode == NavigationMode::fly) hint = {{"", icon::arrows_move, "WASD move  \xC2\xB7  Q/E down/up  \xC2\xB7  Shift faster  \xC2\xB7  Esc stop"}};
+            else if (m_router.navigating())
+                hint = {{"", mode == NavigationMode::orbit ? icon::rotate : icon::arrows_move,
+                         std::string("Drag to ") + (mode == NavigationMode::orbit ? "orbit" : mode == NavigationMode::pan ? "pan" : "zoom") +
+                             "  \xC2\xB7  Esc stop"}};
+            else {
+                if (!m_play) hint.push_back({"", nullptr, "Click to select"});
+                hint.insert(hint.end(), {{"", icon::mouse_right, "Fly"}, {"Alt", icon::mouse_left, "Orbit"},
+                                         {"", icon::mouse_middle, "Pan"}, {"", icon::mouse_scroll, "Dolly"}});
+            }
             auto* draw = ImGui::GetWindowDrawList();
-            const auto size = ImGui::CalcTextSize(hint.c_str());
+            const auto size = ImVec2{hint_line(nullptr, {}, hint, 0), ImGui::GetTextLineHeight()};
             const auto corner = ImVec2{m_layout.viewport_min.x + 12.0f, m_layout.viewport_max.y - size.y - 22.0f};
-            draw->AddRectFilled(corner, {corner.x + size.x + 20.0f, corner.y + size.y + 10.0f},
+            draw->AddRectFilled(corner, {corner.x + size.x + 24.0f, corner.y + size.y + 10.0f},
                                 theme::color::rgb(0x0B0C0E, 190), 8.0f);
-            draw->AddText({corner.x + 10.0f, corner.y + 5.0f}, flying ? theme::color::text : theme::color::muted, hint.c_str());
+            hint_line(draw, {corner.x + 12.0f, corner.y + 5.0f}, hint, flying ? theme::color::text : theme::color::muted);
             if (m_play) {
                 draw_view_toggle();
             } else if (const auto view = make_render_view(m_camera.camera, m_camera.pose(), request.width, request.height)) {
