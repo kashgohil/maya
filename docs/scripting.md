@@ -2,9 +2,7 @@
 
 [Issue #1018](https://work.rezee.app/kash/issues/1018) runs [Luau 0.740](architecture/physics-scripting-decision.md#luau) scripts in play sessions. A script is a project asset, attached to an entity by a `maya.script` component, and it runs in the player and in the editor's play mode. The design follows the [scripting boundary](architecture/runtime-world-contracts.md#scripting-boundary) and the [fixed-tick phases](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick).
 
-Later issues add to this:
-- **#1020:** the Assets panel's script column, dragging scripts onto entities, and reloading edited scripts.
-- **#1021:** body requests, queries, events, and `late_fixed_update`.
+[Issue #1020](https://work.rezee.app/kash/issues/1020) completes scripts as project assets in the editor: they are listed in the Assets panel, attached by dragging, opened in an external editor, and [reloaded](#reload) when their files change, during play too. [#1021](https://work.rezee.app/kash/issues/1021) adds body requests, queries, events, and `late_fixed_update`.
 
 ## A script
 
@@ -49,7 +47,7 @@ return Spin
     values 2 speed number 1.5 target entity 6d617961 300
 ```
 
-An entity has at most one script. The Inspector shows the script and one field per declared property ([Inspector](inspector.md#script-components)).
+An entity has at most one script. In the editor, a script is attached by dragging it from the Assets panel's Scripts column onto an object in the viewport, a Hierarchy row, or the Inspector's script field ([Assets panel](projects.md#the-assets-panel)). The Inspector shows the script and one field per declared property ([Inspector](inspector.md#script-components)).
 
 ## Properties
 
@@ -152,6 +150,24 @@ A syntax, runtime, budget, or memory error names the entity, the script, the lin
 
 Play sessions report these through `PlayFrame::messages` (`SimulationMessage` with a level: info, warning, or error). Native systems keep their contract: a throwing native system still stops the session.
 
+## Reload
+
+The editor watches the project's script files, checking them a few times a second. The player never watches files: it plays the scripts as they were when it started.
+
+- **While editing.** A changed script is compiled at once. When it compiles, it becomes the script's current version: the Inspector shows its declared properties, and authored values that still fit are kept. Values for properties it no longer declares stay in the scene, reported as unused. When it does not compile, or its file is missing (deleted or renamed), the error goes to Diagnostics under **script** with the file and line. The Assets panel and the Inspector show it, and the last version that compiled stays in use. Every script is also compiled when a project opens or refreshes, so errors show before anything plays.
+- **While playing.** A changed script is compiled in the editor's frame, not in a tick. If it does not compile, a notice says why and the running version goes on. If it does, the play session swaps it in at its next tick boundary:
+  1. each instance of the script saves its exposed properties' current values;
+  2. each old instance's `stop` runs, in activation order;
+  3. each instance starts again from the new version, in the same order, with the saved values for the properties the new version still declares (with the same type and in range). The rest of `self` starts over.
+
+  Instances of a script that had failed start again too, and a script that could not compile before starts now. While paused, the swap waits for the next step or resume. Diagnostics logs `Reloaded scripts/mover.luau (2 instances)`.
+- **Next Play.** Play always uses each script's last version that compiled.
+- **Recorded.** Each applied reload is recorded with its tick (`ScriptReloads::applied`), so a replay can tell that the session is not promised to repeat.
+
+Old versions are released when they are replaced: 200 edits to a script while playing leave the script VM's memory where it was. Diagnostics shows the VM's memory and the reload count while playing.
+
+A script's hooks are read when a version loads, so a reload is also how a script gains or loses a hook.
+
 ## Determinism
 
 The same scene, inputs, and seed give the same result:
@@ -176,6 +192,15 @@ for (const auto& message : frame.messages) report(message.level, message.text);
 - **Where Luau lives.** The scripting host is in MayaSimulation (`src/maya/simulation/scripting/`), the only place that includes Luau. The CTest check `maya_library_headers` enforces it along with Jolt's boundary.
 - **Public API.** [scripting.hpp](../include/maya/simulation/scripting.hpp) has no Luau types.
 - **Frame hook.** `SimulationSystem::frame(FrameContext&)` is the new once-per-frame hook; `TickContext::messages` and `FrameContext::messages` collect reports.
+- **Reloads.** A host that changes scripts during play shares a `ScriptReloads` with the session through `ScriptSettings::reloads`. `offer(script, source)` compiles and describes the new version in the host's frame and returns an error, or queues it for the session's next tick:
+
+```cpp
+auto settings = maya::project_script_settings(project.settings);
+settings.reloads = std::make_shared<maya::ScriptReloads>(settings.limits);
+auto systems = maya::play_systems(sources, settings);
+// ... later, when a script file changed:
+if (auto error = settings.reloads->offer(script_id, {"scripts/mover.luau", new_text}); !error.empty()) report(error);
+```
 
 ## Cost
 
@@ -217,6 +242,12 @@ That is about 97 ns per call for an empty hook and 480 ns per moved instance, fl
 - **Determinism:** random numbers and created IDs repeating from the seed.
 - **Spin parity:** a spin script matching the built-in `maya.spin` for 600 ticks.
 - **Stale handles:** held entity values checked on every use.
+- **Reload** (#1020):
+  - a new version replacing its instances at the next tick, old `stop`s before new `start`s in activation order, with exposed values kept and the rest of `self` starting over;
+  - a version that does not compile refused, with the running one kept;
+  - the swap waiting while paused, and the reload recorded with its tick;
+  - a reload reaching a script not used yet, and repairing one that did not compile;
+  - 200 reloads keeping the VM's memory flat.
 
 Also:
 - [asset_tests.cpp](../tests/asset_tests.cpp): script catalog entries, loading, reloading, and missing files.
@@ -224,5 +255,12 @@ Also:
 - [property_tests.cpp](../tests/property_tests.cpp): the component's schema and value validation.
 - [scene_tests.cpp](../tests/scene_tests.cpp): value encoding and refused values.
 - [world_tests.cpp](../tests/world_tests.cpp): dropping a batch's newest commands (`WorldCommands::truncate`).
-- [editor_scripting_tests.cpp](../tests/editor_scripting_tests.cpp): the Inspector's script fields with undo, unused values, compile errors in the Inspector, and script logs and failures in Diagnostics while play continues, and a project's raised work budget letting a heavy script run.
+- [editor_scripting_tests.cpp](../tests/editor_scripting_tests.cpp):
+  - the Inspector's script fields with undo, unused values, and compile errors;
+  - script logs and failures in Diagnostics while play continues;
+  - a project's raised work budget letting a heavy script run;
+  - the Assets panel's scripts attached by dragging onto a Hierarchy row and an object in the viewport, and opened by double-click and from the Inspector;
+  - edits while authoring: new and removed properties, a syntax error and a missing (renamed) file keeping the last good version, and the error on reopening;
+  - edits while playing: the swap with kept values, a broken edit leaving play running, a paused swap waiting for a step, and the next Play using the latest version;
+  - 200 edits while playing keeping the script VM's memory flat.
 - The editor–player parity tests now play the sample scenes with scripts.

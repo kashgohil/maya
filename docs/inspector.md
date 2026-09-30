@@ -56,11 +56,11 @@ A Script component (#1018, [scripting](scripting.md)) shows its script asset, th
 
 Edits are "Edit Script" undo steps, like other properties.
 
-Below the fields, the Inspector notes:
-- **Scripts that cannot be read or compiled,** in red, with the reason, such as `scripts/broken.luau:2: Expected identifier when parsing expression, got 'return'`. No fields are shown.
+Below the fields, **Open script** opens the file in an external editor ([Assets panel](projects.md#the-assets-panel)), and the Inspector notes:
+- **Scripts that cannot be read or compiled,** in red, with the reason, such as `scripts/broken.luau:2: Expected identifier when parsing expression, got 'return'`. A script that never compiled shows no fields. One that compiled before keeps the fields of that last good version, which stays in use.
 - **Stored values that do not fit,** in amber: one for a property the script no longer declares, of another type, or out of range. **Remove unused values** drops those for undeclared properties, as one undo step.
 
-The editor compiles a script to read its declarations when the Inspector first shows it, and keeps the result for that asset version. The editor does not watch script files yet: until [#1020](https://work.rezee.app/kash/issues/1020), a changed script is read again when the project is reopened.
+The editor compiles each script when the project opens, and again whenever its file changes ([reload](scripting.md#reload)), so the fields follow the script as it is edited.
 
 ## Gizmos
 

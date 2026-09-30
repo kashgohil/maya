@@ -1,6 +1,6 @@
 # Scheduling and rendering contracts
 
-Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave. [#1017](../physics.md) implements phases 4–6 for bodies made from code. [#1018](../scripting.md) runs script `start`, `fixed_update`, `update`, and `stop` hooks as one system; event hooks, `late_fixed_update`, and reload come with #1020 and #1021.
+Status: intended implementation contracts for [#990](https://work.rezee.app/kash/issues/990). `Engine::tick` still calls one update followed by rendering. [#1003](../play.md) implements the fixed clock and its modes (play, pause, single step), input assignment to ticks, and phases 1–3 of the fixed tick in `MayaSimulation`, shared by the player and editor play. Animation, events, presentation interpolation, capture/replay, and a job system are not implemented yet. [#1015](https://work.rezee.app/kash/issues/1015) records how [physics and scripts run in the fixed tick](#physics-and-behavior-in-the-fixed-tick), and how reset, replay, and reload behave. [#1017](../physics.md) implements phases 4–6 for bodies made from code. [#1018](../scripting.md) runs script `start`, `fixed_update`, `update`, and `stop` hooks as one system, and [#1020](../scripting.md#reload) implements the reload rules below; event hooks and `late_fixed_update` come with #1021.
 
 ## Clocks and modes
 
@@ -105,6 +105,8 @@ The same result means identical component values for every entity, identical bod
   - **While paused,** the swap waits for the next step or resume.
   - **Replay.** A reload is recorded, and replaying a session that reloaded is not promised to match.
 - **Next Play.** Always uses each script's current good version.
+
+#1020 implements these rules ([reload](../scripting.md#reload)). The editor checks script files every quarter second rather than every frame. Within a swap, all the old instances stop before any new one starts, both in activation order. Reloads are recorded with their tick in `ScriptReloads::applied`, and phase 1 runs retirements, then swaps, then new activations.
 
 ## Extraction and GPU ownership
 

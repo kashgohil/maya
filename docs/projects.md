@@ -69,25 +69,25 @@ Undoing back to the saved state counts as no changes, so nothing is asked. A sav
 
 ## The Assets panel
 
-The Assets panel is the bottom panel shown first (Diagnostics is its neighbouring tab). It has a filter and a refresh button above three columns:
+The Assets panel is the bottom panel shown first (Diagnostics is its neighbouring tab). It has a filter and a refresh button above four columns:
 
 - **Scenes:** the `.scene` files in the content folder, with the open scene highlighted. Double-click one to open it.
 - **Meshes:** meshes from the catalog, by file name.
 - **Materials:** materials from the catalog, each with a swatch of its base color.
+- **Scripts:** [scripts](scripting.md) from the catalog (#1020). Their status is kept current, since the editor watches script files.
 
-Scripts in the catalog ([scripting](scripting.md)) are not listed yet; they are assigned in the Inspector until [#1020](https://work.rezee.app/kash/issues/1020) adds them here.
-
-A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, or **not loaded** for a mesh no frame has drawn yet. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Assign to selection**, **Reload** (read the file again), and **Copy ID**.
+A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, **error** (red) for a script that does not compile, or **not loaded** for a mesh no frame has drawn yet. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Open** (scripts: in the application the system uses for the file, else the default text editor), **Assign to selection**, **Reload** (read the file again), and **Copy ID**.
 
 | Gesture | Result |
 | --- | --- |
 | Drag a mesh into the viewport | A new entity named after the file, placed where it is dropped. It rests on the surface under the pointer, else on the ground plane (y = 0) within 500 m, else 5 m in front of the camera. It is lifted by how far the mesh reaches below its origin, so it sits on the surface. |
-| Drag a material onto an object in the viewport | Assigns it to that object. |
-| Drag a mesh or material onto a Hierarchy row | Assigns it to that entity. An entity with a transform but no mesh renderer gets one. |
+| Drag a material or script onto an object in the viewport | Assigns it to that object. |
+| Drag a mesh, material, or script onto a Hierarchy row | Assigns it to that entity. An entity with a transform but no mesh renderer gets one for a mesh or material. A script replaces the entity's script, keeping the values the new script declares. |
 | Drag a mesh onto the Hierarchy's empty space | Places it in view, as a double-click does. |
-| Drag onto an Inspector mesh or material field | Chooses it, when the kind matches. |
+| Drag onto an Inspector mesh, material, or script field | Chooses it, when the kind matches. |
 | Double-click a mesh | Places it where the center of the view meets the scene. |
 | Double-click a material | Assigns it to every selected entity. |
+| Double-click a script | Opens it, as **Open** does. |
 
 Each placement or assignment is one undo step. Duplicating an instance with ⌘D (from [#1000](editing.md)) keeps its references. Placed meshes have no material until one is assigned, and draw with the default white factors. References always hold the catalog's AssetId. The Inspector's asset fields show a failed asset in red with the reason, and an ID missing from the catalog in amber.
 

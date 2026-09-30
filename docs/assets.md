@@ -51,7 +51,7 @@ roughness 0.7
 
 All six factors must be finite and in [0,1]. Field order is fixed in version one; extra data, unsupported versions, and malformed values fail. These immutable material values are ready for renderer integration; this issue does not implement PBR shading, textures, material graphs, or shader cooking. `fallback_material()` returns explicit magenta/opaque, nonmetallic, rough data for callers choosing a fallback. Missing meshes skip their draw. Neither fallback replaces the missing reference's ID or reports the source as successfully loaded.
 
-Script assets (`script`, `ScriptAsset`, since #1018) are Luau source text. `AssetProvider::load_script` reads the file as text, and every provider inherits it; the registry neither compiles nor checks the source. Play sessions and the editor compile it ([scripting](scripting.md)), and bytecode is never stored. The Assets panel lists scripts, and scripts reload while editing, with [#1020](https://work.rezee.app/kash/issues/1020).
+Script assets (`script`, `ScriptAsset`, since #1018) are Luau source text. `AssetProvider::load_script` reads the file as text, and every provider inherits it; the registry neither compiles nor checks the source. Play sessions and the editor compile it ([scripting](scripting.md)), and bytecode is never stored. Since #1020 the editor watches script files and reloads changed ones through `reload` ([scripting](scripting.md#reload)); the Assets panel lists scripts.
 
 ## Loading and reload
 

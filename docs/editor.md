@@ -84,7 +84,7 @@ These additions to the desktop host are generic, not editor-specific:
 - `Input::events()` holds the frame's ordered `KeyEvent` (with modifiers), `TextEvent` (Unicode code points), `MouseMoveEvent` (points), `MouseButtonEvent`, `ScrollEvent`, and `FocusEvent`. The host clears them after each tick. Held-key state for simple controllers such as the player's fly camera is unchanged.
 - `Input::window_metrics()` gives the window size in points and in framebuffer pixels, published before each tick.
 - `Input::request_cursor_capture(bool)` asks the host to capture or release the cursor after the tick. Smoke runs ignore it.
-- `PlatformServices` provides clipboard access and cursor shapes without a window-library dependency. ImGui's clipboard and cursor use them.
+- `PlatformServices` provides clipboard access and cursor shapes without a window-library dependency. ImGui's clipboard and cursor use them. Its `open_file` opens a file in the application the system uses for it (`/usr/bin/open`, then `open -t` for the default text editor); the editor opens scripts with it.
 - `KeyCode` names the keys the editor needs; values are GLFW key codes.
 - The Metal layer's `contentsScale` follows the window's backing scale, and it is updated whenever the framebuffer size changes. Before this, a Retina display showed every frame as 1× content, soft and blocky. `MetalDevice::surface_scale()` reports it, and a desktop test checks it against the window.
 - `DesktopOptions::escape_closes` and `DesktopOptions::device` (passed to `Engine::initialize`). The editor reserves 16 MiB of upload memory per frame for UI geometry and scene constants.
@@ -109,7 +109,7 @@ The Diagnostics panel shows the current state:
 - drawn, hidden, and skipped mesh renderers;
 - frames, waits, and upload-memory high water against capacity;
 - live resources and pending retirements;
-- while playing, the tick, the wall time the clock refused, and the ticks it dropped;
+- while playing, the tick, the wall time the clock refused, and the ticks it dropped, and the script VM's memory and reload count;
 - **Performance** over the last 240 frames: the frame interval with P95 and P99, CPU time per part of the frame, GPU time (or why it is unavailable), draws, instances, and triangles, tracked bytes, platform-reported GPU and process memory, and resident assets ([performance](performance.md#in-the-editor)).
 
 It also lists this frame's extraction problems, such as missing meshes and materials, and a log. The log records:
@@ -121,6 +121,7 @@ It also lists this frame's extraction problems, such as missing meshes and mater
 - GPU errors taken from the device, also written to stderr;
 - UI pass errors;
 - script logs and script errors while playing, under **script** ([scripting](scripting.md#errors)); an error also shows the notice "A script stopped";
+- script compile errors and missing script files, when a project opens and whenever a script file changes, and each reload during play, also under **script** ([reload](scripting.md#reload));
 - minimize and restore.
 
 Repeated messages are merged with a count, and the log keeps at most 200 entries. Viewport and renderer problems do not stop the editor: the rest of the UI keeps drawing, and a later frame recovers once the cause is gone. Only a failure of the UI pass itself is returned to the Engine.
