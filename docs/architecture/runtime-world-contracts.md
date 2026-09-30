@@ -189,7 +189,7 @@ return Mover
 **Limits.**
 - **Work budget.** Each hook call has a budget counted at Luau safepoints (loop back edges and calls), never in wall time, so the same script and inputs always pass or always fail.
 - **Memory.** Each play session's VM has a memory limit.
-- **Defaults.** #1018 sets 1,000,000 safepoints per call and 64 MiB per session. An empty hook costs about 92 ns, and the sample's scripts use a small fraction of either limit ([scripting](../scripting.md#cost)). A project may raise them later. The prototype used 10 million safepoints and 4 MiB.
+- **Defaults.** #1018 sets 1,000,000 safepoints per call and 64 MiB per session. An empty hook costs about 97 ns; the sample's spin script needs fewer than 5 safepoints per call and plays within 512 KiB ([scripting](../scripting.md#cost)). A project may raise them later. The prototype used 10 million safepoints and 4 MiB.
 - **Coroutines.** They may run within a call, but a hook that yields is an error; waiting across ticks is a later design.
 
 **Errors.**

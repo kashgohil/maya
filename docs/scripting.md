@@ -77,7 +77,7 @@ An entity has at most one script. The Inspector shows the script and one field p
 | `update(self, frame_dt)` | Once per host frame after its ticks, also while paused. Read-only. |
 | `stop(self)` | Once, if `start` ran. When the entity is destroyed, loses its component, or gets another script, this is the next tick, and the entity may already be gone (`self.entity:alive()` is false). At the end of play, newest first, with no world left to change. |
 
-The scripts run as one system, `script_system`, which `play_systems` places after the built-in ones.
+A script's hooks are the functions its table holds when it loads; functions added to the table later are not called. The scripts run as one system, `script_system`, which `play_systems` places after the built-in ones.
 
 ## The engine API
 
@@ -125,7 +125,7 @@ Reads see the World as the previous tick committed it.
 - **Removed.** `print`, `debug`, `os`, `getfenv`, and `setfenv` are removed. Luau has no file, process, environment, or code-loading functions of its own.
 - **Globals.** Each script has its own globals; writing a library table is an error.
 - **Work budget.** Each hook call gets a work budget counted at Luau safepoints (loop back edges and calls), never in wall time, so the same script and inputs always pass or always fail.
-- **Memory.** The play session's VM has a memory limit.
+- **Memory.** The play session's VM has a memory limit. Loading a script and setting up its instances count against it too: a script that cannot be set up is that script's error, like one that runs out while running.
 - **Coroutines.** They may run within a call; a hook that yields is an error.
 
 `ScriptSettings` sets the limits and the seed:
@@ -181,10 +181,10 @@ Release on the M4 Pro reference machine (thermal state nominal), per tick with e
 
 | Scripted entities | Empty `fixed_update` | Moving with `set_position` each tick |
 | --- | --- | --- |
-| 1,000 | 0.09 ms mean, 0.11 ms worst | 0.47 ms mean, 0.54 ms worst |
-| 10,000 | 0.93 ms mean, 1.1 ms worst | 4.7 ms mean, 5.5 ms worst |
+| 1,000 | 0.10 ms mean, 0.15 ms worst | 0.48 ms mean, 0.59 ms worst |
+| 10,000 | 0.97 ms mean, 1.1 ms worst | 4.8 ms mean, 5.2 ms worst |
 
-That is about 92 ns per call for an empty hook and 470 ns per moved instance, flat from 1,000 to 10,000. A move costs a read, a validated property edit, and one transform write in the World batch per entity. These are observations, not budgets; `maya_scripting_tests "[cost]"` prints them.
+That is about 97 ns per call for an empty hook and 480 ns per moved instance, flat from 1,000 to 10,000. `spin.luau` needs fewer than 5 safepoints per call, and plays in a VM limited to 512 KiB, so the defaults leave a wide margin. A move costs a read, a validated property edit, and one transform write in the World batch per entity. These are observations, not budgets; `maya_scripting_tests "[cost]"` prints them.
 
 ## Tests
 
@@ -205,8 +205,10 @@ That is about 92 ns per call for an empty hook and 470 ns per moved instance, fl
   - messages with script and line;
   - the failing call's move and creation discarded;
   - other scripts continuing;
-  - compile errors reported once.
-- **Limits:** the work budget and the memory limit, each stopping only its script.
+  - compile errors reported once;
+  - errors in `start`, `update`, and `stop`, with `stop` still following a failed `start`;
+  - a failing native system still stopping the session.
+- **Limits:** the work budget and the memory limit, each stopping only its script, including a script that arrives when the VM is full.
 - **Refusals:** writes to physics bodies, and writes from `update`.
 - **Conflicts** between two scripts.
 - **Input** by key name.
