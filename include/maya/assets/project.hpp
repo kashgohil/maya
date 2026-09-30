@@ -24,6 +24,10 @@ std::string validate_collision_group_name(std::string_view name);
 /// The name to show for group `index`: its name, or "Group <n>" when it has none.
 std::string collision_group_label(const CollisionGroupNames& groups, size_t index);
 
+/// Bounds of the script limits a project may set (docs/scripting.md#sandbox-and-limits).
+inline constexpr uint64_t min_script_work = 1'000, max_script_work = 1'000'000'000; // safepoints per hook call
+inline constexpr uint32_t max_script_memory = 4096; // MiB per play session
+
 /// A project file's settings. Every path is relative and stays inside its base, so a project keeps
 /// working wherever its directory is moved or copied.
 struct ProjectSettings {
@@ -31,6 +35,8 @@ struct ProjectSettings {
     std::filesystem::path catalog = "catalog.maya"; // asset catalog, relative to the content root
     std::filesystem::path startup_scene; // optional scene to open first, relative to the content root
     CollisionGroupNames collision_groups = default_collision_groups();
+    std::optional<uint64_t> script_work; // safepoints per hook call; the engine's default when unset
+    std::optional<uint32_t> script_memory; // MiB per play session; the engine's default when unset
 };
 struct ProjectSettingsResult {
     ProjectSettings settings;
@@ -43,10 +49,13 @@ struct ProjectSettingsResult {
 ///     content "assets"
 ///     catalog "catalog.maya"
 ///     startup "basic.scene"
+///     script_work 5000000
+///     script_memory 256
 ///     group 1 "Player"
 ///
-/// `content` and `catalog` are required and `startup` is optional, in that order. Any number of
-/// `group <index> "<name>"` lines follow, one per named collision group other than the default names.
+/// `content` and `catalog` are required and `startup` is optional, in that order. The optional script
+/// limits follow, then any number of `group <index> "<name>"` lines, one per named collision group other
+/// than the default names; after `startup`, these lines may come in any order.
 ProjectSettingsResult read_project(std::istream& input);
 void write_project(std::ostream& output, const ProjectSettings& settings);
 

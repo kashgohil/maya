@@ -15,7 +15,9 @@ bool EditorShell::start_play() {
     if (m_play || !m_scene || !m_assets) return false;
     if (m_scene->group_open()) m_scene->end_group(); // a control mid-drag finishes its step first
     m_edit_group_open = false;
-    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets), play_systems(registry_script_sources(*m_assets)));
+    const auto scripts = m_project ? project_script_settings(m_project->settings) : ScriptSettings{};
+    auto started = PlaySession::start(m_scene->document(), asset_property_context(*m_assets),
+                                      play_systems(registry_script_sources(*m_assets), scripts));
     if (!started) {
         auto reason = started.error;
         for (const auto& problem : started.diagnostics) {

@@ -37,7 +37,7 @@ public:
         const auto context = asset_property_context(*m_assets);
         auto loaded = load_scene_file(*scene_path, context);
         if (!loaded) return fail(*scene_path, loaded.diagnostics);
-        auto started = PlaySession::start(std::move(loaded.document), context, play_systems(registry_script_sources(*m_assets)));
+        auto started = PlaySession::start(std::move(loaded.document), context, play_systems(registry_script_sources(*m_assets), project_script_settings(project.settings)));
         if (!started) return started.diagnostics.empty() ? fail(started.error) : fail(*scene_path, started.diagnostics);
         m_session = std::move(started.session);
         if (!m_session->camera()) return fail(scene_path->filename().string() + " has no camera to show; add one in the editor");

@@ -1,4 +1,5 @@
 #include "maya/assets/project.hpp"
+#include <charconv>
 #include <fstream>
 #include <iomanip>
 #include <istream>
@@ -87,6 +88,22 @@ ProjectSettingsResult read_project(std::istream& input) {
     }
     auto named = std::array<bool, collision_group_names>{};
     while (input >> key) {
+        if (key == "script_work" || key == "script_memory") {
+            const auto work = key == "script_work";
+            const auto minimum = work ? min_script_work : uint64_t{1};
+            const auto maximum = work ? max_script_work : uint64_t{max_script_memory};
+            auto number = uint64_t{};
+            const auto parsed = (input >> value) ? std::from_chars(value.data(), value.data() + value.size(), number)
+                                                 : std::from_chars_result{value.data(), std::errc::invalid_argument};
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || number < minimum || number > maximum)
+                return {{}, work ? "'script_work' needs a whole number of safepoints per call from 1000 to 1000000000"
+                                 : "'script_memory' needs a whole number of MiB from 1 to 4096"};
+            if (work ? settings.script_work.has_value() : settings.script_memory.has_value())
+                return {{}, "'" + key + "' is set twice"};
+            if (work) settings.script_work = number;
+            else settings.script_memory = uint32_t(number);
+            continue;
+        }
         if (key != "group") return {{}, "Unexpected '" + key + "' after the project settings"};
         auto index = 0u;
         if (!(input >> index) || index >= collision_group_names)
@@ -109,6 +126,8 @@ void write_project(std::ostream& output, const ProjectSettings& settings) {
          << "content " << std::quoted(settings.content.generic_string()) << '\n'
          << "catalog " << std::quoted(settings.catalog.generic_string()) << '\n';
     if (!settings.startup_scene.empty()) text << "startup " << std::quoted(settings.startup_scene.generic_string()) << '\n';
+    if (settings.script_work) text << "script_work " << *settings.script_work << '\n';
+    if (settings.script_memory) text << "script_memory " << *settings.script_memory << '\n';
     const auto defaults = default_collision_groups();
     for (size_t i = 0; i < collision_group_names; ++i)
         if (settings.collision_groups[i] != defaults[i] && !settings.collision_groups[i].empty())
