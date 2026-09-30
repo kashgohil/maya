@@ -46,16 +46,21 @@ BodyDesc sphere(MotionType motion, float radius = 0.5f) {
     return body;
 }
 
-/// Runs a callback on every tick; the tests script what systems ask of physics with it.
+/// Runs a callback on every tick, and another after each step; the tests script what systems ask of
+/// physics with them.
 class Scripted final : public SimulationSystem {
 public:
-    explicit Scripted(std::function<void(TickContext&)> tick, std::string name = "Scripted")
-        : m_tick(std::move(tick)), m_name(std::move(name)) {}
+    explicit Scripted(std::function<void(TickContext&)> tick, std::string name = "Scripted",
+                      std::function<void(TickContext&)> late = {})
+        : m_tick(std::move(tick)), m_late(std::move(late)), m_name(std::move(name)) {}
     std::string_view name() const override { return m_name; }
     void fixed_update(TickContext& tick) override { m_tick(tick); }
+    void late_fixed_update(TickContext& tick) override {
+        if (m_late) m_late(tick);
+    }
 
 private:
-    std::function<void(TickContext&)> m_tick;
+    std::function<void(TickContext&)> m_tick, m_late;
     std::string m_name;
 };
 
@@ -63,6 +68,16 @@ std::unique_ptr<PlaySession> play(const SceneDocument& document, std::function<v
                                   PhysicsSettings settings = {}, std::string name = "Scripted") {
     auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
     systems.push_back(std::make_unique<Scripted>(std::move(tick), std::move(name)));
+    auto started = PlaySession::start(document, {}, std::move(systems), {}, settings);
+    REQUIRE(started);
+    return std::move(started.session);
+}
+
+/// A session whose system also runs `late` after each step, and when the session stops.
+std::unique_ptr<PlaySession> play_late(const SceneDocument& document, std::function<void(TickContext&)> tick,
+                                       std::function<void(TickContext&)> late, PhysicsSettings settings = {}) {
+    auto systems = std::vector<std::unique_ptr<SimulationSystem>>{};
+    systems.push_back(std::make_unique<Scripted>(std::move(tick), "Scripted", std::move(late)));
     auto started = PlaySession::start(document, {}, std::move(systems), {}, settings);
     REQUIRE(started);
     return std::move(started.session);
@@ -581,7 +596,7 @@ TEST_CASE("Step cost at 1,000 and 10,000 bodies", "[.][physics][cost]") {
         run(*session, 1);
         reset_physics_peak();
         auto samples = std::vector<double>{};
-        auto phases = std::array<double, 4>{};
+        auto phases = std::array<double, 5>{};
         for (int i = 0; i < 300; ++i) {
             const auto before = std::chrono::steady_clock::now();
             run(*session, 1);
@@ -591,6 +606,7 @@ TEST_CASE("Step cost at 1,000 and 10,000 bodies", "[.][physics][cost]") {
             phases[1] += stats.step_ms / 300.0;
             phases[2] += stats.synchronize_ms / 300.0;
             phases[3] += stats.commit_ms / 300.0;
+            phases[4] += stats.events_ms / 300.0;
         }
         std::sort(samples.begin(), samples.end());
         auto mean = 0.0;
@@ -601,8 +617,8 @@ TEST_CASE("Step cost at 1,000 and 10,000 bodies", "[.][physics][cost]") {
                     count, physics_worker_threads(), mean, samples[samples.size() * 95 / 100], samples.back(),
                     stats.active_bodies, double(physics_memory().peak_bytes) / (1 << 20),
                     static_cast<unsigned long long>(stats.steps_with_errors));
-        std::printf("       means: prepare %.3f ms, step %.3f ms, synchronize %.3f ms, body commit %.3f ms\n", phases[0],
-                    phases[1], phases[2], phases[3]);
+        std::printf("       means: prepare %.3f ms, step %.3f ms, synchronize %.3f ms, events %.3f ms (%.0f per tick), body commit %.3f ms\n",
+                    phases[0], phases[1], phases[2], phases[4], double(stats.events) / double(stats.steps), phases[3]);
     }
 }
 
@@ -784,4 +800,295 @@ TEST_CASE("The same authored scene plays identically every time", "[physics][aut
     };
     CHECK(trace(0) == trace(4));
     CHECK(trace(4) == trace(4));
+}
+
+// --- Queries and events (#1021) ----------------------------------------------------------------------
+
+namespace {
+BodyDesc in_group(BodyDesc body, uint8_t group) {
+    body.group = group;
+    return body;
+}
+BodyDesc as_sensor(BodyDesc body) {
+    body.sensor = true;
+    return body;
+}
+EntityId id(uint64_t low) { return EntityId{0x70, low}; }
+
+/// A floor, and three boxes in a row along -Z: in groups 1 and 2, then a sensor.
+SceneDocument corridor() {
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {at({0, -0.5f, 0})}), entity(2, {at({0, 0.5f, -3})}), entity(3, {at({0, 0.5f, -6})}),
+                         entity(4, {at({0, 0.5f, -9})})};
+    return document;
+}
+std::function<void(TickContext&)> corridor_bodies() {
+    return create_on_first_tick({{1, box(MotionType::static_body, {10, 0.5f, 10})},
+                                 {2, in_group(box(MotionType::static_body), 1)},
+                                 {3, in_group(box(MotionType::static_body), 2)},
+                                 {4, as_sensor(box(MotionType::static_body))}});
+}
+std::vector<EntityId> ids(const std::vector<QueryHit>& hits) {
+    auto result = std::vector<EntityId>{};
+    for (const auto& hit : hits) result.push_back(hit.id);
+    return result;
+}
+} // namespace
+
+TEST_CASE("Raycasts, shape casts, and overlaps hit the chosen groups, nearest first", "[physics][query]") {
+    auto session = play(corridor(), corridor_bodies());
+    run(*session, 1);
+    const auto& physics = session->physics();
+    // Along -Z from the origin: the two boxes, not the sensor; the floor is below the ray.
+    auto hits = physics.raycast({0, 0.5f, 0}, {0, 0, -2}, 20.0f);
+    REQUIRE(ids(hits) == std::vector{id(2), id(3)});
+    CHECK(hits[0].distance == Approx(2.5f).margin(1e-4));
+    CHECK(hits[0].point.z == Approx(-2.5f).margin(1e-4));
+    CHECK(hits[0].normal.z == Approx(1.0f).margin(1e-4));
+    CHECK(hits[0].entity == handle(session->world(), 2));
+    CHECK(hits[1].distance == Approx(5.5f).margin(1e-4));
+    CHECK(ids(physics.raycast({0, 0.5f, 0}, {0, 0, -1}, 20.0f)) == ids(hits)); // the same results again
+    // Filters: groups, sensors, and an ignored entity.
+    auto group_2 = QueryFilter{};
+    group_2.groups = uint16_t(1u << 2);
+    CHECK(ids(physics.raycast({0, 0.5f, 0}, {0, 0, -1}, 20.0f, group_2)) == std::vector{id(3)});
+    auto with_sensors = QueryFilter{};
+    with_sensors.sensors = true;
+    CHECK(ids(physics.raycast({0, 0.5f, 0}, {0, 0, -1}, 20.0f, with_sensors)) == std::vector{id(2), id(3), id(4)});
+    auto ignoring = QueryFilter{};
+    ignoring.ignore = handle(session->world(), 2);
+    CHECK(ids(physics.raycast({0, 0.5f, 0}, {0, 0, -1}, 20.0f, ignoring)) == std::vector{id(3)});
+    CHECK(physics.raycast({0, 0.5f, 0}, {0, 0, -1}, 2.0f).empty()); // too short
+    // Down onto box 2: its top, then the floor below it, one hit per body.
+    hits = physics.raycast({0, 5, -3}, {0, -1, 0}, 10.0f);
+    REQUIRE(ids(hits) == std::vector{id(2), id(1)});
+    CHECK(hits[0].distance == Approx(4.0f).margin(1e-4));
+    CHECK(hits[0].normal.y == Approx(1.0f).margin(1e-4));
+
+    // A sphere swept along the ray stops a radius short.
+    hits = physics.shape_cast(SphereShape{0.25f}, {0, 0.5f, 0}, {}, {0, 0, -1}, 20.0f);
+    REQUIRE(ids(hits) == std::vector{id(2), id(3)});
+    CHECK(hits[0].distance == Approx(2.25f).margin(1e-3));
+    CHECK(hits[0].normal.z == Approx(1.0f).margin(1e-3));
+    // Overlaps list what a shape touches, by EntityId; a cast that starts touching has distance 0.
+    CHECK(ids(physics.overlap(BoxShape{{0.5f, 0.5f, 0.5f}}, {0, 1.2f, -3}, {})).empty() == false);
+    CHECK(ids(physics.overlap(BoxShape{{0.5f, 0.5f, 0.5f}}, {0, 1.2f, -3}, {})) == std::vector{id(2)});
+    CHECK(ids(physics.overlap(BoxShape{{0.5f, 2.0f, 5.0f}}, {0, 0.5f, -5}, {})) == std::vector{id(1), id(2), id(3)});
+    hits = physics.shape_cast(SphereShape{0.25f}, {0, 0.5f, -3}, {}, {0, 0, -1}, 1.0f);
+    REQUIRE_FALSE(hits.empty());
+    CHECK(hits[0].id == id(2));
+    CHECK(hits[0].distance == 0.0f);
+    // Bad queries are refused.
+    CHECK_THROWS_AS(physics.raycast({0, 0, 0}, {0, 0, 0}, 1.0f), std::invalid_argument);
+    CHECK_THROWS_AS(physics.raycast({0, 0, 0}, {0, 0, 1}, -1.0f), std::invalid_argument);
+    CHECK_THROWS_AS(physics.shape_cast(SphereShape{-1.0f}, {0, 0, 0}, {}, {0, 0, 1}, 1.0f), std::invalid_argument);
+}
+
+namespace {
+struct Recorded {
+    PhysicsEventKind kind;
+    uint64_t tick;
+    EntityId first, second;
+    bool removed;
+    bool operator==(const Recorded&) const = default;
+};
+/// A floor; boxes 2 and 3 dropped onto it; sphere 5 dropped through the sensor band 4 onto the floor.
+SceneDocument drops() {
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {at({0, -0.5f, 0})}), entity(2, {at({0, 2, 0})}), entity(3, {at({3, 3, 0})}),
+                         entity(4, {at({6, 2.5f, 0})}), entity(5, {at({6, 6, 0})})};
+    return document;
+}
+std::function<void(TickContext&)> drop_bodies(std::function<void(TickContext&)> then = {}) {
+    return [then](TickContext& tick) {
+        if (tick.tick == 0) {
+            tick.bodies.create(handle(tick.world, 1), box(MotionType::static_body, {20, 0.5f, 20}));
+            tick.bodies.create(handle(tick.world, 2), box(MotionType::dynamic));
+            tick.bodies.create(handle(tick.world, 3), box(MotionType::dynamic));
+            tick.bodies.create(handle(tick.world, 4), as_sensor(box(MotionType::static_body, {1, 0.5f, 1})));
+            tick.bodies.create(handle(tick.world, 5), sphere(MotionType::dynamic, 0.5f));
+        }
+        if (then) then(tick);
+    };
+}
+std::vector<Recorded> record_drops(int workers, int ticks, std::function<void(TickContext&)> then = {},
+                                   std::vector<PhysicsEvent>* all = nullptr) {
+    set_physics_worker_threads(workers);
+    auto recorded = std::vector<Recorded>{};
+    {
+        auto session = play_late(drops(), drop_bodies(then), [&](TickContext& tick) {
+            if (tick.stopping) return; // only the step's events
+            for (const auto& e : tick.events) {
+                recorded.push_back({e.kind, e.tick, e.first, e.second, e.removed});
+                if (all) all->push_back(e);
+            }
+        });
+        run(*session, ticks);
+    }
+    set_physics_worker_threads(-1);
+    return recorded;
+}
+size_t count(const std::vector<Recorded>& events, PhysicsEventKind kind, uint64_t first, uint64_t second) {
+    return size_t(std::ranges::count_if(events, [&](const Recorded& e) { return e.kind == kind && e.first == id(first) && e.second == id(second); }));
+}
+} // namespace
+
+TEST_CASE("Contacts and triggers begin and end once per pair, in the same order for any worker count", "[physics][events]") {
+    const auto events = record_drops(0, 240);
+    using Kind = PhysicsEventKind;
+    // Each body lands once and stays in contact, also after it falls asleep.
+    for (const uint64_t body : {2, 3, 5}) {
+        INFO(body);
+        CHECK(count(events, Kind::contact_begin, 1, body) == count(events, Kind::contact_end, 1, body) + 1);
+    }
+    CHECK(count(events, Kind::contact_end, 1, 2) == 0);
+    // The sphere passes through the sensor band: in once, out once, and never a contact with it.
+    CHECK(count(events, Kind::trigger_enter, 4, 5) == 1);
+    CHECK(count(events, Kind::trigger_exit, 4, 5) == 1);
+    CHECK(count(events, Kind::contact_begin, 4, 5) == 0);
+    // Within a tick, events come by kind, then by the two EntityIds.
+    for (size_t i = 1; i < events.size(); ++i)
+        if (events[i].tick == events[i - 1].tick)
+            CHECK(std::tuple(events[i - 1].kind, events[i - 1].first, events[i - 1].second) <=
+                  std::tuple(events[i].kind, events[i].first, events[i].second));
+    CHECK(std::ranges::none_of(events, [](const Recorded& e) { return e.removed || e.first >= e.second; }));
+    // The same events, at the same ticks, with several worker threads.
+    CHECK(record_drops(4, 240) == events);
+}
+
+TEST_CASE("Recipients being destroyed are skipped and counted; removed bodies end their contacts as removals", "[physics][events]") {
+    using Kind = PhysicsEventKind;
+    // Find the tick box 2 lands, then destroy it in that tick: its recipient is left out and counted.
+    const auto first = record_drops(0, 120);
+    const auto landing = std::ranges::find_if(first, [](const Recorded& e) { return e.kind == Kind::contact_begin && e.second == id(2); });
+    REQUIRE(landing != first.end());
+    const auto tick = landing->tick;
+    const auto box_3 = std::ranges::find_if(first, [](const Recorded& e) { return e.kind == Kind::contact_begin && e.second == id(3); });
+    REQUIRE(box_3 != first.end());
+    const auto remove_at = std::max(tick, box_3->tick) + 5;
+    auto all = std::vector<PhysicsEvent>{};
+    auto skipped = uint64_t{0};
+    set_physics_worker_threads(0);
+    {
+        auto session = play_late(drops(), drop_bodies([&](TickContext& t) {
+            if (t.tick == tick) t.commands.destroy(handle(t.world, 2));
+            if (t.tick == remove_at) t.bodies.remove(handle(t.world, 3)); // its entity stays
+        }), [&](TickContext& t) {
+            if (!t.stopping) all.insert(all.end(), t.events.begin(), t.events.end());
+        });
+        const auto before = session->physics().stats().event_recipients_skipped;
+        run(*session, int(remove_at) + 5);
+        skipped = session->physics().stats().event_recipients_skipped - before;
+    }
+    set_physics_worker_threads(-1);
+    const auto landed = std::ranges::find_if(all, [&](const PhysicsEvent& e) { return e.kind == Kind::contact_begin && e.second == id(2); });
+    REQUIRE(landed != all.end());
+    CHECK(landed->tick == tick);
+    CHECK(landed->first_entity.has_value()); // the floor gets it
+    CHECK_FALSE(landed->second_entity.has_value()); // box 2 is being destroyed in this tick
+    // Its body goes at the commit: the floor's contact with it ends as a removal, the next tick.
+    const auto gone = std::ranges::find_if(all, [&](const PhysicsEvent& e) { return e.kind == Kind::contact_end && e.second == id(2); });
+    REQUIRE(gone != all.end());
+    CHECK(gone->removed);
+    CHECK(gone->tick == tick + 1);
+    CHECK_FALSE(gone->second_entity.has_value());
+    CHECK(skipped >= 2);
+    // Box 3's body removed, its entity kept: both hear the contact end, as a removal.
+    const auto removed = std::ranges::find_if(all, [&](const PhysicsEvent& e) { return e.kind == Kind::contact_end && e.second == id(3); });
+    REQUIRE(removed != all.end());
+    CHECK(removed->removed);
+    CHECK(removed->first_entity.has_value());
+    CHECK(removed->second_entity.has_value());
+}
+
+TEST_CASE("Stopping the session ends every contact and trigger in progress, as removals", "[physics][events]") {
+    auto at_stop = std::vector<PhysicsEvent>{};
+    auto stopping = false;
+    {
+        auto document = drops();
+        document.entities[4] = entity(5, {at({6, 2.5f, 0})}); // the sphere starts inside the sensor band
+        auto session = play_late(document, drop_bodies([](TickContext& t) {
+            if (t.tick > 0) t.bodies.set_linear_velocity(handle(t.world, 5), {0, 0, 0}); // hold it there
+        }), [&](TickContext& t) {
+            if (t.stopping) {
+                stopping = true;
+                at_stop.assign(t.events.begin(), t.events.end());
+            }
+        });
+        run(*session, 120);
+    }
+    REQUIRE(stopping);
+    using Kind = PhysicsEventKind;
+    CHECK(std::ranges::all_of(at_stop, [](const PhysicsEvent& e) { return e.removed; }));
+    const auto has = [&](Kind kind, uint64_t a, uint64_t b) {
+        return std::ranges::any_of(at_stop, [&](const PhysicsEvent& e) { return e.kind == kind && e.first == id(a) && e.second == id(b); });
+    };
+    CHECK(has(Kind::contact_end, 1, 2));
+    CHECK(has(Kind::contact_end, 1, 3));
+    CHECK(has(Kind::trigger_exit, 4, 5));
+}
+
+TEST_CASE("After the step, systems read its results and their requests wait for the next step", "[physics][events]") {
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {at({0, 10, 0})})};
+    auto late_velocity = std::vector<float>{};
+    auto before_step = 0.0f; // tick 4, before its step
+    auto session = play_late(document, [&, create = create_on_first_tick({{1, sphere(MotionType::dynamic)}})](TickContext& t) {
+        create(t);
+        if (t.tick == 4) before_step = t.physics.state(handle(t.world, 1))->linear_velocity.y;
+    }, [&](TickContext& t) {
+        if (!t.physics.has_body(handle(t.world, 1))) return;
+        late_velocity.push_back(t.physics.state(handle(t.world, 1))->linear_velocity.y); // this step's result
+        if (t.tick == 3) {
+            t.bodies.set_linear_velocity(handle(t.world, 1), {0, 5, 0});
+            late_velocity.push_back(t.physics.state(handle(t.world, 1))->linear_velocity.y); // unchanged: the step is done
+        }
+    });
+    run(*session, 5);
+    // Ticks 1 to 3 fall; the request after tick 3's step applies before tick 4's.
+    REQUIRE(late_velocity.size() == 5);
+    CHECK(late_velocity[0] < 0.0f);
+    CHECK(late_velocity[3] == late_velocity[2]);
+    CHECK(before_step == late_velocity[2]); // the next tick starts from the completed step, untouched
+    CHECK(late_velocity[4] == Approx(5.0f - 9.81f / 60.0f).epsilon(0.02));
+    // Writing a dynamic body's transform after the step is refused like before it.
+    auto refused = play_late(document, create_on_first_tick({{1, sphere(MotionType::dynamic)}}), [](TickContext& t) {
+        if (t.tick == 2) t.commands.set_transform(handle(t.world, 1), at({0, 0, 0}));
+    });
+    const auto error = failure(*refused);
+    CHECK(contains(error, "failed after the step"));
+    CHECK(contains(error, "written by physics"));
+}
+
+TEST_CASE("Events in one tick are ordered by kind and EntityId, not by when bodies were made", "[physics][events]") {
+    auto document = SceneDocument{};
+    document.entities = {entity(1, {at({0, -0.5f, 0})}), entity(7, {at({-2, 1, 0})}), entity(8, {at({2, 1, 0})}), entity(9, {at({-2, 0.5f, 0})})};
+    auto events = std::vector<PhysicsEvent>{};
+    auto session = play_late(document, [](TickContext& t) {
+        if (t.tick != 0) return;
+        // Made in reverse: 9, 8, 7, then the floor, so Jolt's body order is the opposite of the EntityIds'.
+        t.bodies.create(handle(t.world, 9), as_sensor(box(MotionType::static_body, {1, 0.5f, 1})));
+        t.bodies.create(handle(t.world, 8), box(MotionType::dynamic));
+        t.bodies.create(handle(t.world, 7), box(MotionType::dynamic));
+        t.bodies.create(handle(t.world, 1), box(MotionType::static_body, {20, 0.5f, 20}));
+    }, [&](TickContext& t) {
+        if (!t.stopping) events.insert(events.end(), t.events.begin(), t.events.end());
+    });
+    run(*session, 60);
+    // Box 7 starts inside the sensor, and both boxes land in the same tick.
+    auto landing = std::vector<std::pair<PhysicsEventKind, EntityId>>{};
+    auto first_tick = std::optional<uint64_t>{};
+    for (const auto& e : events) {
+        if (e.kind == PhysicsEventKind::trigger_enter) continue;
+        if (!first_tick) first_tick = e.tick;
+        if (e.tick == *first_tick) landing.emplace_back(e.kind, e.second);
+    }
+    CHECK(landing == std::vector<std::pair<PhysicsEventKind, EntityId>>{{PhysicsEventKind::contact_begin, id(7)}, {PhysicsEventKind::contact_begin, id(8)}});
+    const auto entered = std::ranges::find_if(events, [](const PhysicsEvent& e) { return e.kind == PhysicsEventKind::trigger_enter; });
+    REQUIRE(entered != events.end());
+    CHECK(entered->first == id(7));
+    CHECK(entered->second == id(9));
+    // In the tick box 7 met the sensor, the contacts (if any) come first, then the trigger.
+    for (size_t i = 1; i < events.size(); ++i)
+        if (events[i].tick == events[i - 1].tick) CHECK(events[i - 1].kind <= events[i].kind);
 }

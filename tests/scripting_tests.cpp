@@ -676,3 +676,234 @@ TEST_CASE("Two hundred reloads while playing keep the VM's memory flat", "[scrip
     INFO("after 20 reloads " << early << " bytes, after 200 " << settings.reloads->memory());
     CHECK(settings.reloads->memory() < early + early / 4);
 }
+
+// --- Bodies, queries, and events (#1021) ----------------------------------------------------------------
+
+namespace {
+TransformComponent placed(math::Vec3 position) {
+    auto transform = TransformComponent{};
+    transform.translation = position;
+    return transform;
+}
+ColliderComponent box_collider(math::Vec3 half = math::Vec3(0.5f), bool sensor = false, int32_t group = 0) {
+    auto collider = ColliderComponent{};
+    collider.half_extents = half;
+    collider.sensor = sensor;
+    collider.group = group;
+    return collider;
+}
+ColliderComponent ball_collider() {
+    auto collider = ColliderComponent{};
+    collider.shape = ColliderShape::sphere;
+    return collider;
+}
+RigidBodyComponent moving(BodyMotion motion = BodyMotion::dynamic) {
+    auto body = RigidBodyComponent{};
+    body.motion = motion;
+    return body;
+}
+/// A 40 m floor, its top at y = 0.
+SceneEntity floor_entity() {
+    return entity(1, {NameComponent{"Floor"}, placed({0, -0.5f, 0}), box_collider({20, 0.5f, 20})});
+}
+bool logged(const Session& session, const std::string& text) {
+    const auto texts = session.texts(SimulationMessage::Level::info);
+    return std::ranges::any_of(texts, [&](const std::string& t) { return t.find(text) != std::string::npos; });
+}
+} // namespace
+
+TEST_CASE("Scripts read bodies and push them, and requests that break the rules are refused", "[scripting][bodies]") {
+    auto scripts = Scripts{};
+    const auto pusher = scripts.add(1, "pusher", R"(
+local P = {}
+function P:start() maya.log("motion " .. self.entity:motion() .. string.format(" mass %.0f", self.entity:mass())) end
+function P:fixed_update(dt)
+    local t = maya.tick()
+    if t == 3 then self.entity:add_impulse(vector.create(0, 5000, 0)) end
+    if t == 4 then maya.log(string.format("rising %.2f", self.entity:velocity().y)) end
+    if t == 6 then self.entity:teleport(vector.create(0, 10, 0)) end
+    if t == 8 then maya.log(string.format("height %.1f", self.entity:world_position().y)) end
+    if t == 9 then
+        local ok, message = pcall(function() self.entity:set_position(vector.create(0, 0, 0)) end)
+        maya.log(message)
+    end
+end
+return P
+)");
+    const auto undone = scripts.add(2, "undone", R"(
+local U = {}
+function U:fixed_update(dt)
+    if maya.tick() == 3 then
+        self.entity:add_impulse(vector.create(0, 5000, 0))
+        error("changed my mind")
+    end
+end
+return U
+)");
+    const auto mover = scripts.add(3, "mover", R"(
+local M = {}
+function M:fixed_update(dt)
+    self.entity:move_kinematic(self.entity:position() + vector.create(1, 0, 0) * dt)
+    if maya.tick() == 2 then
+        local ok, message = pcall(function() self.entity:add_force(vector.create(1, 0, 0)) end)
+        maya.log(message)
+        ok, message = pcall(function() self.entity:set_position(vector.create(0, 0, 0)) end)
+        maya.log(message)
+    end
+end
+function M:update(dt)
+    local ok, message = pcall(function() self.entity:wake() end)
+    if maya.tick() == 3 then maya.log(message) end
+end
+return M
+)");
+    const auto probe = scripts.add(4, "probe", R"(
+local B = {}
+function B:start()
+    maya.log("no body: " .. tostring(self.entity:velocity()) .. " " .. tostring(self.entity:motion()))
+    local ok, message = pcall(function() self.entity:add_force(vector.create(0, 1, 0)) end)
+    maya.log(message)
+end
+return B
+)");
+    auto session = play(scripts, {floor_entity(),
+                                  entity(2, {NameComponent{"Crate"}, placed({0, 0.5f, 0}), box_collider(), moving(), script(pusher)}),
+                                  entity(3, {NameComponent{"Resting"}, placed({4, 0.5f, 0}), box_collider(), moving(), script(undone)}),
+                                  entity(4, {NameComponent{"Platform"}, placed({-4, 2, 0}), box_collider(), moving(BodyMotion::kinematic), script(mover)}),
+                                  entity(5, {NameComponent{"Marker"}, placed({0, 5, 5}), script(probe)})});
+    session.run(12);
+    CHECK(logged(session, "Crate (pusher.luau): motion dynamic mass 1000"));
+    CHECK(logged(session, "rising 4.8")); // 5 m/s, less a tick of gravity
+    CHECK(logged(session, "height 10.1")); // teleported to 10, still rising: a teleport keeps the velocity
+    CHECK(logged(session, "cannot set the transform of entity 70 2: its dynamic body's pose is written by physics; use add_force"));
+    // The failed call's impulse was discarded with it.
+    CHECK(std::abs(session.play->physics().state(handle(session.world(), 3))->linear_velocity.y) < 0.1f);
+    CHECK(logged(session, "cannot push entity 70 4 \"Platform\": its body is kinematic; move it with a kinematic target"));
+    CHECK(logged(session, "its kinematic body's pose is written by physics; use move_kinematic or teleport"));
+    CHECK(logged(session, "update hooks cannot"));
+    CHECK(transform_of(session.world(), 4).translation.x > -4.0f + 0.1f); // it moved along its targets
+    CHECK(logged(session, "no body: nil nil"));
+    CHECK(logged(session, "cannot push entity 70 5 \"Marker\": it has no body"));
+}
+
+TEST_CASE("Scripts query the physics world", "[scripting][query]") {
+    auto scripts = Scripts{};
+    const auto asker = scripts.add(1, "asker", R"(
+local Q = {}
+local function names(list)
+    local out = {}
+    for _, item in list do table.insert(out, (item.entity or item):name()) end
+    return table.concat(out, ",")
+end
+function Q:fixed_update(dt)
+    if maya.tick() ~= 2 then return end
+    local origin, along = vector.create(0, 0.5, 0), vector.create(0, 0, -1)
+    local hit = maya.raycast(origin, along, 20)
+    maya.log(string.format("ray %s %.2f %.2f", hit.entity:name(), hit.distance, hit.normal.z))
+    maya.log("all " .. names(maya.raycast_all(origin, along, 20, {sensors = true})))
+    maya.log("group " .. maya.raycast(origin, along, 20, {groups = 4}).entity:name())
+    maya.log("ignoring " .. maya.raycast(origin, along, 20, {ignore = hit.entity}).entity:name())
+    maya.log("miss " .. tostring(maya.raycast(origin, vector.create(0, 1, 0), 20)))
+    local cast = maya.shape_cast({sphere = 0.25}, origin, along, 20)
+    maya.log(string.format("cast %s %.2f", cast.entity:name(), cast.distance))
+    maya.log("capsules " .. names(maya.shape_cast_all({capsule = 0.2, half_height = 0.3}, origin + vector.create(0, 0.2, 0), along, 20)))
+    maya.log("overlap " .. names(maya.overlap({box = vector.create(0.5, 0.5, 0.5)}, vector.create(0, 1.2, -3))))
+    local ok, message = pcall(maya.overlap, {cone = 1}, origin)
+    maya.log(message)
+end
+return Q
+)");
+    auto session = play(scripts, {floor_entity(), entity(2, {NameComponent{"Near"}, placed({0, 0.5f, -3}), box_collider(math::Vec3(0.5f), false, 1)}),
+                                  entity(3, {NameComponent{"Far"}, placed({0, 0.5f, -6}), box_collider(math::Vec3(0.5f), false, 2)}),
+                                  entity(4, {NameComponent{"Zone"}, placed({0, 0.5f, -9}), box_collider(math::Vec3(0.5f), true)}),
+                                  entity(5, {NameComponent{"Asker"}, script(asker)})});
+    session.run(3);
+    CHECK(logged(session, "ray Near 2.50 1.00"));
+    CHECK(logged(session, "all Near,Far,Zone"));
+    CHECK(logged(session, "group Far"));
+    CHECK(logged(session, "ignoring Far"));
+    CHECK(logged(session, "miss nil"));
+    CHECK(logged(session, "cast Near 2.25"));
+    CHECK(logged(session, "capsules Near,Far"));
+    CHECK(logged(session, "overlap Near"));
+    CHECK(logged(session, "a shape is {sphere = radius}, {box = half extents}, or {capsule = radius, half_height = h}"));
+    CHECK(session.texts(SimulationMessage::Level::error).empty());
+}
+
+TEST_CASE("A scripted trigger counts a ball dropped through it five times", "[scripting][events]") {
+    auto scripts = Scripts{};
+    const auto counter = scripts.add(1, "counter", R"(
+local C = {}
+function C:start() self.entered = 0; self.inside = 0 end
+function C:on_trigger_enter(other, contact)
+    self.entered += 1
+    self.inside += 1
+    if contact.removed then maya.log("removed?") end
+end
+function C:on_trigger_exit(other) self.inside -= 1 end
+function C:late_fixed_update(dt)
+    if maya.tick() == 449 then maya.log("entered " .. self.entered .. ", inside " .. self.inside) end
+end
+return C
+)");
+    const auto dropper = scripts.add(2, "dropper", R"(
+local D = {}
+function D:start() self.landings = 0 end
+function D:fixed_update(dt)
+    local t = maya.tick()
+    if t > 0 and t % 90 == 0 and t < 450 then
+        self.entity:teleport(vector.create(self.entity:position().x, 6, 0))
+        self.entity:set_velocity(vector.create(0, 0, 0))
+    end
+end
+function D:on_contact_begin(other, contact)
+    if other:name() == "Floor" then
+        self.landings += 1
+        if contact.normal.y > 0.9 then maya.log("landed on its underside") end
+    end
+end
+function D:late_fixed_update(dt)
+    if maya.tick() == 449 then maya.log(self.entity:name() .. " landed " .. self.landings) end
+end
+return D
+)");
+    auto session = play(scripts, {floor_entity(), entity(2, {NameComponent{"Zone"}, placed({0, 2.5f, 0}), box_collider({1, 0.5f, 1}, true), script(counter)}),
+                                  entity(3, {NameComponent{"Ball"}, placed({0, 6, 0}), ball_collider(), moving(), script(dropper)}),
+                                  entity(4, {NameComponent{"Stray"}, placed({5, 6, 0}), ball_collider(), moving(), script(dropper)})});
+    session.run(450);
+    CHECK(logged(session, "Zone (counter.luau): entered 5, inside 0"));
+    CHECK(logged(session, "Ball (dropper.luau): Ball landed 5"));
+    CHECK(logged(session, "Stray (dropper.luau): Stray landed 5"));
+    CHECK_FALSE(logged(session, "removed?"));
+    CHECK_FALSE(logged(session, "landed on its underside")); // the normal points from the ball toward the floor
+    CHECK(session.texts(SimulationMessage::Level::error).empty());
+}
+
+TEST_CASE("late_fixed_update reads the completed step and queues changes for the next", "[scripting][events]") {
+    auto scripts = Scripts{};
+    const auto after = scripts.add(1, "after", R"(
+local A = {}
+function A:late_fixed_update(dt)
+    local t = maya.tick()
+    if t == 3 then
+        maya.log(string.format("falling %.3f", self.entity:velocity().y))
+        self.entity:set_velocity(vector.create(0, 5, 0))
+        maya.log(string.format("still %.3f", self.entity:velocity().y))
+        local ok, message = pcall(function() self.entity:set_position(vector.create(0, 0, 0)) end)
+        maya.log(message)
+        maya.find("70 2"):set_position(vector.create(1, 2, 3))
+    end
+    if t == 4 then maya.log(string.format("then %.3f", self.entity:velocity().y)) end
+end
+return A
+)");
+    auto session = play(scripts, {entity(1, {placed({0, 10, 0}), ball_collider(), moving(), script(after)}), entity(2, {placed({0, 0, 0})})});
+    session.run(5);
+    const auto dt = 1.0f / 60.0f;
+    CHECK(logged(session, "falling -0.65")); // four ticks of gravity: this step's result
+    CHECK(logged(session, "still -0.65")); // the request waits for the next step
+    CHECK(logged(session, "then 4.83")); // 5 m/s, less a tick of gravity
+    CHECK(logged(session, "its dynamic body's pose is written by physics"));
+    CHECK(transform_of(session.world(), 2).translation.z == 3.0f); // committed with the tick
+    (void)dt;
+}
