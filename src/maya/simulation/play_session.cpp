@@ -132,6 +132,7 @@ PlayFrame PlaySession::update(double wall_delta) {
 // The fixed-tick phases of docs/architecture/scheduling-contracts.md. This tick's commit is the next
 // tick's phase 1: the World batch, then bodies for destroyed entities go and requested ones arrive.
 void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
+    m_physics->clear_debug_queries(); // debug views show the last tick's
     // Phase 2: this tick's input, live or replayed, and recorded when recording.
     auto input = m_input.latch();
     if (m_replay.replaying) input = m_replay_inputs.at(m_clock.tick());

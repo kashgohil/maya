@@ -3,6 +3,7 @@
 #include "maya/simulation/recording.hpp"
 #include "maya/simulation/scripting.hpp"
 #include "editor_camera.hpp"
+#include "editor_preferences.hpp"
 #include "editor_theme.hpp"
 #include "input_router.hpp"
 #include "picking.hpp"
@@ -262,6 +263,24 @@ public:
     /// For inspection in tests; make it current only between frames.
     ImGuiContext* context() const noexcept { return m_context; }
 
+    /// Reads preferences from `file`, and saves every change to them there. A missing file keeps the
+    /// defaults; an unreadable one is reported and kept as it is until a change is saved.
+    void use_preferences_file(std::filesystem::path file);
+    const EditorPreferences& preferences() const noexcept { return m_preferences; }
+    /// The viewport's physics debug views (docs/editor.md#physics-debug-views): while editing, from the
+    /// collider components; while playing, from the play session's physics world. Saved as preferences.
+    const PhysicsDebugOptions& physics_debug() const noexcept { return m_preferences.physics_debug; }
+    void set_physics_debug(const PhysicsDebugOptions& options);
+    /// While on, the primary selection's collider shows size and offset handles in place of the
+    /// transform gizmo. Each drag is one undoable edit, validated as the Inspector's are.
+    bool collider_editing() const noexcept { return m_collider_editing; }
+    void set_collider_editing(bool on);
+    /// The physics counts Diagnostics shows while playing (refreshed four times a second), else none.
+    const std::optional<PhysicsStats>& shown_physics() const noexcept { return m_shown_physics; }
+    const RendererStats& renderer_stats() const noexcept { return m_renderer.stats(); }
+    /// The debug lines and outlines the last viewport render drew.
+    const DebugDraw& viewport_debug() const noexcept { return m_debug_draw; }
+
 private:
     void apply_input(const RoutedInput& routed);
     void rebuild_fonts(float scale);
@@ -271,6 +290,10 @@ private:
     bool edit_property(EntityId id, const ComponentValue& value, PropertyId property, PropertyValue input);
     void track_edit(const std::string& label);
     void draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2 max);
+    void draw_physics_debug_menu();
+    /// Size and offset handles on the primary selection's collider. Returns whether they are shown.
+    bool draw_collider_handles(const RenderView& view, ImVec2 min, ImVec2 max);
+    void save_preferences();
     void pick_at(ImVec2 point, const RenderView& view, ImVec2 min, ImVec2 max);
     void frame_selection();
     /// Sets the camera's pivot and pan scale as orbit, pan, or zoom starts at a viewport point.
@@ -366,6 +389,23 @@ private:
     bool m_gizmo_local = false;
     bool m_gizmo_using = false;
     bool m_gizmo_hovered = false;
+    // Collider handles: a drag moves one handle along its line, from the collider as it was at the press.
+    bool m_collider_editing = false;
+    struct ColliderDrag {
+        EntityId entity;
+        std::string handle; // "collider.+x", "collider.centre", ...
+        ColliderComponent start;
+        float start_along = 0.0f; // where the pointer was on the handle's line, in entity-local metres
+        math::Vec3 start_point{0.0f}; // centre drags: the pointer on the plane facing the camera
+    };
+    std::optional<ColliderDrag> m_collider_drag;
+    bool m_handle_hovered = false;
+    // Preferences and physics debug views.
+    EditorPreferences m_preferences;
+    std::filesystem::path m_preferences_file;
+    DebugDraw m_debug_draw; // this frame's, reused
+    std::optional<PhysicsStats> m_shown_physics;
+    float m_physics_age = 0.0f; // seconds since m_shown_physics was taken
     std::optional<RenderSnapshot> m_snapshot; // the last rendered frame, for picking and outlines
     ImVec2 m_pick_point{-1.0f, -1.0f};
     std::vector<EntityId> m_pick_hits;

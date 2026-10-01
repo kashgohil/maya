@@ -6,6 +6,7 @@
 #include "maya/core/file_system.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
+#include "maya/simulation/physics_debug.hpp"
 #include "maya/simulation/play_session.hpp"
 #include <fstream>
 #include <iostream>
@@ -67,6 +68,10 @@ public:
         m_session = std::move(started.session);
         if (!m_session->camera()) return fail(std::filesystem::path(scene_name).filename().string() + " has no camera to show; add one in the editor");
         if (m_options.record) m_session->start_recording();
+        if (m_options.debug_physics) {
+            m_session->set_physics_debug_capture(true);
+            std::cerr << "[Player] drawing the physics debug views\n";
+        }
         if (m_options.replay) {
             m_session->start_replay(m_recording.inputs, m_recording.checkpoints);
             std::cerr << "[Player] replaying " << m_recording.inputs.size() << " ticks of " << scene_name << " from "
@@ -114,6 +119,11 @@ public:
         if (!view) throw std::runtime_error("[Player] the camera entity has no valid view");
         auto options = RenderExtractOptions{};
         options.poses = &poses;
+        if (m_options.debug_physics) { // never drawn otherwise
+            m_debug.clear();
+            play_physics_debug(world, m_session->physics(), {all_physics_debug, all_collision_groups}, &poses, m_debug);
+            options.debug = &m_debug;
+        }
         const auto snapshot = extract_render_snapshot(world, *m_assets, options);
         if (snapshot.diagnostics.size() != m_reported) { // report changes, not every frame
             for (const auto& problem : snapshot.diagnostics) std::cerr << "[Player] " << problem.message << '\n';
@@ -161,6 +171,7 @@ private:
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<RenderTarget> m_view;
     size_t m_reported = 0;
+    DebugDraw m_debug; // --debug-physics: this frame's, reused
     PlayRecording m_recording; // being made (--record), or being replayed (--replay)
     bool m_replay_done = false;
 };

@@ -122,6 +122,7 @@ void EditorShell::stop_play() {
     }
     m_play.reset(); // the play World, its systems, and the snapshot's leases on it go now
     m_play_reloads.reset();
+    m_shown_physics.reset();
     m_snapshot.reset();
     m_frame_problems.clear();
     if (m_scene) {
@@ -155,6 +156,12 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
     m_play->input().feed(routed.game);
     if (routed.game_ended) m_play->input().release_all();
     const auto frame = m_play->update(delta_time);
+    // Diagnostics' physics counts, four times a second, whether or not the panel is showing.
+    m_physics_age += delta_time;
+    if (!m_shown_physics || m_physics_age >= 0.25f) {
+        m_shown_physics = m_play->physics().stats();
+        m_physics_age = 0.0f;
+    }
     // Scripts report without stopping play: logs to Diagnostics; a failed instance also as a notice.
     for (const auto& message : frame.messages) {
         m_log.add(DiagnosticSource::script, message.text, m_frame);
@@ -212,8 +219,12 @@ void EditorShell::draw_view_toggle() {
     if (option((std::string(icon::cube_focus) + "  Scene").c_str(), "view.scene", !m_game_view || !has_camera,
                "Through the editor camera; hold the right button to fly"))
         set_game_view(false);
+    ImGui::SameLine(0.0f, 8.0f);
+    if (option(icon::eye, "tool.physics-debug", m_preferences.physics_debug.any(), "Physics debug views")) ImGui::OpenPopup("physics-debug");
     ImGui::PopStyleVar(3);
     ImGui::NewLine();
+    draw_physics_debug_menu();
+    if (ImGui::IsPopupOpen("physics-debug")) hovered = true; // the menu's clicks are not the game's
     if (hovered) m_viewport_hovered = false; // a click on the toggle is not a click on the game
 }
 

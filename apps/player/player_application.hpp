@@ -16,6 +16,8 @@ struct PlayerOptions {
     std::optional<std::filesystem::path> record;
     /// Replays this recording (its scene, with its input) instead of a scene, and checks the result.
     std::optional<std::filesystem::path> replay;
+    /// Draws every physics debug view over the game (docs/physics.md#debug-views), for debugging.
+    bool debug_physics = false;
 };
 
 /// Runs a saved scene: opens the project and scene, starts a play session with the built-in systems,

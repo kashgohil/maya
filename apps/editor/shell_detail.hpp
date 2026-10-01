@@ -114,5 +114,7 @@ inline float hint_line(ImDrawList* draw, ImVec2 origin, const std::vector<HintIt
 
 /// Applies the theme's colors and line weights to ImGuizmo (viewport_tools.cpp).
 void style_gizmo();
+/// The selection outline's color (0xFFD166), for debug outlines of what is being edited.
+inline constexpr DebugColor selection_debug_color{1.0f, 0.82f, 0.40f, 1.0f};
 
 } // namespace maya::editor::detail

@@ -25,6 +25,7 @@ public:
                                                             read_file("resources/fonts/Inter-SemiBold.ttf"),
                                                             read_file("resources/fonts/GeistMono-Regular.ttf"),
                                                             read_file("resources/fonts/Phosphor-Light.ttf")});
+        if (const auto preferences = default_preferences_file(); !preferences.empty()) m_shell->use_preferences_file(preferences);
         // An editor without a project still starts; the Assets panel says how to open one, and a project
         // that fails to open explains why.
         if (!m_project) m_project = FileSystem::resolve("samples/basic_scene/project.maya");

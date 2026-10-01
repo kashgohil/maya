@@ -154,6 +154,7 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
                 " ignored: at most " + std::to_string(max_directional_lights) + " directional lights are rendered");
         snapshot.lights.resize(max_directional_lights);
     }
+    if (options.debug) snapshot.debug = *options.debug;
     return snapshot;
 }
 

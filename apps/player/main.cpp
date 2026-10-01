@@ -5,12 +5,17 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-    // The player's own options, --record <file> and --replay <file>, are taken out first; the rest are a
-    // project file or folder, then a scene inside its content folder, and the host's options.
+    // The player's own options (--record <file>, --replay <file>, and --debug-physics) are taken out
+    // first; the rest are a project file or folder, then a scene inside its content folder, and the
+    // host's options.
     auto options = maya::player::PlayerOptions{};
     auto kept = std::vector<char*>{};
     for (int i = 0; i < argc; ++i) {
         const auto argument = std::string_view(argv[i]);
+        if (argument == "--debug-physics") {
+            options.debug_physics = true;
+            continue;
+        }
         if (argument == "--record" || argument == "--replay") {
             if (i + 1 >= argc) {
                 std::cerr << "[Player] " << argument << " needs a file\n";
@@ -35,5 +40,5 @@ int main(int argc, char** argv) {
     if (arguments.positional.size() > 1) options.scene = arguments.positional[1];
     return maya::run_desktop(arguments.host_count(), arguments.host.data(),
         maya::player::create_player_application(std::move(options)),
-        {.title = "Maya Player", .capture_cursor = true, .usage = "[project [scene]] [--record file | --replay file]"});
+        {.title = "Maya Player", .capture_cursor = true, .usage = "[project [scene]] [--record file | --replay file] [--debug-physics]"});
 }

@@ -248,9 +248,15 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
         m_gizmo_local = !m_gizmo_local;
     ImGui::SameLine(0.0f, 8.0f);
     if (tool(icon::frame, false, "Frame selection   F")) frame_selection();
+    ImGui::SameLine(0.0f, 8.0f);
+    if (tool(icon::cube_transparent, m_collider_editing, "Edit collider   C")) set_collider_editing(!m_collider_editing);
+    m_layout.controls.push_back({"tool.collider", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    if (tool(icon::eye, m_preferences.physics_debug.any(), "Physics debug views")) ImGui::OpenPopup("physics-debug");
+    m_layout.controls.push_back({"tool.physics-debug", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
     ImGui::PopStyleVar(3);
     ImGui::NewLine();
     const auto toolbar_hovered = ImGui::IsAnyItemHovered();
+    draw_physics_debug_menu();
 
     // Gizmo on the primary selection.
     m_layout.gizmo_origin.reset();
@@ -264,7 +270,8 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
         return component_id(value) == ComponentId::transform;
     });
     auto shown = false;
-    if (has_transform) {
+    const auto handles = m_collider_editing && draw_collider_handles(view, min, max);
+    if (has_transform && !handles) {
         const auto handle = scene.world().find(*primary);
         const auto world = handle ? scene.world().world_matrix(*handle) : std::nullopt;
         if (world) {
@@ -304,7 +311,7 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     // Click to select (the gizmo and tool bar take their own clicks).
     const auto over_image = io.MousePos.x >= min.x && io.MousePos.x < max.x && io.MousePos.y >= min.y && io.MousePos.y < max.y;
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && over_image && ImGui::IsWindowHovered() && !toolbar_hovered &&
-        !m_gizmo_hovered && !m_gizmo_using)
+        !m_gizmo_hovered && !m_gizmo_using && !m_handle_hovered && !m_collider_drag)
         pick_at(io.MousePos, view, min, max);
 
     // Tool keys while the pointer is over the viewport and no text field has the keyboard.
@@ -315,11 +322,223 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) m_gizmo = GizmoOperation::scale;
         if (ImGui::IsKeyPressed(ImGuiKey_X, false)) m_gizmo_local = !m_gizmo_local;
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_selection();
+        if (ImGui::IsKeyPressed(ImGuiKey_C, false)) set_collider_editing(!m_collider_editing);
         if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
             if (const auto result = scene.delete_selection(); !result && result.error != "Nothing is selected")
                 report(result, "Delete");
         }
     }
+}
+
+
+// The physics debug views menu: a check for each category and for each collision group, saved as
+// preferences as they change.
+void EditorShell::draw_physics_debug_menu() {
+    if (!ImGui::BeginPopup("physics-debug")) return;
+    auto options = m_preferences.physics_debug;
+    const auto remember = [&](const char* key) { m_layout.controls.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()}); };
+    theme::caption(m_fonts, "PHYSICS DEBUG");
+    const auto category = [&](PhysicsDebugCategory value, const char* label, const char* key, const char* tip) {
+        auto on = options.has(value);
+        if (ImGui::Checkbox(label, &on)) options.categories = on ? options.categories | uint8_t(value) : options.categories & ~uint8_t(value);
+        remember(key);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    };
+    category(PhysicsDebugCategory::colliders, "Colliders", "debug.colliders", "Outlines of solid colliders.");
+    category(PhysicsDebugCategory::body_state, "Body state", "debug.body-state",
+             "Colors outlines by body: static, kinematic, active, or sleeping (in Play).");
+    category(PhysicsDebugCategory::triggers, "Triggers", "debug.triggers", "Outlines of sensor colliders.");
+    category(PhysicsDebugCategory::contacts, "Contacts", "debug.contacts", "Contact points and normals of the last step, in Play.");
+    category(PhysicsDebugCategory::queries, "Queries", "debug.queries", "The last tick's raycasts, shape casts, and overlaps, and their hits, in Play.");
+    ImGui::Dummy({0.0f, 4.0f});
+    theme::caption(m_fonts, "COLLISION GROUPS");
+    if (ImGui::SmallButton("All")) options.groups = all_collision_groups;
+    remember("debug.groups.all");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("None")) options.groups = 0;
+    remember("debug.groups.none");
+    const auto names = collision_groups();
+    if (ImGui::BeginTable("groups", 2, ImGuiTableFlags_SizingFixedFit)) {
+        for (uint32_t group = 0; group < collision_group_count; ++group) {
+            ImGui::TableNextColumn();
+            auto on = (options.groups >> group & 1u) != 0;
+            ImGui::PushID(int(group));
+            if (ImGui::Checkbox(collision_group_label(names, group).c_str(), &on))
+                options.groups = uint16_t(on ? options.groups | 1u << group : options.groups & ~(1u << group));
+            ImGui::PopID();
+            m_layout.controls.push_back({"debug.group." + std::to_string(group), ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        }
+        ImGui::EndTable();
+    }
+    set_physics_debug(options);
+    ImGui::EndPopup();
+}
+
+// Collider handles: a dot on each face (box), on each axis (sphere), or on the radius and each end
+// (capsule), and a square at the centre. A face or end moves with the opposite one held still, so a
+// drag changes the size and the offset together; the centre moves the offset in the plane facing
+// the camera. Everything is worked out in the entity's own space, where the collider is described.
+bool EditorShell::draw_collider_handles(const RenderView& view, ImVec2 min, ImVec2 max) {
+    auto& scene = *m_scene;
+    m_handle_hovered = false;
+    const auto end_drag = [&] {
+        if (m_collider_drag) scene.end_group();
+        m_collider_drag.reset();
+    };
+    const auto primary = scene.primary();
+    const auto entity = primary ? scene.world().find(*primary) : std::nullopt;
+    const auto world = entity ? scene.world().world_matrix(*entity) : std::nullopt;
+    const auto inverse = world ? inverse_affine(*world) : std::nullopt;
+    auto collider = std::optional<ColliderComponent>{};
+    if (inverse) scene.world().with<ColliderComponent>(*entity, [&](const ColliderComponent& value) { collider = value; });
+    if (!collider || (m_collider_drag && m_collider_drag->entity != *primary)) {
+        end_drag();
+        if (!collider) return false;
+    }
+
+    struct Handle {
+        std::string key;
+        math::Vec3 point; // entity space
+        math::Vec3 axis; // unit, entity space, pointing out; zero for the centre
+    };
+    const auto rotation = collider->rotation;
+    const auto offset = collider->offset;
+    auto handles = std::vector<Handle>{{"collider.centre", offset, {}}};
+    const math::Vec3 unit_axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const char* const names[3] = {"x", "y", "z"};
+    for (int axis = 0; axis < 3; ++axis) {
+        const auto along = rotation.rotate(unit_axes[axis]);
+        auto reach = collider->radius;
+        if (collider->shape == ColliderShape::box) reach = axis == 0 ? collider->half_extents.x : axis == 1 ? collider->half_extents.y : collider->half_extents.z;
+        if (collider->shape == ColliderShape::capsule && axis == 1) reach = collider->half_height + collider->radius;
+        for (const auto sign : {1.0f, -1.0f})
+            handles.push_back({std::string("collider.") + (sign > 0 ? "+" : "-") + names[axis], offset + along * (reach * sign), along * sign});
+    }
+
+    const auto& io = ImGui::GetIO();
+    const auto project = [&](const math::Vec3& local) -> std::optional<ImVec2> {
+        const auto p = transform_point(*world, local);
+        const auto clip = view.matrices.view_projection * math::Vec4(p, 1.0f);
+        if (clip.w <= 1e-4f) return std::nullopt;
+        return ImVec2{min.x + (clip.x / clip.w * 0.5f + 0.5f) * (max.x - min.x), min.y + (0.5f - clip.y / clip.w * 0.5f) * (max.y - min.y)};
+    };
+    // The pointer as a ray in entity space.
+    const auto local_ray = [&]() -> std::optional<Ray> {
+        const auto ray = viewport_ray(io.MousePos);
+        if (!ray) return std::nullopt;
+        const auto o = *inverse * math::Vec4(ray->origin, 1.0f);
+        const auto d = *inverse * math::Vec4(ray->direction, 0.0f);
+        return Ray{{o.x, o.y, o.z}, {d.x, d.y, d.z}};
+    };
+    // Where the pointer is along a handle's line through `centre` (the offset when the drag began).
+    const auto along_line = [&](const Ray& ray, const math::Vec3& centre, const math::Vec3& axis) -> std::optional<float> {
+        const auto w = centre - ray.origin;
+        const auto a = math::Vec3::dot(axis, axis), b = math::Vec3::dot(axis, ray.direction), c = math::Vec3::dot(ray.direction, ray.direction);
+        const auto denominator = a * c - b * b;
+        if (std::abs(denominator) < 1e-8f) return std::nullopt; // looking straight along it
+        return (b * math::Vec3::dot(ray.direction, w) - c * math::Vec3::dot(axis, w)) / denominator;
+    };
+    // Where the pointer meets the plane through the centre that faces the camera.
+    const auto forward = *inverse * math::Vec4(m_camera.forward(), 0.0f);
+    const auto on_plane = [&](const Ray& ray, const math::Vec3& centre) -> std::optional<math::Vec3> {
+        const auto normal = math::Vec3{forward.x, forward.y, forward.z};
+        const auto facing = math::Vec3::dot(normal, ray.direction);
+        if (std::abs(facing) < 1e-8f) return std::nullopt;
+        const auto t = math::Vec3::dot(normal, centre - ray.origin) / facing;
+        return ray.origin + ray.direction * t;
+    };
+
+    // Draw, and find the handle under the pointer.
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(min, max, true);
+    const Handle* hovered = nullptr;
+    auto nearest = 8.0f * 8.0f;
+    const auto tone = theme::color::rgb(0xFFD166);
+    for (const auto& handle : handles) {
+        const auto at = project(handle.point);
+        if (!at) continue;
+        m_layout.controls.push_back({handle.key, {at->x - 6.0f, at->y - 6.0f}, {at->x + 6.0f, at->y + 6.0f}});
+        const auto dx = io.MousePos.x - at->x, dy = io.MousePos.y - at->y;
+        const auto dragging = m_collider_drag && m_collider_drag->handle == handle.key;
+        if (!m_collider_drag && dx * dx + dy * dy <= nearest) {
+            nearest = dx * dx + dy * dy;
+            hovered = &handle;
+        }
+        const auto size = dragging || hovered == &handle ? 6.5f : 5.0f;
+        if (handle.key == "collider.centre") {
+            draw->AddRectFilled({at->x - size, at->y - size}, {at->x + size, at->y + size}, theme::color::rgb(0x0B0C0E, 220), 2.0f);
+            draw->AddRect({at->x - size, at->y - size}, {at->x + size, at->y + size}, tone, 2.0f, 0, 1.5f);
+        } else {
+            draw->AddCircleFilled(*at, size, tone);
+            draw->AddCircle(*at, size + 1.0f, theme::color::rgb(0x0B0C0E, 220), 0, 1.5f);
+        }
+    }
+    draw->PopClipRect();
+    m_handle_hovered = hovered != nullptr && ImGui::IsWindowHovered();
+
+    // Press on a handle to start a drag: one undo step for the whole drag.
+    if (!m_collider_drag && hovered && m_handle_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !m_router.navigating()) {
+        const auto ray = local_ray();
+        auto drag = ColliderDrag{*primary, hovered->key, *collider};
+        auto started = false;
+        if (ray && hovered->axis.length_squared() == 0.0f) {
+            if (const auto point = on_plane(*ray, offset)) {
+                drag.start_point = *point;
+                started = true;
+            }
+        } else if (ray) {
+            if (const auto t = along_line(*ray, offset, hovered->axis)) {
+                drag.start_along = *t;
+                started = true;
+            }
+        }
+        if (started) {
+            scene.begin_group((hovered->key == "collider.centre" ? "Move the collider of " : "Resize the collider of ") + scene.display_name(*primary));
+            m_collider_drag = std::move(drag);
+        }
+    }
+    if (!m_collider_drag) return true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        end_drag();
+        return true;
+    }
+
+    // Dragging: the new collider, from the one at the press.
+    const auto& drag = *m_collider_drag;
+    const auto found = std::ranges::find(handles, drag.handle, &Handle::key);
+    const auto ray = local_ray();
+    if (found == handles.end() || !ray) return true;
+    constexpr float smallest = 0.005f; // metres: half extents, radii, and half heights stay positive
+    auto updated = drag.start;
+    const auto& start = drag.start;
+    if (found->axis.length_squared() == 0.0f) {
+        if (const auto point = on_plane(*ray, start.offset)) updated.offset = start.offset + (*point - drag.start_point);
+    } else if (const auto t = along_line(*ray, start.offset, found->axis)) {
+        const auto moved = *t - drag.start_along; // how far the handle moved, outward positive
+        const auto axis = drag.handle[10] == 'x' ? 0 : drag.handle[10] == 'y' ? 1 : 2; // "collider.+x"
+        const auto outward = found->axis;
+        if (start.shape == ColliderShape::box) {
+            auto half = start.half_extents;
+            auto& h = axis == 0 ? half.x : axis == 1 ? half.y : half.z;
+            const auto before = h;
+            h = std::max(before + moved * 0.5f, smallest);
+            updated.half_extents = half;
+            updated.offset = start.offset + outward * (h - before); // the opposite face stays
+        } else if (start.shape == ColliderShape::capsule && axis == 1) {
+            updated.half_height = std::max(start.half_height + moved * 0.5f, smallest);
+            updated.offset = start.offset + outward * (updated.half_height - start.half_height); // the other end stays
+        } else {
+            updated.radius = std::max(start.radius + moved, smallest);
+        }
+    }
+    const auto result = scene.set_component(*primary, updated);
+    if (!result && result.error != "Nothing to change") {
+        m_edit_error = result.error;
+        m_edit_error_entity = *primary;
+    } else {
+        m_edit_error.clear();
+    }
+    return true;
 }
 
 } // namespace maya::editor

@@ -834,6 +834,43 @@ void EditorShell::draw_diagnostics() {
             }
             theme::end_properties();
         }
+        // The play session's physics: bodies by state, what touches, what was asked, and the step's cost
+        // and errors, which are never hidden.
+        if (m_play && m_shown_physics && m_shown_physics->steps > 0) {
+            const auto& p = *m_shown_physics;
+            const auto count = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+            ImGui::Dummy({0.0f, 6.0f});
+            theme::caption(m_fonts, "PHYSICS", format("%llu steps", count(p.steps)).c_str());
+            if (theme::begin_properties("physics")) {
+                const auto row = [&](const char* label, const std::string& value, const char* tip, bool warning = false) {
+                    theme::property(label);
+                    ImGui::AlignTextToFramePadding();
+                    if (warning) ImGui::PushStyleColor(ImGuiCol_Text, theme::color::warning);
+                    theme::mono_text(m_fonts, value.c_str());
+                    if (warning) ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                };
+                const auto moving = p.kinematic_bodies + p.dynamic_bodies;
+                row("Bodies", format("%zu   static %zu   kinematic %zu   dynamic %zu", p.bodies, p.static_bodies, p.kinematic_bodies,
+                                     p.dynamic_bodies), "Bodies in the physics world, by motion type.");
+                row("State", format("active %zu   sleeping %zu", p.active_bodies, moving - p.active_bodies),
+                    "Kinematic and dynamic bodies awake in the last step, and those asleep.");
+                row("Touching", format("%zu contacts   %zu overlaps", p.contacts, p.overlaps),
+                    "Pairs of bodies touching now: solid contacts, and overlaps with a sensor.");
+                row("Asked", format("%llu queries   %llu events", count(p.queries), count(p.events)),
+                    "Raycasts, shape casts, and overlaps asked, and contact and trigger events delivered, this session.");
+                row("Step", format("%.2f ms   prepare %.2f   sync %.2f   events %.2f", p.step_ms, p.prepare_ms, p.synchronize_ms, p.events_ms),
+                    "Wall time of the last tick's physics phases, in milliseconds.");
+                const auto errors = p.steps_with_errors + p.contact_records_dropped;
+                row("Errors", format("%llu steps   manifolds %llu   pairs %llu   constraints %llu   dropped %llu   skipped %llu",
+                                     count(p.steps_with_errors), count(p.manifold_cache_full), count(p.body_pair_cache_full),
+                                     count(p.contact_constraints_full), count(p.contact_records_dropped),
+                                     count(p.event_recipients_skipped)),
+                    "Steps where Jolt ran out of room (manifold cache, body pairs, contact constraints), contact changes "
+                    "that could not be stored, and event recipients already gone at delivery.", errors > 0);
+                theme::end_properties();
+            }
+        }
         // Performance over the last few seconds: the frame interval, where the CPU time went, the GPU's
         // own execution time, what was drawn, and memory, tracked and platform-reported kept apart.
         ImGui::Dummy({0.0f, 6.0f});
@@ -859,6 +896,9 @@ void EditorShell::draw_diagnostics() {
                 : shown.gpu.count ? format("%.2f ms   P95 %.2f   P99 %.2f", shown.gpu.mean, shown.gpu.p95, shown.gpu.p99)
                 : std::string("waiting for frames"),
                 "The GPU's execution time per frame, from its own timestamps when frames complete; never CPU time.");
+            if (!m_debug_draw.empty())
+                row("Debug", format("%zu outlines   %zu lines", m_debug_draw.shapes.size(), m_debug_draw.lines.size()),
+                    "Physics debug outlines and lines drawn in the viewport this frame.");
             row("Drawn", format("%llu draws   %llu instances   %llu triangles   %u passes",
                                 static_cast<unsigned long long>(stats.frame_draws), static_cast<unsigned long long>(stats.frame_instances),
                                 static_cast<unsigned long long>(stats.frame_triangles), stats.frame_passes));
@@ -907,6 +947,39 @@ void EditorShell::draw_diagnostics() {
     ImGui::End();
 }
 
+void EditorShell::use_preferences_file(std::filesystem::path file) {
+    m_preferences_file = std::move(file);
+    auto input = std::ifstream(m_preferences_file);
+    if (!input) return; // none yet: the defaults, until something changes
+    auto read = read_preferences(input);
+    if (!read.error.empty()) m_log.add(DiagnosticSource::project, "Preferences (" + m_preferences_file.string() + "): " + read.error, m_frame);
+    m_preferences = read.preferences;
+}
+
+void EditorShell::save_preferences() {
+    if (m_preferences_file.empty()) return;
+    auto error = std::error_code{};
+    std::filesystem::create_directories(m_preferences_file.parent_path(), error);
+    auto output = std::ofstream(m_preferences_file);
+    write_preferences(output, m_preferences);
+    output.flush();
+    if (error || !output) m_log.add(DiagnosticSource::project, "Cannot save preferences to " + m_preferences_file.string(), m_frame);
+}
+
+void EditorShell::set_physics_debug(const PhysicsDebugOptions& options) {
+    if (options == m_preferences.physics_debug) return;
+    m_preferences.physics_debug = options;
+    save_preferences();
+}
+
+void EditorShell::set_collider_editing(bool on) {
+    if (!on && m_collider_drag) {
+        m_scene->end_group(); // a drag in progress keeps what it did
+        m_collider_drag.reset();
+    }
+    m_collider_editing = on;
+}
+
 void EditorShell::record_frame(const FrameTiming& timing) {
     auto& p = m_performance;
     if (timing.interval > 0.0) p.interval.add(timing.interval);
@@ -945,6 +1018,29 @@ void EditorShell::render_viewport() {
     auto clock = Stopwatch{};
     auto options = RenderExtractOptions{};
     options.poses = &poses;
+    // Physics debug views: from the play session's physics world while playing, else from the collider
+    // components. Contacts and queries are captured only while they are shown.
+    m_debug_draw.clear();
+    const auto& debug = m_preferences.physics_debug;
+    if (m_play) {
+        m_play->set_physics_debug_capture(debug.needs_capture());
+        play_physics_debug(world, m_play->physics(), debug, &poses, m_debug_draw);
+    } else {
+        authored_physics_debug(world, debug, m_debug_draw);
+        // The collider being edited is always outlined, in the selection's color.
+        const auto primary = m_collider_editing ? m_scene->primary() : std::nullopt;
+        const auto handle = primary ? world.find(*primary) : std::nullopt;
+        const auto matrix = handle ? world.world_matrix(*handle) : std::nullopt;
+        if (matrix)
+            world.with<ColliderComponent>(*handle, [&](const ColliderComponent& collider) {
+                auto shape = ShapeGeometry{BoxShape{collider.half_extents}};
+                if (collider.shape == ColliderShape::sphere) shape = SphereShape{collider.radius};
+                if (collider.shape == ColliderShape::capsule) shape = CapsuleShape{collider.radius, collider.half_height};
+                debug_collider(m_debug_draw, *matrix, ColliderDesc{shape, collider.offset, collider.rotation}, selection_debug_color);
+            });
+    }
+    if (!m_debug_draw.empty()) options.debug = &m_debug_draw;
+    view->debug_line_width = 1.5f * std::max(m_font_scale, 1.0f);
     auto snapshot = extract_render_snapshot(world, *m_assets, options);
     m_performance.extract.add(clock.milliseconds());
     m_extraction = snapshot.stats;

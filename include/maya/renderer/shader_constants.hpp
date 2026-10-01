@@ -32,6 +32,14 @@ struct DrawConstants {
 struct PresentConstants {
     math::Vec4 area; // left, bottom, right, top
 };
+/// Uploaded once per debug draw. Buffer 0 holds that draw's lines (from, to, color: three float4
+/// each) or outlines (world matrix columns, size, color: six float4 each).
+struct DebugConstants {
+    math::Vec4 viewport; // width and height in pixels, line width in pixels, opacity
+    uint32_t kind[4]; // x: 0 lines, else DebugShapeKind + 1; y: circle segments; the rest is padding
+};
+inline constexpr size_t debug_line_floats = 12;
+inline constexpr size_t debug_shape_floats = 24;
 
 static_assert(sizeof(ViewConstants) == 240 && offsetof(ViewConstants, camera_position) == 64 &&
               offsetof(ViewConstants, ambient) == 80 && offsetof(ViewConstants, light_count) == 96 &&
@@ -40,4 +48,5 @@ static_assert(sizeof(DrawConstants) == 144 && offsetof(DrawConstants, normal_mat
               offsetof(DrawConstants, base_color) == 112 && offsetof(DrawConstants, material) == 128,
               "DrawConstants must match renderer.metal");
 static_assert(sizeof(PresentConstants) == 16, "PresentConstants must match renderer.metal");
+static_assert(sizeof(DebugConstants) == 32 && offsetof(DebugConstants, kind) == 16, "DebugConstants must match renderer.metal");
 } // namespace maya

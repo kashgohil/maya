@@ -104,3 +104,118 @@ fragment float4 presentFragment(PresentOut in [[stage_in]], texture2d<float> ima
                                 sampler filter [[sampler(0)]]) {
     return image.sample(filter, in.uv);
 }
+
+// Debug lines and outlines (docs/renderer.md#debug-lines). Buffer 0 holds either lines (from, to,
+// color) or outlines (world matrix columns, size, color); outlines are drawn from unit templates
+// generated here, one instance per outline. Every segment becomes a screen-space quad, `width`
+// pixels wide plus a pixel of soft edge.
+struct DebugConstants {
+    float4 viewport; // width, height, line width in pixels, opacity
+    uint4 kind; // x: 0 lines, 1 box, 2 sphere, 3 capsule; y: circle segments (8, 16, or 32)
+};
+
+struct DebugOut {
+    float4 position [[position]];
+    float4 color;
+    float across [[center_no_perspective]]; // pixels from the segment's centre line
+    float half_width [[flat]];
+};
+
+constant uint debug_box_edges[24] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7};
+
+// A unit circle point in one of three planes: 0 XY, 1 YZ, 2 ZX.
+float3 debug_circle(uint plane, float angle) {
+    const float c = cos(angle), s = sin(angle);
+    return plane == 0 ? float3(c, s, 0) : plane == 1 ? float3(0, c, s) : float3(s, 0, c);
+}
+
+// Endpoint `end` of template line `line` with `n` segments per circle: xyz on the unit shape, w which
+// cap it follows (capsules). Line counts match debug_template_lines in include/maya/world/debug_draw.hpp.
+float4 debug_template(uint kind, uint line, uint end, uint n) {
+    const float step = 2.0 * M_PI_F / float(n);
+    if (kind == 1) {
+        const uint corner = debug_box_edges[line * 2 + end];
+        return float4(corner & 1 ? 1 : -1, corner & 2 ? 1 : -1, corner & 4 ? 1 : -1, 0);
+    }
+    if (kind == 2) return float4(debug_circle(line / n, float(line % n + end) * step), 0);
+    // Capsule: rings around each cap's base, four sides, then arcs over the caps in the XY and ZY planes.
+    if (line < 2 * n) {
+        const float3 p = debug_circle(2, float(line % n + end) * step); // in the ZX plane
+        return float4(p, line < n ? 1 : -1);
+    }
+    if (line < 2 * n + 4) {
+        const uint side = line - 2 * n;
+        const float3 p = side == 0 ? float3(1, 0, 0) : side == 1 ? float3(-1, 0, 0) : side == 2 ? float3(0, 0, 1) : float3(0, 0, -1);
+        return float4(p, end == 0 ? -1 : 1);
+    }
+    const uint arc = line - (2 * n + 4); // 0 to 2n: n segments in XY, then n in ZY
+    const uint k = arc % n; // the first half turn is the top cap, the second the bottom
+    const float angle = float(k + end) * step;
+    const float3 p = arc < n ? float3(cos(angle), sin(angle), 0) : float3(0, sin(angle), cos(angle));
+    return float4(p, k < n / 2 ? 1 : -1);
+}
+
+vertex DebugOut debugVertex(uint vid [[vertex_id]], uint iid [[instance_id]],
+                            const device float4* data [[buffer(0)]],
+                            constant DebugConstants& debug [[buffer(1)]],
+                            constant ViewConstants& view [[buffer(2)]]) {
+    const uint line = vid / 6, corner = vid % 6;
+    const uint kind = debug.kind.x;
+    float3 a, b;
+    float4 color;
+    if (kind == 0) {
+        const device float4* l = data + 3 * line;
+        a = l[0].xyz;
+        b = l[1].xyz;
+        color = l[2];
+    } else {
+        const device float4* s = data + 6 * iid;
+        const float4x4 world = float4x4(s[0], s[1], s[2], s[3]);
+        const float3 size = s[4].xyz;
+        color = s[5];
+        const float4 ta = debug_template(kind, line, 0, debug.kind.y), tb = debug_template(kind, line, 1, debug.kind.y);
+        // Boxes stretch by their half extents; spheres and capsules by their radius, and a capsule's
+        // caps move apart by its half height.
+        const float3 scale = kind == 1 ? size : float3(size.x);
+        const float3 la = ta.xyz * scale + float3(0, ta.w * size.y, 0) * (kind == 3 ? 1.0 : 0.0);
+        const float3 lb = tb.xyz * scale + float3(0, tb.w * size.y, 0) * (kind == 3 ? 1.0 : 0.0);
+        a = (world * float4(la, 1)).xyz;
+        b = (world * float4(lb, 1)).xyz;
+    }
+    // A thousandth of the distance toward the camera, so outlines on surfaces win the depth test.
+    const float3 eye = view.camera_position.xyz;
+    a = eye + (a - eye) * 0.999;
+    b = eye + (b - eye) * 0.999;
+    float4 ca = view.view_projection * float4(a, 1), cb = view.view_projection * float4(b, 1);
+    DebugOut out;
+    out.color = color;
+    out.half_width = debug.viewport.z * 0.5;
+    out.across = 0;
+    const float near_w = 1e-3;
+    if (ca.w < near_w && cb.w < near_w) { // behind the camera
+        out.position = float4(0, 0, 2, 1);
+        return out;
+    }
+    if (ca.w < near_w) ca = mix(ca, cb, (near_w - ca.w) / (cb.w - ca.w));
+    if (cb.w < near_w) cb = mix(cb, ca, (near_w - cb.w) / (ca.w - cb.w));
+    const float2 half_size = debug.viewport.xy * 0.5;
+    const float2 sa = ca.xy / ca.w * half_size, sb = cb.xy / cb.w * half_size;
+    const float length_pixels = length(sb - sa);
+    const float2 d = length_pixels > 1e-4 ? (sb - sa) / length_pixels : float2(1, 0);
+    const float2 n = float2(-d.y, d.x);
+    // Two triangles: (a, -), (b, -), (a, +), (b, -), (b, +), (a, +).
+    const bool at_b = corner == 1 || corner == 3 || corner == 4;
+    const float side = corner == 0 || corner == 1 || corner == 3 ? -1.0 : 1.0;
+    const float reach = out.half_width + 1.0; // a pixel of soft edge
+    float4 c = at_b ? cb : ca;
+    const float2 offset = n * (side * reach) + d * ((at_b ? 1.0 : -1.0) * reach);
+    c.xy += offset / half_size * c.w;
+    out.position = c;
+    out.across = side * reach;
+    return out;
+}
+
+fragment float4 debugFragment(DebugOut in [[stage_in]], constant DebugConstants& debug [[buffer(1)]]) {
+    const float coverage = saturate(in.half_width + 0.5 - abs(in.across));
+    return float4(in.color.rgb, in.color.a * coverage * debug.viewport.w);
+}

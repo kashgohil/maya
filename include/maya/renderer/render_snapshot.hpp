@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/assets/registry.hpp"
+#include "maya/world/debug_draw.hpp"
 #include "maya/world/presentation.hpp"
 #include "maya/world/world.hpp"
 #include <array>
@@ -46,6 +47,8 @@ struct RenderExtractOptions {
     math::Vec3 ambient{0.06f, 0.07f, 0.09f}; // linear RGB added to every surface
     /// Poses shown in place of the World's, e.g. a play session's between ticks; none when null.
     const PresentationPoses* poses = nullptr;
+    /// Debug lines and outlines drawn over the scene (docs/renderer.md#debug-lines); none when null.
+    const DebugDraw* debug = nullptr;
 };
 struct RenderSnapshotStats {
     size_t mesh_renderers = 0;
@@ -66,6 +69,7 @@ struct RenderSnapshot {
     math::Vec3 ambient{0.0f};
     std::vector<RenderDiagnostic> diagnostics; // capped at max_render_diagnostics
     RenderSnapshotStats stats{};
+    DebugDraw debug; // copied from RenderExtractOptions::debug; empty draws nothing and costs nothing
 };
 
 /// Reads the World without modifying it and acquires assets through the registry, which loads
@@ -82,6 +86,7 @@ struct RenderView {
     CameraMatrices matrices{};
     math::Vec3 position{0.0f};
     std::array<double, 4> clear_color{0.1, 0.1, 0.1, 1.0};
+    float debug_line_width = 1.5f; // framebuffer pixels
 };
 /// A view from camera data and a rigid world pose, e.g. an editor camera that is tool state.
 /// Returns nullopt for a zero size or an invalid camera/pose.

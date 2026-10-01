@@ -20,6 +20,9 @@ struct RendererStats {
     uint64_t views = 0;
     uint64_t draws = 0;
     uint64_t presents = 0;
+    uint64_t debug_draws = 0; // instanced draws of debug lines and outlines, both depth passes
+    uint64_t debug_shapes = 0; // outlines drawn, counted once per view
+    uint64_t debug_lines = 0; // lines drawn, counted once per view
 };
 
 /// Turns render snapshots into images. It owns pipelines and a sampler, created on first use for
@@ -34,7 +37,9 @@ public:
     Renderer& operator=(const Renderer&) = delete;
 
     /// Inside a frame with no pass open: clears the target to the view's clear color, draws every
-    /// instance with its own constants, and closes the pass. The view size must match the target.
+    /// instance with its own constants, then the snapshot's debug lines and outlines (brightly where
+    /// they are in front of the scene, faintly behind it), and closes the pass. The view size must
+    /// match the target.
     /// Returns the first error (e.g. exhausted upload memory); later instances are not drawn, the
     /// pass is still closed, and the frame can still end.
     RhiDiagnostic render(const RenderSnapshot& snapshot, const RenderView& view, const RenderTarget& target);
@@ -45,13 +50,16 @@ public:
     const RendererStats& stats() const noexcept { return m_stats; }
 
 private:
+    enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind };
     struct CachedPipeline {
         Format format = Format::undefined;
-        bool present = false;
+        PipelineKind kind = PipelineKind::lit;
         PipelineHandle handle;
         RhiDiagnostic error; // a failed compile is not retried every frame
     };
-    RhiDiagnostic pipeline(Format format, bool present, PipelineHandle& out);
+    RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out);
+    RhiDiagnostic encode_debug(const DebugDraw& debug, const RenderView& view, const TransientSlice& view_constants,
+                               PipelineHandle front, PipelineHandle behind);
     bool session_changed() noexcept;
     void release() noexcept;
 
@@ -61,6 +69,8 @@ private:
     std::vector<CachedPipeline> m_pipelines;
     SamplerHandle m_sampler;
     RendererStats m_stats{};
+    std::vector<float> m_debug_data; // packed debug lines or outlines of one kind, reused
+    std::vector<uint32_t> m_debug_segments; // each outline's circle segments, reused
 };
 
 } // namespace maya

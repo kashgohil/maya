@@ -3,6 +3,7 @@
 #include "maya/world/world.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -135,6 +136,8 @@ struct PhysicsStats {
     uint64_t manifold_cache_full = 0, body_pair_cache_full = 0, contact_constraints_full = 0;
     uint64_t bodies_created = 0, bodies_removed = 0;
     uint64_t events = 0; // contact and trigger events produced
+    size_t contacts = 0, overlaps = 0; // body pairs touching now: solid pairs, and pairs with a sensor
+    uint64_t queries = 0; // raycasts, shape casts, and overlaps asked
     uint64_t event_recipients_skipped = 0; // recipients already gone, or being destroyed, at delivery
     uint64_t contact_records_dropped = 0; // contact changes Jolt reported that could not be stored (out of memory)
     // Wall time of the last tick's phases, in milliseconds.
@@ -158,6 +161,33 @@ void reset_physics_peak() noexcept;
 /// count. Takes effect for the next step; call it on the thread that steps worlds.
 void set_physics_worker_threads(int count);
 int physics_worker_threads() noexcept;
+
+/// A body as debug views draw it (docs/physics.md#debug-views).
+struct PhysicsDebugBody {
+    EntityHandle entity;
+    MotionType motion = MotionType::static_body;
+    bool sleeping = false; // kinematic and dynamic bodies
+    bool sensor = false;
+    uint8_t group = 0;
+    std::span<const ColliderDesc> colliders; // in the entity's space, before its scale
+};
+/// A contact point in the last step between two solid bodies (sensors report no points).
+struct PhysicsDebugContact {
+    math::Vec3 point{0.0f};
+    math::Vec3 normal{0.0f}; // from the lower body ID toward the other
+    uint16_t groups = 0; // bit n: one of the two bodies is in group n
+};
+enum class PhysicsQueryKind : uint8_t { raycast, shape_cast, overlap };
+/// A query as it was asked, and where it hit.
+struct PhysicsDebugQuery {
+    PhysicsQueryKind kind = PhysicsQueryKind::raycast;
+    math::Vec3 origin{0.0f}; // an overlap's position
+    math::Quat rotation{}; // shape casts and overlaps
+    math::Vec3 direction{0.0f}; // unit; raycasts and shape casts
+    float distance = 0.0f;
+    std::optional<ShapeGeometry> shape; // shape casts and overlaps
+    std::vector<math::Vec3> hits; // each hit body's nearest point
+};
 
 class PhysicsWorld;
 
@@ -238,6 +268,19 @@ public:
     std::optional<MotionType> motion_type(EntityHandle entity) const noexcept;
     std::optional<BodyState> state(EntityHandle entity) const;
     PhysicsStats stats() const;
+
+    /// Debug views (docs/physics.md#debug-views). While capture is on, each step keeps its contact
+    /// points, and each query is kept until clear_debug_queries; while it is off, neither costs anything.
+    void set_debug_capture(bool on);
+    bool debug_capture() const noexcept;
+    /// Every body in creation order, with its shape as it was described.
+    void for_each_debug_body(const std::function<void(const PhysicsDebugBody&)>& visit) const;
+    /// The last step's contact points, sorted by position; empty while capture is off.
+    const std::vector<PhysicsDebugContact>& debug_contacts() const noexcept;
+    /// The queries asked since clear_debug_queries, in order; empty while capture is off.
+    const std::vector<PhysicsDebugQuery>& debug_queries() const noexcept;
+    /// Play sessions call it at the start of each tick, so the list holds the last tick's queries.
+    void clear_debug_queries() noexcept;
 
     /// Throws std::invalid_argument naming the entity if `commands` (from index `first`) sets the
     /// transform of, removes the transform of, or reparents an entity with a kinematic or dynamic

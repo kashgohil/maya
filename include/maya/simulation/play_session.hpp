@@ -53,6 +53,9 @@ public:
     const World& world() const noexcept { return *m_world; }
     /// The session's physics, created with it and destroyed before its World.
     const PhysicsWorld& physics() const noexcept { return *m_physics; }
+    /// Debug views that draw contacts or queries turn this on (PhysicsWorld::set_debug_capture); each
+    /// tick then starts a new list of queries. Capture changes nothing the simulation does.
+    void set_physics_debug_capture(bool on) { m_physics->set_debug_capture(on); }
     FixedClock& clock() noexcept { return m_clock; }
     const FixedClock& clock() const noexcept { return m_clock; }
     GameInput& input() noexcept { return m_input; }

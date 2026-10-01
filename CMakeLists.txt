@@ -165,6 +165,7 @@ add_library(MayaSimulation STATIC
     src/maya/simulation/authored_physics.cpp
     src/maya/simulation/play_session.cpp
     src/maya/simulation/recording.cpp
+    src/maya/simulation/physics_debug.cpp
     src/maya/simulation/scripting/script_host.cpp
     src/maya/simulation/scripting/script_api.cpp
     src/maya/simulation/scripting/scripting.cpp)
@@ -271,6 +272,7 @@ if(MAYA_BUILD_EDITOR)
     add_library(MayaEditor STATIC
         apps/editor/editor_application.cpp
         apps/editor/editor_camera.cpp
+        apps/editor/editor_preferences.cpp
         apps/editor/editor_shell.cpp
         apps/editor/editor_theme.cpp
         apps/editor/input_router.cpp

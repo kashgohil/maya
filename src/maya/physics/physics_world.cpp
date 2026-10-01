@@ -239,9 +239,25 @@ public:
         record.speed = (a.GetPointVelocity(point) - b.GetPointVelocity(point)).Dot(normal);
         record.sensor = a.IsSensor() || b.IsSensor();
         append(record);
+        if (m_capture.load(std::memory_order_relaxed) && !record.sensor) capture(a, b, manifold);
+    }
+    void OnContactPersisted(const JPH::Body& a, const JPH::Body& b, const JPH::ContactManifold& manifold, JPH::ContactSettings&) override {
+        if (m_capture.load(std::memory_order_relaxed) && !a.IsSensor() && !b.IsSensor()) capture(a, b, manifold);
     }
     void OnContactRemoved(const JPH::SubShapeIDPair& pair) override {
         append({false, pair.GetBody1ID(), pair.GetBody2ID(), pair.GetSubShapeID1(), pair.GetSubShapeID2()});
+    }
+    /// Debug views: every contact point of the step's solid contacts, while capture is on.
+    struct Point {
+        JPH::BodyID a, b;
+        math::Vec3 point{0.0f}, normal{0.0f};
+    };
+    void set_capture(bool on) noexcept { m_capture = on; }
+    bool capturing() const noexcept { return m_capture; }
+    void take_points(std::vector<Point>& into) {
+        into.clear();
+        const auto lock = std::scoped_lock(m_mutex);
+        std::swap(into, m_points);
     }
     /// Swaps the recorded contacts into `into` (cleared first), keeping both buffers' capacity.
     void take(std::vector<ContactRecord>& into) {
@@ -260,9 +276,21 @@ private:
             ++m_dropped; // out of memory: the event is lost, never the step
         }
     }
+    void capture(const JPH::Body& a, const JPH::Body& b, const JPH::ContactManifold& manifold) noexcept {
+        try {
+            const auto lock = std::scoped_lock(m_mutex);
+            for (JPH::uint i = 0; i < manifold.mRelativeContactPointsOn1.size(); ++i)
+                m_points.push_back({a.GetID(), b.GetID(), maya_vector(JPH::Vec3(manifold.GetWorldSpaceContactPointOn1(i))),
+                                    maya_vector(manifold.mWorldSpaceNormal)});
+        } catch (...) {
+            // out of memory: a debug view misses a point
+        }
+    }
     std::mutex m_mutex;
     std::vector<ContactRecord> m_records;
+    std::vector<Point> m_points;
     std::atomic<uint64_t> m_dropped = 0;
+    std::atomic<bool> m_capture = false;
 };
 
 /// Queries hit the groups in the filter's mask.
@@ -350,8 +378,10 @@ struct PhysicsWorld::Impl {
         math::Quat rotation{};
         math::Mat4 world{}; // static bodies: the world matrix the shape was built for
         math::Vec3 scale{1.0f};
-        std::vector<ColliderDesc> colliders; // static bodies: to rebuild when the scale changes
+        std::vector<ColliderDesc> colliders; // to rebuild static bodies when their scale changes, and for debug views
         float density = 1000.0f;
+        bool sensor = false;
+        uint8_t group = 0;
     };
 
     explicit Impl(PhysicsSettings value) : settings(value), temp(uint32_t(value.temp_allocator_bytes)) {
@@ -377,12 +407,15 @@ struct PhysicsWorld::Impl {
         size_t operator()(const PairKey& key) const noexcept { return std::hash<uint64_t>{}(uint64_t(key.first) << 32 | key.second); }
     };
     void add_pair(const PairKey& key, Pair pair) {
-        pairs.emplace(key, pair);
+        if (pairs.emplace(key, pair).second) ++(pair.sensor ? overlapping : touching);
         pairs_of[key.first].push_back(key);
         pairs_of[key.second].push_back(key);
     }
     void erase_pair(const PairKey& key) {
-        pairs.erase(key);
+        if (const auto found = pairs.find(key); found != pairs.end()) {
+            --(found->second.sensor ? overlapping : touching);
+            pairs.erase(found);
+        }
         apart.erase(key);
         for (const auto body : {key.first, key.second}) {
             auto found = pairs_of.find(body);
@@ -543,7 +576,35 @@ struct PhysicsWorld::Impl {
     std::unordered_map<PairKey, std::pair<int, const ContactRecord*>, PairHash> changes;
     std::vector<PhysicsEvent> pending; // ends from removed bodies, for the next delivery
     size_t live_static = 0, live_moving = 0, dead = 0;
+    size_t touching = 0, overlapping = 0; // pairs: solid, and with a sensor
     PhysicsStats stats;
+    mutable uint64_t queries = 0;
+    // Debug views: the last step's contact points, and the queries since the last clear.
+    std::vector<ContactRecorder::Point> points;
+    std::vector<PhysicsDebugContact> debug_contacts;
+    mutable std::vector<PhysicsDebugQuery> debug_queries;
+    void log_query(PhysicsDebugQuery query, const std::vector<QueryHit>& hits) const {
+        ++queries;
+        if (!contacts.capturing()) return;
+        for (const auto& hit : hits) query.hits.push_back(hit.point);
+        debug_queries.push_back(std::move(query));
+    }
+    void take_debug_contacts() {
+        debug_contacts.clear();
+        contacts.take_points(points);
+        for (const auto& point : points) {
+            const auto* a = by_id(point.a.GetIndexAndSequenceNumber());
+            const auto* b = by_id(point.b.GetIndexAndSequenceNumber());
+            if (!a || !b) continue;
+            const auto lower = point.a.GetIndexAndSequenceNumber() < point.b.GetIndexAndSequenceNumber();
+            debug_contacts.push_back({point.point, lower ? point.normal : point.normal * -1.0f,
+                                      uint16_t(1u << a->group | 1u << b->group)});
+        }
+        // Worker threads report in any order.
+        std::ranges::sort(debug_contacts, {}, [](const PhysicsDebugContact& c) {
+            return std::tuple(c.point.x, c.point.y, c.point.z, c.normal.x, c.normal.y, c.normal.z);
+        });
+    }
 };
 
 std::string PhysicsWorld::Impl::refuse_create(const World& world, EntityHandle entity, const BodyDesc& body,
@@ -616,10 +677,12 @@ void PhysicsWorld::Impl::create(const World& world, EntityHandle entity, const B
     record.motion = body.motion;
     record.position = position;
     record.rotation = rotation;
+    record.colliders = body.colliders;
+    record.sensor = body.sensor;
+    record.group = body.group;
     if (body.motion == MotionType::static_body) {
         record.world = matrix;
         record.scale = scale;
-        record.colliders = body.colliders;
         record.density = body.density;
         resting.push_back(record.body);
         ++live_static;
@@ -761,9 +824,37 @@ std::optional<BodyState> PhysicsWorld::state(EntityHandle entity) const {
     return state;
 }
 
+void PhysicsWorld::set_debug_capture(bool on) {
+    auto& impl = *m_impl;
+    if (on == impl.contacts.capturing()) return;
+    impl.contacts.set_capture(on);
+    // Nothing captured is kept past turning it off, so a view that turns it on again starts clean.
+    impl.take_debug_contacts();
+    impl.debug_contacts.clear();
+    impl.debug_queries.clear();
+}
+
+bool PhysicsWorld::debug_capture() const noexcept { return m_impl->contacts.capturing(); }
+
+void PhysicsWorld::for_each_debug_body(const std::function<void(const PhysicsDebugBody&)>& visit) const {
+    const auto& impl = *m_impl;
+    for (const auto& record : impl.records) {
+        if (!record.alive) continue;
+        const auto sleeping = record.motion != MotionType::static_body && !impl.bodies().IsActive(record.body);
+        visit({record.entity, record.motion, sleeping, record.sensor, record.group, record.colliders});
+    }
+}
+
+const std::vector<PhysicsDebugContact>& PhysicsWorld::debug_contacts() const noexcept { return m_impl->debug_contacts; }
+const std::vector<PhysicsDebugQuery>& PhysicsWorld::debug_queries() const noexcept { return m_impl->debug_queries; }
+void PhysicsWorld::clear_debug_queries() noexcept { m_impl->debug_queries.clear(); }
+
 PhysicsStats PhysicsWorld::stats() const {
     auto stats = m_impl->stats;
     stats.contact_records_dropped = m_impl->contacts.dropped();
+    stats.contacts = m_impl->touching;
+    stats.overlaps = m_impl->overlapping;
+    stats.queries = m_impl->queries;
     for (const auto& record : m_impl->records) {
         if (!record.alive) continue;
         ++stats.bodies;
@@ -881,6 +972,7 @@ void PhysicsWorld::step(float interval) {
     const auto timer = PhaseTimer(impl.stats.step_ms);
     const auto errors = impl.system.Update(interval, int(impl.settings.collision_steps), &impl.temp, &detail::physics_jobs());
     ++impl.stats.steps;
+    if (impl.contacts.capturing()) impl.take_debug_contacts();
     if (errors == JPH::EPhysicsUpdateError::None) return;
     ++impl.stats.steps_with_errors;
     const auto has = [&](JPH::EPhysicsUpdateError flag) { return (errors & flag) != JPH::EPhysicsUpdateError::None; };
@@ -1004,7 +1096,11 @@ std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direct
     const auto along = unit(direction);
     if (!along || !finite(origin)) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
     if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A raycast's distance must be finite and not negative");
-    if (distance == 0.0f) return {};
+    auto logged = PhysicsDebugQuery{PhysicsQueryKind::raycast, origin, {}, *along, distance, std::nullopt, {}};
+    if (distance == 0.0f) {
+        impl.log_query(std::move(logged), {});
+        return {};
+    }
     const auto ray = JPH::RRayCast(JPH::RVec3(jolt(origin)), jolt(*along * distance));
     auto collector = JPH::AllHitCollisionCollector<JPH::CastRayCollector>{};
     const auto groups = QueryGroups(filter.groups);
@@ -1020,7 +1116,7 @@ std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direct
         std::vector<Hit> mHits;
     } found;
     for (const auto& hit : collector.mHits) found.mHits.push_back({hit.mBodyID, hit.mSubShapeID2, hit.mFraction});
-    return impl.hits(found, [&](const Hit& hit) {
+    auto results = impl.hits(found, [&](const Hit& hit) {
         auto result = QueryHit{};
         result.distance = hit.fraction * distance;
         result.point = origin + *along * result.distance;
@@ -1028,6 +1124,8 @@ std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direct
         if (lock.Succeeded()) result.normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.sub, JPH::RVec3(jolt(result.point))));
         return result;
     });
+    impl.log_query(std::move(logged), results);
+    return results;
 }
 
 std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math::Vec3 origin, math::Quat rotation, math::Vec3 direction,
@@ -1051,13 +1149,15 @@ std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math:
     const auto groups = QueryGroups(filter.groups);
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
     impl.query().CastShape(cast, settings, JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
-    return impl.hits(collector, [&](const JPH::ShapeCastResult& hit) {
+    auto results = impl.hits(collector, [&](const JPH::ShapeCastResult& hit) {
         auto result = QueryHit{};
         result.distance = hit.mFraction * distance;
         result.point = maya_vector(hit.mContactPointOn2);
         if (const auto axis = maya_vector(hit.mPenetrationAxis); const auto normal = unit(axis)) result.normal = *normal * -1.0f;
         return result;
     });
+    impl.log_query({PhysicsQueryKind::shape_cast, origin, *turned, *along, distance, shape, {}}, results);
+    return results;
 }
 
 std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::Vec3 position, math::Quat rotation,
@@ -1073,12 +1173,14 @@ std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::Ve
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
     impl.query().CollideShape(probe, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sRotationTranslation(jolt(*turned), JPH::RVec3(jolt(position))),
                               JPH::CollideShapeSettings(), JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
-    return impl.hits(collector, [&](const JPH::CollideShapeResult& hit) {
+    auto results = impl.hits(collector, [&](const JPH::CollideShapeResult& hit) {
         auto result = QueryHit{};
         result.point = maya_vector(hit.mContactPointOn2);
         if (const auto normal = unit(maya_vector(hit.mPenetrationAxis))) result.normal = *normal * -1.0f;
         return result;
     });
+    impl.log_query({PhysicsQueryKind::overlap, position, *turned, {}, 0.0f, shape, {}}, results);
+    return results;
 }
 
 std::string PhysicsWorld::create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies) {
