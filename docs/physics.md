@@ -134,6 +134,7 @@ If creating a body fails at the commit (a refused entity, or a full world), the 
 | Query | Returns |
 | --- | --- |
 | `raycast(origin, direction, distance, filter)` | Every body the ray hits within `distance`. A ray starting inside a shape hits it at distance 0. |
+| `raycast_nearest(origin, direction, distance, filter)` | Exactly the first of `raycast`'s results, or none, without collecting the others (#1024). It keeps only the nearest hit as Jolt reports them, preferring the lower EntityId at an exact tie. In P1's dense scene it is about five times faster than taking the first of every hit. Scripts' `maya.raycast` uses it. |
 | `shape_cast(shape, origin, rotation, direction, distance, filter)` | Every body a box, sphere, or capsule swept along the direction touches. One that touches at the start is at distance 0. |
 | `overlap(shape, position, rotation, filter)` | Every body the shape touches where it is. |
 
@@ -178,6 +179,7 @@ An empty world reserves 20.6 MiB through the hooks for these limits, but it is c
 - steps, and steps with errors by kind;
 - bodies created and removed;
 - body pairs touching now (`contacts`, and `overlaps` with a sensor), and queries asked (#1022);
+- the per-step scratch allocator's high water and its preallocated capacity (#1024); beyond the capacity, Jolt falls back to malloc;
 - the last tick's time in each phase.
 
 The editor's Diagnostics panel shows them while playing ([editor](editor.md#physics-debug-views)).
@@ -235,7 +237,7 @@ The rest of the tick is the World commit of the moved poses. The events phase gr
 
 [physics_debug_tests.cpp](../tests/physics_debug_tests.cpp) (`maya_simulation_tests`) covers the debug views (#1022): authoring outlines by category, motion, sensor, and group, with offsets and child colliders; a capsule on a scaled entity keeping round caps; play outlines from the physics world at shown poses, with sleeping and kinematic colors; capture only when asked, sorted contacts, queries with their hits, a new query list each tick, and identical state hashes over 300 ticks with and without capture. [physics_debug_gpu_tests.cpp](../tests/physics_debug_gpu_tests.cpp) renders each category on Metal and compares it with its [reference image](../tests/references/physics-debug), as the #1005 references are compared.
 
-[physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers queries and events (#1021):
+[physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers queries and events (#1021), and that `raycast_nearest` equals the first of `raycast` in every field for filtered rays, an exact tie, and 400 rays into a settling pile (#1024):
 - **Queries:** raycasts, shape casts, and overlaps with group, sensor, and ignore filters; distances, points, and normals; one hit per body, nearest first; the same results on repeated calls; refused queries.
 - **Events:**
   - one begin or enter per pair, contacts held while bodies sleep, and a sphere passing through a sensor entering and exiting once;

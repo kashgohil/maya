@@ -130,7 +130,7 @@ Queries run against the last completed step, and scripts and native systems get 
 
 | `maya` | |
 | --- | --- |
-| `raycast(origin, direction, distance, options?)`, `raycast_all(...)` | The nearest hit, or nil; or every hit, nearest first. |
+| `raycast(origin, direction, distance, options?)`, `raycast_all(...)` | The nearest hit, or nil; or every hit, nearest first. `raycast` asks only for the nearest, which costs much less than `raycast_all` along a long ray (#1024). |
 | `shape_cast(shape, origin, direction, distance, options?)`, `shape_cast_all(...)` | The same, sweeping a shape. |
 | `overlap(shape, position, options?)` | The entities a shape touches, by EntityId. |
 

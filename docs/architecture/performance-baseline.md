@@ -64,7 +64,16 @@ Specified for [#1015](https://work.rezee.app/kash/issues/1015) and measured in [
 - `p1_physics`: the baseline, measured on the M4 Pro reference machine when cool (nominal thermal state at the start and end of each run, as for the [approved budgets](../acceptance.md#budgets)).
 - `p1_20k`: four times the dynamic bodies. A stress input that reports the largest completed case; it gets no budget.
 
-Budgets for P1 are proposed from #1024's baselines and approved separately. Until then, they are recorded as unresolved.
+**As implemented** ([#1024](https://work.rezee.app/kash/issues/1024); manifests `p1_small`, `p1_physics`, and `p1_20k` in [benchmarks](../../benchmarks), workload `physics` in [performance](../performance.md#manifests)). Where the recipe leaves a detail open, version 1 fixes it:
+- **Placement.** The field is cut into 13 m cells outside the bin, shuffled by the seed. The resting patches take the first cells, and the obstacles are spread over the rest, kept 2.2 m inside their cells, so the two never overlap. Patches are 10 × 10 bodies 1.15 m apart; capsules lie on their side. The dropped set fills 15 × 15 layers 1.2 m apart from 3 m up, with seeded jitter and yaw.
+- **Groups.** Static (0) holds the ground, walls, obstacles, and the paddle; Dynamic (1) the bodies; Trigger (2) the sensors.
+- **The paddle and the queries** are native systems before the scripts in phase 3. Rays use `raycast_nearest`, the closest-hit query; overlaps and casts report every body.
+- **Limits.** The engine's defaults, raised only as the scene needs: `p1_20k` has 32,768 bodies, 164,448 body pairs, and 82,224 contact constraints.
+- **Counts.** Jolt does not report its contact constraint count, so the report counts touching pairs and solid contacts instead, and says so under `unavailable`.
+- **Parts of the tick.** Scripts are the script system's `fixed_update`; queries are the query system's. Events and post-physics hooks are the events phase and every system's `late_fixed_update`. The body commit is reported separately.
+- **Determinism.** The state hash is `PlaySession::state_hash`: every entity's transform, every body's pose, velocities, and sleep state, and the event and message trace.
+
+Budgets for P1 were approved on 1 October 2026 from #1024's baselines ([acceptance](../acceptance.md#physics-budgets)).
 
 ## Measurement protocol
 

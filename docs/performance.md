@@ -93,7 +93,7 @@ A manifest is a small versioned text file. Its keys may appear in any order, eac
 ```text
 maya-benchmark 1
 name "i1-10k"
-workload instances           # instances, scene, load_cycles, or play_cycles
+workload instances           # instances, scene, load_cycles, play_cycles, or physics
 project "../samples/basic_scene"
 mesh 6d617961 2              # catalog IDs of the shared mesh and material
 material 6d617961 11
@@ -116,6 +116,24 @@ overhead on                  # also a matched run without CPU scopes
 | `scene` | A project's saved scene (`scene`, or the startup scene) through its first camera, as the player runs it. |
 | `load_cycles` | L1 load/unload. The generated scene is saved to a file. First, a malformed copy and a copy with a missing asset must be refused, leaving nothing behind. Then, for each cycle: load the file, start a play session, render `ticks` frames, stop, wait for the GPU, evict unused asset versions, and sample memory. |
 | `play_cycles` | L1 play reset. Starts and stops play sessions from the same authored scene. The authored World must be unchanged afterwards. |
+| `physics` | P1 physics stress ([recipe](architecture/performance-baseline.md#p1-physics-stress), #1024). Generates the P1 scene and ticks it back to back, headless: no project, views, or device work. Each worker configuration runs `runs` times. |
+
+Cycle workloads take `cycles`, `ticks` (frames per cycle), and `slope_from`, the first cycle of the footprint slope's fit (default 11). The L1 manifests run 300 cycles and fit from cycle 101, once allocator warm-up has finished (#1024).
+
+The physics workload takes these keys instead of the mesh, material, camera, and resolution:
+
+```text
+workload physics
+count 5000                   # dynamic bodies: 40% dropped into the bin, 60% resting in patches
+obstacles 500
+scripted 500                 # bodies of the dropped set that carry the P1 script
+sensors 50
+queries 1000 100 20          # each tick: closest-hit rays, sphere overlaps, box casts
+workers default 0            # physics worker threads, one configuration each; default is the engine's
+warmup 300                   # ticks
+samples 3000
+runs 3
+```
 
 The seed selection uses SplitMix64, so it is the same on every machine. Generated scenes are built with the same World, scene, and asset APIs as authored content. Before a run, the generated scene is validated against the project's catalog, just as a scene file is.
 
@@ -129,7 +147,8 @@ The JSON holds:
 - baseline and resident memory, tracked and reported;
 - for each run: throughput, summaries of the frame, of each CPU scope, and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
 - the uninstrumented run, and the overhead of instrumentation;
-- for cycles: summaries after the ten warmup cycles, the slope of the process footprint in bytes per cycle, whether counts returned to the baseline, and every cycle;
+- for cycles: summaries after the ten warmup cycles, the slope of the process footprint in bytes per cycle over `footprint_slope_cycles` (from `slope_from` to the last), whether counts returned to the baseline, and every cycle;
+- for physics, under `physics`: the recipe, the scene's counts, and for each run its worker threads, start time, and summaries per tick of the whole tick and each part (scripts, queries, other systems, body preparation, the step, synchronization, events, post-physics hooks, and the body commit), of active and sleeping bodies, touching pairs, solid contacts, events, and query hits; Jolt's heap at the start and end and its peak, the per-step scratch allocator's high water and capacity, the script VM's bytes, the process footprint at the start and end and its slope per tick, the state hash after the last tick, and the raw tick times. `deterministic` says whether every run and configuration ended in the same state; a mismatch, or a step that hit a physics limit, fails the benchmark;
 - the rejected cases;
 - `unavailable`: each metric that could not be measured, with the reason.
 
@@ -208,6 +227,7 @@ Ranges are across the three runs.
   - **Counters against known sharing:** 50 instances give 50 draws and 600 triangles, with one mesh (two buffers) and one material; the spinning fraction is exact for any seed.
   - **Samples:** per-frame counts, missing GPU samples as `null`, and the uninstrumented run.
   - **Failures:** an upload overflow fails with its reason.
-  - **Cycles:** load cycles return to the baseline after eviction and refuse the malformed and missing-asset scenes; play cycles leave the authored scene unchanged.
+  - **Cycles:** load cycles return to the baseline after eviction and refuse the malformed and missing-asset scenes; play cycles leave the authored scene unchanged; the footprint is fitted from `slope_from`.
+  - **Physics (#1024):** the physics keys; the recipe's proportions and a repeatable scene; a small run with and without workers that counts every part, renders nothing, and ends every run in the same state.
   - **JSON:** complete and balanced.
-- CTest runs the smoke manifests in [benchmarks/smoke](../benchmarks/smoke) on Metal and checks the runner's refusal of a file that is not a manifest.
+- CTest runs the smoke manifests in [benchmarks/smoke](../benchmarks/smoke) on Metal, and [p1_small](../benchmarks/p1_small.benchmark), which must end every run in the same state. It also checks the runner's refusal of a file that is not a manifest.

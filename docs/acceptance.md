@@ -1,6 +1,6 @@
 # Milestone acceptance: author, save, and run a scene
 
-[Issue #1005](https://work.rezee.app/kash/issues/1005) closes the first milestone ([#988](https://work.rezee.app/kash/issues/988)). This page is the acceptance record:
+[Issue #1005](https://work.rezee.app/kash/issues/1005) closes the first milestone ([#988](https://work.rezee.app/kash/issues/988)), and [#1024](https://work.rezee.app/kash/issues/1024) the second, physics and behavior ([#1014](https://work.rezee.app/kash/issues/1014); [below](#milestone-2-physics-and-behavior)). This page is the acceptance record:
 
 - the automated checks, split by what they need;
 - a short manual script for what only a person at the machine can check;
@@ -19,9 +19,9 @@ tools/check_milestone.sh build
 
 | Group | CTest selection | Needs | What it covers |
 | --- | --- | --- | --- |
-| CPU | `-L cpu` | nothing else | World, properties, scenes, assets, projects, simulation, metrics, the editor on the null device (including the authoring half of the acceptance workflow), the benchmark runner on the null device, argument handling, and UI isolation |
+| CPU | `-L cpu` | nothing else | World, properties, scenes, assets, projects, simulation, physics, scripting, metrics, the editor on the null device (including the authoring half of both acceptance workflows), the benchmark runner on the null device, argument handling, and UI isolation |
 | GPU, headless | `-L gpu -LE smoke` | a Metal device | Metal rendering and retirement, GPU timing, the authored scene through the player's path, the V1 visual references, resize/reload/play-reset steadiness, and the editor on Metal |
-| Windowed | `-L smoke` | Metal and a logged-in desktop session | The real `maya_player` on the authored project from another directory, the player's failure exit codes, the editor, player, and sample smoke runs, the desktop host, and benchmark CLI smoke runs |
+| Windowed | `-L smoke` | Metal and a logged-in desktop session | The real `maya_player` on both authored projects from another directory, the player's failure exit codes, recording and replay, and debug views, the editor, player, and sample smoke runs, the desktop host, and benchmark CLI smoke runs, including `p1_small` |
 
 The script ends by listing the manual steps and benchmark baselines as **manual**. Neither is run automatically: one needs a person, the other a quiet machine and a Release build.
 
@@ -47,13 +47,13 @@ Repeated work must return to these states, with no stale handles and no unbounde
 
 | Repeated work | Returns to | Checked by |
 | --- | --- | --- |
-| Loading, playing, and unloading a 10,000-entity scene 100 times | No buffers or resident meshes beyond the empty session. Two textures (the view target), no pending retirements, and no outside leases. | `l1_load` benchmark; `benchmark_tests.cpp` |
-| Starting and stopping 100 play sessions from one authored scene | The same, and the authored scene is unchanged | `l1_play` benchmark; `benchmark_tests.cpp`; 40 editor Play/Stop rounds in `editor_play_tests.cpp` |
+| Loading, playing, and unloading a 10,000-entity scene 300 times | No buffers or resident meshes beyond the empty session. Two textures (the view target), no pending retirements, and no outside leases. | `l1_load` benchmark; `benchmark_tests.cpp` |
+| Starting and stopping 300 play sessions from one authored scene | The same, and the authored scene is unchanged | `l1_play` benchmark; `benchmark_tests.cpp`; 40 editor Play/Stop rounds in `editor_play_tests.cpp` |
 | Resizing a view 200 times across five sizes | Two textures sized for the current size, no pending retirements. The first size's texture no longer resolves, and Metal's reported memory grows by at most 32 MiB. | `acceptance_tests.cpp` |
 | Evicting and reloading an asset | Its old handle resolves as stale; the reload is a new generation | `acceptance_tests.cpp` |
 | 25 play resets | No handle from one session's World is alive in the next; no outside leases once the sessions end | `acceptance_tests.cpp` |
 
-**Process footprint.** In the load and play cycles, the footprint rises by about 200 MiB during the first cycle, then stays flat for the other 99. All tracked counts are back at the empty session after every cycle. The retained memory is not attributed to engine allocations; it is consistent with allocator and driver retention. It is recorded as a plateau, not called a leak.
+**Process footprint.** In the load and play cycles, the footprint rises by about 200 MiB during the first cycle, then levels off. Since #1024 the cycles run 300 times and the slope is fitted over cycles 101–300: over cycles 11–100 it had failed intermittently near its limit (116 and 108 KB/cycle in #1016) while the footprint was still settling, though it levels off by cycle 200 with no later growth. All tracked counts are back at the empty session after every cycle. The retained memory is not attributed to engine allocations; it is consistent with allocator and driver retention. It is recorded as a plateau, not called a leak.
 
 ## Regression scenes
 
@@ -61,7 +61,7 @@ Repeated work must return to these states, with no stale handles and no unbounde
 | --- | --- | --- |
 | V1 visual reference | [v1_reference.scene](../samples/basic_scene/assets/v1_reference.scene) in the sample project | See below. |
 | I1 repeated instances | [benchmarks/i1_*.benchmark](../benchmarks) (generated) | 1,000, 10,000, and 100,000 instances of one cube and one material; a subset view |
-| L1 load/unload and play reset | [benchmarks/l1_load.benchmark](../benchmarks/l1_load.benchmark), [l1_play.benchmark](../benchmarks/l1_play.benchmark) | 100 cycles of a 10,000-entity scene; malformed and missing-asset scenes |
+| L1 load/unload and play reset | [benchmarks/l1_load.benchmark](../benchmarks/l1_load.benchmark), [l1_play.benchmark](../benchmarks/l1_play.benchmark) | 300 cycles of a 10,000-entity scene (100 before #1024); malformed and missing-asset scenes |
 | The sample scene | [basic.scene](../samples/basic_scene/assets/basic.scene) | The fast regression case; not evidence of scale |
 
 **The V1 visual reference scene** contains:
@@ -144,7 +144,7 @@ Every budget shares these conditions:
 | Budget | Limit | Checked by | Observed | Rationale |
 | --- | --- | --- | --- | --- |
 | Tracked counts after load, play, and resize cycles | Exactly the empty session | Tests, on every CTest run; `l1_load` and `l1_play` | Exact in every run | Any drift is a defect |
-| Process footprint slope over cycles 11–100 | At most 100 KB/cycle | `l1_load`, `l1_play` | −25 to +59 KB/cycle | About twice the observed spread; flags growth of 10 MiB per 100 cycles |
+| Process footprint slope over cycles 101–300 (11–100 before #1024) | At most 100 KB/cycle | `l1_load`, `l1_play` | See [#1024's baselines](#physics-baselines) | About twice the observed spread; flags growth of 10 MiB per 100 cycles. The window moved on 1 October 2026, approved by the project owner; the limit stayed. |
 | I1 10k frame | CPU P99 at most 2.5 ms; GPU P95 at most 1.5 ms | `i1_10k`, `i1_10k_subset` | 2.04–2.13 ms; 1.14–1.22 ms | About 20% above the observations. Tighten once repeated baselines show the variance. |
 | Loading a 10,000-entity scene | P95 at most 50 ms | `l1_load` | 35.1 ms cool (46.4 ms throttled) | About 40% above the cool observations |
 | Starting play | P95 at most 10 ms | `l1_play` | 6.8 ms cool (7.2 ms throttled) | About 45% above the cool observations |
@@ -160,7 +160,125 @@ The benchmarks are not part of CTest, so the timing and slope budgets are checke
 - **Scale.** The sample scene is not evidence of large-game readiness, and neither is I1: its 100,000 instances are a stress input, not a promised capacity.
   - At 100,000 instances a frame takes about 21 ms of CPU time, which is over the proposed 16.67 ms interactive target. The renderer encodes one draw with its own constants per instance and does not cull. On this machine, the full 100k protocol also runs into thermal throttling.
   - Instancing, batching, and culling are the known next steps.
-- **Not implemented, so not measured:** per-pass GPU timing, streaming (S1), physics, scripting, texture and PBR/shadow quality, import and cook times, and edit-to-preview latency.
+- **Not implemented at #1005, so not measured:** per-pass GPU timing, streaming (S1), physics, scripting, texture and PBR/shadow quality, import and cook times, and edit-to-preview latency. Physics and scripting are measured for milestone 2 below.
 - **Present pacing** is not measured: benchmarks render offscreen. The editor's live display shows the frame interval, but it is not a controlled measurement.
 - **Retained footprint.** The ~200 MiB footprint plateau after the first load cycle is unattributed. Attributing it needs Instruments on the reference hardware.
 - **Cold-cache loads.** The OS file cache is not controlled, so every load time is a warm-cache time.
+
+## Milestone 2: physics and behavior
+
+[Issue #1024](https://work.rezee.app/kash/issues/1024) closes the physics and behavior milestone ([#1014](https://work.rezee.app/kash/issues/1014)): author a physics interaction, reset it safely, edit behavior, and run it in both the editor and the player. The checks run in the same three groups as above.
+
+### The reference interaction, automated
+
+A ball rolls down a ramp into a stack of crates; a trigger zone's script opens a kinematic door when something enters. [physics_acceptance_tests.cpp](../tests/physics_acceptance_tests.cpp) and two CTest entries chained by a fixture:
+
+1. **`maya_physics_acceptance_author`** (CPU) drives the editor on a fresh copy of the sample project in `build/acceptance/Physics Game`.
+   - **Author.** The script file is written as a person would in a text editor and listed in the catalog. In a new scene, the editor makes a floor, a ramp, a heavy ball, three light crates, a sensor zone, and a kinematic door, with a child for its mesh (moving bodies have unit scale). The script is dragged from the Assets panel onto the zone's Hierarchy row, given the door, and its `lift` is edited by dragging its Inspector field. The scene is saved as `levels/door`.
+   - **Reopen.** A fresh editor opens it; every entity has its ID.
+   - **Play.** A recorded Play: the ball knocks the bottom crate into the zone, the script logs "the door rises for Crate 1", and the door rises by the edited lift. Stop returns the scene text to the authored one.
+   - **Edit behavior.** The script file changes while the editor is open: the door now slides aside. Replaying the first Play is refused ("scripts/door.luau has changed since the recording"). A new recorded Play slides the door and no longer raises it, and its replay matches the recording.
+   - **Reset.** 25 Play/Stop rounds return device buffers, textures, and pending retirements, physics memory, and script memory (0) to the empty session, and leave the scene text and its saved state unchanged.
+   - **Errors.** The script is broken to fail when something enters. The error is reported once with the notice "A script stopped", and the session plays on for two more seconds, with the door shut.
+2. **`maya_physics_acceptance_player`** (windowed) runs the real `maya_player "../Physics Game" levels/door.scene --smoke 900` from `build/acceptance/elsewhere`. It must log that the door slides open.
+
+**Elsewhere in the milestone.**
+- Bodies, colliders, queries, and events: [physics_tests.cpp](../tests/physics_tests.cpp) and [editor_physics_tests.cpp](../tests/editor_physics_tests.cpp).
+- Scripts and reload: [scripting_tests.cpp](../tests/scripting_tests.cpp) and [editor_scripting_tests.cpp](../tests/editor_scripting_tests.cpp).
+- Recording, replay, and editor/player parity: [replay_tests.cpp](../tests/replay_tests.cpp) and [editor_replay_tests.cpp](../tests/editor_replay_tests.cpp).
+- Debug views, with their reference images: [physics_debug_gpu_tests.cpp](../tests/physics_debug_gpu_tests.cpp) and [tests/references/physics-debug](../tests/references/physics-debug).
+- CTest runs the player with `--record`, `--replay`, and `--debug-physics`, and `p1_small`.
+
+### Steady states, physics and behavior
+
+| Repeated work | Returns to | Checked by |
+| --- | --- | --- |
+| 100 Play/Stop rounds with physics and scripts | Device buffers, textures, and pending retirements, physics memory, and script memory at the empty session; the scene text, history, unsaved state, and selection unchanged | `editor_replay_tests.cpp`; 25 rounds in the reference interaction |
+| Repeated play sessions in the player's path | Jolt's memory back to the empty-session baseline | `physics_tests.cpp` |
+| 200 edits to a script while playing | Script memory flat; the session keeps running | `editor_scripting_tests.cpp` |
+| Replaying a recording | The same checkpoints and final state, with any worker count | `replay_tests.cpp`, `editor_replay_tests.cpp` |
+| Turning debug capture on | Nothing changes: identical state hashes over 300 ticks | `physics_debug_tests.cpp` |
+
+### Regression scenes, physics and behavior
+
+| Scene | Where | Purpose |
+| --- | --- | --- |
+| The physics sample | [physics.scene](../samples/basic_scene/assets/physics.scene) | A floor, a stack of crates, a falling crate, and a scripted beacon |
+| The reference interaction | `levels/door.scene`, written by the acceptance test | The milestone's workflow end to end |
+| The debug-view scene | [physics_debug_gpu_tests.cpp](../tests/physics_debug_gpu_tests.cpp) (in code) | One reference image per debug category |
+| P1 physics stress | [p1_small](../benchmarks/p1_small.benchmark), [p1_physics](../benchmarks/p1_physics.benchmark), [p1_20k](../benchmarks/p1_20k.benchmark) | The [physics stress workload](architecture/performance-baseline.md#p1-physics-stress), version 1 |
+
+### Manual script, physics and behavior
+
+Run on the reference machine with a Release build, after the steps above.
+
+1. **Play physics.** Open `physics.scene` and press ⌘P. The crates settle, the falling crate lands on them, and the beacon spins. Stop: everything is back where it was authored.
+2. **Debug views.** Open the eye menu in the viewport and check Colliders, Body state, and Contacts. While editing, outlines sit on each collider. In Play, active bodies are green and turn slate as they fall asleep, and contacts show while the stack settles. Uncheck group 0: everything in it disappears. Quit and reopen the editor: the checks are as you left them.
+3. **Edit a collider.** Select Crate 1 and press C. Drag the +X face's dot: the box grows to the right while its left face stays. ⌘Z undoes the whole drag.
+4. **Pause and step.** In Play, pause (⇧⌘P) and step (⌥⌘P): each step advances one tick, and Diagnostics' Physics section counts bodies, contacts, and steps.
+5. **Edit a script while playing.** Change the beacon's speed in `scripts/spin.luau` and save. The beacon changes at the next tick, and Diagnostics logs the reload.
+6. **Record and replay.** Choose Play and record from the scene menu, click the Game view and fly the camera for a few seconds, then stop. Replay the last recording: the camera flies the same path, and Diagnostics says the replay matches.
+7. **Run standalone.** `maya_player <project> physics.scene --debug-physics`: the same scene with outlines over it. Without the flag, none.
+8. **Break a script.** Add `error("boom")` to `spin.luau`'s `fixed_update` while playing. Diagnostics reports the error with the notice "A script stopped", and the rest of the scene keeps playing.
+
+### Physics baselines
+
+Measured for #1024 on 1 October 2026, on the Mac16,7 above (Apple M4 Pro, 24 GiB, macOS 26.6.2), in a Release build of revision `81b1d88` plus #1024's changes, at user-interactive quality of service. Each manifest started after the machine reported a nominal thermal state and a further two-minute pause, and every one ended nominal too.
+
+**L1 at 300 cycles,** fitted over cycles 101–300:
+
+| Manifest | Load or start (ms, mean / P95) | First frame (ms) | Stop (ms) | Tracked counts after every cycle | Footprint (MiB) | Slope, cycles 101–300 | For comparison, cycles 11–100 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `l1_load` | 35.9 / 37.6 | 2.42 | 0.13 | back at the empty session | 220 empty; 426 after cycle 1; 435 from cycle 100 on | +35 KB/cycle | −9 KB/cycle |
+| `l1_play` | 6.6 / 7.1 | 2.40 | 0.13 | back at the empty session | 220 empty; 411 after cycle 1; 425–426 from cycle 100 on | +2.3 KB/cycle | **+105 KB/cycle** |
+
+The `l1_play` run shows why the window moved: over the old window its slope was over the limit, while the footprint stopped growing by cycle 100 and stayed within 1 MiB for the other 200. Both malformed and missing-asset scenes were refused, and the authored scene was unchanged.
+
+**P1** (`p1_physics`, version 1: 5,556 bodies, 5,000 of them dynamic; three runs per configuration, 300 warmup and 3,000 sampled ticks each):
+
+| Per tick (ms, means of the three runs) | 7 workers (the default) | No workers |
+| --- | --- | --- |
+| Whole tick: mean / P50 / P95 / P99 / max | 5.85–5.98 / 5.83–5.97 / 6.24–6.51 / 6.40–7.08 / 9.3–14.4 | 11.40–11.56 / 11.03–11.41 / 12.82–12.94 / 13.22–13.68 / 16.6–26.9 |
+| Physics step (phase 5) | 2.53–2.54 | 8.04–8.14 |
+| Queries (1,000 closest-hit rays, 100 overlaps, 20 casts) | 2.49–2.60 | 2.52–2.54 |
+| Scripts (500 instances, phase 3) | 0.25–0.27 | 0.26 |
+| Events, then post-physics hooks (phase 7) | 0.17, then 0.02 | 0.16–0.18, then 0.02 |
+| Synchronize (6), body preparation (4), body commit | 0.08, 0.03, 0.01 | 0.07–0.08, 0.03, 0.01 |
+| Starting the session | 9–12 ms | 8–9 ms |
+
+- **Counts per tick (means, the same in every run):** 2,046 active and 2,955 sleeping bodies; 9,906 touching pairs, 9,090 of them solid contacts; 161 events; 5,373 query hits.
+- **Memory:**
+  - Jolt's heap peaks at 39.6 MiB, and is back to 0.3 MiB (the job pool and type registry) after every run.
+  - The per-step scratch allocator reaches 15.5 MiB against its 4 MiB default, so Jolt falls back to malloc every step. A 64 MiB allocator changed nothing measurable (6.18–6.25 ms against 6.22–6.27 ms over 1,000 ticks), so the default stays.
+  - The script VM holds 0.6 MiB.
+  - The process footprint is 235–247 MiB, with slopes from −876 to +366 bytes per tick over the sampled ticks.
+- **Determinism.** All six runs ended in the same state (`77030e512a75db62`), and no step hit a physics limit.
+- **Queries.** Before `raycast_nearest`, the rays alone took 5.0 ms per tick; they take 0.95 ms as closest-hit queries ([physics](physics.md#queries)).
+
+**P1 at 20,000 dynamic bodies** (`p1_20k`, 20,556 bodies; a stress input with no budget). All six runs completed with no physics limit hit and ended in the same state (`44972d3041dd06d8`).
+- **7 workers:** 17.6–17.8 ms per tick (P99 19.4–19.9), with the step at 10.6–10.7 ms. That is over a 16.67 ms frame.
+- **No workers:** 42.9–43.3 ms (P99 52–56).
+- **Per tick:** 8,935 active bodies and 39,695 solid contacts; Jolt's heap peaks at 95–96 MiB and the scratch allocator at 38.9 MiB.
+
+### Physics budgets
+
+Approved on 1 October 2026 by the project owner, from the baselines above. They share the conditions of the [milestone 1 budgets](#budgets) (the reference machine, a Release build, user-interactive quality of service, nominal at the start and the end), on the `maya-benchmark 1` P1 manifests of #1024. A change to the recipe is a new version and needs a new baseline.
+
+| Budget | Limit | Checked by | Observed | Rationale |
+| --- | --- | --- | --- | --- |
+| P1 whole tick, default workers | P99 at most 8.5 ms | `p1_physics` | 6.40–7.08 ms | About 20% above the worst run |
+| P1 Jolt heap | Peak at most 48 MiB | `p1_physics` | 39.6 MiB | About 20% above the observation |
+| P1 determinism | Every run and worker configuration ends in the same state, and no step hits a physics limit | `p1_physics`, `p1_small` (on every CTest run) | Exact in every run | Any difference is a defect |
+| P1 with no workers, and `p1_20k` | **No budget** | — | 11.4–11.6 ms; 17.6–17.8 ms with workers | A diagnostic configuration, and a stress input, not a capacity |
+
+The footprint-slope budget above now uses cycles 101–300: `l1_load` +35 and `l1_play` +2.3 KB/cycle, within its 100 KB/cycle. Loading (P95 37.6 ms against 50) and starting play (P95 7.1 ms against 10) stay within their budgets.
+
+### Limits, physics and behavior
+
+- **One machine.** The same limits as above apply: the M1 Baseline and M2 Pro Headroom profiles are unmeasured, and these are M4 Pro observations.
+- **Determinism is per build and machine.** Runs repeat exactly across worker counts on this machine and build; nothing is promised across machines, OS or compiler versions, or Jolt and Luau versions ([scheduling](architecture/scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick)).
+- **P1 is headless.** It measures simulation, not rendering; debug views have their own measurement ([renderer](renderer.md#debug-lines)).
+- **Contact constraints** are not counted: Jolt does not report them. Touching pairs and solid contacts are counted instead.
+- **20,000 bodies** do not fit a 60 Hz frame on this machine with the default workers. It is a stress input, not a capacity.
+- **What a person checks.** The editor's interaction (debug views, handles, pause and step, a script reloading while playing) is covered by tests on the null device, and by the manual script on the real editor.
+
