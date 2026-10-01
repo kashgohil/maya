@@ -100,7 +100,7 @@ History is the difference from the same ticks without it (about 20–28 ns per m
 ## The player
 
 ```bash
-maya_player [project [scene]] [--record file | --replay file] [--smoke N]
+maya_player [project [scene]] [--record file | --replay file] [--debug-physics] [--smoke N]
 ```
 
 - **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project.
@@ -108,6 +108,7 @@ maya_player [project [scene]] [--record file | --replay file] [--smoke N]
 - **View.** The player shows the scene's first camera, in document order, at the window's size.
 - **Input.** Every window event goes to the game, and the cursor is captured. Escape closes the window.
 - **`--record file`** records the session and writes it to `file` when the window closes ([recording and replay](#recording-and-replay)).
+- **`--debug-physics`** draws every [physics debug view](physics.md#debug-views) over the game, for debugging. Without it the player draws none.
 - **`--replay file`** plays a recording's scene with its input instead of the window's. The scene comes from the recording, so no scene argument is needed. At the end the player reports `[Player] the replay matches the recording: 120 ticks, 2 checkpoints, and the final state` and stays on the last frame. A replay that differs fails with exit code 1, and so does a recording that cannot be replayed.
 
 It reports what it runs, `[Player] My Game / basic.scene: 6 entities`, and exits with:
@@ -251,4 +252,4 @@ In the editor, Play also builds the document from the scene (2.7 ms at 50,000 en
   - **Reload:** a script reloaded during a recorded Play is recorded, and replaying it is refused with a notice.
   - **Reset:** 100 rounds of Play and Stop with physics and scripts, recording nothing. Script memory returns to 0 after each Stop. Device buffers, textures, and pending retirements, and physics memory, return to where they were. The scene text, history, unsaved state, and selection are unchanged.
 - [renderer_gpu_tests.cpp](../tests/renderer_gpu_tests.cpp) renders a playing scene halfway between ticks on Metal and compares it byte for byte with the same cube authored at the pose between them (#1016).
-- CTest runs the player with bad arguments, a missing project, a missing scene, a scene path outside the project, and a missing recording. Each must exit with its code and message ([expect_exit.cmake](../cmake/expect_exit.cmake)). It also records a smoke run of physics.scene and replays it, which must report a match. [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) runs the player through window resizes and covers splitting launch arguments.
+- CTest runs the player with bad arguments, a missing project, a missing scene, a scene path outside the project, and a missing recording. Each must exit with its code and message ([expect_exit.cmake](../cmake/expect_exit.cmake)). It also records a smoke run of physics.scene and replays it, which must report a match. It runs physics.scene with `--debug-physics` (#1022). [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) runs the player through window resizes and covers splitting launch arguments.

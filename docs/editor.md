@@ -112,6 +112,21 @@ To support this, the RHI gained three general features (see [the graphics device
 
 [editor_ui.metal](../resources/shaders/metal/editor_ui.metal) is the UI shader.
 
+## Physics debug views
+
+[Issue #1022](https://work.rezee.app/kash/issues/1022) adds two tools to the viewport's tool bar (and the eye to the Game/Scene toggle while playing):
+
+- **Physics debug views** (the eye) opens a menu with a check for each [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries. Below them is a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
+- **Edit collider** (the transparent cube, or C) puts handles on the primary selection's collider in place of the transform gizmo, and outlines that collider in the selection's color:
+  - a box has a dot on each face; a drag moves that face, holding the opposite one still, which changes the half extents and the offset together;
+  - a sphere has a dot on each axis, which changes its radius about a fixed centre;
+  - a capsule has dots on its sides (the radius) and at each end (the length, holding the other end still);
+  - the square at the centre moves the offset in the plane facing the camera.
+
+  Each drag is one undo step, named "Resize the collider of …" or "Move the collider of …", and goes through `SceneEditor::set_component`, so it is validated as the Inspector's edits are. Sizes never go below 5 mm. Handles are hidden while playing, and an entity without a collider keeps its gizmo.
+
+**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories and a `physics-debug-groups` mask. They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
+
 ## Diagnostics
 
 The Diagnostics panel shows the current state:
@@ -121,6 +136,8 @@ The Diagnostics panel shows the current state:
 - frames, waits, and upload-memory high water against capacity;
 - live resources and pending retirements;
 - while playing, the tick, the wall time the clock refused, and the ticks it dropped, and the script VM's memory and reload count;
+- while playing, a **Physics** section (#1022), refreshed four times a second: bodies by motion type, active and sleeping, contacts and overlaps touching now, queries and events this session, the last step's time and its other phases, and error counters (steps where Jolt ran out of room, by kind, contact changes dropped, and event recipients skipped), shown in the warning color when any is nonzero;
+- the number of debug outlines and lines drawn, when there are any;
 - **Performance** over the last 240 frames: the frame interval with P95 and P99, CPU time per part of the frame, GPU time (or why it is unavailable), draws, instances, and triangles, tracked bytes, platform-reported GPU and process memory, and resident assets ([performance](performance.md#in-the-editor)).
 
 It also lists this frame's extraction problems, such as missing meshes and materials, and a log. The log records:
@@ -143,7 +160,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 
 ## Limitations
 
-- Layout, window placement, and editor camera state are not saved between runs.
+- Layout, window placement, and editor camera state are not saved between runs; the preferences file holds only the physics debug views so far.
 - Dialogs are drawn in the editor window; there are no native open or save panels.
 - No IME composition, gamepad or keyboard navigation of the UI, or multiple OS windows (ImGui multi-viewports).
 - The cursor-shape service covers arrow, text, hand, and horizontal/vertical resize. GLFW 3.3 has no diagonal or "not allowed" cursors.
@@ -164,6 +181,11 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 - [editor_gpu_tests.cpp](../tests/editor_gpu_tests.cpp) (`maya_editor_gpu`, labels `gpu;editor`, Metal API validation) renders the whole editor into a window-sized texture at 2× scale and reads it back. It checks lit scene pixels at the viewport's center and dark panel pixels, then resize, a scale change, and minimize and recover. With `MAYA_EDITOR_CAPTURE=<path>.ppm` it writes the image for review.
 - [rhi_validation_tests.cpp](../tests/rhi_validation_tests.cpp) and [rhi_tests.cpp](../tests/rhi_tests.cpp) cover scissor, blend, and upload-slice index rules, and a Metal half-transparent draw clipped to half the target.
 - [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) runs the real editor and player through window resizes, publishing metrics as the host does.
+- [editor_physics_debug_tests.cpp](../tests/editor_physics_debug_tests.cpp) (#1022) covers:
+  - **Preferences:** the file round-trips, skips unknown lines, and refuses other files and bad masks.
+  - **Toggles:** off by default, with no debug draw encoded; the menu's checks turn outlines on and a group off; saved, and read by a new editor; off again, debug draws stop.
+  - **Play:** contacts captured only while their check is on, outlines from the physics world, and the Physics section's counts, cleared at Stop.
+  - **Handles:** a box face resized with the opposite face held, one undo step that undoes and redoes; the centre moving the offset; a sphere's radius; a capsule lengthened from one end; the gizmo back when editing stops; no handles in Play; and drags past the centre stopping at the smallest size, which validation accepts.
 
 #999 validation on 24 September 2026:
 

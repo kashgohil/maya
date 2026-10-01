@@ -74,7 +74,28 @@ A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatri
 
 `Renderer::present(target, destination, area, background)` opens a pass on `destination`, clears it to `background`, and draws the target's color texture scaled into `area`. The area is a `PixelRect` in the destination's pixels, with its origin at the top left. The destination is usually the acquired window surface, but any render-target texture works. The player presents to the whole surface; the same call can present into any rectangle, such as a panel. When the area and the view have the same size, presentation copies the view's pixels exactly (bilinear sampling at texel centers).
 
-Pipelines are created on first use for each target format (lit, with `depth32_float`, back-face culling, and counter-clockwise front faces) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles and recreates what it needs. `stats()` counts views, draws, and presents.
+Pipelines are created on first use for each target format (lit, with `depth32_float`, back-face culling, and counter-clockwise front faces; and the two debug pipelines, only once a snapshot has debug lines) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles and recreates what it needs. `stats()` counts views, draws, presents, and debug draws, outlines, and lines.
+
+## Debug lines
+
+[Issue #1022](https://work.rezee.app/kash/issues/1022) adds a pass for debug lines and outlines, used by the [physics debug views](physics.md#debug-views). It is an ordinary part of `render`, so it works in any view: the editor's Scene and Game views, the player, and offscreen targets.
+
+- **Data.** `DebugDraw` ([debug_draw.hpp](../include/maya/world/debug_draw.hpp), in `MayaWorld`) holds world-space `lines` (from, to, color) and `shapes`: box, sphere, and capsule outlines, each a world matrix, a size, and a color. A capsule's matrix is rigid and its size carries the radius and the half height, so its caps stay round. Helpers add crosses, arrows, and each outline. Colors are RGBA as the view stores them, with alpha blending.
+- **Extraction.** `RenderExtractOptions::debug` is copied into `RenderSnapshot::debug`, so the snapshot stays self-contained. Without it the snapshot's `DebugDraw` is empty.
+- **Off costs nothing.** An empty `DebugDraw` creates no pipelines, uploads nothing, and draws nothing.
+- **Drawing.** Lines are uploaded once, and outlines once per kind. Each outline is an instance of a unit wire template generated in the vertex shader: a box's 12 edges, a sphere's three great circles, and a capsule's two rings, four sides, and arcs over each cap. Every segment becomes a screen-space quad `RenderView::debug_line_width` pixels wide (default 1.5; the editor doubles it at 2× scale), with a pixel of soft edge, clipped at the near plane.
+- **In front and behind.** Each batch is drawn twice against the scene's depth, without writing it: at full opacity where it is in front (`less_equal`), then at 30% where the scene hides it (`greater`). Lines are pulled a thousandth of their distance toward the camera, so outlines lying on surfaces win.
+- **Level of detail.** Sphere and capsule circles have 8, 16, or 32 segments, chosen from the outline's radius on screen (under 6 pixels, under 20, or more: `debug_segments_for`), so segments stay a few pixels long. The pass is bound by vertex work, so distant outlines cost little.
+- **Layout.** `DebugConstants` (viewport size, line width, opacity, kind, and segments) is in [shader_constants.hpp](../include/maya/renderer/shader_constants.hpp) with the other layouts.
+
+Cost, Release on the M4 Pro reference machine (thermal state nominal), at 1920 × 1080 with 3-pixel lines: boxes, spheres, and capsules in equal numbers, seen from about 100 m (`maya_editor_tests "Physics debug pass cost*"`, hidden):
+
+| Colliders | GPU time added by the pass | Encoding added |
+| --- | --- | --- |
+| 1,000 | 0.38–0.46 ms | < 0.01 ms |
+| 10,000 | 1.6 ms | 0.13 ms |
+
+The GPU times are the device's own timestamps for the frame, with and without the pass. Before level of detail, every circle had 32 segments and the same views cost 1.75 ms and 7.6 ms. These are observations, not budgets.
 
 ## Lighting and materials
 
@@ -104,6 +125,7 @@ The [basic scene](../samples/basic_scene/assets/basic.scene) is an ordinary [sce
 - [renderer_tests.cpp](../tests/renderer_tests.cpp) (`maya_renderer_tests`, labels `cpu;renderer`) uses a null device that mirrors buffer contents and records the constants bound at every draw. It covers mesh sharing, copied transforms and materials, and each missing-asset rule. It checks normal matrices under nonuniform scale in a hierarchy and light selection and limits. It checks that snapshot ownership survives entity deletion, eviction, and registry/World destruction, with deferred retirement. It also covers two views of one snapshot, target reallocation and retirement, upload exhaustion, presentation rectangles, and pipeline recreation across sessions.
 - [renderer_gpu_tests.cpp](../tests/renderer_gpu_tests.cpp) (in `maya_tests`, tag `[rhi]`, run under Metal API validation) reads pixels back. It checks per-instance colors from one shared mesh and a skipped missing mesh. It checks diffuse lighting of a slanted quad scaled 1 × 1 × 4, which only the inverse-transpose normal passes. It checks identical output presented into a player-sized window and an editor viewport rectangle, rendering at six sizes with target reuse and retirement, and ten rounds of deleting the drawn entity and evicting its mesh while its frame is still in flight.
 - [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) drives the real player and editor applications through window resizes, including a zero-sized one.
+- **Debug lines** (#1022), in renderer_tests.cpp: an empty `DebugDraw` creates no pipelines and draws nothing; lines, boxes, and capsules are uploaded once per kind, with their matrices, sizes, and colors, and drawn in front and then behind at their opacities; outlines take 8, 16, or 32 segments by their size on screen; and the helpers make the lines they promise. Reference images of every physics debug category are compared on Metal ([physics](physics.md#debug-views)).
 
 #998 validation on 24 September 2026:
 

@@ -177,9 +177,39 @@ An empty world reserves 20.6 MiB through the hooks for these limits, but it is c
 - bodies by motion type, and awake bodies;
 - steps, and steps with errors by kind;
 - bodies created and removed;
+- body pairs touching now (`contacts`, and `overlaps` with a sensor), and queries asked (#1022);
 - the last tick's time in each phase.
 
-The Diagnostics panel and debug views arrive with #1022.
+The editor's Diagnostics panel shows them while playing ([editor](editor.md#physics-debug-views)).
+
+## Debug views
+
+[Issue #1022](https://work.rezee.app/kash/issues/1022) draws physics over a view, through the renderer's [debug lines](renderer.md#debug-lines). `PhysicsDebugOptions` ([physics_debug.hpp](../include/maya/simulation/physics_debug.hpp)) chooses categories and collision groups:
+
+| Category | Draws | Color |
+| --- | --- | --- |
+| Colliders | Every solid collider's outline. | Cyan |
+| Body state | The same outlines, colored by body: static; kinematic (dimmer while asleep); dynamic, active or sleeping. | Grey-blue; violet; green or slate |
+| Triggers | Every sensor's outline. | Amber |
+| Contacts | Each contact point of the last step, as a cross, and its normal, as an arrow. | Red and orange |
+| Queries | The last tick's raycasts (their line), shape casts (the shape at both ends and the line between), and overlaps (the shape), and a cross at each hit. | Blue, hits pink |
+
+Body state takes precedence over Colliders when both are on. A body (or contact) is drawn only when its collision group, or one of the two groups, is in `groups`.
+
+- **Play views** (`play_physics_debug`) draw from the play session's physics world: every body's colliders as they were described, at the entity's shown pose, so outlines stay on meshes between ticks ([play](play.md#between-ticks)). `PhysicsWorld::for_each_debug_body` gives each body's entity, motion type, sleep, sensor flag, group, and colliders.
+- **Authoring views** (`authored_physics_debug`) have no physics world. They draw each collider component at its entity's world pose, with body state from the authored motion: the nearest rigid body at or above the entity, else static. Contacts and queries have nothing to show.
+- **Capture.** Contacts and queries are kept only while `PhysicsWorld::set_debug_capture(true)`, which views turn on while they show them (`PlaySession::set_physics_debug_capture`). Then each step keeps every contact point of its solid contacts, from Jolt's added and persisted callbacks, sorted by position (`debug_contacts`), and each query is kept with its hits (`debug_queries`) until the session starts the next tick. Sleeping bodies report no contact points. Off, nothing is kept, and the only cost is a flag read in each callback. Capture never changes the simulation: the same session's state hashes match with and without it.
+- **Not through Jolt's `DebugRenderer`.** The [decision record](architecture/physics-scripting-decision.md) expected debug drawing to go through Jolt's `DebugRenderer`. Jolt compiles it only into Debug and Release builds (not a build without a type), and it draws shapes as triangle meshes, hundreds of edges for a sphere. Maya's collider shapes are boxes, spheres, and capsules, so outlines are made from their descriptions instead: the same drawing in every build and in authoring and play views, and cheap at 10,000 colliders.
+- **The player** draws every category with `--debug-physics` ([play](play.md#the-player)), and never otherwise.
+
+Making the lines costs, in Release with every body resting on a floor (`maya_simulation_tests "Physics debug cost*"`, hidden):
+
+| Colliders | Outlines | Every category |
+| --- | --- | --- |
+| 1,000 | 0.05 ms | 0.12 ms (16,016 lines) |
+| 10,000 | 0.57 ms | 1.25 ms (160,016 lines) |
+
+Drawing them is in [renderer](renderer.md#debug-lines).
 
 ## Determinism
 
@@ -202,6 +232,8 @@ Release on the M4 Pro reference machine (thermal state nominal), with the defaul
 The rest of the tick is the World commit of the moved poses. The events phase grows with how many contacts begin and end, about 0.4 µs per event including Jolt's records, not with the number of bodies. #1021's first version walked every contact pair each tick (0.27 ms at 10,000 bodies); it now visits only pairs that stopped touching. The 10,000-body P95 comes from the pile's collisions. It is an observation for P1 ([#1024](https://work.rezee.app/kash/issues/1024)), not a budget.
 
 ## Tests
+
+[physics_debug_tests.cpp](../tests/physics_debug_tests.cpp) (`maya_simulation_tests`) covers the debug views (#1022): authoring outlines by category, motion, sensor, and group, with offsets and child colliders; a capsule on a scaled entity keeping round caps; play outlines from the physics world at shown poses, with sleeping and kinematic colors; capture only when asked, sorted contacts, queries with their hits, a new query list each tick, and identical state hashes over 300 ticks with and without capture. [physics_debug_gpu_tests.cpp](../tests/physics_debug_gpu_tests.cpp) renders each category on Metal and compares it with its [reference image](../tests/references/physics-debug), as the #1005 references are compared.
 
 [physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers queries and events (#1021):
 - **Queries:** raycasts, shape casts, and overlaps with group, sensor, and ignore filters; distances, points, and normals; one hit per body, nearest first; the same results on repeated calls; refused queries.
