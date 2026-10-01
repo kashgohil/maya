@@ -25,6 +25,12 @@ public:
         PresentConstants constants;
         uint32_t texture;
     };
+    struct DebugCall {
+        std::string pipeline; // its label: in front of the scene, or behind it
+        DebugConstants constants;
+        uint32_t vertices, instances;
+        std::vector<float> data; // what buffer 0 holds for this draw
+    };
     explicit CapturingDevice(DeviceOptions options = {}) : NullGraphicsDevice({false, 0, 0, true}) {
         REQUIRE(initialize(nullptr, options));
     }
@@ -34,7 +40,9 @@ public:
 
     std::vector<Draw> draws;
     std::vector<Present> presents;
+    std::vector<DebugCall> debug;
     std::vector<RenderPassDesc> passes;
+    size_t pipelines_created = 0;
 
 protected:
     RhiDiagnostic backend_create_buffer(uint32_t slot, const BufferDesc& desc, const void* data) override {
@@ -53,8 +61,26 @@ protected:
     void backend_set_vertex_buffer(uint32_t index, uint32_t slot, size_t offset) override { m_bound[index] = {slot, offset}; }
     void backend_set_uniform_buffer(uint32_t index, uint32_t slot, size_t offset) override { m_bound[index] = {slot, offset}; }
     void backend_set_texture(uint32_t, uint32_t slot) override { m_texture = slot; }
-    void backend_draw(uint32_t, uint32_t, uint32_t) override {
-        presents.push_back({read<PresentConstants>(1), m_texture});
+    RhiDiagnostic backend_create_pipeline(uint32_t slot, const PipelineDesc& desc) override {
+        m_labels[slot] = desc.label;
+        ++pipelines_created;
+        return NullGraphicsDevice::backend_create_pipeline(slot, desc);
+    }
+    void backend_set_pipeline(uint32_t slot) override {
+        m_pipeline = m_labels[slot];
+        NullGraphicsDevice::backend_set_pipeline(slot);
+    }
+    void backend_draw(uint32_t vertices, uint32_t, uint32_t instances) override {
+        if (!m_pipeline.starts_with("debug")) {
+            presents.push_back({read<PresentConstants>(1), m_texture});
+            return;
+        }
+        const auto constants = read<DebugConstants>(1);
+        const auto& [slot, offset] = m_bound.at(0);
+        const auto floats = constants.kind[0] == 0 ? size_t(vertices / 6) * debug_line_floats : size_t(instances) * debug_shape_floats;
+        auto data = std::vector<float>(floats);
+        std::memcpy(data.data(), m_buffers.at(slot).data() + offset, floats * sizeof(float));
+        debug.push_back({m_pipeline, constants, vertices, instances, std::move(data)});
     }
     void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t) override {
         draws.push_back({read<DrawConstants>(1), read<ViewConstants>(2), m_bound.at(0).first, slot});
@@ -69,6 +95,8 @@ private:
     }
     std::unordered_map<uint32_t, std::vector<std::byte>> m_buffers;
     std::unordered_map<uint32_t, std::pair<uint32_t, size_t>> m_bound;
+    std::unordered_map<uint32_t, std::string> m_labels;
+    std::string m_pipeline;
     uint32_t m_texture = 0;
 };
 
@@ -289,7 +317,7 @@ TEST_CASE("Directional lights come from entity rotation, color, and intensity", 
     (void)created;
 
     // Light and ambient values reach the per-view constants.
-    const auto one = RenderSnapshot{snapshot.world, {}, {}, {snapshot.lights[0]}, snapshot.ambient, {}, {}};
+    const auto one = RenderSnapshot{snapshot.world, {}, {}, {snapshot.lights[0]}, snapshot.ambient, {}, {}, {}};
     auto renderer = Renderer(device, "test source");
     auto target = RenderTarget(device);
     REQUIRE_FALSE(target.resize(4, 4));
@@ -560,4 +588,145 @@ TEST_CASE("Renderer recreates its pipelines in a new device session", "[renderer
     frame();
     CHECK(device.stats().pipelines == pipelines);
     CHECK(device.stats().samplers == 1);
+}
+
+TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw each kind twice when there are", "[renderer][debug]") {
+    CapturingDevice device;
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        auto entity = commands.create();
+        commands.add(entity, TransformComponent{{0, 0, 0}, {}, {1.0f}});
+        commands.add(entity, MeshRendererComponent{cube, {}, true});
+    });
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device, {Format::rgba8_unorm, true, "view"});
+    const auto view = view_of(64, 32);
+    const auto render = [&](const RenderSnapshot& snapshot) {
+        REQUIRE_FALSE(target.resize(64, 32));
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(renderer.render(snapshot, view, target));
+        REQUIRE_FALSE(device.end_frame());
+    };
+
+    // Off: no debug pipelines, uploads, or draws.
+    render(extract_render_snapshot(world, *project.registry));
+    CHECK(device.pipelines_created == 1); // the lit pipeline only
+    CHECK(device.debug.empty());
+    CHECK(renderer.stats().debug_draws == 0);
+    auto empty = DebugDraw{};
+    auto options = RenderExtractOptions{};
+    options.debug = &empty;
+    render(extract_render_snapshot(world, *project.registry, options));
+    CHECK(device.pipelines_created == 1);
+    CHECK(renderer.stats().debug_draws == 0);
+
+    // On: extraction copies the lines and outlines, and each kind is uploaded once and drawn in front
+    // of the scene, then faintly behind it.
+    auto debug = DebugDraw{};
+    debug.line({0, 0, 0}, {1, 2, 3}, {1, 0, 0, 1});
+    debug.cross({0, 1, 0}, 0.5f, {0, 1, 0, 1});
+    debug.box(math::Mat4::translate({2, 0, 0}), {0.5f, 1.0f, 1.5f}, {0, 0, 1, 1});
+    debug.box(math::Mat4::identity(), {1, 1, 1}, {0, 0, 1, 1});
+    debug.capsule(math::Mat4::identity(), 0.25f, 0.75f, {1, 1, 0, 0.5f});
+    options.debug = &debug;
+    const auto snapshot = extract_render_snapshot(world, *project.registry, options);
+    debug.clear(); // the snapshot keeps its own copy
+    REQUIRE(snapshot.debug.lines.size() == 4);
+    REQUIRE(snapshot.debug.shapes.size() == 3);
+    render(snapshot);
+    CHECK(device.pipelines_created == 3);
+    REQUIRE(device.debug.size() == 6); // lines, boxes, capsules; twice each
+    for (size_t i = 0; i < 6; ++i) {
+        const auto& call = device.debug[i];
+        CHECK(call.pipeline == (i < 3 ? "debug lines in front" : "debug lines behind"));
+        CHECK(call.constants.viewport.x == 64.0f);
+        CHECK(call.constants.viewport.y == 32.0f);
+        CHECK(call.constants.viewport.z == view.debug_line_width);
+        CHECK(call.constants.viewport.w == Approx(i < 3 ? 1.0f : 0.3f));
+    }
+    const auto& lines = device.debug[0];
+    CHECK(lines.constants.kind[0] == 0);
+    CHECK(lines.vertices == 4 * 6);
+    CHECK(lines.instances == 1);
+    CHECK(lines.data[4] == 1.0f); // the first line's end, then its color
+    CHECK(lines.data[6] == 3.0f);
+    CHECK(lines.data[8] == 1.0f);
+    const auto& boxes = device.debug[1];
+    CHECK(boxes.constants.kind[0] == uint32_t(DebugShapeKind::box) + 1);
+    CHECK(boxes.vertices == debug_template_lines(DebugShapeKind::box) * 6);
+    CHECK(boxes.instances == 2);
+    CHECK(boxes.data[12] == 2.0f); // the first box's translation column
+    CHECK(boxes.data[17] == 1.0f); // its half extents
+    CHECK(boxes.data[18] == 1.5f);
+    const auto& capsules = device.debug[2];
+    CHECK(capsules.constants.kind[0] == uint32_t(DebugShapeKind::capsule) + 1);
+    CHECK(capsules.constants.kind[1] == 16); // several pixels across in this small view
+    CHECK(capsules.vertices == debug_template_lines(DebugShapeKind::capsule, 16) * 6);
+    CHECK(capsules.data[16] == 0.25f); // radius, half height
+    CHECK(capsules.data[17] == 0.75f);
+    CHECK(capsules.data[23] == 0.5f); // alpha
+    CHECK(renderer.stats().debug_draws == 6);
+    CHECK(renderer.stats().debug_lines == 4);
+    CHECK(renderer.stats().debug_shapes == 3);
+    CHECK(device.draws.size() == 3); // the mesh, in each of the three views
+}
+
+TEST_CASE("Sphere and capsule outlines take fewer segments the smaller they are on screen", "[renderer][debug]") {
+    CapturingDevice device;
+    TestProject project(device, {}, {});
+    World world;
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device, {Format::rgba8_unorm, true, "view"});
+    const auto view = view_of(640, 360); // from (0, 0, 5), looking at the origin
+    auto debug = DebugDraw{};
+    debug.sphere(math::Mat4::identity(), 1.0f, {1, 1, 1, 1}); // tens of pixels across
+    debug.sphere(math::Mat4::translate({0, 0, -80}), 1.0f, {1, 1, 1, 1}); // a few pixels
+    debug.sphere(math::Mat4::scale(math::Vec3(0.2f)), 1.0f, {1, 1, 1, 1}); // its matrix's scale counts
+    debug.capsule(math::Mat4::identity(), 0.5f, 1.0f, {1, 1, 1, 1});
+    auto options = RenderExtractOptions{};
+    options.debug = &debug;
+    REQUIRE_FALSE(target.resize(640, 360));
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(renderer.render(extract_render_snapshot(world, *project.registry, options), view, target));
+    REQUIRE_FALSE(device.end_frame());
+    REQUIRE(device.debug.size() == 8); // spheres at 8, 16, and 32 segments, and the capsule; twice each
+    auto segments = std::vector<std::pair<uint32_t, uint32_t>>{};
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& call = device.debug[i];
+        segments.emplace_back(call.constants.kind[0], call.constants.kind[1]);
+        CHECK(call.instances == 1);
+        CHECK(call.vertices == debug_template_lines(DebugShapeKind(call.constants.kind[0] - 1), call.constants.kind[1]) * 6);
+    }
+    const auto sphere = uint32_t(DebugShapeKind::sphere) + 1, capsule = uint32_t(DebugShapeKind::capsule) + 1;
+    CHECK(segments == std::vector<std::pair<uint32_t, uint32_t>>{{sphere, 8}, {sphere, 16}, {sphere, 32}, {capsule, 32}});
+    CHECK(device.debug[0].data[14] == -80.0f); // the far sphere has the fewest
+    CHECK(debug_segments_for(5.0f) == 8);
+    CHECK(debug_segments_for(12.0f) == 16);
+    CHECK(debug_segments_for(100.0f) == 32);
+}
+
+TEST_CASE("Debug helpers make the lines they promise", "[renderer][debug]") {
+    auto debug = DebugDraw{};
+    CHECK(debug.empty());
+    debug.cross({1, 2, 3}, 0.2f, {1, 1, 1, 1});
+    REQUIRE(debug.lines.size() == 3);
+    CHECK(debug.lines[0].from.x == Approx(0.9f));
+    CHECK(debug.lines[0].to.x == Approx(1.1f));
+    debug.arrow({0, 0, 0}, {0, 0, 2}, {1, 1, 1, 1});
+    REQUIRE(debug.lines.size() == 8); // the shaft and four head lines
+    for (size_t i = 4; i < 8; ++i) {
+        CHECK(debug.lines[i].from.z == 2.0f);
+        CHECK(debug.lines[i].to.z == Approx(1.6f)); // a fifth back
+    }
+    debug.arrow({0, 0, 0}, {0, 0, 0}, {1, 1, 1, 1}); // no length: no head
+    CHECK(debug.lines.size() == 9);
+    debug.sphere(math::Mat4::identity(), 2.0f, {1, 1, 1, 1});
+    CHECK(debug.shapes.back().size.x == 2.0f);
+    CHECK(debug_template_lines(DebugShapeKind::box) == 12);
+    CHECK(debug_template_lines(DebugShapeKind::sphere) == 96);
+    CHECK(debug_template_lines(DebugShapeKind::capsule) == 132);
+    debug.clear();
+    CHECK(debug.empty());
 }

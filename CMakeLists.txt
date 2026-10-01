@@ -345,7 +345,7 @@ if(BUILD_TESTING)
     add_test(NAME maya_metrics COMMAND maya_metrics_tests)
     set_tests_properties(maya_metrics PROPERTIES LABELS "cpu;metrics" TIMEOUT 30)
 
-    add_executable(maya_simulation_tests tests/simulation_tests.cpp tests/replay_tests.cpp)
+    add_executable(maya_simulation_tests tests/simulation_tests.cpp tests/replay_tests.cpp tests/physics_debug_tests.cpp)
     target_link_libraries(maya_simulation_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_simulation_tests)
     add_test(NAME maya_simulation COMMAND maya_simulation_tests)
@@ -406,7 +406,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/acceptance_tests.cpp)
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
@@ -507,6 +507,12 @@ if(BUILD_TESTING)
         set_tests_properties(maya_player_record PROPERTIES FIXTURES_SETUP smoke_recording)
         set_tests_properties(maya_player_replay PROPERTIES FIXTURES_REQUIRED smoke_recording)
         set_tests_properties(maya_player_record maya_player_replay PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Physics debug views draw in the player only when asked (#1022).
+        add_test(NAME maya_player_debug_physics COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_player>|${sample_project}|physics.scene|--debug-physics|--smoke|60"
+            -DEXIT_CODE=0 "-DEXPECT=drawing the physics debug views" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        set_tests_properties(maya_player_debug_physics PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
     endif()
 
