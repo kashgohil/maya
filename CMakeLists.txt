@@ -235,7 +235,7 @@ endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
-    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp)
+    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp)
     target_include_directories(MayaBenchmark PUBLIC apps/benchmark)
     target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaBuildInfo)
     maya_target_options(MayaBenchmark)

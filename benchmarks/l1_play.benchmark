@@ -1,6 +1,7 @@
 maya-benchmark 1
-# L1 play reset: 100 play sessions started and stopped from the same authored 10,000-entity scene,
-# each rendering 120 ticks. The authored scene must be unchanged afterwards.
+# L1 play reset: 300 play sessions started and stopped from the same authored 10,000-entity scene,
+# each rendering 120 ticks. The authored scene must be unchanged afterwards. The footprint slope is
+# fitted over cycles 101-300, once allocator warm-up has finished (#1024).
 name "l1-play"
 workload play_cycles
 project "../samples/basic_scene"
@@ -13,5 +14,6 @@ seed 990
 camera 0 130 150 0 0 0
 resolution 1920 1080
 upload_mib 64
-cycles 100
+cycles 300
+slope_from 101
 ticks 120

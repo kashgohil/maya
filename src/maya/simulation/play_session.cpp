@@ -5,6 +5,7 @@
 #include <cstring>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -142,11 +143,19 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     auto commands = m_world->commands();
     auto bodies = BodyCommands(*m_physics, *m_world);
     auto context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, bodies, *m_physics, messages};
-    for (auto& system : m_systems) { // phase 3
+    const auto since = [](std::chrono::steady_clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    };
+    m_system_timings.resize(m_systems.size());
+    for (size_t i = 0; i < m_systems.size(); ++i) { // phase 3
+        auto& system = m_systems[i];
         const auto first = commands.size();
         bodies.set_source(system->name());
+        m_system_timings[i].name = system->name();
+        const auto started = std::chrono::steady_clock::now();
         try {
             system->fixed_update(context);
+            m_system_timings[i].fixed_update_ms = since(started);
             m_physics->check_world_commands(*m_world, commands, first);
         } catch (const std::exception& error) {
             throw std::runtime_error(std::string(system->name()) + " failed: " + error.what());
@@ -178,11 +187,14 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     }
     auto late = std::make_unique<BodyCommands>(*m_physics, *m_world);
     auto late_context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, *late, *m_physics, messages, events};
-    for (auto& system : m_systems) {
+    for (size_t i = 0; i < m_systems.size(); ++i) {
+        auto& system = m_systems[i];
         const auto first = commands.size();
         late->set_source(system->name());
+        const auto started = std::chrono::steady_clock::now();
         try {
             system->late_fixed_update(late_context);
+            m_system_timings[i].late_fixed_update_ms = since(started);
             m_physics->check_world_commands(*m_world, commands, first);
         } catch (const std::exception& error) {
             throw std::runtime_error(std::string(system->name()) + " failed after the step: " + error.what());

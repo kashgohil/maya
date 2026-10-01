@@ -1,0 +1,18 @@
+maya-benchmark 1
+# P1 physics stress, recipe version 1 (docs/architecture/performance-baseline.md#p1-physics-stress):
+# 5,000 dynamic bodies (2,000 dropped into a bin with a turning kinematic paddle, 3,000 resting in
+# patches across the field), 500 static obstacles, 50 sensors, and 500 scripted bodies; 1,000 rays,
+# 100 overlaps, and 20 box casts each tick. Headless: no views. Run with the default physics worker
+# threads and with none; every run must end in the same state.
+name "p1-physics"
+workload physics
+count 5000
+obstacles 500
+scripted 500
+sensors 50
+queries 1000 100 20
+seed 990
+warmup 300
+samples 3000
+runs 3
+workers default 0

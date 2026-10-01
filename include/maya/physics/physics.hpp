@@ -140,6 +140,8 @@ struct PhysicsStats {
     uint64_t queries = 0; // raycasts, shape casts, and overlaps asked
     uint64_t event_recipients_skipped = 0; // recipients already gone, or being destroyed, at delivery
     uint64_t contact_records_dropped = 0; // contact changes Jolt reported that could not be stored (out of memory)
+    size_t temp_high_water_bytes = 0; // the most the per-step scratch allocator held at once
+    size_t temp_capacity_bytes = 0; // its preallocated size; more than this falls back to malloc
     // Wall time of the last tick's phases, in milliseconds.
     double prepare_ms = 0.0, step_ms = 0.0, synchronize_ms = 0.0, events_ms = 0.0, commit_ms = 0.0;
 };
@@ -309,6 +311,8 @@ public:
     /// std::invalid_argument for a direction that is zero or not finite, a negative distance, or a
     /// shape a collider could not have.
     std::vector<QueryHit> raycast(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
+    /// The nearest hit of the same ray, exactly raycast(...).front(), without collecting the others.
+    std::optional<QueryHit> raycast_nearest(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
     /// Sweeps a shape from `origin` along `direction` for `distance`.
     std::vector<QueryHit> shape_cast(const ShapeGeometry& shape, math::Vec3 origin, math::Quat rotation, math::Vec3 direction,
                                      float distance, const QueryFilter& filter = {}) const;

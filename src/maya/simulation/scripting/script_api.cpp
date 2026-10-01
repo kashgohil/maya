@@ -617,9 +617,14 @@ int push_hits(lua_State* L, const std::vector<QueryHit>& hits, bool all) {
 }
 template<bool All>
 int maya_raycast(lua_State* L, ScriptApi& api) {
-    const auto hits = query_physics(api).raycast(check_vector(L, 1), check_vector(L, 2), float(luaL_checknumber(L, 3)),
-                                                  check_filter(L, 4, api));
-    return push_hits(L, hits, All);
+    const auto origin = check_vector(L, 1);
+    const auto direction = check_vector(L, 2);
+    const auto distance = float(luaL_checknumber(L, 3));
+    const auto filter = check_filter(L, 4, api);
+    if constexpr (All) return push_hits(L, query_physics(api).raycast(origin, direction, distance, filter), true);
+    // The nearest only, without collecting the rest.
+    const auto hit = query_physics(api).raycast_nearest(origin, direction, distance, filter);
+    return push_hits(L, hit ? std::vector<QueryHit>{*hit} : std::vector<QueryHit>{}, false);
 }
 template<bool All>
 int maya_shape_cast(lua_State* L, ScriptApi& api) {

@@ -1,0 +1,15 @@
+maya-benchmark 1
+# P1 at a tenth of every count, with 120 sampled ticks: the CTest smoke run, which must complete and
+# end every run in the same state.
+name "p1-small"
+workload physics
+count 500
+obstacles 50
+scripted 50
+sensors 5
+queries 100 10 2
+seed 990
+warmup 30
+samples 120
+runs 3
+workers default 0

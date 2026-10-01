@@ -5,6 +5,7 @@
 #include "maya/core/system_info.hpp"
 #include "maya/metrics/metrics.hpp"
 #include "maya/rhi/graphics_device.hpp"
+#include "maya/scene/scene_io.hpp"
 #include <filesystem>
 #include <iosfwd>
 #include <optional>
@@ -18,6 +19,7 @@ enum class Workload {
     scene, // a project's saved scene, as the player runs it (the fast regression case)
     load_cycles, // L1: load the generated scene from its file, play and render, unload; repeatedly
     play_cycles, // L1: start and stop play sessions from one authored scene; repeatedly
+    physics, // P1: the physics stress scene, ticked back to back with no views
 };
 
 /// A versioned benchmark description (docs/performance.md#manifests). Paths are relative to the
@@ -42,7 +44,14 @@ struct Manifest {
     uint32_t runs = 3;
     uint32_t cycles = 100; // cycle workloads
     uint32_t ticks = 120; // frames per cycle
+    uint32_t slope_from = 11; // cycle workloads: the first cycle of the footprint slope's fit
     bool overhead = true; // also a matched run without CPU instrumentation, to measure its cost
+    // Physics (P1): `count` is the dynamic bodies; warmup and samples are ticks.
+    uint32_t obstacles = 500;
+    uint32_t scripted = 500;
+    uint32_t sensors = 50;
+    uint32_t rays = 1000, overlaps = 100, casts = 20; // queries per tick
+    std::vector<int> workers{-1, 0}; // physics worker threads per configuration; -1 is the default
 };
 struct ManifestResult {
     Manifest manifest;
@@ -93,6 +102,27 @@ struct Counters {
     size_t unique_meshes = 0, unique_materials = 0; // resident asset versions
 };
 
+/// P1: one run's per-tick samples (milliseconds and counts) and what it ended with.
+struct PhysicsRun {
+    int workers = -1; // as configured
+    int worker_threads = 0; // what that resolved to
+    std::string failure; // a step error flag, or an exception; the run is not averaged in
+    double start_ms = 0.0; // build the World, create the bodies, start the scripts
+    std::vector<double> tick, scripts, queries, other_systems, prepare, step, synchronize, events, late, commit;
+    std::vector<double> active, sleeping, pairs, contacts, events_delivered, query_hits;
+    size_t jolt_live_start = 0, jolt_live_end = 0, jolt_peak = 0; // Jolt heap, bytes
+    size_t temp_high_water = 0, temp_capacity = 0; // per-step scratch allocator
+    size_t script_bytes = 0; // script VM, at the end
+    std::optional<size_t> footprint_start, footprint_end;
+    double footprint_slope_per_tick = 0.0; // bytes, from samples every 100 ticks
+    uint64_t state = 0; // PlaySession::state_hash after the last tick: every body's pose and more
+};
+/// P1: what the generated scene holds.
+struct PhysicsScene {
+    size_t bodies = 0, static_bodies = 0, kinematic_bodies = 0, dynamic_bodies = 0, active_set = 0, sleeping_set = 0;
+    size_t boxes = 0, spheres = 0, capsules = 0, obstacles = 0, sensors = 0, scripted = 0;
+};
+
 struct Result {
     Manifest manifest;
     SystemInfo system;
@@ -106,10 +136,19 @@ struct Result {
     std::vector<CycleSample> cycles;
     std::vector<RejectedCase> rejected;
     std::optional<bool> authored_unchanged; // play cycles
+    PhysicsScene physics_scene;
+    std::vector<PhysicsRun> physics_runs;
+    std::optional<bool> deterministic; // physics: every run and worker configuration ended in the same state
     std::vector<std::pair<std::string, std::string>> unavailable; // metric, reason
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended
     std::string thread_qos; // the measuring thread's quality-of-service class
 };
+
+/// P1's scene, version 1, as scene data (docs/architecture/performance-baseline.md#p1-physics-stress),
+/// and what it holds. Its script is physics_script_source(), under physics_script_id.
+SceneDocument physics_scene(const Manifest& manifest, PhysicsScene* counts = nullptr);
+inline constexpr AssetId physics_script_id{0x7031, 1};
+const char* physics_script_source();
 
 /// Runs the manifest offscreen on `device` (initialized, headless or not) with the renderer shader.
 /// Failures stop the benchmark and are recorded in `failure`; what completed is kept.

@@ -1,0 +1,15 @@
+maya-benchmark 1
+# P1 at four times the dynamic bodies (8,000 dropped, 12,000 resting): a stress input, with no budget.
+# Everything else is as in p1_physics.
+name "p1-20k"
+workload physics
+count 20000
+obstacles 500
+scripted 500
+sensors 50
+queries 1000 100 20
+seed 990
+warmup 300
+samples 3000
+runs 3
+workers default 0

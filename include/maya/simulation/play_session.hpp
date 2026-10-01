@@ -53,6 +53,13 @@ public:
     const World& world() const noexcept { return *m_world; }
     /// The session's physics, created with it and destroyed before its World.
     const PhysicsWorld& physics() const noexcept { return *m_physics; }
+    /// Wall time of each system's fixed-tick hooks in the last tick, in system order: phase 3
+    /// (fixed_update) and phase 7 (late_fixed_update, with the event hooks it runs). For benchmarks.
+    struct SystemTiming {
+        std::string_view name;
+        double fixed_update_ms = 0.0, late_fixed_update_ms = 0.0;
+    };
+    const std::vector<SystemTiming>& system_timings() const noexcept { return m_system_timings; }
     /// Debug views that draw contacts or queries turn this on (PhysicsWorld::set_debug_capture); each
     /// tick then starts a new list of queries. Capture changes nothing the simulation does.
     void set_physics_debug_capture(bool on) { m_physics->set_debug_capture(on); }
@@ -104,6 +111,7 @@ private:
     std::unique_ptr<World> m_world;
     std::unique_ptr<PhysicsWorld> m_physics; // declared after the World, so it is destroyed first
     std::vector<std::unique_ptr<SimulationSystem>> m_systems;
+    std::vector<SystemTiming> m_system_timings; // the last tick's, one per system
     std::unique_ptr<BodyCommands> m_late_bodies; // requests from the last phase 7, for the next step
     // Phase 2's pose history: each entity's local transform before the last tick changed it.
     struct History {

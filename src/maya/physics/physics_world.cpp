@@ -216,6 +216,28 @@ JPH::Ref<JPH::Shape> make_shape(const std::vector<ColliderDesc>& colliders, cons
     return result.Get();
 }
 
+/// Jolt's per-step scratch allocator, counting the most it held at once. Jolt uses it as the wrapped
+/// allocator requires, so the counts need no more synchronization than the allocator itself.
+class CountedTempAllocator final : public JPH::TempAllocator {
+public:
+    explicit CountedTempAllocator(JPH::uint size) : m_inner(size), m_capacity(size) {}
+    void* Allocate(JPH::uint size) override {
+        m_used += JPH::AlignUp(size, JPH_RVECTOR_ALIGNMENT);
+        m_high = std::max(m_high, m_used);
+        return m_inner.Allocate(size);
+    }
+    void Free(void* address, JPH::uint size) override {
+        m_used -= JPH::AlignUp(size, JPH_RVECTOR_ALIGNMENT);
+        m_inner.Free(address, size);
+    }
+    size_t high_water() const noexcept { return m_high; }
+    size_t capacity() const noexcept { return m_capacity; }
+
+private:
+    JPH::TempAllocatorImplWithMallocFallback m_inner;
+    size_t m_capacity, m_used = 0, m_high = 0;
+};
+
 /// A contact that began or ended in a step, as Jolt reported it from a worker thread.
 struct ContactRecord {
     bool added = false;
@@ -482,20 +504,26 @@ struct PhysicsWorld::Impl {
         return events;
     }
 
+    /// One result per body, nearest first: `fraction(hit)` picks each body's nearest raw hit, and only
+    /// those are turned into results by `place`, which may be costly (a ray's normal locks the body).
     template<class Collector>
-    std::vector<QueryHit> hits(const Collector& collector, auto&& place) const {
-        auto nearest = std::map<uint32_t, QueryHit>{}; // one per body
+    std::vector<QueryHit> hits(const Collector& collector, auto&& fraction, auto&& place) const {
+        using Hit = std::decay_t<decltype(collector.mHits[0])>;
+        auto nearest = std::map<uint32_t, const Hit*>{}; // by body, in body ID order
         for (const auto& hit : collector.mHits) {
-            const auto* record = by_id(hit.mBodyID2.GetIndexAndSequenceNumber());
-            if (!record) continue;
-            auto result = place(hit);
-            result.entity = record->entity;
-            result.id = record->id;
-            auto [it, added] = nearest.try_emplace(hit.mBodyID2.GetIndexAndSequenceNumber(), result);
-            if (!added && result.distance < it->second.distance) it->second = result;
+            auto [it, added] = nearest.try_emplace(hit.mBodyID2.GetIndexAndSequenceNumber(), &hit);
+            if (!added && fraction(hit) < fraction(*it->second)) it->second = &hit;
         }
         auto results = std::vector<QueryHit>{};
-        for (auto& [body, hit] : nearest) results.push_back(hit);
+        results.reserve(nearest.size());
+        for (const auto& [body, hit] : nearest) {
+            const auto* record = by_id(body);
+            if (!record) continue;
+            auto result = place(*hit);
+            result.entity = record->entity;
+            result.id = record->id;
+            results.push_back(result);
+        }
         std::ranges::sort(results, {}, [](const QueryHit& h) { return std::tuple(h.distance, h.id); });
         return results;
     }
@@ -562,7 +590,7 @@ struct PhysicsWorld::Impl {
     BroadPhaseLayers layers;
     ObjectVsBroadPhase object_vs_broad_phase;
     ObjectPairs object_pairs;
-    JPH::TempAllocatorImplWithMallocFallback temp;
+    CountedTempAllocator temp;
     JPH::PhysicsSystem system;
     ContactRecorder contacts;
     std::vector<Record> records; // creation order
@@ -853,6 +881,8 @@ PhysicsStats PhysicsWorld::stats() const {
     auto stats = m_impl->stats;
     stats.contact_records_dropped = m_impl->contacts.dropped();
     stats.contacts = m_impl->touching;
+    stats.temp_high_water_bytes = m_impl->temp.high_water();
+    stats.temp_capacity_bytes = m_impl->temp.capacity();
     stats.overlaps = m_impl->overlapping;
     stats.queries = m_impl->queries;
     for (const auto& record : m_impl->records) {
@@ -1091,6 +1121,54 @@ std::vector<PhysicsEvent> PhysicsWorld::end_contacts(const World& world, uint64_
     return impl.finish(std::move(events), tick, world, {});
 }
 
+std::optional<QueryHit> PhysicsWorld::raycast_nearest(math::Vec3 origin, math::Vec3 direction, float distance,
+                                                      const QueryFilter& filter) const {
+    const auto& impl = *m_impl;
+    const auto along = unit(direction);
+    if (!along || !finite(origin)) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
+    if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A raycast's distance must be finite and not negative");
+    auto logged = PhysicsDebugQuery{PhysicsQueryKind::raycast, origin, {}, *along, distance, std::nullopt, {}};
+    if (distance == 0.0f) {
+        impl.log_query(std::move(logged), {});
+        return std::nullopt;
+    }
+    // The nearest hit, and on a tie the lower EntityId, as raycast orders them. Hits as near as the
+    // best so far must still arrive, so the early out sits just past it.
+    class Nearest final : public JPH::CastRayCollector {
+    public:
+        explicit Nearest(const Impl& impl) : m_impl(impl) {}
+        void AddHit(const JPH::RayCastResult& hit) override {
+            const auto* record = m_impl.by_id(hit.mBodyID.GetIndexAndSequenceNumber());
+            if (!record) return;
+            if (best && (hit.mFraction > best->mFraction || (hit.mFraction == best->mFraction && !(record->id < best_id)))) return;
+            best = hit;
+            best_id = record->id;
+            UpdateEarlyOutFraction(std::nextafter(hit.mFraction, 2.0f));
+        }
+        std::optional<JPH::RayCastResult> best;
+        EntityId best_id;
+
+    private:
+        const Impl& m_impl;
+    } collector(impl);
+    const auto ray = JPH::RRayCast(JPH::RVec3(jolt(origin)), jolt(*along * distance));
+    const auto groups = QueryGroups(filter.groups);
+    const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
+    impl.query().CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
+    auto result = std::optional<QueryHit>{};
+    if (collector.best) {
+        const auto& hit = *collector.best;
+        const auto* record = impl.by_id(hit.mBodyID.GetIndexAndSequenceNumber());
+        result = QueryHit{record->entity, record->id};
+        result->distance = hit.mFraction * distance;
+        result->point = origin + *along * result->distance;
+        const auto lock = JPH::BodyLockRead(impl.system.GetBodyLockInterfaceNoLock(), hit.mBodyID);
+        if (lock.Succeeded()) result->normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, JPH::RVec3(jolt(result->point))));
+    }
+    impl.log_query(std::move(logged), result ? std::vector<QueryHit>{*result} : std::vector<QueryHit>{});
+    return result;
+}
+
 std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter) const {
     const auto& impl = *m_impl;
     const auto along = unit(direction);
@@ -1116,7 +1194,7 @@ std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direct
         std::vector<Hit> mHits;
     } found;
     for (const auto& hit : collector.mHits) found.mHits.push_back({hit.mBodyID, hit.mSubShapeID2, hit.mFraction});
-    auto results = impl.hits(found, [&](const Hit& hit) {
+    auto results = impl.hits(found, [](const Hit& hit) { return hit.fraction; }, [&](const Hit& hit) {
         auto result = QueryHit{};
         result.distance = hit.fraction * distance;
         result.point = origin + *along * result.distance;
@@ -1149,7 +1227,7 @@ std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math:
     const auto groups = QueryGroups(filter.groups);
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
     impl.query().CastShape(cast, settings, JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
-    auto results = impl.hits(collector, [&](const JPH::ShapeCastResult& hit) {
+    auto results = impl.hits(collector, [](const JPH::ShapeCastResult& hit) { return hit.mFraction; }, [&](const JPH::ShapeCastResult& hit) {
         auto result = QueryHit{};
         result.distance = hit.mFraction * distance;
         result.point = maya_vector(hit.mContactPointOn2);
@@ -1173,7 +1251,7 @@ std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::Ve
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
     impl.query().CollideShape(probe, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sRotationTranslation(jolt(*turned), JPH::RVec3(jolt(position))),
                               JPH::CollideShapeSettings(), JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
-    auto results = impl.hits(collector, [&](const JPH::CollideShapeResult& hit) {
+    auto results = impl.hits(collector, [](const JPH::CollideShapeResult&) { return 0.0f; }, [&](const JPH::CollideShapeResult& hit) {
         auto result = QueryHit{};
         result.point = maya_vector(hit.mContactPointOn2);
         if (const auto normal = unit(maya_vector(hit.mPenetrationAxis))) result.normal = *normal * -1.0f;

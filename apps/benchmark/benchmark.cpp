@@ -1,4 +1,5 @@
 #include "benchmark.hpp"
+#include "benchmark_detail.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/renderer/renderer.hpp"
@@ -30,10 +31,12 @@ const char* workload_name(Workload workload) {
     case Workload::scene: return "scene";
     case Workload::load_cycles: return "load_cycles";
     case Workload::play_cycles: return "play_cycles";
+    case Workload::physics: return "physics";
     }
     return "?";
 }
-bool generated(Workload workload) { return workload != Workload::scene; }
+/// Workloads that generate a scene of one mesh and material.
+bool generated(Workload workload) { return workload != Workload::scene && workload != Workload::physics; }
 
 // Manifests -------------------------------------------------------------------------------------------
 
@@ -68,13 +71,7 @@ bool asset_id(std::istringstream& in, AssetId& id) {
 
 // Scene generation ------------------------------------------------------------------------------------
 
-/// SplitMix64: a small, portable generator, so the same seed selects the same entities everywhere.
-uint64_t mix(uint64_t value) noexcept {
-    value += 0x9e3779b97f4a7c15ull;
-    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ull;
-    value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
-    return value ^ (value >> 31);
-}
+using detail::mix;
 
 math::Quat looking(const math::Vec3& from, const math::Vec3& to) {
     auto forward = to - from;
@@ -437,6 +434,101 @@ double slope(const std::vector<double>& ys) {
     return num / den;
 }
 
+void write_physics(Json& json, const Result& r) {
+    const auto& m = r.manifest;
+    const auto& s = r.physics_scene;
+    json.key("physics");
+    json.open('{');
+    json.key("recipe");
+    json.open('{');
+    json.field("version", 1);
+    json.field("dynamic_bodies", m.count);
+    json.field("obstacles", m.obstacles);
+    json.field("scripted", m.scripted);
+    json.field("sensors", m.sensors);
+    json.field("rays", m.rays);
+    json.field("overlaps", m.overlaps);
+    json.field("shape_casts", m.casts);
+    json.key("workers");
+    json.open('[');
+    for (const auto workers : m.workers) json.value(workers);
+    json.close(']');
+    json.close('}');
+    json.key("scene");
+    json.open('{');
+    json.field("bodies", s.bodies);
+    json.field("static", s.static_bodies);
+    json.field("kinematic", s.kinematic_bodies);
+    json.field("dynamic", s.dynamic_bodies);
+    json.field("dropped", s.active_set);
+    json.field("resting", s.sleeping_set);
+    json.field("boxes", s.boxes);
+    json.field("spheres", s.spheres);
+    json.field("capsules", s.capsules);
+    json.field("obstacles", s.obstacles);
+    json.field("sensors", s.sensors);
+    json.field("scripted", s.scripted);
+    json.close('}');
+    json.key("deterministic");
+    if (r.deterministic) json.value(*r.deterministic); else json.null();
+    json.key("runs");
+    json.open('[');
+    for (const auto& run : r.physics_runs) {
+        json.open('{');
+        json.field("workers", run.workers);
+        json.field("worker_threads", run.worker_threads);
+        json.key("failure");
+        if (run.failure.empty()) json.null(); else json.value(run.failure);
+        json.field("start_ms", run.start_ms);
+        json.key("ms");
+        json.open('{');
+        write_summary(json, "tick", run.tick);
+        write_summary(json, "scripts", run.scripts);
+        write_summary(json, "queries", run.queries);
+        write_summary(json, "other_systems", run.other_systems);
+        write_summary(json, "prepare", run.prepare);
+        write_summary(json, "step", run.step);
+        write_summary(json, "synchronize", run.synchronize);
+        write_summary(json, "events", run.events);
+        write_summary(json, "post_physics_hooks", run.late);
+        write_summary(json, "body_commit", run.commit);
+        json.close('}');
+        json.key("per_tick");
+        json.open('{');
+        write_summary(json, "active_bodies", run.active);
+        write_summary(json, "sleeping_bodies", run.sleeping);
+        write_summary(json, "pairs", run.pairs);
+        write_summary(json, "contacts", run.contacts);
+        write_summary(json, "events", run.events_delivered);
+        write_summary(json, "query_hits", run.query_hits);
+        json.close('}');
+        json.key("memory");
+        json.open('{');
+        json.field("jolt_live_start_bytes", run.jolt_live_start);
+        json.field("jolt_live_end_bytes", run.jolt_live_end);
+        json.field("jolt_peak_bytes", run.jolt_peak);
+        json.field("temp_high_water_bytes", run.temp_high_water);
+        json.field("temp_capacity_bytes", run.temp_capacity);
+        json.field("script_vm_bytes", run.script_bytes);
+        json.key("footprint_start_bytes");
+        if (run.footprint_start) json.value(*run.footprint_start); else json.null();
+        json.key("footprint_end_bytes");
+        if (run.footprint_end) json.value(*run.footprint_end); else json.null();
+        json.field("footprint_slope_bytes_per_tick", run.footprint_slope_per_tick);
+        json.close('}');
+        char state[17];
+        std::snprintf(state, sizeof(state), "%016llx", static_cast<unsigned long long>(run.state));
+        json.field("state_hash", std::string_view(state));
+        json.key("tick_ms");
+        json.open('[');
+        for (const auto v : run.tick) json.value(v);
+        json.close(']');
+        json.close('}');
+    }
+    json.close(']');
+    json.close('}');
+}
+
 } // namespace
 
 ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
@@ -472,7 +564,8 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             else if (text == "scene") manifest.workload = Workload::scene;
             else if (text == "load_cycles") manifest.workload = Workload::load_cycles;
             else if (text == "play_cycles") manifest.workload = Workload::play_cycles;
-            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, or play_cycles");
+            else if (text == "physics") manifest.workload = Workload::physics;
+            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, or physics");
         } else if (key == "project") {
             ok = bool(in >> std::quoted(text)) && !text.empty();
             manifest.project = (folder / text).lexically_normal();
@@ -499,6 +592,23 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         else if (key == "runs") ok = number(in, manifest.runs) && manifest.runs > 0;
         else if (key == "cycles") ok = number(in, manifest.cycles) && manifest.cycles > 0;
         else if (key == "ticks") ok = number(in, manifest.ticks) && manifest.ticks > 0;
+        else if (key == "slope_from") ok = number(in, manifest.slope_from) && manifest.slope_from > 0;
+        else if (key == "obstacles") ok = number(in, manifest.obstacles);
+        else if (key == "scripted") ok = number(in, manifest.scripted);
+        else if (key == "sensors") ok = number(in, manifest.sensors);
+        else if (key == "queries") ok = number(in, manifest.rays) && number(in, manifest.overlaps) && number(in, manifest.casts);
+        else if (key == "workers") {
+            manifest.workers.clear();
+            while (in >> text) {
+                auto count = 0;
+                if (text == "default") count = -1;
+                else if (const auto [ptr, error] = std::from_chars(text.data(), text.data() + text.size(), count);
+                         error != std::errc{} || ptr != text.data() + text.size() || count < 0 || count > 64)
+                    return fail(number_of_line, "workers are 'default' or a count from 0 to 64, not '" + text + "'");
+                manifest.workers.push_back(count);
+            }
+            ok = !manifest.workers.empty();
+        }
         else if (key == "overhead") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.overhead = text == "on";
@@ -507,8 +617,11 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         if (in >> text) return fail(number_of_line, "unexpected '" + text + "' after '" + key + "'");
     }
     if (!header) return fail(number_of_line, "expected a maya-benchmark header");
-    for (const auto* required : {"name", "workload", "project"})
+    for (const auto* required : {"name", "workload"})
         if (std::ranges::find(seen, required) == seen.end()) return {{}, std::string("missing '") + required + "'"};
+    if (manifest.workload != Workload::physics && std::ranges::find(seen, "project") == seen.end()) return {{}, "missing 'project'"};
+    if ((manifest.workload == Workload::load_cycles || manifest.workload == Workload::play_cycles) && manifest.slope_from > manifest.cycles)
+        return {{}, "'slope_from' is past the last cycle"};
     if (generated(manifest.workload))
         for (const auto* required : {"mesh", "material"})
             if (std::ranges::find(seen, required) == seen.end())
@@ -527,6 +640,18 @@ ManifestResult load_manifest(const fs::path& file) {
 namespace {
 /// The workload itself; run() records what surrounds it.
 void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
+    if (manifest.workload == Workload::physics) { // headless: no project, views, or device work
+        result.unavailable = {
+            {"contact_constraints", "Jolt does not report its contact constraint count; pairs and solid contacts are counted"},
+            {"rendering", "the physics workload renders nothing"},
+        };
+        try {
+            detail::run_physics(result, manifest);
+        } catch (const std::exception& error) {
+            result.failure = error.what();
+        }
+        return;
+    }
     result.unavailable = {
         {"gpu_pass_time", "per-pass GPU timing is not implemented; each frame's GPU execution time is measured"},
         {"present_pacing", "the benchmark renders offscreen and never presents, so display pacing does not apply"},
@@ -764,6 +889,8 @@ std::string to_json(const Result& r) {
         json.key("cycles");
         json.open('{');
         const auto warm = std::min<size_t>(10, r.cycles.size() / 2); // cycles 1-10 warm up
+        // The footprint is fitted from slope_from, once the allocators have warmed up too.
+        const auto fit_from = std::min<size_t>(m.slope_from, r.cycles.size()) - 1;
         auto load = std::vector<double>{}, first = std::vector<double>{}, longest = std::vector<double>{}, stop = std::vector<double>{};
         auto footprint = std::vector<double>{};
         for (size_t i = warm; i < r.cycles.size(); ++i) {
@@ -771,9 +898,15 @@ std::string to_json(const Result& r) {
             first.push_back(r.cycles[i].first_frame);
             longest.push_back(r.cycles[i].longest_frame);
             stop.push_back(r.cycles[i].stop);
-            if (r.cycles[i].after.process) footprint.push_back(double(r.cycles[i].after.process->footprint));
         }
+        for (size_t i = fit_from; i < r.cycles.size(); ++i)
+            if (r.cycles[i].after.process) footprint.push_back(double(r.cycles[i].after.process->footprint));
         json.field("warmup_cycles", warm);
+        json.key("footprint_slope_cycles");
+        json.open('[');
+        json.value(fit_from + 1);
+        json.value(r.cycles.size());
+        json.close(']');
         write_summary(json, "load_ms", load);
         write_summary(json, "first_frame_ms", first);
         write_summary(json, "longest_frame_ms", longest);
@@ -820,6 +953,7 @@ std::string to_json(const Result& r) {
     json.close(']');
     json.key("authored_unchanged");
     if (r.authored_unchanged) json.value(*r.authored_unchanged); else json.null();
+    if (m.workload == Workload::physics) write_physics(json, r);
     json.key("unavailable");
     json.open('{');
     for (const auto& [metric, reason] : r.unavailable) json.field(metric, reason);
@@ -861,6 +995,24 @@ std::string to_text(const Result& r) {
     for (const auto& rejected : r.rejected)
         out << "  " << rejected.name << ": " << (rejected.rejected ? "refused" : "NOT REFUSED") << (rejected.nothing_left ? "" : ", LEFT RESOURCES") << "\n";
     if (r.authored_unchanged) out << "  authored scene " << (*r.authored_unchanged ? "unchanged" : "CHANGED") << "\n";
+    if (r.manifest.workload == Workload::physics) {
+        const auto& s = r.physics_scene;
+        out << "  " << s.bodies << " bodies (" << s.dynamic_bodies << " dynamic: " << s.active_set << " dropped, " << s.sleeping_set
+            << " resting; " << s.scripted << " scripted), " << s.obstacles << " obstacles, " << s.sensors << " sensors\n";
+        for (const auto& run : r.physics_runs) {
+            out << "  workers " << run.worker_threads << ": ";
+            if (!run.failure.empty()) {
+                out << "FAILED: " << run.failure << "\n";
+                continue;
+            }
+            const auto t = summarize(run.tick);
+            out << "tick " << t.mean << " ms (P95 " << t.p95 << ", P99 " << t.p99 << ", max " << t.max << "); step "
+                << summarize(run.step).mean << ", scripts " << summarize(run.scripts).mean << ", queries " << summarize(run.queries).mean
+                << "; " << summarize(run.active).mean << " active, " << summarize(run.contacts).mean << " contacts; state "
+                << std::hex << run.state << std::dec << "\n";
+        }
+        if (r.deterministic) out << "  " << (*r.deterministic ? "every run ended in the same state" : "RUNS DIFFER: a determinism failure") << "\n";
+    }
     return out.str();
 }
 
