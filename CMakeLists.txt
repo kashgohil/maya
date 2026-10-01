@@ -406,7 +406,8 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/acceptance_tests.cpp)
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/acceptance_tests.cpp
+            tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
@@ -423,12 +424,25 @@ if(BUILD_TESTING)
 
         # Milestone acceptance (docs/acceptance.md): authoring in the editor writes a project that the
         # player's path renders on Metal and the real maya_player runs from another directory.
-        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]")
+        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]~[physics]")
         set_tests_properties(maya_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 60
             FIXTURES_SETUP authored_project)
         add_test(NAME maya_acceptance_render COMMAND maya_editor_tests "[acceptance][gpu]")
         set_tests_properties(maya_acceptance_render PROPERTIES LABELS "gpu;acceptance" TIMEOUT 120 RUN_SERIAL TRUE
             FIXTURES_REQUIRED authored_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 2 (#1024): the reference physics interaction authored, played, edited, replayed, reset,
+        # and broken in the editor; then the real player runs it from another directory.
+        add_test(NAME maya_physics_acceptance_author COMMAND maya_editor_tests "[acceptance][physics][author]")
+        set_tests_properties(maya_physics_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 120
+            FIXTURES_SETUP physics_project)
+        if(TARGET maya_player)
+            add_test(NAME maya_physics_acceptance_player COMMAND ${CMAKE_COMMAND}
+                "-DCOMMAND=$<TARGET_FILE:maya_player>|../Physics Game|levels/door.scene|--smoke|900"
+                -DEXIT_CODE=0 "-DEXPECT=the door slides open for (Crate|Ball)" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+            set_tests_properties(maya_physics_acceptance_player PROPERTIES LABELS "gpu;smoke;acceptance" TIMEOUT 90 RUN_SERIAL TRUE
+                WORKING_DIRECTORY "${MAYA_ACCEPTANCE_DIR}/elsewhere" FIXTURES_REQUIRED physics_project
+                ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        endif()
         add_test(NAME maya_visual_reference COMMAND maya_editor_tests "[visual]")
         set_tests_properties(maya_visual_reference PROPERTIES LABELS "gpu;acceptance;visual" TIMEOUT 120 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
@@ -534,6 +548,12 @@ if(BUILD_TESTING)
             set_tests_properties(maya_benchmark_smoke_${manifest} PROPERTIES LABELS "gpu;smoke;benchmark" TIMEOUT 120
                 RUN_SERIAL TRUE ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         endforeach()
+        # P1 at a tenth of its size: it must complete, and every run and worker count must end alike (#1024).
+        add_test(NAME maya_benchmark_smoke_p1_small COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/p1_small.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-p1_small.json"
+            -DEXIT_CODE=0 "-DEXPECT=every run ended in the same state" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        set_tests_properties(maya_benchmark_smoke_p1_small PROPERTIES LABELS "gpu;smoke;benchmark" TIMEOUT 300
+            RUN_SERIAL TRUE ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         add_test(NAME maya_benchmark_bad_manifest COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
             -DEXIT_CODE=2 "-DEXPECT=expected a maya-benchmark header" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)

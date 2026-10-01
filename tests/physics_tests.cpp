@@ -933,6 +933,52 @@ size_t count(const std::vector<Recorded>& events, PhysicsEventKind kind, uint64_
 }
 } // namespace
 
+TEST_CASE("The nearest raycast hit is exactly the first of every hit, ties going to the lower EntityId", "[physics][query]") {
+    const auto same = [](const std::optional<QueryHit>& nearest, const std::vector<QueryHit>& all) {
+        if (all.empty()) return !nearest.has_value();
+        return nearest && nearest->id == all.front().id && nearest->entity == all.front().entity && nearest->distance == all.front().distance &&
+               nearest->point.x == all.front().point.x && nearest->point.y == all.front().point.y && nearest->point.z == all.front().point.z &&
+               nearest->normal.x == all.front().normal.x && nearest->normal.y == all.front().normal.y && nearest->normal.z == all.front().normal.z;
+    };
+    auto session = play(corridor(), corridor_bodies());
+    run(*session, 1);
+    const auto& physics = session->physics();
+    auto with_sensors = QueryFilter{};
+    with_sensors.sensors = true;
+    auto ignoring = QueryFilter{};
+    ignoring.ignore = handle(session->world(), 2);
+    for (const auto& filter : {QueryFilter{}, with_sensors, ignoring})
+        for (const auto& [origin, direction] : {std::pair{math::Vec3{0, 0.5f, 0}, math::Vec3{0, 0, -1}}, std::pair{math::Vec3{0, 5, -3}, math::Vec3{0, -1, 0}},
+                                                std::pair{math::Vec3{0, 5, 0}, math::Vec3{0, 1, 0}}})
+            CHECK(same(physics.raycast_nearest(origin, direction, 20.0f, filter), physics.raycast(origin, direction, 20.0f, filter)));
+    CHECK_FALSE(physics.raycast_nearest({0, 0.5f, 0}, {0, 0, -1}, 2.0f)); // too short
+    CHECK_THROWS_AS(physics.raycast_nearest({0, 0, 0}, {0, 0, 0}, 1.0f), std::invalid_argument);
+
+    // Two boxes whose faces meet at the ray: an exact tie, which the lower EntityId wins, though the
+    // other body was made first.
+    auto document = SceneDocument{};
+    document.entities = {entity(7, {at({0.5f, 0.5f, -3})}), entity(6, {at({-0.5f, 0.5f, -3})})};
+    auto tied = play(document, create_on_first_tick({{7, box(MotionType::static_body)}, {6, box(MotionType::static_body)}}));
+    run(*tied, 1);
+    const auto all = tied->physics().raycast({0, 0.5f, 0}, {0, 0, -1}, 20.0f);
+    REQUIRE(all.size() == 2);
+    REQUIRE(all[0].distance == all[1].distance);
+    CHECK(all[0].id == id(6));
+    CHECK(same(tied->physics().raycast_nearest({0, 0.5f, 0}, {0, 0, -1}, 20.0f), all));
+
+    // A settling pile, from many directions.
+    auto pile = play(drops(), drop_bodies());
+    run(*pile, 20);
+    auto mismatches = 0;
+    for (int i = 0; i < 400; ++i) {
+        const auto angle = float(i) * 0.0157f, height = float(i % 7) * 0.8f;
+        const auto origin = math::Vec3{std::cos(angle) * 12.0f, height, std::sin(angle) * 12.0f};
+        const auto toward = math::Vec3{3.0f, 0.5f + float(i % 5) * 0.4f, 0.0f} - origin;
+        if (!same(pile->physics().raycast_nearest(origin, toward, 30.0f), pile->physics().raycast(origin, toward, 30.0f))) ++mismatches;
+    }
+    CHECK(mismatches == 0);
+}
+
 TEST_CASE("Contacts and triggers begin and end once per pair, in the same order for any worker count", "[physics][events]") {
     const auto events = record_drops(0, 240);
     using Kind = PhysicsEventKind;

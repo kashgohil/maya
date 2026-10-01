@@ -203,10 +203,14 @@ TEST_CASE("Load cycles return to their baseline and refuse bad scenes", "[benchm
     CHECK(has(loads.rejected[1].reason, "ffffffff")); // the missing asset is named
     CHECK(loads.authored_unchanged == true);
 
-    const auto plays = run(small(Workload::play_cycles), device, "renderer");
+    auto play_manifest = small(Workload::play_cycles);
+    play_manifest.cycles = 6;
+    play_manifest.slope_from = 5; // the footprint is fitted over cycles 5-6, after the timings' warmup (3)
+    const auto plays = run(play_manifest, device, "renderer");
     INFO(plays.failure);
     REQUIRE(plays.failure.empty());
-    CHECK(plays.cycles.size() == 4);
+    CHECK(plays.cycles.size() == 6);
+    CHECK(has(to_json(plays), "\"footprint_slope_cycles\":[5,6]"));
     CHECK(plays.rejected.empty());
     CHECK(plays.authored_unchanged == true);
     CHECK(plays.cycles.back().after.device.buffers == plays.baseline.device.buffers);
@@ -240,6 +244,99 @@ TEST_CASE("Results are complete JSON with raw samples, summaries, and what was u
     CHECK_FALSE(has(json, ",]"));
     CHECK_FALSE(has(json, "[,"));
     CHECK(has(to_text(result), "run 2: frame"));
+}
+
+TEST_CASE("Cycle footprints are fitted from slope_from, and physics manifests name their counts", "[benchmark]") {
+    const auto cycles = parse(minimal + "cycles 300\nslope_from 101\n");
+    REQUIRE(cycles);
+    CHECK(cycles.manifest.slope_from == 101);
+    CHECK(parse(minimal).manifest.slope_from == 11);
+    const auto late = parse("maya-benchmark 1\nname \"t\"\nworkload play_cycles\nproject \"p\"\nmesh 1 2\nmaterial 1 3\ncycles 50\nslope_from 51\n");
+    CHECK(has(late.error, "past the last cycle"));
+
+    const auto physics = parse("maya-benchmark 1\nname \"p1\"\nworkload physics\ncount 5000\nobstacles 500\nscripted 400\nsensors 50\n"
+                               "queries 1000 100 20\nworkers default 0 3\n");
+    INFO(physics.error);
+    REQUIRE(physics); // no project, mesh, or material: it uses no assets
+    const auto& m = physics.manifest;
+    CHECK(m.workload == Workload::physics);
+    CHECK(m.count == 5000);
+    CHECK(m.obstacles == 500);
+    CHECK(m.scripted == 400);
+    CHECK(m.sensors == 50);
+    CHECK(m.rays == 1000);
+    CHECK(m.overlaps == 100);
+    CHECK(m.casts == 20);
+    CHECK(m.workers == std::vector<int>{-1, 0, 3});
+    CHECK(has(parse("maya-benchmark 1\nname \"p\"\nworkload physics\nworkers some\n").error, "workers are 'default' or a count"));
+    CHECK(has(parse("maya-benchmark 1\nname \"p\"\nworkload physics\nqueries 1 2\n").error, "invalid value for 'queries'"));
+
+    // The recipe's proportions: 40% dropped, 60% resting; 60/25/15 boxes, spheres, and capsules.
+    auto counts = PhysicsScene{};
+    const auto scene = physics_scene(m, &counts);
+    CHECK(counts.dynamic_bodies == 5000);
+    CHECK(counts.active_set == 2000);
+    CHECK(counts.sleeping_set == 3000);
+    CHECK(counts.boxes == 3000);
+    CHECK(counts.spheres == 1250);
+    CHECK(counts.capsules == 750);
+    CHECK(counts.obstacles == 500);
+    CHECK(counts.sensors == 50);
+    CHECK(counts.scripted == 400);
+    CHECK(counts.kinematic_bodies == 1);
+    CHECK(counts.static_bodies == 5 + 500 + 50);
+    CHECK(counts.bodies == scene.entities.size());
+    // The same seed gives the same scene.
+    auto again = physics_scene(m);
+    REQUIRE(again.entities.size() == scene.entities.size());
+    CHECK(std::get<TransformComponent>(again.entities.back().components[1]).translation.x ==
+          std::get<TransformComponent>(scene.entities.back().components[1]).translation.x);
+}
+
+TEST_CASE("The physics workload runs headless, counts every part, and ends every run in the same state", "[benchmark]") {
+    auto manifest = Manifest{};
+    manifest.name = "p1-test";
+    manifest.workload = Workload::physics;
+    manifest.count = 100;
+    manifest.obstacles = 10;
+    manifest.scripted = 10;
+    manifest.sensors = 2;
+    manifest.rays = 20;
+    manifest.overlaps = 4;
+    manifest.casts = 2;
+    manifest.warmup = 5;
+    manifest.samples = 20;
+    manifest.runs = 2;
+    manifest.workers = {-1, 0};
+    auto device = Device{};
+    const auto result = run(manifest, device, "renderer");
+    INFO(result.failure);
+    REQUIRE(result.failure.empty());
+    REQUIRE(result.physics_runs.size() == 4);
+    CHECK(result.deterministic == true);
+    CHECK(result.physics_runs[2].worker_threads == 0);
+    for (const auto& run : result.physics_runs) {
+        CHECK(run.failure.empty());
+        CHECK(run.tick.size() == 20);
+        CHECK(run.step.size() == 20);
+        CHECK(run.scripts.size() == 20);
+        CHECK(run.queries.front() > 0.0);
+        CHECK(run.query_hits.front() > 0.0); // rays toward the bin hit it
+        CHECK(run.active.back() > 0.0); // the paddle keeps the bin awake
+        CHECK(run.contacts.back() > 0.0);
+        CHECK(run.temp_high_water > 0);
+        CHECK(run.jolt_peak > 0);
+        CHECK(run.script_bytes > 0);
+        CHECK(run.state == result.physics_runs.front().state);
+    }
+    const auto json = to_json(result);
+    for (const auto* key : {"\"physics\":{", "\"recipe\":{\"version\":1", "\"deterministic\":true", "\"worker_threads\":0", "\"step\":{",
+                            "\"query_hits\":{", "\"temp_high_water_bytes\":", "\"state_hash\":\"", "\"contact_constraints\":"}) {
+        INFO(key);
+        CHECK(has(json, key));
+    }
+    CHECK(has(to_text(result), "every run ended in the same state"));
+    CHECK(device.stats().submitted_frames == 0); // headless: nothing rendered
 }
 
 TEST_CASE("On Metal every sampled frame gets its own GPU time, and warmup frames none", "[benchmark][gpu]") {

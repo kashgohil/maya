@@ -34,7 +34,7 @@ else
     note "unavailable  GPU checks: no Metal device"
     note "unavailable  Windowed checks: no Metal device"
 fi
-note "manual       Interactive checks: docs/acceptance.md, steps 1-9"
-note "manual       Benchmark baselines: a Release build and benchmarks/*.benchmark (docs/performance.md)"
+note "manual       Interactive checks: docs/acceptance.md, steps 1-9, and physics and behavior steps 1-8"
+note "manual       Benchmark baselines: a Release build and benchmarks/*.benchmark, including P1 (docs/performance.md)"
 printf "\nSummary:%s\n" "$summary"
 exit $status
