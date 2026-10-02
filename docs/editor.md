@@ -112,6 +112,8 @@ To support this, the RHI gained three general features (see [the graphics device
 
 [editor_ui.metal](../resources/shaders/metal/editor_ui.metal) is the UI shader.
 
+**Texture thumbnails** (#1031, [Assets panel](projects.md#the-assets-panel)) render before the UI, after the viewport. `TextureThumbnails` draws each requested texture version once, with one triangle and a trilinear sampler, into a small RGBA8 target that the UI then samples like any image. The same shader file's `thumbnailFragment` re-encodes color textures from linear to sRGB (the UI writes display values as they are), shows data as stored, and rebuilds normals from x in red and y in alpha.
+
 ## Physics debug views
 
 [Issue #1022](https://work.rezee.app/kash/issues/1022) adds two tools to the viewport's tool bar (and the eye to the Game/Scene toggle while playing):

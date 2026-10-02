@@ -21,7 +21,8 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 
 ## Boundaries
 
-- `MayaAssets` / `Maya::Assets`: Project catalog, typed asset handles, shared version leases, the initial OBJ/material providers, and project files (`project.hpp`: content root, catalog, startup scene). See [docs/assets.md](docs/assets.md) for loading and GPU ownership boundaries. Resolve project content through `Project::resolve`, never the working directory or FileSystem search roots ([docs/projects.md](docs/projects.md)).
+- `MayaAssets` / `Maya::Assets`: Project catalog, typed asset handles, shared version leases, the initial OBJ/material/texture providers, and project files (`project.hpp`: content root, catalog, startup scene). See [docs/assets.md](docs/assets.md) for loading and GPU ownership boundaries. Resolve project content through `Project::resolve`, never the working directory or FileSystem search roots ([docs/projects.md](docs/projects.md)).
+- `MayaTextures` / `Maya::Textures` (#1031): texture descriptors (`.texture`), Maya's own KTX2 reader and writer, and cooking source images (stb_image, stb_image_resize2, astcenc; all three private to it). MayaAssets links it to cook PNG and JPEG sources at load. See [docs/assets.md](docs/assets.md#textures). Normal maps are stored as x in RGB and y in alpha; never write a KTX2 subset beyond what `ktx validate` accepts (`maya_ktx2_validate` with `MAYA_KTX_TOOL`).
 - `MayaWorld` / `Maya::World`: CPU-only entity identity, packed component storage, and atomic structural command batches. No RHI, window, or editor dependency. See [docs/world.md](docs/world.md) for APIs and scoped-borrow rules.
 - `MayaScene` / `Maya::Scene`: Versioned scene files, detached scene documents, validated loading into a new World, and atomic saves. Links only MayaWorld; asset references are checked through `asset_property_context(registry)`. See [docs/scene.md](docs/scene.md).
 - `MayaRHI` / `Maya::RHI`: GraphicsDevice validation, per-session handles, deferred retirement, and `NullGraphicsDevice` for CPU tests. The Metal backend lives in MayaRuntime. See [docs/rhi.md](docs/rhi.md).
@@ -47,7 +48,7 @@ GPU tests require an interactive macOS session. Applications support `--smoke [p
 
 The host owns the window; Engine owns device and Application. Stop and destroy application content before device shutdown, then destroy the window. Shutdown is idempotent, startup failures roll back, and stopped engines can initialize a fresh session. Callbacks must not re-enter lifecycle methods.
 
-Mesh, Texture, and the fly-camera `Camera` controller are prototype utilities retained pending their dedicated replacement issues; the legacy Scene and Material were removed by #998. Physics bodies come from `maya.collider`, `maya.rigid_body`, and `maya.physics_settings` components at Play start (#1019, `authored_physics`) or from code (#1017). Scripting is not implemented yet; only its #1015 prototypes exist.
+`Mesh` and `Texture`/`Sampler` (`core/texture.hpp`) own the GPU resources behind MeshAsset and TextureAsset; the fly-camera `Camera` controller is a prototype utility retained pending its replacement issue; the legacy Scene and Material were removed by #998. Physics bodies come from `maya.collider`, `maya.rigid_body`, and `maya.physics_settings` components at Play start (#1019, `authored_physics`) or from code (#1017). Scripting is not implemented yet; only its #1015 prototypes exist.
 
 World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas exist independently of those sample utilities. Structural edits use WorldCommands and explicit commit; never retain a component reference outside a query callback. Hierarchy and camera calculations are implemented; transform queries are read-only and edits use validated set_transform/reparent commands. Asset registry/residency services are implemented by #993. Shared [property metadata and validated edits](docs/properties.md) are implemented by #994; use this boundary for authoring/import/script values. Native non-transform component writes remain trusted. [Scene save/load](docs/scene.md) is implemented by #995: load into a separate World and replace the active one only on success. The [renderer](docs/renderer.md) (#998) extracts immutable snapshots from a World and renders camera views into offscreen targets; applications never issue draws from World data themselves. See [spatial APIs and tolerances](docs/spatial.md).
 
@@ -68,9 +69,9 @@ World storage and the initial Name/Transform/MeshRenderer/Camera/Light schemas e
 - `include/maya/core/application.hpp`: Content lifecycle boundary.
 - `include/maya/core/engine.hpp`: Runtime session owner.
 - `src/maya/platform/desktop_application.cpp`: Desktop loop.
-- `samples/basic_scene/assets/`: Sample catalog, `basic.scene`, meshes, and material files.
+- `samples/basic_scene/assets/`: Sample catalog, `basic.scene`, meshes, material files, and two textures (a tile grid and its normal map).
 - `resources/shaders/metal/renderer.metal`: Lit pass and view presentation shaders.
-- `resources/shaders/metal/editor_ui.metal`: Editor UI (Dear ImGui) shader.
+- `resources/shaders/metal/editor_ui.metal`: Editor UI (Dear ImGui) shader, and the Assets panel's texture thumbnails.
 - `resources/fonts/`: Inter and Geist Mono (SIL OFL) and Phosphor Light icons (MIT), licenses alongside, for the editor UI. Add icons as named constants in `apps/editor/editor_icons.hpp` so they enter the font atlas. Use the palette and helpers in `apps/editor/editor_theme.hpp` for new editor UI instead of raw ImGui colors.
 - `apps/editor/`: Editor shell, UI renderer, input router, and editor camera.
 

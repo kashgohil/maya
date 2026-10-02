@@ -42,7 +42,7 @@ The prototypes used Metal directly because the RHI ([rhi](../rhi.md)) lacks what
 | Comparison samplers and sampled depth textures | Shadows ([#1034](https://work.rezee.app/kash/issues/1034)) |
 | Per-pass GPU timing | [#1026](https://work.rezee.app/kash/issues/1026) |
 
-Compute is not needed by any decision here.
+Compute is not needed by any decision here. [#1031](https://work.rezee.app/kash/issues/1031) added mip levels and ASTC ([rhi](../rhi.md#mip-levels-and-compressed-formats)).
 
 ## glTF import: cgltf
 
@@ -101,7 +101,7 @@ The M4 Pro (Metal family Apple9) supports ASTC, including HDR, and BC. ASTC on A
 
 - **Defaults.** Color and data maps use 6×6 at medium quality; normal maps use 4×4 at medium in astcenc's normal mode (x in RGB, y in alpha; the shader rebuilds z). An import setting can keep a texture as RGBA8, for example UI art.
 - **Cost.** Cooking a 2048 map takes 15–120 ms; cooked textures are cached ([#1036](https://work.rezee.app/kash/issues/1036)).
-- **KTX2, by Maya's own code.** KTX2 is Khronos's texture container: glTF's `KHR_texture_basisu` uses it, and Khronos's `ktx` tools, PVRTexTool, RenderDoc, and other engines read it. Maya writes and reads the subset it needs: the header, the level index, the data format descriptor, key/value data, and the mip levels, holding ASTC or RGBA8 with the color space and sampler in KTX2's own fields and Maya's metadata as key/value pairs. Tests check written files with Khronos's `ktx validate` when it is installed. libktx and its BasisU transcoder are added only if importing BasisU-compressed glTF files becomes needed.
+- **KTX2, by Maya's own code.** KTX2 is Khronos's texture container: glTF's `KHR_texture_basisu` uses it, and Khronos's `ktx` tools, PVRTexTool, RenderDoc, and other engines read it. Maya writes and reads the subset it needs: the header, the level index, the data format descriptor, key/value data, and the mip levels, holding ASTC or RGBA8 with the color space in KTX2's data format descriptor. A texture's usage, compression, and sampler settings are in its texture file (`.texture`), chosen by the project owner in [#1031](https://work.rezee.app/kash/issues/1031) ([textures](../assets.md#textures)). Tests check written files with Khronos's `ktx validate` when it is installed. libktx and its BasisU transcoder are added only if importing BasisU-compressed glTF files becomes needed.
 - **BC** stays a seam: if a platform without ASTC is added, the cooker adds a BC target.
 
 astcenc is pinned at tag `5.7.0` (commit `baff485b`). Apache-2.0.

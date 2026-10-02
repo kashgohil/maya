@@ -38,11 +38,21 @@ Handles and descriptors:
 | Kind | Descriptor | Notes |
 | --- | --- | --- |
 | `BufferHandle` | size, `vertex`/`index`/`uniform` usage flags, label | CPU-writable shared memory. `write_buffer` is immediate and not synchronized with frames in flight; per-frame data belongs in [upload memory](#frame-pacing-and-upload-memory). |
-| `TextureHandle` | width, height, format, `sampled`/`render_target`/`readback` usage, label | 2D, one mip level, GPU-private. Optional tightly packed initial data is uploaded through a staging copy. Depth textures cannot be uploaded or read back. |
-| `SamplerHandle` | min/mag filter, U/V address mode, label | |
+| `TextureHandle` | width, height, format, `sampled`/`render_target`/`readback` usage, label, mip levels | 2D, GPU-private, 1 to `full_mip_count` levels (#1031). Optional initial data, every level tightly packed and level 0 first, is uploaded through a staging copy. Depth textures cannot be uploaded or read back; mipmapped and compressed textures can only be sampled. |
+| `SamplerHandle` | min/mag filter, U/V address mode, label, mip filter, anisotropy | Mip filtering is `none` (level 0 only), `nearest`, or `linear`; anisotropy is 1 (off) to `limits().max_anisotropy`. |
 | `PipelineHandle` | Metal source, entry points, ordered color formats, depth format, depth test/write/compare, cull, winding, label, blend | Shaders fetch vertices from bound buffers; there is no fixed-function vertex layout. `BlendMode::alpha` (#999) is straight-alpha source-over on every color attachment; the default is opaque. |
 
-Formats are `rgba8_unorm`, `rgba8_srgb`, `bgra8_unorm`, `bgra8_srgb`, `rgba16_float`, and `depth32_float`. The Metal surface is `bgra8_unorm`; the linear/HDR color pipeline is later rendering work.
+Formats are `rgba8_unorm`, `rgba8_srgb`, `bgra8_unorm`, `bgra8_srgb`, `rgba16_float`, `depth32_float`, and (since #1031) the block-compressed `astc_4x4_unorm`, `astc_4x4_srgb`, `astc_6x6_unorm`, and `astc_6x6_srgb`, which need `limits().astc`. The Metal surface is `bgra8_unorm`; the linear/HDR color pipeline is later rendering work.
+
+### Mip levels and compressed formats
+
+[#1031](https://work.rezee.app/kash/issues/1031) adds what [texture assets](assets.md#textures) need. Level *n* of a texture is max(1, size >> *n*) on each side, and `full_mip_count(width, height)` is the chain to 1×1. Sizes come from `resource.hpp`, so callers and backends agree:
+
+- `mip_level_bytes(format, width, height, level)`: rows of pixels, or of blocks for ASTC (16 bytes per 4×4 or 6×6 block, partial blocks rounded up);
+- `texture_bytes(desc)`: every level, the size initial data must have and what `RhiStats` tracks;
+- `is_compressed_format`, `is_srgb_format`, `block_extent`, `block_bytes`. `bytes_per_pixel` is 0 for compressed formats.
+
+`create_texture(desc, std::span<const std::byte>)` refuses data whose size is not `texture_bytes(desc)`; the older pointer form trusts the caller. Sampling an sRGB format decodes to linear values. `limits().astc` is true on Apple GPUs (Metal's `MTLGPUFamilyApple2`); the null device reports it as `NullDeviceOptions::astc` says (true by default), so tests can check a device without it.
 
 A handle carries its device session token, slot, and slot generation. It is valid only for that device session and is never serialized. Destroying a resource bumps the generation at once. A new session invalidates every handle, even at a reused slot. Exhausted generations retire a slot permanently instead of wrapping.
 
@@ -52,7 +62,8 @@ Every public call validates in `GraphicsDevice` before reaching a backend, so Me
 
 | Check | Error |
 | --- | --- |
-| Zero/oversized sizes, undefined formats, empty or unknown usage, unknown enum values, depth test without a depth format, color/depth format mix-ups, no attachments | `invalid_descriptor` |
+| Zero/oversized sizes, undefined formats, empty or unknown usage, unknown enum values, depth test without a depth format, color/depth format mix-ups, compressed color attachment formats, no attachments, mip levels outside 1..`full_mip_count`, anisotropy outside 1..the limit, initial data (span form) of the wrong size | `invalid_descriptor` |
+| Mipmapped or compressed textures with render-target or readback usage; ASTC on a device without it | `unsupported` |
 | Metal shader compile failure (compiler text included) / missing entry point or pipeline rejection | `shader_compilation` / `invalid_descriptor` |
 | Null, destroyed, reused-slot, or other-session handles | `stale_handle` |
 | Calls in the wrong frame/pass state; draw without a pipeline in the current pass; `end_frame` with a pass still open (the pass is closed and the frame still submits) | `wrong_state` |
@@ -63,7 +74,7 @@ Every public call validates in `GraphicsDevice` before reaching a backend, so Me
 | Uniform offsets not multiples of 256 bytes, vertex offsets not multiples of 4, index offsets not multiples of 4 | `misaligned` |
 | Headless surface / zero-sized surface or no drawable | `unsupported` / `surface_unavailable` |
 
-Shader reflection is not used, so a pipeline that reads an unbound slot is not caught by this layer. GPU tests run with Metal API validation (`MTL_DEBUG_LAYER=1`, set by CTest), which aborts on such misuse. `limits()` reports the conservative binding limits: 31 buffer and texture indices, 16 samplers, 8 color attachments, 16384-texel textures, and the device's maximum buffer length. Vertex and uniform buffers share one index table per stage. Uniform buffers bind to both stages; textures and samplers bind to the fragment stage.
+Shader reflection is not used, so a pipeline that reads an unbound slot is not caught by this layer. GPU tests run with Metal API validation (`MTL_DEBUG_LAYER=1`, set by CTest), which aborts on such misuse. `limits()` reports the conservative binding limits: 31 buffer and texture indices, 16 samplers, 8 color attachments, 16384-texel textures, the device's maximum buffer length, anisotropy up to 16, and whether ASTC can be sampled. Vertex and uniform buffers share one index table per stage. Uniform buffers bind to both stages; textures and samplers bind to the fragment stage.
 
 ## Deferred retirement
 
@@ -112,13 +123,18 @@ Since [#1004](performance.md), the device measures as well as renders:
 
 - **Per-frame counters.** `stats()` counts the current or most recent frame's `frame_passes`, `frame_draws`, `frame_instances`, and `frame_triangles`, as submitted; they reset in `begin_frame`.
 - **Tracked bytes.** `stats()` also reports tracked bytes, computed from descriptors on request:
-  - `buffer_bytes` and `texture_bytes` for live caller resources (excluding the upload buffers and the window's drawable);
+  - `buffer_bytes` and `texture_bytes` for live caller resources (excluding the upload buffers and the window's drawable), textures as `texture_bytes(desc)`: every level, compressed blocks included;
   - `pending_retirement_bytes`;
   - `upload_bytes`, the device's own per-frame memory times frames in flight.
 - **GPU time.** When a frame completes, the Metal backend records its command buffer's GPU execution time, `GPUEndTime − GPUStartTime`, keyed by the frame's serial. `take_gpu_timings()` hands these over, and at most 1,024 wait (older ones are dropped and counted). `gpu_timing_supported()` is false where GPU time cannot be measured, including the null device; GPU time is never inferred from CPU submission.
 - **Reported memory.** `reported_memory()` is the platform's figure for the device (Metal's `currentAllocatedSize`), or nullopt. It is kept apart from tracked bytes.
 
 ## Verification
+
+The #1031 additions:
+
+- **CPU**: level and block sizes for odd and non-square sizes; mip-level and data-size validation; mipmapped and compressed textures limited to sampling; a device without ASTC refusing ASTC only; sampler mip-filter and anisotropy limits; and tracked and pending bytes counting every level and block.
+- **Metal** ([texture_gpu_tests.cpp](../tests/texture_gpu_tests.cpp), with API validation): each level of a four-level texture sampled at an explicit level, linear blending between levels, and level 0 only without mip filtering; sRGB decoding against linear storage; ASTC 6×6 and 4×4 cooked by astcenc, sampled at three levels, and a detailed image within a mean error of 3 per channel of its RGBA8 reference.
 
 The #997 additions:
 

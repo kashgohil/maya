@@ -44,10 +44,10 @@ The editor splits `render` further into extraction, viewport encoding, and UI en
 **Memory.** Two kinds are kept apart and never added together.
 
 - **Tracked**, from descriptors:
-  - live buffer bytes, and texture bytes (width × height × bytes per pixel);
+  - live buffer bytes, and texture bytes (every mip level, compressed blocks included: `texture_bytes`);
   - bytes of destroyed resources awaiting GPU completion;
   - the device's own upload memory (per-frame bytes × frames in flight);
-  - `AssetRegistry::residency()`: entries by state, resident mesh and material versions, versions also leased outside the registry, and mesh GPU and CPU (picking) bytes.
+  - `AssetRegistry::residency()`: entries by state, resident mesh, material, and texture versions, versions also leased outside the registry, mesh GPU and CPU (picking) bytes, and texture GPU bytes (#1031; `resident_textures` and `texture_gpu_bytes` in results).
 - **Platform-reported:**
   - `GraphicsDevice::reported_memory()`: Metal's `currentAllocatedSize` for the device;
   - `process_memory()`: the process's physical footprint, resident size, and peak resident size.

@@ -34,6 +34,7 @@ maya-assets 1
 mesh 6d617961 1 "models/tree.obj"
 material 6d617961 2 "materials/bark.mat"
 script 6d617961 20 "scripts/spin.luau"
+texture 6d617961 50 "textures/bark.texture"
 ```
 
 `write_asset_catalog(stream, registry.records())` writes metadata only. `read_asset_catalog(stream)` checks syntax/version/ID words and returns records or a diagnostic; register each record in a fresh registry before publishing that project. Registration validates identity, kind, duplicate sources, and project boundaries. Parsing/registration does not load resources. Loading a malformed catalog must discard the unpublished registry, not expose a partially registered project. Filesystem I/O and allocation exceptions remain ordinary exceptions. This catalog is not the [scene format](scene.md) (#995); scenes store only AssetIds and validate them against the catalog.
@@ -52,6 +53,76 @@ roughness 0.7
 All six factors must be finite and in [0,1]. Field order is fixed in version one; extra data, unsupported versions, and malformed values fail. These immutable material values are ready for renderer integration; this issue does not implement PBR shading, textures, material graphs, or shader cooking. `fallback_material()` returns explicit magenta/opaque, nonmetallic, rough data for callers choosing a fallback. Missing meshes skip their draw. Neither fallback replaces the missing reference's ID or reports the source as successfully loaded.
 
 Script assets (`script`, `ScriptAsset`, since #1018) are Luau source text. `AssetProvider::load_script` reads the file as text, and every provider inherits it; the registry neither compiles nor checks the source. Play sessions and the editor compile it ([scripting](scripting.md)), and bytecode is never stored. Since #1020 the editor watches script files and reloads changed ones through `reload` ([scripting](scripting.md#reload)); the Assets panel lists scripts.
+
+## Textures
+
+[#1031](https://work.rezee.app/kash/issues/1031) adds textures (`texture`, `TextureAsset`), in the stack the [rendering and content record](architecture/rendering-content-decision.md#gpu-formats-astc-in-ktx2) chose. Materials sample them from [#1033](https://work.rezee.app/kash/issues/1033); until then the editor's [Assets panel](projects.md#the-assets-panel) lists them with thumbnails.
+
+### Texture files
+
+A catalog `texture` entry names a texture file, which names its source image and states every setting. Nothing is guessed from file names or pixels.
+
+```text
+maya-texture 1
+source "board_color.png"
+usage color
+compression astc
+mips on
+filter linear linear
+mip_filter linear
+anisotropy 8
+address repeat repeat
+```
+
+| Setting | Values | Meaning |
+| --- | --- | --- |
+| `source` | a quoted path | The image, relative to the texture file's folder and at or below it (no `..`, no absolute paths; symlinks are checked on every load). A `.png`, `.jpg`, or `.jpeg` is cooked when loaded; a `.ktx2` is already cooked. |
+| `usage` | `color`, `data`, `normal` | Color is sRGB-encoded; data (occlusion, roughness, metallic, masks) and normal maps are linear. |
+| `compression` | `astc`, `rgba8` | ASTC 6×6 for color and data and 4×4 for normals, or uncompressed RGBA8 (e.g. for UI art). |
+| `mips` | `on`, `off` | A full chain to 1×1, or level 0 only. |
+| `filter` | `nearest`/`linear` twice | Minification, then magnification. |
+| `mip_filter` | `none`, `nearest`, `linear` | Between levels. Must be `none` when `mips` is off. |
+| `anisotropy` | 1 (off) to 16 | Clamped to the device's limit. |
+| `address` | `repeat`/`clamp`/`mirror` twice | U, then V. |
+
+Each setting appears exactly once, in any order; blank lines are allowed. `read_texture_settings` reports the first problem with its line (`line 3: usage must be color, data, or normal`), and `write_texture_settings` writes every setting in the order above. The descriptor and its formats live in `MayaTextures` ([texture_data.hpp](../include/maya/assets/texture_data.hpp)), which MayaAssets links.
+
+| `usage` | `compression astc` | `compression rgba8` |
+| --- | --- | --- |
+| color | `astc_6x6_srgb` | `rgba8_srgb` |
+| data | `astc_6x6_unorm` | `rgba8_unorm` |
+| normal | `astc_4x4_unorm` | `rgba8_unorm` |
+
+**Normal maps** are stored with tangent-space x in red, green, and blue and y in alpha, as astcenc's normal mode expects, in both formats. Shaders rebuild z = √(1 − x² − y²) from x and y in [−1, 1].
+
+### Cooking at load
+
+Until [#1036](https://work.rezee.app/kash/issues/1036) caches cooked results, a PNG or JPEG source is cooked whenever its texture loads ([texture_cook.hpp](../include/maya/assets/texture_cook.hpp)):
+
+1. **Decode** with stb_image (PNG and JPEG only, from memory) to straight-alpha RGBA8, exactly the stored values: no color management or premultiplication. Images above the device's largest texture are refused before their pixels are decoded. stb_image is not hardened against hostile files; it cooks the project's own content, and packaged games will read cooked KTX2 only ([#1039](https://work.rezee.app/kash/issues/1039)).
+2. **Mips** with stb_image_resize2, each level halved from the one before: sRGB-correct with alpha-weighted color for color, every channel independent for data, and renormalized for normals (a straight-up normal where a texel holds no direction).
+3. **Compress** with astcenc 5.7.0 at medium quality on every core, or keep RGBA8. A device that cannot sample ASTC gets RGBA8. The same source, settings, and device always give the same bytes, whatever the thread count.
+
+On the reference machine (M4 Pro, Release), ABeautifulGame's 33 maps of 2048×2048 decode in 1.1 s on one thread and take 5.0 s to build mips and compress (40–540 ms each; noisy normal and ORM maps take longest), for 108 MiB of ASTC. A `.ktx2` source skips all of this.
+
+### KTX2
+
+Maya reads and writes KTX 2.0 with its own code ([ktx2.cpp](../src/maya/assets/ktx2.cpp)), without libktx. The subset is one 2D image with its mip levels, no array layers, cube faces, or supercompression, in RGBA8 (`vkFormat` 37, 43) or ASTC 4×4 and 6×6 LDR (157, 158, 165, 166). `write_ktx2` writes:
+
+- the identifier and header (`typeSize` 1, depth 0, no layers, one face), and the level index;
+- a basic data format descriptor: the RGBSDA or ASTC color model, BT.709 primaries, an sRGB or linear transfer function matching `vkFormat`, four 8-bit samples (alpha marked linear in sRGB files) or one 128-bit ASTC sample with the block size;
+- key/value data sorted by key: `KTXorientation` `rd` and `KTXwriter`;
+- the levels from smallest to largest, each aligned to the least common multiple of its block size and 4.
+
+`read_ktx2` checks the identifier, the header, every level's size, offset, and alignment against the file, and the descriptor's color model and transfer function against `vkFormat`, before allocating or copying texels, and refuses images larger than 16384 on a side (the RHI's limit). It refuses anything else with the first problem (`supercompression scheme 1 is not supported`). Reading 200,000 mutated files under Guard Malloc found no read past a buffer and no unbounded allocation. It reads files Khronos's own tools write as well as Maya's. A cooked source must match its texture file: its color space and format family (sRGB for color, ASTC or RGBA8 as stated) and its mips (a full chain, or one level).
+
+With KTX-Software 4.3 or later installed (or `MAYA_KTX_TOOL` set), CTest's `maya_ktx2_validate` writes every format and layout Maya writes (`maya_ktx2_samples`) and checks each with `ktx validate --warnings-as-errors`.
+
+### Texture assets
+
+A `TextureAsset` owns a sampled texture with every level and a sampler built from the settings (labelled with the file's stem), and records its usage. `gpu_bytes()` counts every level as the device does (`texture_bytes`). Loading, sharing, reload, eviction, and retirement follow the mesh rules below: a reload publishes a new version, and the old texture and sampler are released only after every frame that could sample them completes. A failed reload keeps the previous version. `residency()` counts resident textures and their GPU bytes.
+
+**Missing or failed textures** fail with a diagnostic naming the texture file, its line or its source, and allocate nothing. `make_placeholder_texture(device)` makes the declared stand-in: an 8×8 magenta and black checkerboard of 2×2-texel squares (`placeholder_texture_pixels()`), sRGB RGBA8, nearest filtering, repeating. A consumer draws it in a failed texture's place and still reports the problem; the reference keeps its ID. Materials use it from #1033; the editor's thumbnails show it now.
 
 ## Loading and reload
 
@@ -72,7 +143,7 @@ Loading is **synchronous** and registry/device access, including final mesh-leas
 
 The registry retains one cache lease for each published version. `evict_unused()` removes versions whose only remaining owner is that cache, preserving catalog entries as unloaded. Call it at scene-unload/maintenance boundaries. There is no hidden timed/LRU eviction; explicit maintenance is required to bound the resident cache. Old versions after reload live only as long as their remaining leases. Registry destruction drops its cache ownership; outstanding leases remain valid while their device session remains available.
 
-`residency()` (since #1004) counts entries by state, resident mesh and material versions, versions also held by an outside lease, and resident mesh GPU and CPU bytes, for [measurements](performance.md#what-is-measured).
+`residency()` (since #1004) counts entries by state, resident mesh, material, script, and texture versions, versions also held by an outside lease, resident mesh GPU and CPU bytes, and (since #1031) resident texture GPU bytes, for [measurements](performance.md#what-is-measured).
 
 Since #1001, `MeshAsset` also keeps a CPU `MeshGeometry` (local positions, triangle indices, and bounds) from the OBJ loader for [picking](inspector.md#picking), at 12 bytes per vertex and 4 per index; providers may omit it, and such meshes cannot be picked.
 
@@ -84,7 +155,7 @@ Buffers, textures, samplers, and pipelines share the [#996 retirement rules](rhi
 
 ## Integration, cost, and verification
 
-The [basic scene catalog](../samples/basic_scene/assets/catalog.maya) gives the sample's pyramid and cube meshes and four material files persistent IDs. `basic.scene`'s mesh renderers reference those IDs. Since #1002, a [project file](projects.md#projects) names a project's content root and catalog; `open_project_assets` reads the catalog into a registry rooted at the content root. The editor and, since #1003, the [player](play.md#the-player) open projects this way and never use the FileSystem search roots for project content. Since #998, [render extraction](renderer.md) acquires the meshes and materials each frame and shades with the material factors.
+The [basic scene catalog](../samples/basic_scene/assets/catalog.maya) gives the sample's pyramid and cube meshes, four material files, a script, and (since #1031) two textures persistent IDs: a 256×256 tile grid and its normal map, made procedurally. `basic.scene`'s mesh renderers reference those IDs. Since #1002, a [project file](projects.md#projects) names a project's content root and catalog; `open_project_assets` reads the catalog into a registry rooted at the content root. The editor and, since #1003, the [player](play.md#the-player) open projects this way and never use the FileSystem search roots for project content. Since #998, [render extraction](renderer.md) acquires the meshes and materials each frame and shades with the material factors.
 
 Registry ID lookup is average O(1); source loading happens once per resident version. Lease acquire/copy increments a shared ownership count. Registration canonicalizes paths and performs filesystem checks. `evict_unused()` and metadata export are O(catalog size), and catalog metadata is retained for the registry lifetime. These choices need profiling against production asset counts; the correctness tests do not promise game capacity.
 
