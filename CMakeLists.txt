@@ -457,6 +457,21 @@ if(BUILD_TESTING)
     set(MAYA_GPU_TEST_ENVIRONMENT "MTL_DEBUG_LAYER=1")
     set_tests_properties(maya_rhi PROPERTIES LABELS "gpu" TIMEOUT 60 ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
 
+    # The #1030 library prototypes check what the rendering and content decision relies on. They need
+    # the sample content from tools/fetch_render_samples.sh, and skip (77) without it.
+    if(MAYA_BUILD_PROTOTYPES)
+        set(MAYA_RENDER_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/render-samples" CACHE PATH
+            "Sample content for the #1030 prototypes, from tools/fetch_render_samples.sh")
+        add_test(NAME maya_prototype_import COMMAND maya_import_prototype "${MAYA_RENDER_SAMPLES}")
+        set_tests_properties(maya_prototype_import PROPERTIES LABELS "cpu;prototype" TIMEOUT 120 SKIP_RETURN_CODE 77)
+        add_test(NAME maya_prototype_texture COMMAND maya_texture_prototype "${MAYA_RENDER_SAMPLES}")
+        set_tests_properties(maya_prototype_texture PROPERTIES LABELS "cpu;prototype" TIMEOUT 300 SKIP_RETURN_CODE 77)
+        add_test(NAME maya_prototype_render COMMAND maya_render_prototype "${MAYA_RENDER_SAMPLES}"
+            "${CMAKE_CURRENT_BINARY_DIR}/render-prototype")
+        set_tests_properties(maya_prototype_render PROPERTIES LABELS "gpu;prototype" TIMEOUT 120 SKIP_RETURN_CODE 77
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+    endif()
+
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
