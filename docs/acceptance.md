@@ -80,6 +80,8 @@ Repeated work must return to these states, with no stale handles and no unbounde
 
 **Re-blessing.** Render the references with `MAYA_BLESS_REFERENCES=1 build/maya_editor_tests "[visual]"`, then inspect them before committing. The current references were inspected: the path stays inside the room, and each view shows the objects it names.
 
+**Re-blessed once for HDR (#1032).** The V1 and [physics debug](../tests/references/physics-debug) references were re-blessed when views began rendering through the [HDR pipeline](renderer.md#exposure-and-tone-mapping): scene light exposed at EV100 0, tone-mapped by AgX, and sRGB-encoded. The old images showed linear values unencoded, so the new ones are lighter in the midtones, flatter, and less saturated (AgX turns the pure red cubes pinkish red), and the background clear color shows as mid grey. Debug lines keep their colors, drawn after tone mapping. The project owner inspected the before-and-after images and approved them on 3 October 2026. Five [HDR references](../tests/references/hdr) were added from the V1 overview: EV100 −2 and +2, PBR Neutral, and the luminance and false-color exposure views.
+
 ## Manual acceptance script
 
 Run on the reference machine with a Release build. Each step lists its expected result.

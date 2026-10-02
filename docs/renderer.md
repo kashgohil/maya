@@ -62,23 +62,29 @@ The sample logs diagnostics only when their number changes, not every frame.
 
 ## Views and targets
 
-A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatrices`, camera position, and clear color. `extract_render_view(world, camera, width, height)` builds one from a camera entity through `World::camera`. `make_render_view(camera, pose, width, height)` builds one from camera data and a rigid pose, for cameras that are not entities. Both take the aspect ratio from the view's own size and return `nullopt` for a zero size or an invalid camera ([camera rules](spatial.md)). Several views can render the same snapshot in one frame, each into its own target. They do not need separate Worlds or separate extraction.
+A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatrices`, camera position, clear color, and (since #1032) the camera's exposure as a scale, its tone mapping, and an [exposure view](#exposure-views). `extract_render_view(world, camera, width, height)` builds one from a camera entity through `World::camera`. `make_render_view(camera, pose, width, height)` builds one from camera data and a rigid pose, for cameras that are not entities. Both take the aspect ratio from the view's own size, and the exposure and tone mapping from the camera's component, and return `nullopt` for a zero size or an invalid camera ([camera rules](spatial.md)). Several views can render the same snapshot in one frame, each into its own target. They do not need separate Worlds or separate extraction.
 
 **Poses between ticks** (#1016). `RenderExtractOptions::poses` and the last argument of `extract_render_view` take a `PresentationPoses`: world matrices shown in place of the World's for some entities, such as a play session's between ticks ([play](play.md#between-ticks)). Entities not in it draw at the World's pose; without it, extraction is as before. The player and the editor's Play pass `PlaySession::presentation()`.
 
-`RenderTarget` owns one view's color texture (render target, sampled, and optionally readback) and its `depth32_float` depth texture. Nothing is allocated until `resize`. Resizing to the current size does nothing, so steady frames never reallocate; `allocations()` counts real allocations. A new size creates both textures before destroying the old ones. The device retires the old ones after their frames complete, and a failed resize keeps the previous textures. Zero sizes are rejected; skip the view instead. After a device session ends, `valid()` is false until the next `resize`. A view's size is independent of any window: offscreen captures, thumbnails, and editor panels choose their own sizes.
+`RenderTarget` owns one view's textures: the HDR scene color the scene is drawn into (`scene_color()`, `rgba16_float` by default: `RenderTargetDesc::scene_format`), its `depth32_float` depth, and the color texture it is tone-mapped into (`color()`: render target, sampled, and optionally readback; `rgba8_unorm` holding sRGB-encoded values). Nothing is allocated until `resize`. Resizing to the current size does nothing, so steady frames never reallocate; `allocations()` counts real allocations. A new size creates all three textures before destroying the old ones. The device retires the old ones after their frames complete, and a failed resize keeps the previous textures. Zero sizes are rejected; skip the view instead. After a device session ends, `valid()` is false until the next `resize`. A view's size is independent of any window: offscreen captures, thumbnails, and editor panels choose their own sizes.
 
 ## Passes
 
-`Renderer::render(snapshot, view, target)` runs inside a frame with no pass open. It uploads one `ViewConstants` block, opens a pass that clears the target's color to the view's clear color and its depth to 1, and binds the lit pipeline. Then, for each instance, it uploads that instance's `DrawConstants` to its own slice of frame upload memory and draws the shared mesh. It checks that the view size matches the target, that the target is live, and that every instance refers to a mesh the snapshot holds. It returns the first device error, such as exhausted upload memory. The remaining instances are skipped, the pass is still closed, and the frame can still end.
+`Renderer::render(snapshot, view, target)` runs inside a frame with no pass open, in up to three named passes (each timed on the GPU, [measuring](performance.md#what-is-measured)):
+
+1. **`view`.** It uploads one `ViewConstants` block, opens a pass that clears the target's HDR scene color to the view's clear color and its depth to 1, and binds the lit pipeline. Then, for each instance, it uploads that instance's `DrawConstants` to its own slice of frame upload memory and draws the shared mesh. Depth is stored only when debug lines will test against it.
+2. **`tone map`.** One triangle over the target's color reads each pixel's scene light, scales it by the view's exposure, and writes it [tone-mapped and sRGB-encoded](#exposure-and-tone-mapping).
+3. **`debug lines`**, only when the snapshot has any: [debug lines](#debug-lines) over the tone-mapped color, against the scene's depth.
+
+It checks that the view size matches the target, that the target is live, and that every instance refers to a mesh the snapshot holds. It returns the first device error, such as exhausted upload memory. The remaining work is skipped, each open pass is still closed, and the frame can still end. The clear color is scene light like any other, before exposure: the views' default 0.1 grey shows as about 35% grey through AgX at EV100 0.
 
 `Renderer::present(target, destination, area, background)` opens a pass on `destination`, clears it to `background`, and draws the target's color texture scaled into `area`. The area is a `PixelRect` in the destination's pixels, with its origin at the top left. The destination is usually the acquired window surface, but any render-target texture works. The player presents to the whole surface; the same call can present into any rectangle, such as a panel. When the area and the view have the same size, presentation copies the view's pixels exactly (bilinear sampling at texel centers).
 
-Pipelines are created on first use for each target format (lit, with `depth32_float`, back-face culling, and counter-clockwise front faces; and the two debug pipelines, only once a snapshot has debug lines) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles and recreates what it needs. `stats()` counts views, draws, presents, and debug draws, outlines, and lines.
+Pipelines are created on first use for each target format (lit, for the scene format, with `depth32_float`, back-face culling, and counter-clockwise front faces; tone map, for the color format; and the two debug pipelines, only once a snapshot has debug lines) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles and recreates what it needs. `stats()` counts views, draws, presents, and debug draws, outlines, and lines.
 
 ## Debug lines
 
-[Issue #1022](https://work.rezee.app/kash/issues/1022) adds a pass for debug lines and outlines, used by the [physics debug views](physics.md#debug-views). It is an ordinary part of `render`, so it works in any view: the editor's Scene and Game views, the player, and offscreen targets.
+[Issue #1022](https://work.rezee.app/kash/issues/1022) adds a pass for debug lines and outlines, used by the [physics debug views](physics.md#debug-views). It is an ordinary part of `render`, so it works in any view: the editor's Scene and Game views, the player, and offscreen targets. Since #1032 it draws after tone mapping, into the view's color, so lines keep exactly the colors they were given.
 
 - **Data.** `DebugDraw` ([debug_draw.hpp](../include/maya/world/debug_draw.hpp), in `MayaWorld`) holds world-space `lines` (from, to, color) and `shapes`: box, sphere, and capsule outlines, each a world matrix, a size, and a color. A capsule's matrix is rigid and its size carries the radius and the half height, so its caps stay round. Helpers add crosses, arrows, and each outline. Colors are RGBA as the view stores them, with alpha blending.
 - **Extraction.** `RenderExtractOptions::debug` is copied into `RenderSnapshot::debug`, so the snapshot stays self-contained. Without it the snapshot's `DebugDraw` is empty.
@@ -97,6 +103,40 @@ Cost, Release on the M4 Pro reference machine (thermal state nominal), at 1920 �
 
 The GPU times are the device's own timestamps for the frame, with and without the pass. Before level of detail, every circle had 32 segments and the same views cost 1.75 ms and 7.6 ms. These are observations, not budgets.
 
+## Exposure and tone mapping
+
+[Issue #1032](https://work.rezee.app/kash/issues/1032) renders through an HDR pipeline, as the [rendering and content record](architecture/rendering-content-decision.md#color-rgba16f-ev100-and-agx) chose. The lit pass writes scene light, unclamped, into the target's `rgba16_float` scene color; the tone-map pass turns it into what the display shows.
+
+- **Exposure** is camera data: `CameraComponent::exposure` in EV100 (default 0, from −10 to 24). Scene light is scaled by `exposure_scale(ev100)` = 1 / (1.2 × 2^EV100), the photometric saturation-based exposure at ISO 100. Each step of EV100 halves the light shown; EV100 log2(1/1.2) ≈ −0.26 would show scene light as it is. Exposure is fixed; metered (automatic) exposure is a later option.
+- **Tone mapping** is `CameraComponent::tone_mapping`: **AgX** by default, or **Khronos PBR Neutral**. AgX (the common approximation of Troy Sobotka's AgX, default look) rolls highlights off smoothly toward white with stable hues, and desaturates saturated colors as they brighten: a pure red surface shows as pinkish red. PBR Neutral keeps base colors as authored up to about 0.76 and then compresses them; use it for material and product views.
+- **Output.** The result is sRGB-encoded into the view's `rgba8_unorm` color, which every consumer (the editor's viewport, the player's window, offscreen readback) shows as it is.
+- **Scenes from before #1032** load with EV100 0 and AgX ([migration](scene.md#versions-and-migration)). EV100 0 shows scene light a quarter stop darker than the old renderer, which wrote linear values to the display unencoded. Old images were darker in the midtones and more saturated; the V1 references were re-blessed once for this ([acceptance](acceptance.md#regression-scenes)).
+- **One path.** The editor's Scene view (the editor camera's own exposure and tone mapping, in the Inspector), its Game view and the player (the scene camera's), and offscreen views all render through `Renderer::render`. A view from a camera entity and one from the same camera data and pose give identical images.
+
+**Cost** (Release on the M4 Pro reference machine, thermal state nominal; 1920 × 1080, 3,000 sampled frames, three runs; GPU time per pass from #1026's timestamps). Observations, not budgets:
+
+| Manifest | `tone map` | `view` | GPU per frame | CPU per frame |
+| --- | --- | --- | --- | --- |
+| `sample` | 0.073–0.074 ms | 0.050–0.052 ms | 0.21 ms (0.044 ms before #1032) | 0.11 ms (0.04 ms before) |
+| `i1_10k` | 0.144–0.147 ms | 0.43 ms | 0.60 ms (0.77–0.91 ms before) | 2.30–2.33 ms (2.12–2.14 ms before) |
+
+- **The tone-map pass** costs 0.07–0.15 ms at 1080p, in line with the #1030 prototype's 0.26 ms for AgX. The light `sample` scene runs at low GPU clocks, so its pass reads slower than under load.
+- **The CPU** pays for encoding one more pass and its constants: about 0.07 ms in `sample`, and within the variation between sessions in `i1_10k`.
+- **GPU time** cannot be compared directly across sessions: it depends on clocks the machine chooses. In `i1_10k`, the frame's GPU time fell, and no pass is slower than before.
+- **Memory.** Each view adds an `rgba16_float` scene color: 15.8 MiB at 1920 × 1080.
+- **Overhead.** The matched runs without CPU scopes and pass timing differ by +4.4% (CPU) and +1.4% (GPU) in `sample` and −0.4% and −0.1% in `i1_10k`, within the variation between runs.
+
+### Exposure views
+
+`RenderView::exposure_view` replaces the tone-mapped image with a diagnostic view of the exposed scene light, without sRGB encoding. The editor offers them in the viewport's eye menu ([editor](editor.md#physics-debug-views)).
+
+| View | What a pixel shows |
+| --- | --- |
+| `luminance` | Exposed luminance (Rec. 709) in grey by stops from middle grey (0.18): black at −8 stops, 50% grey at middle grey, white at +8. |
+| `false_color` | A band per range of stops from middle grey: dark violet below −6, blue −6 to −4, cyan −4 to −2, green −2 to −0.5, grey within half a stop of middle grey, yellow +0.5 to +2, orange +2 to +4, red +4 to +6, and pink beyond +6, where AgX has reached white. |
+
+The views ignore the tone mapper. They help set exposure: a well-exposed subject is mostly grey to yellow in false color.
+
 ## Lighting and materials
 
 [renderer.metal](../resources/shaders/metal/renderer.metal) keeps the initial Blinn-Phong model, but every input is now data:
@@ -104,13 +144,13 @@ The GPU times are the device's own timestamps for the frame, with and without th
 | Input | Source |
 | --- | --- |
 | Camera | View-projection and position from the view. |
-| Lights | Each directional light shines along its entity's local −Z; `direction_to_light` is its world +Z. Radiance is `color × intensity`. No exposure is applied yet, so intensity acts as a linear multiplier rather than lux. |
+| Lights | Each directional light shines along its entity's local −Z; `direction_to_light` is its world +Z. Radiance is `color × intensity`. Intensity still acts as a linear multiplier rather than lux until [#1034](https://work.rezee.app/kash/issues/1034); the camera's [exposure](#exposure-and-tone-mapping) scales the result. |
 | Ambient | `RenderExtractOptions::ambient`, default (0.06, 0.07, 0.09). |
 | Base color | `MaterialAsset::base_color` multiplied by the vertex color. |
 | Metallic | Removes the diffuse term and tints the highlight: specular color = mix(0.04, base, metallic). |
 | Roughness | Highlight exponent = 2 / roughness⁴ − 2, clamped to [1, 2048], with roughness clamped to [0.05, 1]. |
 
-This is not physically based shading. HDR, exposure, tone mapping, shadows, environment lighting, and textures in materials are later work (DOC-58 milestone 3). `MaterialAsset` has no texture reference yet, so the lit shader samples no textures. The sample's old checkerboard texture was removed with the legacy `Material`.
+This is not physically based shading. Shadows, environment lighting, and textures in materials are later work (DOC-58 milestone 3); since #1032 the result is HDR scene light, exposed and tone-mapped. `MaterialAsset` has no texture reference yet, so the lit shader samples no textures. The sample's old checkerboard texture was removed with the legacy `Material`.
 
 Normals are transformed by the inverse transpose of the world matrix's linear part. Extraction computes it in double precision from the cofactor matrix and scales it to stay representable; the shader renormalizes. Normals therefore stay perpendicular to surfaces under nonuniform scale, including scale inherited through the hierarchy. Transforms have strictly positive scale, so no world matrix is a reflection and triangle winding never flips. Extraction rejects a nonpositive or degenerate determinant as `invalid_transform`.
 

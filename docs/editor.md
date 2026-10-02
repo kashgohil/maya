@@ -118,7 +118,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
 [Issue #1022](https://work.rezee.app/kash/issues/1022) adds two tools to the viewport's tool bar (and the eye to the Game/Scene toggle while playing):
 
-- **Physics debug views** (the eye) opens a menu with a check for each [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries. Below them is a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
+- **Debug views** (the eye) opens a menu. At the top (since #1032) are the [exposure views](renderer.md#exposure-views): Image, Luminance, and False color, one at a time, for the Scene and Game views alike. Below them is a check for each physics debug [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries. Below them is a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
 - **Edit collider** (the transparent cube, or C) puts handles on the primary selection's collider in place of the transform gizmo, and outlines that collider in the selection's color:
   - a box has a dot on each face; a drag moves that face, holding the opposite one still, which changes the half extents and the offset together;
   - a sphere has a dot on each axis, which changes its radius about a fixed centre;
@@ -127,7 +127,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
   Each drag is one undo step, named "Resize the collider of …" or "Move the collider of …", and goes through `SceneEditor::set_component`, so it is validated as the Inspector's edits are. Sizes never go below 5 mm. Handles are hidden while playing, and an entity without a collider keeps its gizmo.
 
-**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories and a `physics-debug-groups` mask. They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
+**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories, a `physics-debug-groups` mask, and an `exposure-view` line (`none`, `luminance`, or `false-color`). They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
 
 ## Diagnostics
 
@@ -162,7 +162,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 
 ## Limitations
 
-- Layout, window placement, and editor camera state are not saved between runs; the preferences file holds only the physics debug views so far.
+- Layout, window placement, and editor camera state (including its exposure and tone mapping) are not saved between runs; the preferences file holds only the debug views so far.
 - Dialogs are drawn in the editor window; there are no native open or save panels.
 - No IME composition, gamepad or keyboard navigation of the UI, or multiple OS windows (ImGui multi-viewports).
 - The cursor-shape service covers arrow, text, hand, and horizontal/vertical resize. GLFW 3.3 has no diagonal or "not allowed" cursors.
