@@ -120,7 +120,8 @@ EditorShell::EditorShell(GraphicsDevice& device, std::string renderer_shader, st
                          PlatformServices services, EditorFonts fonts)
     : m_device(device), m_services(std::move(services)), m_font_data(std::move(fonts)),
       m_renderer(device, std::move(renderer_shader)),
-      m_ui(device, std::move(ui_shader)), m_viewport(device, {Format::rgba8_unorm, false, "editor viewport"}),
+      m_ui(device, std::move(ui_shader)), m_thumbnails(device, m_ui, m_ui.shader_source()),
+      m_viewport(device, {Format::rgba8_unorm, false, "editor viewport"}),
       m_camera(EditorCamera::looking_at({3.0f, 2.2f, 4.5f}, {0.0f, 0.0f, 0.0f})) {
     auto* previous = ImGui::GetCurrentContext();
     m_context = ImGui::CreateContext();
@@ -910,8 +911,9 @@ void EditorShell::draw_diagnostics() {
                                    shown.process ? format("%.1f MiB", mib(shown.process->footprint)).c_str() : "unavailable"),
                 "Platform-reported: the device's allocated size and the process's physical footprint. On unified memory "
                 "they overlap; they are not added together.");
-            row("Assets", format("%zu meshes (%.1f MiB)   %zu materials   %zu leased", shown.assets.meshes,
-                                 mib(shown.assets.mesh_gpu_bytes), shown.assets.materials, shown.assets.leased));
+            row("Assets", format("%zu meshes (%.1f MiB)   %zu textures (%.1f MiB)   %zu materials   %zu leased", shown.assets.meshes,
+                                 mib(shown.assets.mesh_gpu_bytes), shown.assets.textures, mib(shown.assets.texture_gpu_bytes),
+                                 shown.assets.materials, shown.assets.leased));
             theme::end_properties();
         }
         if (!m_frame_problems.empty()) {
@@ -1071,6 +1073,7 @@ RhiDiagnostic EditorShell::render(TextureHandle destination) {
     auto* previous = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(m_context);
     render_viewport();
+    if (auto error = m_thumbnails.render()) m_log.add(DiagnosticSource::ui, "Texture thumbnails: " + error.message, m_frame);
     const auto* data = ImGui::GetDrawData();
     auto clock = Stopwatch{};
     auto result = data ? m_ui.render(*data, destination, window_background) : RhiDiagnostic{};

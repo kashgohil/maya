@@ -34,6 +34,7 @@ public:
     RhiDiagnostic render(const ImDrawData& data, TextureHandle destination,
                          const std::array<double, 4>& clear_color);
     const UiRendererStats& stats() const noexcept { return m_stats; }
+    const std::string& shader_source() const noexcept { return m_shader_source; }
 
 private:
     TextureHandle lookup(ImTextureID id) const;

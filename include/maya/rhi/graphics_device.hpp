@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -66,8 +67,12 @@ public:
     RhiStats stats() const noexcept;
 
     RhiResult<BufferHandle> create_buffer(const BufferDesc& desc, const void* initial_data = nullptr);
-    /// Initial data is tightly packed rows of bytes_per_pixel(format) * width.
+    /// Initial data is every mip level, level 0 first, each tightly packed rows of pixels (or of
+    /// blocks for compressed formats): texture_bytes(desc) in all.
     RhiResult<TextureHandle> create_texture(const TextureDesc& desc, const void* initial_data = nullptr);
+    /// As above, refusing data whose size is not texture_bytes(desc). Empty data creates an
+    /// uninitialized texture.
+    RhiResult<TextureHandle> create_texture(const TextureDesc& desc, std::span<const std::byte> initial_data);
     RhiResult<SamplerHandle> create_sampler(const SamplerDesc& desc);
     RhiResult<PipelineHandle> create_pipeline(const PipelineDesc& desc);
     /// Immediate CPU write into a buffer the caller owns. The caller must not overwrite ranges that a

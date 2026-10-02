@@ -8,6 +8,7 @@
 #include "input_router.hpp"
 #include "picking.hpp"
 #include "scene_editor.hpp"
+#include "texture_thumbnails.hpp"
 #include "ui_renderer.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/core/system_info.hpp"
@@ -210,6 +211,7 @@ public:
     const RenderTarget& viewport() const noexcept { return m_viewport; }
     const EditorLayout& layout() const noexcept { return m_layout; }
     const DiagnosticLog& diagnostics() const noexcept { return m_log; }
+    const TextureThumbnails& thumbnails() const noexcept { return m_thumbnails; }
     const UiRenderer& ui_renderer() const noexcept { return m_ui; }
     const RenderSnapshotStats& extraction() const noexcept { return m_extraction; }
     /// The open scene's editing session, or null when no scene is open.
@@ -312,6 +314,9 @@ private:
         bool missing = false; // the source file does not exist
     };
     void draw_asset_row(const AssetRow& row);
+    /// A texture's thumbnail (or the placeholder's, when it failed), loading at most a few textures a
+    /// frame; 0 while it waits to load.
+    ImTextureID texture_thumbnail(AssetId texture, bool preview);
     void draw_scene_menu();
     void draw_prompts();
     void draw_play_controls();
@@ -349,6 +354,8 @@ private:
     ImGuiContext* m_context = nullptr;
     Renderer m_renderer;
     UiRenderer m_ui;
+    TextureThumbnails m_thumbnails;
+    size_t m_texture_loads = 0; // textures loaded for thumbnails this frame
     RenderTarget m_viewport;
     ImTextureID m_viewport_texture = 0;
     std::unique_ptr<AssetRegistry> m_assets;
@@ -427,7 +434,7 @@ private:
     std::vector<std::filesystem::path> m_scene_files;
     std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
     std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
-    std::array<std::vector<size_t>, 4> m_shown_rows; // scenes, meshes, materials, and scripts passing the filter
+    std::array<std::vector<size_t>, 5> m_shown_rows; // scenes, meshes, materials, scripts, and textures passing the filter
     std::string m_shown_filter;
     bool m_shown_stale = true; // the rows or scene files changed
     bool m_rescan = false; // recheck the rows once they are drawn

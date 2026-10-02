@@ -1,0 +1,9 @@
+maya-texture 1
+source "grid_normal.png"
+usage normal
+compression astc
+mips on
+filter linear linear
+mip_filter linear
+anisotropy 8
+address repeat repeat

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <compare>
 #include <cstddef>
@@ -26,19 +27,62 @@ using TextureHandle = RhiHandle<struct TextureTag>;
 using SamplerHandle = RhiHandle<struct SamplerTag>;
 using PipelineHandle = RhiHandle<struct PipelineTag>;
 
+/// ASTC formats are block-compressed (16 bytes per block of 4x4 or 6x6 texels) and can only be
+/// sampled; they need RhiLimits::astc.
 enum class Format : uint8_t {
-    undefined, rgba8_unorm, rgba8_srgb, bgra8_unorm, bgra8_srgb, rgba16_float, depth32_float
+    undefined, rgba8_unorm, rgba8_srgb, bgra8_unorm, bgra8_srgb, rgba16_float, depth32_float,
+    astc_4x4_unorm, astc_4x4_srgb, astc_6x6_unorm, astc_6x6_srgb
 };
+inline constexpr Format last_format = Format::astc_6x6_srgb;
 constexpr bool is_depth_format(Format format) noexcept { return format == Format::depth32_float; }
 constexpr bool is_color_format(Format format) noexcept {
     return format != Format::undefined && !is_depth_format(format);
 }
-constexpr uint32_t bytes_per_pixel(Format format) noexcept {
+constexpr bool is_compressed_format(Format format) noexcept {
+    return format >= Format::astc_4x4_unorm && format <= Format::astc_6x6_srgb;
+}
+/// Sampling decodes sRGB-encoded texels to linear values.
+constexpr bool is_srgb_format(Format format) noexcept {
+    return format == Format::rgba8_srgb || format == Format::bgra8_srgb || format == Format::astc_4x4_srgb ||
+           format == Format::astc_6x6_srgb;
+}
+/// Texels per block side: 1 for uncompressed formats.
+constexpr uint32_t block_extent(Format format) noexcept {
+    switch (format) {
+    case Format::astc_4x4_unorm: case Format::astc_4x4_srgb: return 4;
+    case Format::astc_6x6_unorm: case Format::astc_6x6_srgb: return 6;
+    default: return 1;
+    }
+}
+/// Bytes per block (per pixel for uncompressed formats).
+constexpr uint32_t block_bytes(Format format) noexcept {
     switch (format) {
     case Format::undefined: return 0;
     case Format::rgba16_float: return 8;
+    case Format::astc_4x4_unorm: case Format::astc_4x4_srgb: case Format::astc_6x6_unorm: case Format::astc_6x6_srgb: return 16;
     default: return 4;
     }
+}
+/// Bytes per pixel of an uncompressed format; 0 for compressed formats (see block_bytes).
+constexpr uint32_t bytes_per_pixel(Format format) noexcept {
+    return is_compressed_format(format) ? 0 : block_bytes(format);
+}
+/// Size of mip level `level` of a width x height texture: max(1, size >> level).
+constexpr uint32_t mip_extent(uint32_t size, uint32_t level) noexcept {
+    return level >= 32 ? 1 : std::max<uint32_t>(1, size >> level);
+}
+/// Mip levels of a full chain down to 1x1.
+constexpr uint32_t full_mip_count(uint32_t width, uint32_t height) noexcept {
+    auto levels = uint32_t{1};
+    for (auto size = std::max(width, height); size > 1; size >>= 1) ++levels;
+    return levels;
+}
+/// Tightly packed bytes of one level: rows of blocks (or pixels), no padding.
+constexpr size_t mip_level_bytes(Format format, uint32_t width, uint32_t height, uint32_t level) noexcept {
+    const auto block = block_extent(format);
+    const auto columns = (size_t{mip_extent(width, level)} + block - 1) / block;
+    const auto rows = (size_t{mip_extent(height, level)} + block - 1) / block;
+    return columns * rows * block_bytes(format);
 }
 const char* format_name(Format format) noexcept;
 
@@ -65,15 +109,25 @@ struct BufferDesc {
     BufferUsage usage = BufferUsage::none;
     std::string label;
 };
-/// Two-dimensional, single mip level. Render targets and sampled textures live in GPU memory.
+/// Two-dimensional. Render targets and sampled textures live in GPU memory. Textures with more than
+/// one mip level, and compressed textures, can only be sampled.
 struct TextureDesc {
     uint32_t width = 0;
     uint32_t height = 0;
     Format format = Format::undefined;
     TextureUsage usage = TextureUsage::none;
     std::string label;
+    uint32_t mip_levels = 1; // 1..full_mip_count(width, height)
 };
+/// Every level of a texture, tightly packed, level 0 first.
+constexpr size_t texture_bytes(const TextureDesc& desc) noexcept {
+    auto total = size_t{0};
+    for (uint32_t level = 0; level < desc.mip_levels; ++level) total += mip_level_bytes(desc.format, desc.width, desc.height, level);
+    return total;
+}
 enum class Filter : uint8_t { nearest, linear };
+/// How samples combine mip levels: none reads level 0 only.
+enum class MipFilter : uint8_t { none, nearest, linear };
 enum class AddressMode : uint8_t { repeat, clamp_to_edge, mirror_repeat };
 struct SamplerDesc {
     Filter min_filter = Filter::linear;
@@ -81,6 +135,8 @@ struct SamplerDesc {
     AddressMode address_u = AddressMode::repeat;
     AddressMode address_v = AddressMode::repeat;
     std::string label;
+    MipFilter mip_filter = MipFilter::none;
+    uint32_t max_anisotropy = 1; // 1..16; 1 is off
 };
 
 enum class CompareFunction : uint8_t { never, less, less_equal, equal, greater, greater_equal, always };
@@ -196,6 +252,8 @@ struct RhiLimits {
     size_t max_buffer_size = size_t{256} << 20;
     size_t uniform_offset_alignment = 256;
     size_t vertex_offset_alignment = 4;
+    uint32_t max_anisotropy = 16;
+    bool astc = false; // ASTC LDR texture formats can be created and sampled
 };
 struct RhiStats {
     size_t buffers = 0; // excludes the device's own per-frame upload buffers
@@ -215,8 +273,8 @@ struct RhiStats {
     uint64_t frame_draws = 0;
     uint64_t frame_instances = 0; // summed over draws
     uint64_t frame_triangles = 0; // vertices or indices / 3, times instances
-    // Tracked allocations: sizes from the descriptors of live resources (textures as width × height ×
-    // bytes per pixel), not memory the platform reports as resident. See reported_memory().
+    // Tracked allocations: sizes from the descriptors of live resources (textures as texture_bytes:
+    // every mip level, tightly packed), not memory the platform reports as resident. See reported_memory().
     size_t buffer_bytes = 0;
     size_t texture_bytes = 0;
     size_t pending_retirement_bytes = 0; // destroyed buffers and textures awaiting GPU completion

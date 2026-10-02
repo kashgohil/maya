@@ -9,6 +9,7 @@ struct NullDeviceOptions {
     uint32_t surface_width = 0; // zero until resize()
     uint32_t surface_height = 0;
     bool manual_completion = false; // frames complete only through complete_through()
+    bool astc = true; // report ASTC support, as Apple GPUs do
 };
 
 /// CPU-only backend: validates and tracks resources through GraphicsDevice but executes nothing.

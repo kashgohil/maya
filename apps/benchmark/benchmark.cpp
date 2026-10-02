@@ -361,6 +361,8 @@ void write_memory(Json& json, std::string_view name, const MemorySample& m) {
     json.field("leased", m.assets.leased);
     json.field("mesh_gpu_bytes", m.assets.mesh_gpu_bytes);
     json.field("mesh_cpu_bytes", m.assets.mesh_cpu_bytes);
+    json.field("resident_textures", m.assets.textures);
+    json.field("texture_gpu_bytes", m.assets.texture_gpu_bytes);
     json.close('}');
     json.close('}');
     json.key("reported");

@@ -2,7 +2,8 @@
 
 namespace maya {
 
-bool NullGraphicsDevice::backend_initialize(void* window, RhiLimits&, Format& surface_format) {
+bool NullGraphicsDevice::backend_initialize(void* window, RhiLimits& limits, Format& surface_format) {
+    limits.astc = m_options.astc;
     m_has_surface = m_options.surface && window;
     m_native = 0;
     m_last_submitted = 0;

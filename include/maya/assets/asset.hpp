@@ -1,6 +1,8 @@
 #pragma once
 #include "maya/assets/asset_ref.hpp"
+#include "maya/assets/texture_data.hpp"
 #include "maya/core/mesh.hpp"
+#include "maya/core/texture.hpp"
 #include <concepts>
 #include <filesystem>
 #include <memory>
@@ -8,8 +10,8 @@
 #include <string>
 
 namespace maya {
-enum class AssetKind { mesh, material, script };
-const char* asset_kind_name(AssetKind kind) noexcept; // "mesh", "material", or "script"
+enum class AssetKind { mesh, material, script, texture };
+const char* asset_kind_name(AssetKind kind) noexcept; // "mesh", "material", "script", or "texture"
 enum class AssetState { unloaded, loading, ready, failed };
 enum class AssetError {
     none, invalid_id, duplicate_id, duplicate_path, invalid_path, not_registered,
@@ -44,9 +46,30 @@ struct MaterialAsset {
 struct ScriptAsset {
     std::string source;
 };
-template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset> || std::same_as<T,ScriptAsset>;
+/// A sampled GPU texture with its mip levels, and the sampler its settings describe (docs/assets.md#textures).
+class TextureAsset {
+public:
+    TextureAsset(std::unique_ptr<Texture> texture, std::unique_ptr<Sampler> sampler, TextureRole role)
+        : m_texture(std::move(texture)), m_sampler(std::move(sampler)), m_role(role) {
+        if (!m_texture || !m_texture->valid() || !m_sampler || !m_sampler->valid())
+            throw std::invalid_argument("TextureAsset requires a valid texture and sampler");
+    }
+    const Texture& texture() const noexcept { return *m_texture; }
+    const Sampler& sampler() const noexcept { return *m_sampler; }
+    TextureRole role() const noexcept { return m_role; }
+    bool valid() const noexcept { return m_texture->valid() && m_sampler->valid(); }
+    /// Tracked GPU bytes of every level.
+    size_t gpu_bytes() const noexcept { return m_texture->gpu_bytes(); }
+private:
+    std::unique_ptr<Texture> m_texture;
+    std::unique_ptr<Sampler> m_sampler;
+    TextureRole m_role;
+};
+template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset> || std::same_as<T,ScriptAsset> ||
+                                  std::same_as<T,TextureAsset>;
 template<Asset T> inline constexpr AssetKind asset_kind =
-    std::same_as<T,MeshAsset> ? AssetKind::mesh : std::same_as<T,MaterialAsset> ? AssetKind::material : AssetKind::script;
+    std::same_as<T,MeshAsset> ? AssetKind::mesh : std::same_as<T,MaterialAsset> ? AssetKind::material :
+    std::same_as<T,ScriptAsset> ? AssetKind::script : AssetKind::texture;
 
 template<Asset T> struct AssetHandle {
     uint64_t registry = 0;
@@ -100,17 +123,29 @@ public:
     virtual AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& absolute_path) = 0;
     /// Reads the file as UTF-8 text; providers need not override it.
     virtual AssetLoadResult<ScriptAsset> load_script(const std::filesystem::path& absolute_path);
+    /// `absolute_path` is a texture descriptor (.texture). The default refuses: this provider loads no textures.
+    virtual AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& absolute_path);
 };
-/// Initial adapter: existing OBJ loader and a small versioned material-factor file.
+/// Initial adapter: the OBJ loader, a small versioned material-factor file, and texture descriptors
+/// whose source is cooked at load (PNG or JPEG) or read as cooked KTX2.
 class FileAssetProvider final : public AssetProvider {
 public:
     explicit FileAssetProvider(GraphicsDevice& device) : m_device(device), m_lifetime(device.resource_lifetime()) {}
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override;
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override;
+    AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override;
 private:
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;
 };
 /// Explicit fallback: missing meshes skip their draw; failed materials may use this value.
 const MaterialAsset& fallback_material() noexcept;
+/// The declared stand-in for a missing or failed texture: an 8x8 magenta and black checkerboard
+/// (sRGB RGBA8, nearest filtering, repeating). It replaces the texture's pixels only; the problem is
+/// still reported, and the missing reference keeps its ID.
+inline constexpr uint32_t placeholder_texture_size = 8;
+std::span<const std::byte> placeholder_texture_pixels() noexcept;
+/// One placeholder for a device session, or null if the device cannot create it; its owner keeps it
+/// as long as it may be drawn.
+std::shared_ptr<const TextureAsset> make_placeholder_texture(GraphicsDevice& device);
 } // namespace maya

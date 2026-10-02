@@ -27,6 +27,10 @@ const char* format_name(Format format) noexcept {
     case Format::bgra8_srgb: return "bgra8_srgb";
     case Format::rgba16_float: return "rgba16_float";
     case Format::depth32_float: return "depth32_float";
+    case Format::astc_4x4_unorm: return "astc_4x4_unorm";
+    case Format::astc_4x4_srgb: return "astc_4x4_srgb";
+    case Format::astc_6x6_unorm: return "astc_6x6_unorm";
+    case Format::astc_6x6_srgb: return "astc_6x6_srgb";
     }
     return "unknown";
 }
@@ -169,9 +173,7 @@ RhiStats GraphicsDevice::stats() const noexcept {
     result.submitted_frames = m_submitted;
     result.completed_frames = std::min(m_completion->completed.load(std::memory_order_acquire), m_submitted);
     // Tracked bytes come from descriptors, summed on request: resource tables stay small.
-    const auto texture_size = [](const TextureDesc& desc) {
-        return size_t{desc.width} * desc.height * bytes_per_pixel(desc.format);
-    };
+    const auto texture_size = [](const TextureDesc& desc) { return texture_bytes(desc); };
     for (const auto& slot : m_buffers.slots)
         if (slot.live && !slot.internal) result.buffer_bytes += slot.desc.size;
     for (uint32_t index = 0; index < m_textures.slots.size(); ++index) {
@@ -331,12 +333,21 @@ RhiResult<TextureHandle> GraphicsDevice::create_texture(const TextureDesc& desc,
         desc.height > m_limits.max_texture_dimension)
         return {{}, fail(RhiError::invalid_descriptor, name + " size " + std::to_string(desc.width) + "x" +
             std::to_string(desc.height) + " is outside 1.." + std::to_string(m_limits.max_texture_dimension))};
-    if (desc.format == Format::undefined || static_cast<uint8_t>(desc.format) > static_cast<uint8_t>(Format::depth32_float))
+    if (desc.format == Format::undefined || static_cast<uint8_t>(desc.format) > static_cast<uint8_t>(last_format))
         return {{}, fail(RhiError::invalid_descriptor, name + " needs a defined format")};
     if (!valid_bits(static_cast<uint32_t>(desc.usage), 0x7))
         return {{}, fail(RhiError::invalid_descriptor, name + " needs sampled, render_target, or readback usage")};
     if (is_depth_format(desc.format) && (initial_data || has_flag(desc.usage, TextureUsage::readback)))
         return {{}, fail(RhiError::unsupported, name + ": depth textures cannot be uploaded or read back")};
+    const auto full_chain = full_mip_count(desc.width, desc.height);
+    if (desc.mip_levels == 0 || desc.mip_levels > full_chain)
+        return {{}, fail(RhiError::invalid_descriptor, name + " has " + std::to_string(desc.mip_levels) + " mip levels; a " +
+            std::to_string(desc.width) + "x" + std::to_string(desc.height) + " texture has 1.." + std::to_string(full_chain))};
+    if ((desc.mip_levels > 1 || is_compressed_format(desc.format)) && desc.usage != TextureUsage::sampled)
+        return {{}, fail(RhiError::unsupported, name + ": " + (is_compressed_format(desc.format) ? "compressed" : "mipmapped") +
+            " textures can only be sampled, not rendered to or read back")};
+    if (is_compressed_format(desc.format) && !m_limits.astc)
+        return {{}, fail(RhiError::unsupported, name + ": this device cannot sample " + format_name(desc.format))};
     const auto slot = allocate(m_textures);
     auto diagnostic = RhiDiagnostic{};
     try {
@@ -356,11 +367,27 @@ RhiResult<TextureHandle> GraphicsDevice::create_texture(const TextureDesc& desc,
     return {{m_session, slot, entry.generation}, {}};
 }
 
+RhiResult<TextureHandle> GraphicsDevice::create_texture(const TextureDesc& desc, std::span<const std::byte> initial_data) {
+    if (m_session == 0) return {{}, fail(RhiError::device_unavailable, "Device is not initialized")};
+    if (initial_data.empty()) return create_texture(desc, nullptr);
+    // Sizes are only meaningful for a valid descriptor; create_texture reports the others.
+    const auto expected = desc.width && desc.height && desc.mip_levels && desc.mip_levels <= full_mip_count(desc.width, desc.height)
+        ? texture_bytes(desc) : initial_data.size();
+    if (initial_data.size() != expected)
+        return {{}, fail(RhiError::invalid_descriptor, "Texture" + quoted(desc.label) + " needs " + std::to_string(expected) +
+            " bytes of initial data for " + std::to_string(desc.mip_levels) + " level(s) of " + format_name(desc.format) +
+            ", not " + std::to_string(initial_data.size()))};
+    return create_texture(desc, initial_data.data());
+}
+
 RhiResult<SamplerHandle> GraphicsDevice::create_sampler(const SamplerDesc& desc) {
     if (m_session == 0) return {{}, fail(RhiError::device_unavailable, "Device is not initialized")};
-    if (desc.min_filter > Filter::linear || desc.mag_filter > Filter::linear ||
+    if (desc.min_filter > Filter::linear || desc.mag_filter > Filter::linear || desc.mip_filter > MipFilter::linear ||
         desc.address_u > AddressMode::mirror_repeat || desc.address_v > AddressMode::mirror_repeat)
         return {{}, fail(RhiError::invalid_descriptor, "Sampler" + quoted(desc.label) + " has an unknown filter or address mode")};
+    if (desc.max_anisotropy == 0 || desc.max_anisotropy > m_limits.max_anisotropy)
+        return {{}, fail(RhiError::invalid_descriptor, "Sampler" + quoted(desc.label) + " anisotropy " +
+            std::to_string(desc.max_anisotropy) + " is outside 1.." + std::to_string(m_limits.max_anisotropy))};
     const auto slot = allocate(m_samplers);
     auto diagnostic = RhiDiagnostic{};
     try {
@@ -393,8 +420,8 @@ RhiResult<PipelineHandle> GraphicsDevice::create_pipeline(const PipelineDesc& de
     if (desc.color_formats.size() > m_limits.max_color_attachments)
         return invalid("more than " + std::to_string(m_limits.max_color_attachments) + " color attachments");
     for (const auto format : desc.color_formats)
-        if (!is_color_format(format) || static_cast<uint8_t>(format) > static_cast<uint8_t>(Format::depth32_float))
-            return invalid(std::string("color attachment format ") + format_name(format) + " is not a color format");
+        if (!is_color_format(format) || is_compressed_format(format) || static_cast<uint8_t>(format) > static_cast<uint8_t>(last_format))
+            return invalid(std::string("color attachment format ") + format_name(format) + " is not a renderable color format");
     if (desc.depth_format != Format::undefined && !is_depth_format(desc.depth_format))
         return invalid(std::string("depth format ") + format_name(desc.depth_format) + " is not a depth format");
     if ((desc.depth.test || desc.depth.write) && desc.depth_format == Format::undefined)

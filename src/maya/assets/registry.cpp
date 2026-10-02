@@ -41,9 +41,14 @@ const char* asset_kind_name(AssetKind kind) noexcept {
     switch (kind) {
     case AssetKind::mesh: return "mesh";
     case AssetKind::material: return "material";
+    case AssetKind::texture: return "texture";
     case AssetKind::script: break;
     }
     return "script";
+}
+
+AssetLoadResult<TextureAsset> AssetProvider::load_texture(const std::filesystem::path& path) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load textures: " + path.string()}};
 }
 
 AssetLoadResult<ScriptAsset> AssetProvider::load_script(const std::filesystem::path& path) {
@@ -58,7 +63,8 @@ AssetLoadResult<ScriptAsset> AssetProvider::load_script(const std::filesystem::p
 AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
     if (m_loading) return {AssetError::busy,"Cannot change the asset catalog during a provider load"};
     if (!record.id.valid()) return {AssetError::invalid_id,"Asset ID must be nonzero"};
-    if (record.kind != AssetKind::mesh && record.kind != AssetKind::material && record.kind != AssetKind::script)
+    if (record.kind != AssetKind::mesh && record.kind != AssetKind::material && record.kind != AssetKind::script &&
+        record.kind != AssetKind::texture)
         return {AssetError::wrong_type,"Unsupported asset kind"};
     if (m_ids.contains(record.id)) return {AssetError::duplicate_id,"Duplicate asset ID " + id_text(record.id)};
     const auto full = resolve_path(record.path);
@@ -101,6 +107,9 @@ AssetResidency AssetRegistry::residency() const noexcept {
                 result.mesh_cpu_bytes += geometry.positions.size() * sizeof(math::Vec3) + geometry.indices.size() * sizeof(uint32_t);
             } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const MaterialAsset>) {
                 ++result.materials;
+            } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const TextureAsset>) {
+                ++result.textures;
+                result.texture_gpu_bytes += value->gpu_bytes();
             } else {
                 ++result.scripts;
             }
@@ -120,6 +129,8 @@ bool AssetRegistry::usable(const Payload& payload) noexcept {
         if (!value) return false;
         if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type,const MeshAsset>)
             return value->mesh().valid();
+        else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type,const TextureAsset>)
+            return value->valid();
         else return true;
     },payload);
 }
@@ -163,6 +174,9 @@ AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind,
             candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
         } else if (kind == AssetKind::material) {
             auto result = m_provider->load_material(*path);
+            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+        } else if (kind == AssetKind::texture) {
+            auto result = m_provider->load_texture(*path);
             candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
         } else {
             auto result = m_provider->load_script(*path);
@@ -214,11 +228,12 @@ AssetCatalogResult read_asset_catalog(std::istream& input) {
     };
     while (input >> kind) {
         AssetId id;
-        if ((kind != "mesh" && kind != "material" && kind != "script") ||
+        if ((kind != "mesh" && kind != "material" && kind != "script" && kind != "texture") ||
             !(input >> high >> low >> std::quoted(path)) ||
             !parse_word(high,id.high) || !parse_word(low,id.low) || !id.valid())
             return {{},{AssetError::invalid_data,"Invalid catalog entry " + std::to_string(records.size()+1)}};
-        records.push_back({id,kind == "mesh" ? AssetKind::mesh : kind == "material" ? AssetKind::material : AssetKind::script,path});
+        records.push_back({id,kind == "mesh" ? AssetKind::mesh : kind == "material" ? AssetKind::material :
+                              kind == "script" ? AssetKind::script : AssetKind::texture,path});
     }
     if (input.bad() || !input.eof()) return {{},{AssetError::invalid_data,"I/O failure reading catalog"}};
     return {std::move(records),{}};

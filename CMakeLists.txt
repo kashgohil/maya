@@ -53,6 +53,41 @@ add_library(Maya::RHI ALIAS MayaRHI)
 target_include_directories(MayaRHI PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaRHI)
 
+# Dependency headers are system headers, so Maya's warnings apply to Maya code only.
+function(maya_system_headers target)
+    get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
+    set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
+endfunction()
+
+# stb (public domain or MIT; no releases are tagged, so pinned by commit) and astc-encoder
+# (Apache-2.0), for cooking textures (docs/architecture/rendering-content-decision.md).
+FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20)
+FetchContent_Declare(astcenc GIT_REPOSITORY https://github.com/ARM-software/astc-encoder.git GIT_TAG 5.7.0 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(stb)
+set(ASTCENC_CLI OFF CACHE BOOL "" FORCE)
+set(ASTCENC_UNITTEST OFF CACHE BOOL "" FORCE)
+set(ASTCENC_ISA_NEON ON CACHE BOOL "" FORCE)
+set(ASTCENC_SHAREDLIB OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(astcenc)
+set_property(DIRECTORY ${astcenc_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
+
+# Texture descriptors, KTX2, and cooking source images (stb and astcenc stay private to it).
+add_library(MayaTextures STATIC
+    src/maya/assets/texture_settings.cpp
+    src/maya/assets/ktx2.cpp
+    src/maya/assets/texture_cook.cpp
+    src/maya/assets/stb_implementation.cpp)
+add_library(Maya::Textures ALIAS MayaTextures)
+target_include_directories(MayaTextures PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(MayaTextures SYSTEM PRIVATE ${stb_SOURCE_DIR} ${astcenc_SOURCE_DIR}/Source)
+target_link_libraries(MayaTextures PUBLIC MayaRHI PRIVATE astcenc-neon-static)
+maya_target_options(MayaTextures)
+# stb's own code is not sanitized, like the other dependencies: stb_image_resize2 indexes its sRGB
+# table through a pointer offset before the table (in bounds once indexed), which UBSan reports.
+if(MAYA_ENABLE_SANITIZERS)
+    set_source_files_properties(src/maya/assets/stb_implementation.cpp PROPERTIES COMPILE_OPTIONS "-fno-sanitize=all")
+endif()
+
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/property_context.cpp
@@ -60,7 +95,7 @@ add_library(MayaAssets STATIC
     src/maya/assets/project.cpp
     src/maya/core/model_loader.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
-target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI)
+target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures)
 maya_target_options(MayaAssets)
 
 # Scene persistence depends only on World data and a caller-supplied asset-reference resolver.
@@ -85,12 +120,6 @@ add_library(MayaMetrics STATIC src/maya/metrics/metrics.cpp)
 add_library(Maya::Metrics ALIAS MayaMetrics)
 target_include_directories(MayaMetrics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaMetrics)
-
-# Dependency headers are system headers, so Maya's warnings apply to Maya code only.
-function(maya_system_headers target)
-    get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
-    set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
-endfunction()
 
 # Jolt Physics (MIT), pinned (docs/architecture/physics-scripting-decision.md). Single precision,
 # 32-bit object layers, no GPU compute, no serialization, no install rules. Jolt builds without
@@ -283,6 +312,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/project_files.cpp
         apps/editor/scene_editor.cpp
         apps/editor/script_files.cpp
+        apps/editor/texture_thumbnails.cpp
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
@@ -315,22 +345,13 @@ if(MAYA_BUILD_PROTOTYPES)
     FetchContent_Declare(cgltf GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git GIT_TAG v1.15 GIT_SHALLOW TRUE)
     FetchContent_Declare(tinygltf GIT_REPOSITORY https://github.com/syoyo/tinygltf.git GIT_TAG v3.0.1 GIT_SHALLOW TRUE)
     FetchContent_Declare(fastgltf GIT_REPOSITORY https://github.com/spnda/fastgltf.git GIT_TAG v0.9.1 GIT_SHALLOW TRUE)
-    # stb (public domain or MIT): image decoding and resizing. No releases are tagged; pinned by commit.
-    FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20)
-    # astc-encoder (Apache-2.0): ASTC compression for cooked textures.
-    FetchContent_Declare(astcenc GIT_REPOSITORY https://github.com/ARM-software/astc-encoder.git GIT_TAG 5.7.0 GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(cgltf tinygltf stb)
+    # stb and astc-encoder are the engine's own dependencies (above).
+    FetchContent_MakeAvailable(cgltf tinygltf)
     set(FASTGLTF_DOWNLOAD_SIMDJSON ON CACHE BOOL "" FORCE)
     set(FASTGLTF_COMPILE_AS_CPP20 OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(fastgltf)
     set_property(DIRECTORY ${fastgltf_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
     maya_prototype_system_headers(fastgltf)
-    set(ASTCENC_CLI OFF CACHE BOOL "" FORCE)
-    set(ASTCENC_UNITTEST OFF CACHE BOOL "" FORCE)
-    set(ASTCENC_ISA_NEON ON CACHE BOOL "" FORCE)
-    set(ASTCENC_SHAREDLIB OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(astcenc)
-    set_property(DIRECTORY ${astcenc_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
 
     add_library(MayaPrototypeThirdParty STATIC prototypes/content/third_party.cpp ${tinygltf_SOURCE_DIR}/tiny_gltf_v3.c)
     target_include_directories(MayaPrototypeThirdParty SYSTEM PUBLIC ${cgltf_SOURCE_DIR} ${tinygltf_SOURCE_DIR} ${stb_SOURCE_DIR}

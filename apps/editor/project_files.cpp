@@ -157,6 +157,7 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     auto registry = std::unique_ptr<AssetRegistry>{};
     if (auto error = read_catalog(opened.project, registry); !error.empty()) return fail(error);
     m_project = std::move(opened.project);
+    m_thumbnails.clear(); // their versions belong to the old registry
     m_assets = std::move(registry);
     m_selected_asset.reset();
     scan_project();
@@ -318,6 +319,7 @@ void EditorShell::refresh_project() {
         m_log.add(DiagnosticSource::project, error, m_frame);
         notice("Couldn't reload the catalog", error + "\nThe previous catalog stays in use.");
     } else {
+        m_thumbnails.clear(); // their versions belong to the old registry
         m_assets = std::move(registry); // loaded versions are reloaded from their files on next use
         m_scripts.clear();
         check_script_files();
@@ -566,6 +568,7 @@ EditResult EditorShell::assign_asset(EntityId entity, AssetId asset) {
     if (!info) return {false, "That asset is not in the project's catalog"};
     const auto* record = m_scene->record(entity);
     if (!record) return {false, "The entity no longer exists"};
+    if (info->record.kind == AssetKind::texture) return {false, "Textures are used through materials, not assigned to objects"};
     if (info->record.kind == AssetKind::script) {
         // Values the new script declares, with the same type, carry over; the rest belonged to the old one.
         auto script = ScriptComponent{AssetRef<ScriptAsset>{asset}, {}};
@@ -683,11 +686,30 @@ void EditorShell::accept_viewport_drop() {
 
 // Asset browser -------------------------------------------------------------------------------------
 
+ImTextureID EditorShell::texture_thumbnail(AssetId texture, bool preview) {
+    // Cooking a texture can take tens of milliseconds, so the panel loads one a frame.
+    constexpr size_t loads_per_frame = 1;
+    const auto info = m_assets->info(texture);
+    if (!info) return 0;
+    const auto unloaded = info->state == AssetState::unloaded;
+    if (unloaded && m_texture_loads >= loads_per_frame) return 0;
+    if (unloaded) ++m_texture_loads;
+    const auto loaded = m_assets->acquire(AssetRef<TextureAsset>{texture});
+    if (!loaded) {
+        if (unloaded) m_log.add(DiagnosticSource::asset, loaded.diagnostic.message, m_frame);
+        return m_thumbnails.placeholder(preview);
+    }
+    return preview ? m_thumbnails.preview(texture, loaded.lease) : m_thumbnails.row(texture, loaded.lease);
+}
+
 void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto& record = row.record;
-    const auto info = m_assets->info(record.id);
     const auto mesh = record.kind == AssetKind::mesh;
     const auto script = record.kind == AssetKind::script;
+    const auto texture = record.kind == AssetKind::texture;
+    // Textures load for their thumbnails (or show the placeholder's), before their state is read.
+    const auto thumbnail = texture ? texture_thumbnail(record.id, false) : ImTextureID{0};
+    const auto info = m_assets->info(record.id);
     // Scripts are watched, so their state is current; the others are as the last scan found them.
     const auto* version = script ? &script_version(record.id) : nullptr;
     const auto missing = version ? !version->present : row.missing;
@@ -705,7 +727,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         }
     const auto state = info ? info->state : AssetState::unloaded;
     const auto failed = version ? !missing && !problem.empty() : state == AssetState::failed || (info && info->diagnostic);
-    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : icon::circle_half;
+    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : icon::circle_half;
     ImGui::PushID(static_cast<int>(record.id.low ^ (record.id.high << 7)));
     const auto selected = m_selected_asset == record.id;
     if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()}))
@@ -716,9 +738,9 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         if (mesh) place_in_view(record.id);
         else if (script) open_script(record.id);
-        else assign_to_selection(record.id);
+        else if (!texture) assign_to_selection(record.id);
     }
-    if (ImGui::BeginDragDropSource()) {
+    if (!texture && ImGui::BeginDragDropSource()) { // textures go in material slots, which come later
         const auto payload = AssetPayload{record.id, record.kind};
         ImGui::SetDragDropPayload("MAYA_ASSET", &payload, sizeof(payload));
         icon_text(glyph, theme::color::muted);
@@ -736,13 +758,16 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             open_script(record.id);
         const auto assign = std::string(icon::arrows_move) + "  Assign to selection" +
                             (selection ? " (" + std::to_string(selection) + ")" : std::string{});
-        if (ImGui::MenuItem(assign.c_str(), nullptr, false, selection > 0)) assign_to_selection(record.id);
-        ImGui::Separator();
-        if (script && ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str())) {
+        if (!texture && ImGui::MenuItem(assign.c_str(), nullptr, false, selection > 0)) assign_to_selection(record.id);
+        if (!texture) ImGui::Separator();
+        const auto reload = ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str());
+        m_layout.controls.push_back({"asset.reload", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        if (reload && script) {
             reload_script(record.id);
-        } else if (!script && ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str())) {
-            const auto diagnostic = mesh ? m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic
-                                         : m_assets->reload(AssetRef<MaterialAsset>{record.id}).diagnostic;
+        } else if (reload) {
+            const auto diagnostic = mesh      ? m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic
+                                    : texture ? m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic
+                                              : m_assets->reload(AssetRef<MaterialAsset>{record.id}).diagnostic;
             m_log.add(DiagnosticSource::asset, diagnostic ? record.path.generic_string() + ": " + diagnostic.message
                                                           : "Reloaded " + record.path.generic_string(), m_frame);
             m_rescan = true; // after the rows are drawn: rescanning replaces them
@@ -755,6 +780,32 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(record.path.generic_string().c_str());
         theme::mono_text(m_fonts, id_text(record.id.high, record.id.low).c_str(), true);
+        if (texture) {
+            const auto scale = std::max(ImGui::GetIO().DisplayFramebufferScale.x, 1.0f);
+            const auto side = float(TextureThumbnails::preview_size) / scale;
+            if (const auto image = texture_thumbnail(record.id, true)) ImGui::Image(image, {side, side});
+            if (const auto loaded = state == AssetState::ready ? m_assets->acquire(AssetRef<TextureAsset>{record.id}) : AssetResult<TextureAsset>{}) {
+                const auto& value = loaded.lease.value();
+                const auto& desc = value.texture().desc();
+                const auto& sampler = value.sampler().desc();
+                ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+                ImGui::Text("%u x %u, %s, %u mip level%s, %.2f MiB", desc.width, desc.height, format_name(desc.format), desc.mip_levels,
+                            desc.mip_levels == 1 ? "" : "s", double(value.gpu_bytes()) / (1024.0 * 1024.0));
+                const auto filter = [](Filter value) { return value == Filter::linear ? "linear" : "nearest"; };
+                const auto address = [](AddressMode value) {
+                    return value == AddressMode::repeat ? "repeat" : value == AddressMode::clamp_to_edge ? "clamp" : "mirror";
+                };
+                ImGui::Text("%s; filter %s/%s, mips %s, anisotropy %u, address %s/%s", texture_role_name(value.role()),
+                            filter(sampler.min_filter), filter(sampler.mag_filter),
+                            sampler.mip_filter == MipFilter::linear ? "linear" : sampler.mip_filter == MipFilter::nearest ? "nearest" : "none",
+                            sampler.max_anisotropy, address(sampler.address_u), address(sampler.address_v));
+                ImGui::PopStyleColor();
+            } else if (failed || missing) {
+                ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+                ImGui::TextUnformatted("Materials show the placeholder in its place.");
+                ImGui::PopStyleColor();
+            }
+        }
         if (missing) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::warning);
             ImGui::TextUnformatted("The file is missing from the content folder.");
@@ -777,11 +828,16 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     if (swatch) {
         draw->AddCircleFilled({min.x + 12.0f, middle}, 5.5f, *swatch);
         draw->AddCircle({min.x + 12.0f, middle}, 5.5f, theme::color::rgb(0xFFFFFF, 40));
+    } else if (thumbnail) {
+        const auto side = std::min(max.y - min.y - 4.0f, 20.0f);
+        const auto corner = ImVec2{min.x + 12.0f - side * 0.5f, middle - side * 0.5f};
+        draw->AddImage(thumbnail, corner, {corner.x + side, corner.y + side});
+        draw->AddRect(corner, {corner.x + side, corner.y + side}, theme::color::rgb(0xFFFFFF, 30));
     } else {
         draw->AddText({min.x + 5.0f, text_y}, theme::color::muted, glyph);
     }
     const auto tone = failed ? theme::color::danger : missing ? theme::color::warning : theme::color::text;
-    const auto status = missing ? "missing" : failed ? (script ? "error" : "failed") : state == AssetState::ready ? "" : mesh ? "not loaded" : "";
+    const auto status = missing ? "missing" : failed ? (script ? "error" : "failed") : state == AssetState::ready ? "" : mesh || texture ? "not loaded" : "";
     const auto status_width = ImGui::CalcTextSize(status).x;
     draw->PushClipRect(min, {max.x - status_width - 12.0f, max.y}, true);
     draw->AddText({min.x + 26.0f, text_y}, tone, record.path.stem().string().c_str());
@@ -828,13 +884,14 @@ void EditorShell::draw_assets() {
             for (size_t i = 0; i < m_asset_rows.size(); ++i) {
                 const auto kind = m_asset_rows[i].record.kind;
                 if (passes(m_asset_rows[i].search))
-                    m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : 3].push_back(i);
+                    m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : kind == AssetKind::script ? 3 : 4].push_back(i);
             }
             m_shown_filter = std::move(filter);
             m_shown_stale = false;
         }
         constexpr auto table_flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
-        if (ImGui::BeginTable("asset_columns", 4, table_flags, ImGui::GetContentRegionAvail())) {
+        m_texture_loads = 0;
+        if (ImGui::BeginTable("asset_columns", 5, table_flags, ImGui::GetContentRegionAvail())) {
             // Each column scrolls on its own and draws only its visible rows.
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {
                 ImGui::TableNextColumn();
@@ -873,6 +930,7 @@ void EditorShell::draw_assets() {
             column("meshes", "MESHES", m_shown_rows[1], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("materials", "MATERIALS", m_shown_rows[2], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("scripts", "SCRIPTS", m_shown_rows[3], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
+            column("textures", "TEXTURES", m_shown_rows[4], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             ImGui::EndTable();
         }
         if (std::exchange(m_rescan, false)) scan_project();

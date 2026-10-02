@@ -24,6 +24,10 @@ MTLPixelFormat pixel_format(Format format) {
     case Format::bgra8_srgb: return MTLPixelFormatBGRA8Unorm_sRGB;
     case Format::rgba16_float: return MTLPixelFormatRGBA16Float;
     case Format::depth32_float: return MTLPixelFormatDepth32Float;
+    case Format::astc_4x4_unorm: return MTLPixelFormatASTC_4x4_LDR;
+    case Format::astc_4x4_srgb: return MTLPixelFormatASTC_4x4_sRGB;
+    case Format::astc_6x6_unorm: return MTLPixelFormatASTC_6x6_LDR;
+    case Format::astc_6x6_srgb: return MTLPixelFormatASTC_6x6_sRGB;
     case Format::undefined: break;
     }
     return MTLPixelFormatInvalid;
@@ -116,6 +120,7 @@ bool MetalDevice::backend_initialize(void* native_window, RhiLimits& limits, For
         if (!m_impl->queue) return false;
         m_impl->queue.label = @"Maya queue";
         limits.max_buffer_size = std::min<size_t>(m_impl->device.maxBufferLength, limits.max_buffer_size);
+        limits.astc = [m_impl->device supportsFamily:MTLGPUFamilyApple2];
         if (native_window) {
             NSWindow* window = (__bridge NSWindow*)native_window;
             m_impl->view = window.contentView;
@@ -185,6 +190,7 @@ RhiDiagnostic MetalDevice::backend_create_texture(uint32_t slot, const TextureDe
                                                                               width:desc.width
                                                                              height:desc.height
                                                                           mipmapped:NO];
+        descriptor.mipmapLevelCount = desc.mip_levels;
         descriptor.storageMode = MTLStorageModePrivate;
         descriptor.usage = MTLTextureUsageUnknown;
         if (has_flag(desc.usage, TextureUsage::sampled)) descriptor.usage |= MTLTextureUsageShaderRead;
@@ -194,16 +200,24 @@ RhiDiagnostic MetalDevice::backend_create_texture(uint32_t slot, const TextureDe
             std::to_string(desc.height) + " " + format_name(desc.format) + " texture"};
         if (!desc.label.empty()) texture.label = ns_string(desc.label);
         if (data) {
-            // Private textures are filled through a staging copy ordered before later frames.
-            const auto row = size_t{desc.width} * bytes_per_pixel(desc.format);
-            id<MTLBuffer> staging = [m_impl->device newBufferWithBytes:data length:row * desc.height
+            // Private textures are filled through a staging copy ordered before later frames: every
+            // level from one buffer, level 0 first, rows of pixels or of compressed blocks.
+            id<MTLBuffer> staging = [m_impl->device newBufferWithBytes:data length:texture_bytes(desc)
                                                                options:MTLResourceStorageModeShared];
             id<MTLCommandBuffer> upload = [m_impl->queue commandBuffer];
             id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
             if (!staging || !upload || !blit) return {RhiError::out_of_memory, "Metal could not stage texture data"};
-            [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:row sourceBytesPerImage:row * desc.height
-                      sourceSize:MTLSizeMake(desc.width, desc.height, 1) toTexture:texture destinationSlice:0
-                destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            const auto block = block_extent(desc.format);
+            auto offset = size_t{0};
+            for (uint32_t level = 0; level < desc.mip_levels; ++level) {
+                const auto width = mip_extent(desc.width, level), height = mip_extent(desc.height, level);
+                const auto row = (size_t{width} + block - 1) / block * block_bytes(desc.format);
+                const auto bytes = mip_level_bytes(desc.format, desc.width, desc.height, level);
+                [blit copyFromBuffer:staging sourceOffset:offset sourceBytesPerRow:row sourceBytesPerImage:bytes
+                          sourceSize:MTLSizeMake(width, height, 1) toTexture:texture destinationSlice:0
+                    destinationLevel:level destinationOrigin:MTLOriginMake(0, 0, 0)];
+                offset += bytes;
+            }
             [blit endEncoding];
             upload.label = @"Maya texture upload";
             [upload commit];
@@ -219,6 +233,10 @@ RhiDiagnostic MetalDevice::backend_create_sampler(uint32_t slot, const SamplerDe
         auto* descriptor = [[MTLSamplerDescriptor alloc] init];
         descriptor.minFilter = desc.min_filter == Filter::linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
         descriptor.magFilter = desc.mag_filter == Filter::linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        descriptor.mipFilter = desc.mip_filter == MipFilter::linear    ? MTLSamplerMipFilterLinear
+                               : desc.mip_filter == MipFilter::nearest ? MTLSamplerMipFilterNearest
+                                                                       : MTLSamplerMipFilterNotMipmapped;
+        descriptor.maxAnisotropy = desc.max_anisotropy;
         descriptor.sAddressMode = address_mode(desc.address_u);
         descriptor.tAddressMode = address_mode(desc.address_v);
         if (!desc.label.empty()) descriptor.label = ns_string(desc.label);

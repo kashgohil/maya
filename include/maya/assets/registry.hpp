@@ -11,10 +11,11 @@ namespace maya {
 struct AssetResidency {
     size_t entries = 0; // catalog entries
     size_t unloaded = 0, ready = 0, failed = 0; // entries by state
-    size_t meshes = 0, materials = 0, scripts = 0; // resident versions owned by the cache
+    size_t meshes = 0, materials = 0, scripts = 0, textures = 0; // resident versions owned by the cache
     size_t leased = 0; // resident versions also held by a lease outside the registry
     size_t mesh_gpu_bytes = 0; // vertex and index buffers of resident meshes
     size_t mesh_cpu_bytes = 0; // their picking geometry (MeshGeometry)
+    size_t texture_gpu_bytes = 0; // every mip level of resident textures (texture_bytes)
 };
 
 /// Single-owner-thread registry. Providers execute synchronously at the caller's load boundary.
@@ -56,7 +57,7 @@ public:
 
 private:
     using Payload = std::variant<std::shared_ptr<const MeshAsset>, std::shared_ptr<const MaterialAsset>,
-                                 std::shared_ptr<const ScriptAsset>>;
+                                 std::shared_ptr<const ScriptAsset>, std::shared_ptr<const TextureAsset>>;
     struct Entry {
         AssetRecord record;
         AssetState state = AssetState::unloaded;
