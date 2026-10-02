@@ -1,0 +1,10 @@
+maya-benchmark 1
+# The sample scene presented to a window every frame (#1026).
+name "smoke-sample-presenting"
+workload scene
+project "../../samples/basic_scene"
+resolution 320 180
+warmup 5
+samples 20
+runs 2
+present on

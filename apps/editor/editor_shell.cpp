@@ -799,6 +799,10 @@ void EditorShell::draw_diagnostics() {
             shown.view = p.view.summary();
             shown.ui = p.ui.summary();
             shown.gpu = p.gpu.summary();
+            shown.gpu_passes.clear();
+            for (const auto& [label, pass] : p.gpu_passes)
+                if (p.gpu_frames - pass.last_frame < Performance::window) shown.gpu_passes.emplace_back(label, pass.samples.summary());
+            std::ranges::sort(shown.gpu_passes, std::ranges::greater{}, [](const auto& pass) { return pass.second.mean; });
             shown.gpu_reported = m_device.reported_memory();
             shown.process = process_memory();
             shown.assets = m_assets ? m_assets->residency() : AssetResidency{};
@@ -897,6 +901,12 @@ void EditorShell::draw_diagnostics() {
                 : shown.gpu.count ? format("%.2f ms   P95 %.2f   P99 %.2f", shown.gpu.mean, shown.gpu.p95, shown.gpu.p99)
                 : std::string("waiting for frames"),
                 "The GPU's execution time per frame, from its own timestamps when frames complete; never CPU time.");
+            if (!m_device.gpu_pass_timing_supported())
+                row("GPU passes", "unavailable: " + m_device.gpu_pass_timing_unavailable(), "Why each pass's GPU time cannot be shown.");
+            for (const auto& [label, summary] : shown.gpu_passes)
+                row(("  " + label).c_str(), format("%.2f ms   P95 %.2f", summary.mean, summary.p95),
+                    "This pass's GPU time per frame (its vertex and fragment stages, from GPU timestamps at their boundaries), "
+                    "summed over passes with the same name.");
             if (!m_debug_draw.empty())
                 row("Debug", format("%zu outlines   %zu lines", m_debug_draw.shapes.size(), m_debug_draw.lines.size()),
                     "Physics debug outlines and lines drawn in the viewport this frame.");
@@ -1067,6 +1077,14 @@ RhiDiagnostic EditorShell::render(TextureHandle destination) {
     for (const auto& timing : m_device.take_gpu_timings(&dropped)) { // frames that completed since last time
         m_performance.gpu.add(timing.milliseconds);
         ++m_performance.gpu_frames;
+        auto frame = std::map<std::string, double>{};
+        for (const auto& pass : timing.passes) frame[pass.label] += pass.milliseconds();
+        for (const auto& [label, milliseconds] : frame) {
+            auto& pass = m_performance.gpu_passes[label];
+            pass.samples.add(milliseconds);
+            pass.last_frame = m_performance.gpu_frames;
+        }
+        m_performance.untimed_passes += timing.untimed_passes;
     }
     m_performance.gpu_dropped += dropped;
     if (!m_frame_ready) return {};

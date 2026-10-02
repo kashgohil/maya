@@ -270,7 +270,8 @@ if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaBuildInfo)
     maya_target_options(MayaBenchmark)
     add_executable(maya_benchmark apps/benchmark/main.cpp)
-    target_link_libraries(maya_benchmark PRIVATE MayaBenchmark)
+    # A window, and a display kept awake, for presenting runs.
+    target_link_libraries(maya_benchmark PRIVATE MayaBenchmark MayaDesktop "-framework IOKit" "-framework CoreFoundation")
     maya_target_options(maya_benchmark)
 endif()
 

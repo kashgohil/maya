@@ -13,6 +13,7 @@
 #include <map>
 #include <numeric>
 #include <sstream>
+#include <thread>
 #include <stdexcept>
 #include <pthread.h>
 #include <unistd.h>
@@ -133,6 +134,8 @@ struct Stage {
     Renderer& renderer;
     RenderTarget& target;
     uint32_t width, height;
+    bool present = false; // also into the device's surface
+    const std::function<void()>* poll = nullptr; // between frames, untimed
 };
 
 struct FrameSample {
@@ -140,8 +143,9 @@ struct FrameSample {
 };
 
 /// One frame of a fixed-workload run: exactly one simulation tick, then extraction, encoding, and
-/// submission of an offscreen view. Never presented.
+/// submission of an offscreen view, presented into the surface when the stage presents.
 FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera, bool instrumented) {
+    if (stage.poll && *stage.poll) (*stage.poll)(); // the window's events, outside the frame's time
     auto sample = FrameSample{};
     auto frame = Stopwatch{};
     auto part = Stopwatch{};
@@ -164,6 +168,10 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
     lap(sample.extract);
     if (auto error = stage.renderer.render(snapshot, *view, stage.target)) throw std::runtime_error(error.message);
+    if (stage.present)
+        if (const auto surface = stage.device.acquire_surface()) // none this frame: it is counted as not shown
+            if (auto error = stage.renderer.present(stage.target, surface.target.texture, {0, 0, surface.target.width, surface.target.height}))
+                throw std::runtime_error(error.message);
     lap(sample.encode);
     if (auto error = stage.device.end_frame()) throw std::runtime_error(error.message);
     lap(sample.submit);
@@ -187,11 +195,31 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
     auto samples = RunSamples{};
     samples.instrumented = instrumented;
     samples.gpu.assign(manifest.samples, std::nullopt);
+    if (stage.present) {
+        samples.presented.assign(manifest.samples, std::nullopt);
+        samples.present_reported.assign(manifest.samples, false);
+    }
     const auto first_serial = stage.device.stats().submitted_frames + 1;
+    const auto sampled = [&](uint64_t serial) { return serial >= first_serial && serial < first_serial + manifest.samples; };
     const auto collect = [&] { // warmup frames' timings fall outside the sampled serials
-        for (const auto& timing : stage.device.take_gpu_timings())
-            if (timing.frame >= first_serial && timing.frame < first_serial + manifest.samples)
-                samples.gpu[timing.frame - first_serial] = timing.milliseconds;
+        for (const auto& timing : stage.device.take_gpu_timings()) {
+            if (!sampled(timing.frame)) continue;
+            const auto index = timing.frame - first_serial;
+            samples.gpu[index] = timing.milliseconds;
+            samples.untimed_passes += timing.untimed_passes;
+            for (const auto& pass : timing.passes) {
+                auto& series = samples.gpu_passes[pass.label];
+                if (series.empty()) series.assign(manifest.samples, std::nullopt);
+                series[index] = series[index].value_or(0.0) + pass.milliseconds();
+                // Measured within the frame's own GPU execution; anything else is a measurement fault.
+                if (pass.start_ms < -0.05 || pass.end_ms > timing.milliseconds + 0.05) ++samples.gpu_pass_mismatches;
+            }
+        }
+        for (const auto& present : stage.device.take_present_timings())
+            if (stage.present && sampled(present.frame)) {
+                samples.presented[present.frame - first_serial] = present.presented;
+                samples.present_reported[present.frame - first_serial] = true;
+            }
     };
     for (uint32_t i = 0; i < manifest.samples; ++i) {
         const auto frame = run_frame(stage, session, camera, instrumented);
@@ -210,6 +238,13 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
     }
     stage.device.wait_idle();
     collect();
+    // The last frames are shown at later display refreshes, after their GPU work completed.
+    if (stage.present && stage.device.present_timing_supported())
+        for (auto waited = Stopwatch{}; waited.milliseconds() < 1000.0 && std::ranges::count(samples.present_reported, false) > 0;) {
+            if (stage.poll && *stage.poll) (*stage.poll)();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            collect();
+        }
     if (record_resident) {
         const auto stats = stage.device.stats();
         auto& counters = result.counters;
@@ -379,7 +414,7 @@ void write_memory(Json& json, std::string_view name, const MemorySample& m) {
     json.close('}');
 }
 
-void write_run(Json& json, const RunSamples& run) {
+void write_run(Json& json, const RunSamples& run, std::optional<double> refresh_hz) {
     json.open('{');
     json.field("instrumented", run.instrumented);
     json.field("sampled_seconds", run.sampled_seconds);
@@ -399,6 +434,31 @@ void write_run(Json& json, const RunSamples& run) {
     for (const auto& value : run.gpu) if (value) gpu.push_back(*value);
     write_summary(json, "gpu_ms", gpu);
     json.field("gpu_samples_missing", run.gpu.size() - gpu.size());
+    // Per pass label: the GPU time of a frame's passes with that label, over the frames that had any.
+    json.key("gpu_pass_ms");
+    json.open('{');
+    for (const auto& [label, series] : run.gpu_passes) {
+        auto values = std::vector<double>{};
+        for (const auto& value : series) if (value) values.push_back(*value);
+        write_summary(json, label, values);
+    }
+    json.close('}');
+    json.field("gpu_pass_mismatches", run.gpu_pass_mismatches);
+    json.field("untimed_passes", run.untimed_passes);
+    const auto paced = pacing(run, refresh_hz);
+    if (!run.presented.empty()) {
+        json.key("presentation");
+        json.open('{');
+        json.field("shown", paced.shown);
+        json.field("not_shown", paced.not_shown);
+        json.field("unreported", paced.unreported);
+        json.key("refresh_hz");
+        if (refresh_hz) json.value(*refresh_hz); else json.null();
+        write_summary(json, "interval_ms", paced.intervals);
+        json.key("missed_deadlines");
+        if (refresh_hz) json.value(paced.missed); else json.null();
+        json.close('}');
+    }
     json.key("samples");
     json.open('{');
     const auto series = [&](std::string_view name, const std::vector<double>& values) {
@@ -415,6 +475,16 @@ void write_run(Json& json, const RunSamples& run) {
         series("encode_ms", run.encode);
         series("submit_ms", run.submit);
     }
+    json.key("gpu_pass_ms");
+    json.open('{');
+    for (const auto& [label, series] : run.gpu_passes) {
+        json.key(label);
+        json.open('[');
+        for (const auto& v : series) { if (v) json.value(*v); else json.null(); }
+        json.close(']');
+    }
+    json.close('}');
+    if (!run.presented.empty()) series("present_interval_ms", paced.intervals);
     json.key("gpu_ms");
     json.open('[');
     for (const auto& v : run.gpu) { if (v) json.value(*v); else json.null(); }
@@ -614,6 +684,9 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         else if (key == "overhead") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.overhead = text == "on";
+        } else if (key == "present") {
+            ok = bool(in >> text) && (text == "on" || text == "off");
+            manifest.present = text == "on";
         } else return fail(number_of_line, "unknown key '" + key + "'");
         if (!ok) return fail(number_of_line, "invalid value for '" + key + "'");
         if (in >> text) return fail(number_of_line, "unexpected '" + text + "' after '" + key + "'");
@@ -641,7 +714,8 @@ ManifestResult load_manifest(const fs::path& file) {
 
 namespace {
 /// The workload itself; run() records what surrounds it.
-void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
+void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader,
+                  const std::function<void()>& poll) {
     if (manifest.workload == Workload::physics) { // headless: no project, views, or device work
         result.unavailable = {
             {"contact_constraints", "Jolt does not report its contact constraint count; pairs and solid contacts are counted"},
@@ -655,13 +729,20 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         return;
     }
     result.unavailable = {
-        {"gpu_pass_time", "per-pass GPU timing is not implemented; each frame's GPU execution time is measured"},
-        {"present_pacing", "the benchmark renders offscreen and never presents, so display pacing does not apply"},
         {"culling", "the renderer submits every instance; counters.centers_in_view counts what an origin frustum test keeps"},
         {"gpu_core_count", "Metal does not report it"},
         {"cold_cache_load", "the OS file cache is not controlled; the registry is evicted between load cycles"},
     };
     if (!device.gpu_timing_supported()) result.unavailable.push_back({"gpu_frame_time", "this device does not report GPU execution time"});
+    if (!device.gpu_pass_timing_supported()) result.unavailable.push_back({"gpu_pass_time", device.gpu_pass_timing_unavailable()});
+    if (!manifest.present)
+        result.unavailable.push_back({"present_pacing", "the benchmark renders offscreen and never presents, so display pacing does not apply"});
+    else if (!device.present_timing_supported())
+        result.unavailable.push_back({"present_pacing", "this device does not report when frames are shown"});
+    if (manifest.present) {
+        result.refresh_hz = device.display_refresh_rate();
+        if (!result.refresh_hz) result.unavailable.push_back({"missed_deadlines", "the display's refresh rate is unknown"});
+    }
     auto temporary = fs::path{};
     try {
         auto opened = open_project(manifest.project);
@@ -692,14 +773,21 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         auto renderer = Renderer(device, std::move(renderer_shader));
         auto target = RenderTarget(device, {Format::rgba8_unorm, false, "benchmark view"});
         if (auto error = target.resize(manifest.width, manifest.height)) throw std::runtime_error(error.message);
-        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height};
+        if (manifest.present && device.surface_format() == Format::undefined)
+            throw std::runtime_error("'present on' needs a window; this device has no surface");
+        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll};
         // The warmed empty session: the device, the project's catalog, and the view target, no content.
         result.baseline = memory(device, registry, 0);
 
         if (manifest.workload == Workload::instances || manifest.workload == Workload::scene) {
             for (uint32_t i = 0; i < manifest.runs; ++i)
                 result.runs.push_back(measure(manifest, stage, document, context, camera, true, result, i == 0));
-            if (manifest.overhead) result.uninstrumented = measure(manifest, stage, document, context, camera, false, result, false);
+            if (manifest.overhead) { // without CPU scopes or GPU pass timing
+                const auto timed = device.gpu_pass_timing_enabled();
+                device.set_gpu_pass_timing(false);
+                result.uninstrumented = measure(manifest, stage, document, context, camera, false, result, false);
+                device.set_gpu_pass_timing(timed);
+            }
             return;
         }
 
@@ -772,12 +860,12 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
 }
 } // namespace
 
-Result run(const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
+Result run(const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader, const std::function<void()>& poll) {
     auto result = Result{};
     result.manifest = manifest;
     result.system = system_info();
     result.build = build_info();
-    run_workload(result, manifest, device, std::move(renderer_shader));
+    run_workload(result, manifest, device, std::move(renderer_shader), poll);
     result.thermal_state_at_end = system_info().thermal_state; // throttling during a run shows here
     result.thread_qos = thread_qos();
     return result;
@@ -812,6 +900,7 @@ std::string to_json(const Result& r) {
     json.field("runs", m.runs);
     json.field("cycles", m.cycles);
     json.field("ticks", m.ticks);
+    json.field("present", m.present);
     json.close('}');
     json.key("environment");
     json.open('{');
@@ -847,7 +936,7 @@ std::string to_json(const Result& r) {
     json.field("textures", "none (materials are factors)");
     json.field("lighting", "directional lights, factor materials");
     json.field("shadows", "unavailable");
-    json.field("presentation", "offscreen, never presented");
+    json.field("presentation", m.present ? "presented to a window every frame, synchronized with the display" : "offscreen, never presented");
     json.field("simulation", "fixed 60 Hz, one tick per frame");
     json.field("upload_mib_per_frame", m.upload_mib);
     json.close('}');
@@ -869,20 +958,29 @@ std::string to_json(const Result& r) {
     write_memory(json, "resident_memory", r.resident);
     json.key("runs");
     json.open('[');
-    for (const auto& run : r.runs) write_run(json, run);
+    for (const auto& run : r.runs) write_run(json, run, r.refresh_hz);
     json.close(']');
     json.key("uninstrumented");
-    if (r.uninstrumented) write_run(json, *r.uninstrumented); else json.null();
+    if (r.uninstrumented) write_run(json, *r.uninstrumented, r.refresh_hz); else json.null();
     json.key("overhead");
     if (r.uninstrumented && !r.runs.empty()) {
-        auto instrumented = std::vector<double>{};
-        for (const auto& run : r.runs) instrumented.insert(instrumented.end(), run.frame.begin(), run.frame.end());
+        // The uninstrumented run has no CPU scopes and no GPU pass timing.
+        auto instrumented = std::vector<double>{}, instrumented_gpu = std::vector<double>{}, uninstrumented_gpu = std::vector<double>{};
+        for (const auto& run : r.runs) {
+            instrumented.insert(instrumented.end(), run.frame.begin(), run.frame.end());
+            for (const auto& value : run.gpu) if (value) instrumented_gpu.push_back(*value);
+        }
+        for (const auto& value : r.uninstrumented->gpu) if (value) uninstrumented_gpu.push_back(*value);
         const auto with = summarize(instrumented).mean, without = summarize(r.uninstrumented->frame).mean;
+        const auto gpu_with = summarize(instrumented_gpu).mean, gpu_without = summarize(uninstrumented_gpu).mean;
         json.open('{');
         json.field("instrumented_mean_ms", with);
         json.field("uninstrumented_mean_ms", without);
         json.field("difference_ms", with - without);
         json.field("difference_percent", without > 0.0 ? (with - without) / without * 100.0 : 0.0);
+        json.field("gpu_instrumented_mean_ms", gpu_with);
+        json.field("gpu_uninstrumented_mean_ms", gpu_without);
+        json.field("gpu_difference_percent", gpu_without > 0.0 ? (gpu_with - gpu_without) / gpu_without * 100.0 : 0.0);
         json.close('}');
     } else {
         json.null();
@@ -964,6 +1062,31 @@ std::string to_json(const Result& r) {
     return json.text + "\n";
 }
 
+Pacing pacing(const RunSamples& run, std::optional<double> refresh_hz) {
+    auto result = Pacing{};
+    auto previous = std::optional<double>{};
+    for (size_t i = 0; i < run.presented.size(); ++i) {
+        const auto& shown = run.presented[i];
+        if (i < run.present_reported.size() && !run.present_reported[i]) {
+            ++result.unreported;
+            continue;
+        }
+        if (!shown) {
+            ++result.not_shown;
+            continue;
+        }
+        ++result.shown;
+        if (previous) {
+            const auto interval = (*shown - *previous) * 1000.0;
+            result.intervals.push_back(interval);
+            // A frame shown later than 1.5 refresh periods after the one before missed its deadline.
+            if (refresh_hz && interval > 1.5 * 1000.0 / *refresh_hz) ++result.missed;
+        }
+        previous = shown;
+    }
+    return result;
+}
+
 std::string to_text(const Result& r) {
     auto out = std::ostringstream{};
     out << std::fixed << std::setprecision(3);
@@ -978,10 +1101,32 @@ std::string to_text(const Result& r) {
         auto gpu = std::vector<double>{};
         for (const auto& value : r.runs[i].gpu) if (value) gpu.push_back(*value);
         const auto g = summarize(gpu);
-        out << "  run " << i + 1 << ": frame " << frame.mean << " ms (P95 " << frame.p95 << ", P99 " << frame.p99 << ")";
+        out << "  run " << i + 1 << (r.manifest.present ? " (presenting)" : "") << ": frame " << frame.mean << " ms (P95 " << frame.p95
+            << ", P99 " << frame.p99 << ")";
         if (g.count) out << ", GPU " << g.mean << " ms (P95 " << g.p95 << ")";
         else out << ", GPU unavailable";
         out << ", " << (r.runs[i].sampled_seconds > 0 ? double(r.runs[i].frame.size()) / r.runs[i].sampled_seconds : 0.0) << " fps\n";
+        if (!r.runs[i].gpu_passes.empty()) {
+            out << "    GPU passes:";
+            for (const auto& [label, series] : r.runs[i].gpu_passes) {
+                auto values = std::vector<double>{};
+                for (const auto& value : series) if (value) values.push_back(*value);
+                out << " " << label << " " << summarize(values).mean << " ms;";
+            }
+            if (r.runs[i].gpu_pass_mismatches) out << " " << r.runs[i].gpu_pass_mismatches << " OUTSIDE THEIR FRAME;";
+            out << "\n";
+        }
+        if (!r.runs[i].presented.empty()) {
+            const auto paced = pacing(r.runs[i], r.refresh_hz);
+            const auto interval = summarize(paced.intervals);
+            out << "    presented " << paced.shown << " of " << r.runs[i].presented.size() << "; interval " << interval.mean << " ms (P95 "
+                << interval.p95 << ", P99 " << interval.p99 << ")";
+            if (r.refresh_hz) out << "; " << paced.missed << " missed deadlines at " << *r.refresh_hz << " Hz";
+            out << "\n";
+            if (paced.not_shown > 0 || paced.unreported > 0)
+                out << "    WARNING: " << paced.not_shown << " frames were never shown and " << paced.unreported
+                    << " not reported; a hidden window or a sleeping display shows nothing, so this run's pacing is not valid\n";
+        }
     }
     if (r.uninstrumented) out << "  without instrumentation: frame " << summarize(r.uninstrumented->frame).mean << " ms\n";
     if (!r.runs.empty())

@@ -49,6 +49,10 @@ protected:
     void backend_release_surface(uint32_t slot) noexcept override;
     bool backend_gpu_timing_supported() const noexcept override { return true; }
     std::optional<size_t> backend_reported_memory() const noexcept override;
+    std::string backend_pass_timing_reason() const override;
+    void backend_attach_pass_timings(GpuFrameTiming& timing) override;
+    bool backend_present_timing_supported() const noexcept override;
+    std::optional<double> backend_display_refresh_rate() const noexcept override;
 
 private:
     struct Impl;

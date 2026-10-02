@@ -281,11 +281,34 @@ struct RhiStats {
     size_t upload_bytes = 0; // the device's own per-frame upload memory, across all frames in flight
 };
 
+/// One render pass of a frame, from GPU timestamps at its stage boundaries (#1026). On Apple GPUs a
+/// later pass's vertex stage can run during an earlier pass's fragment stage, so each stage is timed
+/// on its own and a pass's time is their sum, not the span from its first to last sample.
+struct GpuPassTiming {
+    std::string label; // RenderPassDesc::label, or "pass N" (from 1) when it has none
+    double start_ms = 0.0; // when its first stage began, from the frame's GPU start
+    double end_ms = 0.0; // when its last stage ended
+    double vertex_ms = 0.0; // the vertex stage's own interval; 0 when the stage did not run
+    double fragment_ms = 0.0;
+    double milliseconds() const noexcept { return vertex_ms + fragment_ms; }
+};
+
 /// How long the GPU spent executing one submitted frame, measured on the GPU's own timeline and
 /// reported when the frame completes.
 struct GpuFrameTiming {
     uint64_t frame = 0; // the submission serial (RhiStats::submitted_frames when it was submitted)
     double milliseconds = 0.0;
+    double started = 0.0; // GPU clock seconds when the frame began executing; for ordering only
+    /// Its passes in encoding order, when pass timing is supported and on (see
+    /// GraphicsDevice::gpu_pass_timing_supported); empty otherwise.
+    std::vector<GpuPassTiming> passes;
+    uint32_t untimed_passes = 0; // passes beyond GraphicsDevice::max_timed_passes
+};
+
+/// When one presented frame reached the display (#1026).
+struct PresentTiming {
+    uint64_t frame = 0; // the submission serial
+    std::optional<double> presented; // host clock seconds; nullopt when the frame was never shown
 };
 
 } // namespace maya

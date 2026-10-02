@@ -1,9 +1,13 @@
 #include "maya/rhi/metal/metal_device.hpp"
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <string>
 #include <vector>
+#import <AppKit/NSScreen.h>
 #import <AppKit/NSView.h>
 #import <AppKit/NSWindow.h>
 #import <Metal/Metal.h>
@@ -97,6 +101,66 @@ struct MetalDevice::Impl {
     std::vector<MetalPipeline> pipelines;
     // Keeps the most recent transfer ordered before later frames and alive for wait_idle.
     id<MTLCommandBuffer> last_transfer = nil;
+
+    // Pass timing (#1026): timestamps at each pass's vertex and fragment boundaries, four samples per
+    // pass, in one sample buffer per frame slot. A slot is resolved on this thread once its frame is
+    // known complete: when its timing is taken, or before the slot is reused.
+    std::string pass_reason = "the device is not initialized"; // empty when passes can be timed
+    std::vector<id<MTLCounterSampleBuffer>> sample_buffers;
+    struct PassFrame {
+        uint64_t serial = 0;
+        std::vector<std::string> labels; // timed passes, in order
+        uint32_t untimed = 0;
+        bool pending = false; // encoded with timing and not yet resolved
+    };
+    std::vector<PassFrame> pass_frames; // per slot
+    PassFrame encoding; // the frame being encoded
+    struct ResolvedPass {
+        std::string label;
+        double vertex_start = NAN, vertex_end = NAN, fragment_start = NAN, fragment_end = NAN; // seconds; NaN: did not run
+    };
+    struct ResolvedFrame {
+        std::vector<ResolvedPass> passes;
+        uint32_t untimed = 0;
+    };
+    std::map<uint64_t, ResolvedFrame> resolved; // by serial, until attached to its timing
+    // GPU timestamps to seconds on the clock of MTLCommandBuffer.GPUStartTime.
+    MTLTimestamp cpu_base = 0, gpu_base = 0;
+    double ns_per_tick = 1.0;
+    std::chrono::steady_clock::time_point calibrated{};
+
+    void calibrate() {
+        MTLTimestamp cpu = 0, gpu = 0;
+        [device sampleTimestamps:&cpu gpuTimestamp:&gpu];
+        if (gpu_base == 0) cpu_base = cpu, gpu_base = gpu;
+        else if (gpu > gpu_base + 100'000'000 && cpu > cpu_base) ns_per_tick = double(cpu - cpu_base) / double(gpu - gpu_base);
+        calibrated = std::chrono::steady_clock::now();
+    }
+    double seconds(MTLTimestamp gpu) const {
+        return (double(cpu_base) + (double(gpu) - double(gpu_base)) * ns_per_tick) / 1e9;
+    }
+    /// Reads a completed frame's samples from its slot into `resolved`.
+    void resolve(uint32_t slot) {
+        auto& frame = pass_frames[slot];
+        if (!frame.pending) return;
+        frame.pending = false;
+        if (std::chrono::steady_clock::now() - calibrated > std::chrono::seconds(1)) calibrate();
+        auto result = ResolvedFrame{{}, frame.untimed};
+        if (!frame.labels.empty()) {
+            NSData* data = [sample_buffers[slot] resolveCounterRange:NSMakeRange(0, frame.labels.size() * 4)];
+            const auto* samples = data ? static_cast<const MTLCounterResultTimestamp*>(data.bytes) : nullptr;
+            const auto count = data ? data.length / sizeof(MTLCounterResultTimestamp) : 0;
+            const auto at = [&](size_t index) {
+                return index < count && samples[index].timestamp != MTLCounterErrorValue && samples[index].timestamp != 0
+                    ? seconds(samples[index].timestamp) : NAN;
+            };
+            for (size_t pass = 0; pass < frame.labels.size(); ++pass)
+                result.passes.push_back({std::move(frame.labels[pass]), at(pass * 4), at(pass * 4 + 1), at(pass * 4 + 2), at(pass * 4 + 3)});
+        }
+        frame.labels.clear();
+        resolved[frame.serial] = std::move(result);
+        while (resolved.size() > RhiCompletion::timing_capacity) resolved.erase(resolved.begin());
+    }
 };
 
 MetalDevice::MetalDevice() : m_impl(std::make_unique<Impl>()) {}
@@ -121,6 +185,29 @@ bool MetalDevice::backend_initialize(void* native_window, RhiLimits& limits, For
         m_impl->queue.label = @"Maya queue";
         limits.max_buffer_size = std::min<size_t>(m_impl->device.maxBufferLength, limits.max_buffer_size);
         limits.astc = [m_impl->device supportsFamily:MTLGPUFamilyApple2];
+        m_impl->pass_reason.clear();
+        id<MTLCounterSet> timestamps = nil;
+        for (id<MTLCounterSet> set in m_impl->device.counterSets)
+            if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) timestamps = set;
+        if (!timestamps) m_impl->pass_reason = "this GPU has no timestamp counters";
+        else if (![m_impl->device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
+            m_impl->pass_reason = "this GPU cannot sample timestamps at render stage boundaries";
+        for (uint32_t slot = 0; m_impl->pass_reason.empty() && slot < options().frames_in_flight; ++slot) {
+            auto* descriptor = [MTLCounterSampleBufferDescriptor new];
+            descriptor.counterSet = timestamps;
+            descriptor.storageMode = MTLStorageModeShared;
+            descriptor.sampleCount = max_timed_passes * 4;
+            descriptor.label = @"Maya pass timestamps";
+            NSError* error = nil;
+            id<MTLCounterSampleBuffer> buffer = [m_impl->device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+            if (!buffer) m_impl->pass_reason = "Metal could not create a timestamp sample buffer: " + error_text(error);
+            else m_impl->sample_buffers.push_back(buffer);
+        }
+        if (!m_impl->pass_reason.empty()) m_impl->sample_buffers.clear();
+        m_impl->pass_frames.assign(m_impl->sample_buffers.size(), {});
+        m_impl->gpu_base = 0;
+        m_impl->ns_per_tick = 1.0;
+        if (m_impl->pass_reason.empty()) m_impl->calibrate();
         if (native_window) {
             NSWindow* window = (__bridge NSWindow*)native_window;
             m_impl->view = window.contentView;
@@ -152,6 +239,11 @@ void MetalDevice::backend_shutdown() noexcept {
         m_impl->last_submission = nil;
         m_impl->in_flight.clear();
         m_impl->last_transfer = nil;
+        m_impl->sample_buffers.clear();
+        m_impl->pass_frames.clear();
+        m_impl->encoding = {};
+        m_impl->resolved.clear();
+        m_impl->pass_reason = "the device is not initialized";
         if (m_impl->layer && m_impl->view.layer == m_impl->layer) m_impl->view.layer = nil;
         m_impl->view = nil;
         m_impl->layer = nil;
@@ -330,6 +422,14 @@ RhiDiagnostic MetalDevice::backend_begin_frame() {
     m_impl->frame = [m_impl->queue commandBufferWithUnretainedReferences];
     if (!m_impl->frame) return {RhiError::device_unavailable, "Metal could not create a frame command buffer"};
     m_impl->frame.label = @"Maya frame";
+    m_impl->encoding = {};
+    if (frame_pass_timing() && !m_impl->sample_buffers.empty()) {
+        // This frame's slot was last used frames_in_flight frames ago; that frame has completed.
+        const auto serial = encoding_frame_serial();
+        m_impl->resolve(uint32_t(serial % m_impl->sample_buffers.size()));
+        m_impl->encoding.serial = serial;
+        m_impl->encoding.pending = true;
+    }
     return {};
 }
 
@@ -363,6 +463,20 @@ RhiDiagnostic MetalDevice::backend_begin_pass(const RenderPassDesc& desc) {
             pass.depthAttachment.loadAction = load_action(desc.depth->load);
             pass.depthAttachment.storeAction = store_action(desc.depth->store);
             pass.depthAttachment.clearDepth = desc.depth->clear_depth;
+        }
+        if (m_impl->encoding.pending) {
+            const auto index = frame_pass_index();
+            if (index < max_timed_passes) {
+                auto* attachment = pass.sampleBufferAttachments[0];
+                attachment.sampleBuffer = m_impl->sample_buffers[m_impl->encoding.serial % m_impl->sample_buffers.size()];
+                attachment.startOfVertexSampleIndex = index * 4;
+                attachment.endOfVertexSampleIndex = index * 4 + 1;
+                attachment.startOfFragmentSampleIndex = index * 4 + 2;
+                attachment.endOfFragmentSampleIndex = index * 4 + 3;
+                m_impl->encoding.labels.push_back(desc.label.empty() ? "pass " + std::to_string(index + 1) : desc.label);
+            } else {
+                ++m_impl->encoding.untimed;
+            }
         }
         m_impl->encoder = [m_impl->frame renderCommandEncoderWithDescriptor:pass];
         if (!m_impl->encoder) return {RhiError::device_unavailable, "Metal could not begin the render pass"};
@@ -426,9 +540,20 @@ void MetalDevice::backend_submit(uint64_t serial, bool present) {
         id<CAMetalDrawable> drawable = m_impl->drawable;
         id<MTLTexture> drawable_texture = drawable.texture;
         m_impl->drawable = nil;
-        if (present && drawable) [frame presentDrawable:drawable];
-        // The callback may run after this device is destroyed; it only touches shared completion state.
+        // The callbacks may run after this device is destroyed; they only touch shared completion state.
         auto state = completion();
+        if (present && drawable) {
+            [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
+                const double presented = shown.presentedTime;
+                state->record_present(serial, presented > 0.0 ? std::optional<double>(presented) : std::nullopt);
+            }];
+            [frame presentDrawable:drawable];
+        }
+        if (m_impl->encoding.pending) {
+            m_impl->encoding.serial = serial;
+            m_impl->pass_frames[serial % m_impl->pass_frames.size()] = std::move(m_impl->encoding);
+        }
+        m_impl->encoding = {};
         [frame addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
             (void)drawable;
             (void)drawable_texture;
@@ -436,7 +561,7 @@ void MetalDevice::backend_submit(uint64_t serial, bool present) {
                 state->report("Frame " + std::to_string(serial) + " failed on the GPU: " + error_text(buffer.error));
             // The GPU's own timestamps for this command buffer: execution time, not CPU submit time.
             else if (buffer.GPUEndTime > buffer.GPUStartTime && buffer.GPUStartTime > 0.0)
-                state->record_timing(serial, (buffer.GPUEndTime - buffer.GPUStartTime) * 1000.0);
+                state->record_timing(serial, (buffer.GPUEndTime - buffer.GPUStartTime) * 1000.0, buffer.GPUStartTime);
             state->complete(serial);
         }];
         [frame commit];
@@ -445,6 +570,40 @@ void MetalDevice::backend_submit(uint64_t serial, bool present) {
         while (!m_impl->in_flight.empty() && m_impl->in_flight.front().first <= completed) m_impl->in_flight.pop_front();
         m_impl->in_flight.emplace_back(serial, frame);
     }
+}
+
+std::string MetalDevice::backend_pass_timing_reason() const { return m_impl->pass_reason; }
+
+void MetalDevice::backend_attach_pass_timings(GpuFrameTiming& timing) {
+    @autoreleasepool {
+        for (uint32_t slot = 0; slot < m_impl->pass_frames.size(); ++slot)
+            if (m_impl->pass_frames[slot].pending && m_impl->pass_frames[slot].serial == timing.frame) m_impl->resolve(slot);
+        const auto found = m_impl->resolved.find(timing.frame);
+        if (found == m_impl->resolved.end()) return;
+        const auto relative = [&](double seconds) { return (seconds - timing.started) * 1000.0; };
+        const auto span = [](double start, double end) { return std::isnan(start) || std::isnan(end) ? 0.0 : std::max(0.0, end - start) * 1000.0; };
+        for (const auto& pass : found->second.passes) {
+            auto value = GpuPassTiming{pass.label};
+            value.vertex_ms = span(pass.vertex_start, pass.vertex_end);
+            value.fragment_ms = span(pass.fragment_start, pass.fragment_end);
+            const auto first = std::isnan(pass.vertex_start) ? pass.fragment_start : pass.vertex_start;
+            const auto last = std::isnan(pass.fragment_end) ? pass.vertex_end : pass.fragment_end;
+            value.start_ms = std::isnan(first) ? 0.0 : relative(first);
+            value.end_ms = std::isnan(last) ? value.start_ms : relative(last);
+            timing.passes.push_back(std::move(value));
+        }
+        timing.untimed_passes = found->second.untimed;
+        m_impl->resolved.erase(found);
+    }
+}
+
+bool MetalDevice::backend_present_timing_supported() const noexcept { return m_impl->layer != nil; }
+
+std::optional<double> MetalDevice::backend_display_refresh_rate() const noexcept {
+    NSScreen* screen = m_impl->view.window.screen;
+    if (!screen) return std::nullopt;
+    const auto rate = screen.maximumFramesPerSecond;
+    return rate > 0 ? std::optional(double(rate)) : std::nullopt;
 }
 
 std::optional<size_t> MetalDevice::backend_reported_memory() const noexcept {
@@ -470,6 +629,7 @@ void MetalDevice::backend_abandon_frame() noexcept {
     }
     m_impl->frame = nil; // never committed, so the GPU never reads its resources
     m_impl->drawable = nil;
+    m_impl->encoding = {};
 }
 
 void MetalDevice::backend_wait_idle() noexcept {

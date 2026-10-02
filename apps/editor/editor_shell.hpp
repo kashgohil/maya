@@ -19,6 +19,7 @@
 #include <array>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -260,6 +261,13 @@ public:
         SampleWindow gpu{window}; // GPU execution, as frames complete
         uint64_t gpu_frames = 0; // frames with a GPU time
         uint64_t gpu_dropped = 0;
+        /// Per pass label: the GPU time of a frame's passes with that label, over the frames that had any.
+        struct Pass {
+            SampleWindow samples{window};
+            uint64_t last_frame = 0; // gpu_frames when last seen
+        };
+        std::map<std::string, Pass> gpu_passes;
+        uint64_t untimed_passes = 0;
     };
     const Performance& performance() const noexcept { return m_performance; }
     /// For inspection in tests; make it current only between frames.
@@ -464,6 +472,7 @@ private:
     Performance m_performance;
     struct ShownPerformance {
         Summary interval, update, wait, render, submit, extract, view, ui, gpu;
+        std::vector<std::pair<std::string, Summary>> gpu_passes; // seen in the last window of frames, slowest first
         std::optional<size_t> gpu_reported;
         std::optional<ProcessMemory> process;
         AssetResidency assets;

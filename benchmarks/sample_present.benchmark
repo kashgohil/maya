@@ -1,0 +1,11 @@
+maya-benchmark 1
+# The sample scene, presented to a window every frame: display pacing (#1026). Compare with
+# sample.benchmark, which renders the same frames offscreen.
+name "sample-scene-presenting"
+workload scene
+project "../samples/basic_scene"
+resolution 1920 1080
+warmup 300
+samples 3000
+runs 3
+present on

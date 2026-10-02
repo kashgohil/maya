@@ -24,13 +24,17 @@ struct RhiCompletion {
     static constexpr size_t timing_capacity = 1024; // older timings are dropped if nobody takes them
     std::vector<GpuFrameTiming> timings;
     uint64_t dropped_timings = 0;
+    std::vector<PresentTiming> presents; // bounded by timing_capacity too
+    uint64_t dropped_presents = 0;
     /// One frame finished executing.
     void complete(uint64_t serial) noexcept;
     /// Every frame up to `serial` finished (e.g. after waiting for the queue to drain).
     void complete_through(uint64_t serial) noexcept;
     void report(std::string message) noexcept;
-    /// A frame's GPU execution time, from any thread.
-    void record_timing(uint64_t serial, double milliseconds) noexcept;
+    /// A frame's GPU execution time and start (GPU clock seconds), from any thread.
+    void record_timing(uint64_t serial, double milliseconds, double started = 0.0) noexcept;
+    /// When a presented frame was shown (host clock seconds), or that it never was, from any thread.
+    void record_present(uint64_t serial, std::optional<double> presented) noexcept;
 };
 
 /// Single-owner-thread graphics device. Public calls validate handles, descriptors, usage,
@@ -129,9 +133,27 @@ public:
     /// Whether completed frames report their GPU execution time. When false, GPU time is unavailable;
     /// it is never estimated from CPU submission time.
     bool gpu_timing_supported() const noexcept { return m_session != 0 && backend_gpu_timing_supported(); }
-    /// GPU execution times of frames completed since the last call, in completion order. At most
-    /// RhiCompletion::timing_capacity are kept; `dropped` (if given) receives how many were lost.
+    /// GPU execution times of frames completed since the last call, in completion order, each with its
+    /// passes when pass timing is on. At most RhiCompletion::timing_capacity are kept; `dropped` (if
+    /// given) receives how many were lost.
     std::vector<GpuFrameTiming> take_gpu_timings(uint64_t* dropped = nullptr);
+
+    /// Passes timed per frame; later passes in a frame are counted as untimed.
+    static constexpr uint32_t max_timed_passes = 64;
+    /// Whether frames report each pass's GPU time. Never estimated: when false,
+    /// gpu_pass_timing_unavailable() says why.
+    bool gpu_pass_timing_supported() const noexcept { return m_session != 0 && m_pass_timing && backend_pass_timing_reason().empty(); }
+    std::string gpu_pass_timing_unavailable() const;
+    /// Turns pass timing on (the default) or off for frames begun afterwards, e.g. for matched runs.
+    void set_gpu_pass_timing(bool enabled) noexcept { m_pass_timing = enabled; }
+    bool gpu_pass_timing_enabled() const noexcept { return m_pass_timing; }
+
+    /// Whether presented frames report when they were shown (take_present_timings).
+    bool present_timing_supported() const noexcept { return m_session != 0 && backend_present_timing_supported(); }
+    /// Presented frames whose display time is known since the last call, in the order they were shown.
+    std::vector<PresentTiming> take_present_timings(uint64_t* dropped = nullptr);
+    /// The refresh rate of the display the surface is on, in Hz, or nullopt (headless, or unknown).
+    std::optional<double> display_refresh_rate() const noexcept { return m_session ? backend_display_refresh_rate() : std::nullopt; }
     /// Memory the platform reports as allocated for this device (Metal: currentAllocatedSize), or
     /// nullopt when it cannot say. On unified memory it overlaps process memory; never add the two.
     std::optional<size_t> reported_memory() const noexcept { return m_session ? backend_reported_memory() : std::nullopt; }
@@ -189,6 +211,17 @@ protected:
     /// Backends that call completion()->record_timing for every completed frame return true.
     virtual bool backend_gpu_timing_supported() const noexcept { return false; }
     virtual std::optional<size_t> backend_reported_memory() const noexcept { return std::nullopt; }
+    /// Empty when the backend can time passes; otherwise why it cannot.
+    virtual std::string backend_pass_timing_reason() const { return "this device does not sample GPU timestamps"; }
+    /// Fills `timing.passes` and `timing.untimed_passes` for a completed frame (called on the owner thread).
+    virtual void backend_attach_pass_timings(GpuFrameTiming&) {}
+    virtual bool backend_present_timing_supported() const noexcept { return false; }
+    virtual std::optional<double> backend_display_refresh_rate() const noexcept { return std::nullopt; }
+    /// The current frame's passes so far (its index for the pass being begun), and whether they are timed.
+    uint32_t frame_pass_index() const noexcept { return m_counters.frame_passes; }
+    /// The serial the frame being begun or encoded will be submitted as.
+    uint64_t encoding_frame_serial() const noexcept { return m_submitted + 1; }
+    bool frame_pass_timing() const noexcept { return m_frame_pass_timing; }
 
     const std::shared_ptr<RhiCompletion>& completion() const noexcept { return m_completion; }
 
@@ -255,6 +288,8 @@ private:
     uint32_t m_pass_width = 0;
     uint32_t m_pass_height = 0;
     bool m_pipeline_set = false;
+    bool m_pass_timing = true; // as set; applies from the next begin_frame
+    bool m_frame_pass_timing = false; // this frame's passes are timed
 };
 
 } // namespace maya

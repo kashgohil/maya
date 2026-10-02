@@ -56,6 +56,7 @@ protected:
         return !m_options.manual_completion || completion()->completed.load() >= serial;
     }
     void backend_release_surface(uint32_t) noexcept override {}
+    std::string backend_pass_timing_reason() const override { return "the null device executes no GPU work"; }
 
 private:
     NullDeviceOptions m_options;

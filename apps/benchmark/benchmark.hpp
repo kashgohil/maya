@@ -7,7 +7,9 @@
 #include "maya/rhi/graphics_device.hpp"
 #include "maya/scene/scene_io.hpp"
 #include <filesystem>
+#include <functional>
 #include <iosfwd>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -45,7 +47,8 @@ struct Manifest {
     uint32_t cycles = 100; // cycle workloads
     uint32_t ticks = 120; // frames per cycle
     uint32_t slope_from = 11; // cycle workloads: the first cycle of the footprint slope's fit
-    bool overhead = true; // also a matched run without CPU instrumentation, to measure its cost
+    bool overhead = true; // also a matched run without CPU scopes or GPU pass timing, to measure their cost
+    bool present = false; // present every frame to a window and record display pacing (#1026)
     // Physics (P1): `count` is the dynamic bodies; warmup and samples are ticks.
     uint32_t obstacles = 500;
     uint32_t scripted = 500;
@@ -66,6 +69,15 @@ struct RunSamples {
     bool instrumented = true;
     std::vector<double> frame, simulation, wait, extract, encode, submit;
     std::vector<std::optional<double>> gpu; // per sampled frame; nullopt when the GPU did not report it
+    /// Per pass label, per sampled frame: the GPU time of that frame's passes with the label, summed;
+    /// nullopt when the frame had none or was not timed.
+    std::map<std::string, std::vector<std::optional<double>>> gpu_passes;
+    uint64_t gpu_pass_mismatches = 0; // timed passes outside their frame's GPU time (never expected)
+    uint64_t untimed_passes = 0; // beyond GraphicsDevice::max_timed_passes
+    /// Presenting runs: when each sampled frame was shown (host seconds), nullopt when it was not, and
+    /// whether the device reported on it at all.
+    std::vector<std::optional<double>> presented;
+    std::vector<bool> present_reported;
     double sampled_seconds = 0.0;
 };
 
@@ -140,6 +152,7 @@ struct Result {
     std::vector<PhysicsRun> physics_runs;
     std::optional<bool> deterministic; // physics: every run and worker configuration ended in the same state
     std::vector<std::pair<std::string, std::string>> unavailable; // metric, reason
+    std::optional<double> refresh_hz; // presenting runs: the display's refresh rate
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended
     std::string thread_qos; // the measuring thread's quality-of-service class
 };
@@ -150,9 +163,17 @@ SceneDocument physics_scene(const Manifest& manifest, PhysicsScene* counts = nul
 inline constexpr AssetId physics_script_id{0x7031, 1};
 const char* physics_script_source();
 
-/// Runs the manifest offscreen on `device` (initialized, headless or not) with the renderer shader.
-/// Failures stop the benchmark and are recorded in `failure`; what completed is kept.
-Result run(const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader);
+/// Runs the manifest on `device` (initialized) with the renderer shader: offscreen, or, when the
+/// manifest presents, also into the device's surface every frame, calling `poll` (e.g. the window's
+/// event loop) between frames, outside their timing. Failures stop the benchmark and are recorded in
+/// `failure`; what completed is kept.
+Result run(const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader, const std::function<void()>& poll = {});
+/// Present-to-present intervals of consecutive shown frames, and those longer than 1.5 refresh periods.
+struct Pacing {
+    std::vector<double> intervals; // milliseconds
+    size_t shown = 0, not_shown = 0, unreported = 0, missed = 0;
+};
+Pacing pacing(const RunSamples& run, std::optional<double> refresh_hz);
 
 std::string to_json(const Result& result);
 /// A short human-readable report.

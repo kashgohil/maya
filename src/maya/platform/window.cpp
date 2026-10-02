@@ -120,6 +120,16 @@ void* Window::get_native_handle() const {
     return m_window ? glfwGetCocoaWindow(m_window) : nullptr;
 }
 
+void Window::set_floating(bool floating) {
+    if (!m_window) return;
+    glfwSetWindowAttrib(m_window, GLFW_FLOATING, floating ? GLFW_TRUE : GLFW_FALSE);
+    if (floating) glfwFocusWindow(m_window);
+}
+
+void Window::set_size(int width, int height) {
+    if (m_window) glfwSetWindowSize(m_window, width, height);
+}
+
 std::pair<int, int> Window::window_size() const {
     int width = 0;
     int height = 0;

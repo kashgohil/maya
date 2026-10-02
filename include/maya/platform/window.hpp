@@ -31,6 +31,11 @@ public:
     std::pair<int, int> framebuffer_size() const;
     /// Size in points (logical coordinates); smaller than the framebuffer on Retina displays.
     std::pair<int, int> window_size() const;
+    /// Resizes the window's content to `width` x `height` points.
+    void set_size(int width, int height);
+    /// Keeps the window above other applications' windows (e.g. while it must stay visible), and brings
+    /// it to the front.
+    void set_floating(bool floating);
     std::string clipboard_text() const;
     void set_clipboard_text(const std::string& text);
     void set_cursor_captured(bool captured);

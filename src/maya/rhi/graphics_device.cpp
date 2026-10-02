@@ -70,16 +70,28 @@ void RhiCompletion::report(std::string message) noexcept {
     }
 }
 
-void RhiCompletion::record_timing(uint64_t serial, double milliseconds) noexcept {
+void RhiCompletion::record_timing(uint64_t serial, double milliseconds, double started) noexcept {
     try {
         const auto lock = std::scoped_lock(mutex);
         if (timings.size() == timing_capacity) {
             timings.erase(timings.begin());
             ++dropped_timings;
         }
-        timings.push_back({serial, milliseconds});
+        timings.push_back({serial, milliseconds, started, {}, 0});
     } catch (...) {
         // Timing must not throw from a completion callback.
+    }
+}
+
+void RhiCompletion::record_present(uint64_t serial, std::optional<double> presented) noexcept {
+    try {
+        const auto lock = std::scoped_lock(mutex);
+        if (presents.size() == timing_capacity) {
+            presents.erase(presents.begin());
+            ++dropped_presents;
+        }
+        presents.push_back({serial, presented});
+    } catch (...) {
     }
 }
 
@@ -499,12 +511,13 @@ RhiDiagnostic GraphicsDevice::begin_frame() {
         }
     }
     collect_retired();
+    m_frame_pass_timing = m_pass_timing && backend_pass_timing_reason().empty();
+    m_counters.frame_passes = 0;
     if (auto diagnostic = backend_begin_frame()) return diagnostic;
     m_state = State::frame;
     m_pipeline_set = false;
     m_transient_used = 0;
     m_counters.transient_bytes_used = 0;
-    m_counters.frame_passes = 0;
     m_counters.frame_draws = m_counters.frame_instances = m_counters.frame_triangles = 0;
     return {};
 }
@@ -854,9 +867,29 @@ void GraphicsDevice::count_draw(uint32_t elements, uint32_t instances) noexcept 
 }
 
 std::vector<GpuFrameTiming> GraphicsDevice::take_gpu_timings(uint64_t* dropped) {
+    auto timings = std::vector<GpuFrameTiming>{};
+    {
+        const auto lock = std::scoped_lock(m_completion->mutex);
+        if (dropped) *dropped = std::exchange(m_completion->dropped_timings, 0);
+        timings = std::exchange(m_completion->timings, {});
+    }
+    // A recorded timing means its frame completed, so its pass samples are final.
+    if (m_session != 0)
+        for (auto& timing : timings) backend_attach_pass_timings(timing);
+    return timings;
+}
+
+std::string GraphicsDevice::gpu_pass_timing_unavailable() const {
+    if (m_session == 0) return "the device is not initialized";
+    if (auto reason = backend_pass_timing_reason(); !reason.empty()) return reason;
+    if (!m_pass_timing) return "pass timing is turned off";
+    return {};
+}
+
+std::vector<PresentTiming> GraphicsDevice::take_present_timings(uint64_t* dropped) {
     const auto lock = std::scoped_lock(m_completion->mutex);
-    if (dropped) *dropped = std::exchange(m_completion->dropped_timings, 0);
-    return std::exchange(m_completion->timings, {});
+    if (dropped) *dropped = std::exchange(m_completion->dropped_presents, 0);
+    return std::exchange(m_completion->presents, {});
 }
 
 std::vector<RhiDiagnostic> GraphicsDevice::take_gpu_errors() {
