@@ -1,0 +1,23 @@
+# Writes Maya's KTX2 samples and checks each with Khronos's `ktx validate`, warnings as errors.
+# Usage: cmake -DSAMPLES=<maya_ktx2_samples> -DKTX=<ktx> -DFOLDER=<scratch folder> -P validate_ktx2.cmake
+file(REMOVE_RECURSE "${FOLDER}")
+execute_process(COMMAND "${SAMPLES}" "${FOLDER}" RESULT_VARIABLE written OUTPUT_VARIABLE names ERROR_VARIABLE error)
+if(NOT written EQUAL 0)
+    message(FATAL_ERROR "maya_ktx2_samples failed: ${error}")
+endif()
+string(STRIP "${names}" names)
+string(REPLACE "\n" ";" names "${names}")
+set(failed "")
+foreach(name IN LISTS names)
+    execute_process(COMMAND "${KTX}" validate --warnings-as-errors "${FOLDER}/${name}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE output)
+    if(result EQUAL 0)
+        message(STATUS "valid: ${name}")
+    else()
+        message(STATUS "INVALID: ${name}\n${output}")
+        list(APPEND failed "${name}")
+    endif()
+endforeach()
+if(failed)
+    message(FATAL_ERROR "ktx validate refused: ${failed}")
+endif()

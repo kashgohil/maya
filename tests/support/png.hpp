@@ -65,6 +65,32 @@ inline bool write_png(const std::filesystem::path& path, const RgbImage& image) 
     return bool(file);
 }
 
+/// An 8-bit RGBA PNG's bytes (straight alpha), for tests that need alpha or that decode from memory.
+inline std::string encode_png_rgba(uint32_t width, uint32_t height, const std::vector<uint8_t>& rgba) {
+    using namespace png_detail;
+    auto raw = std::string{};
+    raw.reserve(size_t(height) * (width * 4 + 1));
+    for (uint32_t y = 0; y < height; ++y) {
+        raw += '\0';
+        raw.append(reinterpret_cast<const char*>(rgba.data() + size_t(y) * width * 4), width * 4);
+    }
+    auto compressed = std::string(compressBound(uLong(raw.size())), '\0');
+    auto size = uLongf(compressed.size());
+    if (compress2(reinterpret_cast<Bytef*>(compressed.data()), &size, reinterpret_cast<const Bytef*>(raw.data()),
+                  uLong(raw.size()), 9) != Z_OK)
+        return {};
+    compressed.resize(size);
+    auto header = std::string{};
+    put32(header, width);
+    put32(header, height);
+    header += std::string("\x08\x06\x00\x00\x00", 5); // 8-bit, RGBA, deflate, filter 0, no interlace
+    auto out = signature;
+    chunk(out, "IHDR", header);
+    chunk(out, "IDAT", compressed);
+    chunk(out, "IEND", {});
+    return out;
+}
+
 inline std::optional<RgbImage> read_png(const std::filesystem::path& path) {
     using namespace png_detail;
     auto file = std::ifstream(path, std::ios::binary);

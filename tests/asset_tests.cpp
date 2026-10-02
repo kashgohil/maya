@@ -376,7 +376,7 @@ TEST_CASE("Malformed sources report errors before allocating GPU buffers", "[ass
     REQUIRE_FALSE(registry.register_asset(material_ref,"surface.mat"));
     project.write("surface.mat","maya-material 1\nbase_color 2 0 0 1\nmetallic 0\nroughness 1\n");
     CHECK(registry.acquire(material_ref).diagnostic.code == AssetError::invalid_data);
-    for (const auto& text : {"", "maya-assets 2", "maya-assets 1\nmesh 1", "maya-assets 1\ntexture 1 2 foo", "maya-assets 1\nmesh -1 2 foo", "maya-assets 1\nmesh 1g 2 foo", "maya-assets 1\nmesh 0 0 foo"}) {
+    for (const auto& text : {"", "maya-assets 2", "maya-assets 1\nmesh 1", "maya-assets 1\nsound 1 2 foo", "maya-assets 1\nmesh -1 2 foo", "maya-assets 1\nmesh 1g 2 foo", "maya-assets 1\nmesh 0 0 foo"}) {
         auto input=std::istringstream(text); CHECK_FALSE(read_asset_catalog(input));
     }
 }

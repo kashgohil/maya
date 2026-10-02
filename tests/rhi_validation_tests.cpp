@@ -731,3 +731,102 @@ TEST_CASE("GPU timings are kept up to a bound until taken", "[rhi-api]") {
     CHECK(completion.dropped_timings == 5);
     CHECK(completion.timings.back().milliseconds == 1.5);
 }
+
+TEST_CASE("Mip chains and block-compressed formats have exact sizes", "[rhi-api]") {
+    CHECK(full_mip_count(1, 1) == 1);
+    CHECK(full_mip_count(256, 256) == 9);
+    CHECK(full_mip_count(300, 17) == 9); // 300, 150, 75, 37, 18, 9, 4, 2, 1
+    CHECK(mip_extent(300, 4) == 18);
+    CHECK(mip_extent(17, 8) == 1);
+    CHECK(mip_level_bytes(Format::rgba8_unorm, 300, 17, 0) == 300u * 17u * 4u);
+    CHECK(mip_level_bytes(Format::rgba8_unorm, 300, 17, 5) == 9u * 1u * 4u);
+    // ASTC rounds each level up to whole blocks of 16 bytes.
+    CHECK(mip_level_bytes(Format::astc_6x6_srgb, 2048, 2048, 0) == 342u * 342u * 16u);
+    CHECK(mip_level_bytes(Format::astc_4x4_unorm, 5, 3, 0) == 2u * 1u * 16u);
+    CHECK(mip_level_bytes(Format::astc_6x6_unorm, 1, 1, 0) == 16u);
+    const auto desc = TextureDesc{8, 4, Format::rgba8_srgb, TextureUsage::sampled, "chain", 4};
+    CHECK(texture_bytes(desc) == (32u + 8u + 2u + 1u) * 4u); // 8x4, 4x2, 2x1, 1x1
+    CHECK(block_bytes(Format::astc_4x4_srgb) == 16);
+    CHECK(bytes_per_pixel(Format::astc_4x4_srgb) == 0);
+    CHECK(is_srgb_format(Format::astc_6x6_srgb));
+    CHECK_FALSE(is_srgb_format(Format::astc_6x6_unorm));
+}
+
+TEST_CASE("Mip levels, compressed formats, and their data are validated", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    CHECK(device.limits().astc);
+    const auto sampled = [](uint32_t width, uint32_t height, Format format, uint32_t levels, TextureUsage usage = TextureUsage::sampled) {
+        return TextureDesc{width, height, format, usage, "texture", levels};
+    };
+    CHECK(device.create_texture(sampled(256, 64, Format::rgba8_srgb, 9)));
+    CHECK(code(device.create_texture(sampled(256, 64, Format::rgba8_srgb, 10))) == RhiError::invalid_descriptor);
+    CHECK(code(device.create_texture(sampled(256, 64, Format::rgba8_srgb, 0))) == RhiError::invalid_descriptor);
+    CHECK(device.create_texture(sampled(100, 60, Format::astc_6x6_srgb, 7)));
+    // Mipmapped and compressed textures can only be sampled.
+    for (const auto usage : {TextureUsage::sampled | TextureUsage::render_target, TextureUsage::sampled | TextureUsage::readback}) {
+        CHECK(code(device.create_texture(sampled(16, 16, Format::rgba8_unorm, 2, usage))) == RhiError::unsupported);
+        CHECK(code(device.create_texture(sampled(16, 16, Format::astc_4x4_unorm, 1, usage))) == RhiError::unsupported);
+    }
+    CHECK(device.create_texture(sampled(16, 16, Format::rgba8_unorm, 1, TextureUsage::render_target | TextureUsage::readback)));
+    CHECK(code(device.create_texture(sampled(16, 16, static_cast<Format>(uint8_t(last_format) + 1), 1))) == RhiError::invalid_descriptor);
+    // A compressed format is not a render target format.
+    CHECK(code(device.create_pipeline(pipeline_desc({Format::astc_4x4_srgb}))) == RhiError::invalid_descriptor);
+
+    // Initial data must be every level, exactly.
+    const auto chain = sampled(8, 4, Format::rgba8_srgb, 4);
+    auto data = std::vector<std::byte>(texture_bytes(chain));
+    CHECK(device.create_texture(chain, data));
+    data.pop_back();
+    const auto short_data = device.create_texture(chain, data);
+    CHECK(code(short_data) == RhiError::invalid_descriptor);
+    CHECK(short_data.diagnostic.message.find("needs 172 bytes") != std::string::npos);
+    CHECK(device.create_texture(chain, std::span<const std::byte>{})); // no data: uninitialized
+
+    // A device without ASTC refuses ASTC textures and nothing else.
+    NullGraphicsDevice plain({.astc = false});
+    REQUIRE(plain.initialize(nullptr));
+    CHECK_FALSE(plain.limits().astc);
+    CHECK(code(plain.create_texture(sampled(16, 16, Format::astc_6x6_srgb, 1))) == RhiError::unsupported);
+    CHECK(plain.create_texture(sampled(16, 16, Format::rgba8_srgb, 5)));
+}
+
+TEST_CASE("Samplers validate mip filtering and anisotropy", "[rhi-api]") {
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    auto desc = SamplerDesc{};
+    desc.mip_filter = MipFilter::linear;
+    desc.max_anisotropy = 16;
+    CHECK(device.create_sampler(desc));
+    desc.max_anisotropy = 0;
+    CHECK(code(device.create_sampler(desc)) == RhiError::invalid_descriptor);
+    desc.max_anisotropy = 17;
+    CHECK(code(device.create_sampler(desc)) == RhiError::invalid_descriptor);
+    desc.max_anisotropy = 1;
+    desc.mip_filter = static_cast<MipFilter>(3);
+    CHECK(code(device.create_sampler(desc)) == RhiError::invalid_descriptor);
+}
+
+TEST_CASE("Tracked texture bytes count every mip level and compressed block", "[rhi-api]") {
+    NullGraphicsDevice device({.manual_completion = true});
+    REQUIRE(device.initialize(nullptr));
+    const auto baseline = device.stats().texture_bytes;
+    const auto chain = TextureDesc{64, 32, Format::rgba8_srgb, TextureUsage::sampled, "chain", 7};
+    const auto astc = TextureDesc{100, 60, Format::astc_6x6_srgb, TextureUsage::sampled, "astc", 7};
+    const auto first = device.create_texture(chain);
+    const auto second = device.create_texture(astc);
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(device.stats().texture_bytes - baseline == texture_bytes(chain) + texture_bytes(astc));
+    // Levels 100x60, 50x30, 25x15, 12x7, 6x3, 3x1, 1x1 in 6x6 blocks.
+    CHECK(texture_bytes(astc) == (17u * 10u + 9u * 5u + 5u * 3u + 2u * 2u + 1u + 1u + 1u) * 16u);
+    // A texture destroyed during a frame counts as pending until that frame completes.
+    REQUIRE_FALSE(device.begin_frame());
+    CHECK(device.destroy(second.handle));
+    CHECK(device.stats().pending_retirement_bytes == texture_bytes(astc));
+    REQUIRE_FALSE(device.end_frame());
+    device.complete_through(device.stats().submitted_frames);
+    device.wait_idle();
+    CHECK(device.stats().pending_retirement_bytes == 0);
+    CHECK(device.stats().texture_bytes - baseline == texture_bytes(chain));
+}

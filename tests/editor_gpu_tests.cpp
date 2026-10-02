@@ -85,6 +85,30 @@ TEST_CASE("Metal editor draws docked panels and the scene viewport at Retina sca
         CHECK(shell.ui_renderer().stats().missing_textures == 0);
         CHECK(shell.extraction().skipped == 0);
 
+        // The Assets panel's texture thumbnails, from each texture's mips in the display's encoding.
+        const auto thumbnail = [&](uint64_t low) {
+            const auto target = shell.thumbnails().row_target({0x6d617961, low});
+            REQUIRE(target.valid());
+            device.wait_idle();
+            auto texels = std::vector<std::byte>{};
+            REQUIRE_FALSE(device.read_texture(target, texels));
+            return texels;
+        };
+        const auto rgba = [](const std::vector<std::byte>& texels, uint32_t x, uint32_t y) { // stored as RGBA
+            const auto* p = texels.data() + (size_t{y} * TextureThumbnails::row_size + x) * 4;
+            return Pixel{int(p[0]), int(p[1]), int(p[2]), int(p[3])};
+        };
+        const auto near = [](Pixel value, Pixel expected, int tolerance) {
+            for (size_t i = 0; i < 4; ++i)
+                if (std::abs(value[i] - expected[i]) > tolerance) return false;
+            return true;
+        };
+        const auto grid = thumbnail(0x50); // the sample's 256-texel tile grid, ASTC 6x6 sRGB
+        CHECK(near(rgba(grid, 5, 5), {200, 192, 180, 255}, 8)); // tile (0, 0) as authored, not darkened by linear values
+        CHECK(near(rgba(grid, 15, 5), {194, 186, 174, 255}, 8)); // tile (1, 0)
+        const auto normal = thumbnail(0x51); // its normal map: flat tiles point straight up
+        CHECK(near(rgba(normal, 5, 5), {128, 128, 255, 255}, 6));
+
         // Resize and scale change: the viewport follows; the rendering stays valid.
         metrics = {1000, 600, 1000, 600};
         pixels = render(3);

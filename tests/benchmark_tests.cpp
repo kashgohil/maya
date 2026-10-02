@@ -229,7 +229,8 @@ TEST_CASE("Results are complete JSON with raw samples, summaries, and what was u
                             "\"baseline_memory\":{", "\"resident_memory\":{", "\"tracked\":{", "\"reported\":{",
                             "\"gpu_allocated_bytes\":null", "\"runs\":[{", "\"frame_ms\":{\"count\":6", "\"p95\":",
                             "\"samples\":{\"frame_ms\":[", "\"gpu_ms\":[null,null", "\"gpu_samples_missing\":6",
-                            "\"overhead\":{", "\"unavailable\":{", "\"gpu_frame_time\":"}) {
+                            "\"overhead\":{", "\"unavailable\":{", "\"gpu_frame_time\":",
+                            "\"resident_textures\":0", "\"texture_gpu_bytes\":0"}) { // nothing in the scene uses a texture
         INFO(key);
         CHECK(has(json, key));
     }

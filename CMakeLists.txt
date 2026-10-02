@@ -444,12 +444,28 @@ if(BUILD_TESTING)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_library_headers.cmake)
     set_tests_properties(maya_library_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
 
-    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp)
-    target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain)
+    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp)
+    # The system zlib writes test PNGs (tests/support/png.hpp).
+    target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain z)
     target_include_directories(maya_asset_tests PRIVATE tests)
     maya_target_options(maya_asset_tests)
     add_test(NAME maya_assets COMMAND maya_asset_tests)
     set_tests_properties(maya_assets PROPERTIES LABELS "cpu;assets" TIMEOUT 60)
+
+    # KTX2 interoperability: Khronos's `ktx validate` (KTX-Software 4.3 or later) checks every format
+    # and layout Maya writes, when the tool is installed or MAYA_KTX_TOOL names it.
+    add_executable(maya_ktx2_samples tests/ktx2_samples.cpp)
+    target_link_libraries(maya_ktx2_samples PRIVATE MayaTextures)
+    maya_target_options(maya_ktx2_samples)
+    find_program(MAYA_KTX_TOOL ktx DOC "Khronos's ktx tool, for validating KTX2 files")
+    if(MAYA_KTX_TOOL)
+        add_test(NAME maya_ktx2_validate COMMAND ${CMAKE_COMMAND} -DSAMPLES=$<TARGET_FILE:maya_ktx2_samples>
+            -DKTX=${MAYA_KTX_TOOL} -DFOLDER=${CMAKE_CURRENT_BINARY_DIR}/ktx2-samples
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/validate_ktx2.cmake)
+        set_tests_properties(maya_ktx2_validate PROPERTIES LABELS "cpu;assets" TIMEOUT 60)
+    else()
+        message(STATUS "Khronos's ktx tool was not found: KTX2 files are not checked by ktx validate (set MAYA_KTX_TOOL)")
+    endif()
 
     add_executable(maya_tests
         tests/math_tests.cpp
@@ -466,8 +482,9 @@ if(BUILD_TESTING)
         tests/math_utils_tests.cpp
         tests/mesh_tests.cpp
         tests/texture_tests.cpp
+        tests/texture_gpu_tests.cpp
         tests/engine_tests.cpp)
-    target_link_libraries(maya_tests PRIVATE MayaRuntime Catch2::Catch2WithMain)
+    target_link_libraries(maya_tests PRIVATE MayaRuntime Catch2::Catch2WithMain z)
     target_include_directories(maya_tests PRIVATE tests)
     maya_target_options(maya_tests)
 
@@ -496,7 +513,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
