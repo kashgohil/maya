@@ -10,6 +10,7 @@ These are implementation contracts for the next issues, ready for review. They d
 | [Scheduling and rendering](scheduling-contracts.md) | Clocks, mutation boundaries, scripts/physics/animation order, physics and scripts in the fixed tick with reset, replay, and reload (#1015), transform authority, and immutable rendering input. |
 | [Performance baseline](performance-baseline.md) | Proposed hardware and repeatable workloads, including the physics stress workload P1 (#1015), measurement protocol, and budget decisions. |
 | [Physics and scripting libraries](physics-scripting-decision.md) | #1015: Jolt Physics and Luau, chosen from prototypes in this build, with their pinning, build options, threading, determinism, memory, and embedding. |
+| [Rendering and content stack](rendering-content-decision.md) | #1030: cgltf, stb, astcenc, ASTC in KTX2, RGBA16F with EV100 and AgX, glTF metallic-roughness and light units, cascaded shadows, CPU-cooked image-based lighting, GPU skinning, bundle-only packaging, and the R1 reference environment, chosen from prototypes in this build. |
 
 ## Current implementation and migration
 
