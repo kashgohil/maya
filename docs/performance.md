@@ -9,6 +9,8 @@
 - a bounded live display in the editor;
 - a benchmark runner with versioned manifests and machine-readable results.
 
+[Issue #1026](https://work.rezee.app/kash/issues/1026) adds each render pass's GPU time and a presenting benchmark mode that measures display pacing.
+
 ## Aggregation
 
 `MayaMetrics` ([metrics.hpp](../include/maya/metrics/metrics.hpp)) is CPU-only and shared by the editor display and the benchmark runner.
@@ -37,7 +39,18 @@ The editor splits `render` further into extraction, viewport encoding, and UI en
 - They are measured on the GPU's timeline and never estimated from CPU submission time.
 - `gpu_timing_supported()` is false on the null device, where GPU time is reported unavailable.
 - At most 1,024 timings wait to be taken; older ones are dropped and counted.
-- Per-pass GPU timing is not implemented and is reported unavailable. Frames contain few passes, so frame time is the useful figure for now.
+
+**GPU time per pass** (#1026). Each frame timing also carries its passes (`GpuFrameTiming::passes`, `GpuPassTiming`), in encoding order:
+
+- **What is sampled.** Metal writes GPU timestamps at each pass's stage boundaries (`MTLCounterSamplingPointAtStageBoundary`): the start and end of its vertex stage and of its fragment stage. That is the finest point Apple GPUs sample; they cannot sample at draws. Four samples a pass go into a timestamp sample buffer, one buffer per frame slot.
+- **What a pass's time is.** On Apple's tile-based GPUs, a later pass's vertex stage runs while an earlier pass's fragment stage is still working, and the fragment stages run one after another. So the span from a pass's first sample to its last includes waiting for earlier passes. A pass's time is instead its vertex stage plus its fragment stage (`vertex_ms`, `fragment_ms`, `milliseconds()`), each stage's own interval. `start_ms` and `end_ms` place the pass within the frame, from the frame's GPU start.
+- **Checked against the frame.** The samples are on the clock of the command buffer's `GPUStartTime` and `GPUEndTime` (converted with `MTLDevice::sampleTimestamps`). Every pass lies inside its frame's GPU execution, and the fragment stages add up to no more than the frame. Because vertex stages overlap, pass times can add up to slightly more than the frame. A pass outside its frame would be a measurement fault: the benchmark counts such passes (`gpu_pass_mismatches`), and the tests require none.
+- **Names.** A pass is named by `RenderPassDesc::label`, or `pass N` (from 1) without one: the renderer's `view` and `present view`, the editor's `editor ui` and `texture thumbnail`.
+- **Never estimated.** `gpu_pass_timing_supported()` is false, with `gpu_pass_timing_unavailable()` saying why, on the null device ("executes no GPU work"), on a GPU without stage-boundary timestamps, or when turned off. Then frames carry no passes.
+- **Limits and switch.** At most `max_timed_passes` (64) passes a frame are timed; later ones are counted in `untimed_passes`. `set_gpu_pass_timing(false)` turns timing off from the next frame, for matched runs.
+- **When.** Samples are resolved on the device's thread once their frame is known complete: when its timing is taken, or just before its slot is reused, frames in flight later.
+
+**Display pacing** (#1026). A frame presented to a window reports when the display showed it (`take_present_timings()`, `PresentTiming`): Metal's drawable `presentedTime`, on the host clock, or never, when the drawable was replaced before it could be shown. Metal occasionally reports nothing at all for a presented drawable; the benchmark counts such frames as unreported. `display_refresh_rate()` is the window's screen's maximum refresh rate. Both are unavailable headless and on the null device.
 
 **Counters.** `RhiStats` counts the current or most recent frame's passes, draws, instances, and triangles, as submitted. Triangles are the vertices or indices divided by three, times the instance count.
 
@@ -71,6 +84,7 @@ The Diagnostics panel's **Performance** section summarizes the last 240 frames, 
 - mean CPU time per scope;
 - extraction, viewport, and UI encoding;
 - GPU time (mean, P95, P99), or why it is unavailable;
+- each pass's GPU time (mean and P95, slowest first, passes with the same name summed per frame), or why pass times are unavailable;
 - this frame's draws, instances, triangles, and passes;
 - tracked buffer, texture, upload, and pending bytes;
 - platform-reported GPU and process memory;
@@ -84,7 +98,9 @@ Hovering a row explains what it measures. These are live observations of an inte
 maya_benchmark benchmarks/i1_10k.benchmark results.json
 ```
 
-`maya_benchmark` runs a manifest headless and offscreen on the default Metal device. It measures as foreground work: its thread's quality of service is user-interactive. Started from a script, a long run could otherwise be scheduled as background work partway through. It writes JSON results (by default `<name>.results.json`) and prints a summary. It exits with 0 when the benchmark completed, 1 when it failed (the results say why and keep what completed), and 2 for bad arguments or manifests. Nothing is presented, so display pacing does not apply. Each frame runs exactly one 60 Hz simulation tick: a fixed-workload throughput run, labelled as such, not a live wall-clock run.
+`maya_benchmark` runs a manifest headless and offscreen on the default Metal device. It measures as foreground work: its thread's quality of service is user-interactive. Started from a script, a long run could otherwise be scheduled as background work partway through. It writes JSON results (by default `<name>.results.json`) and prints a summary. It exits with 0 when the benchmark completed, 1 when it failed (the results say why and keep what completed), and 2 for bad arguments or manifests. Each frame runs exactly one 60 Hz simulation tick: a fixed-workload throughput run, labelled as such, not a live wall-clock run.
+
+**Presenting runs** (#1026). With `present on`, the runner opens a window whose framebuffer is the manifest's resolution and also presents every frame's view into it, 1:1, synchronized with the display. The window floats in front of other windows, and the display is kept from sleeping, for the run: a hidden window or a sleeping display shows nothing, and the text summary warns about any frame that was not shown. The window's events are handled between frames, outside their timing. Each sampled frame's display time is recorded. After the last frame, the runner waits up to a second for the display to report on every sampled frame. The results are labelled as presenting, and offscreen runs say that pacing does not apply. Presenting runs are paced by the display, so their frame times include waiting for a drawable; compare them with each other, not with offscreen runs. [sample_present](../benchmarks/sample_present.benchmark) and [i1_10k_present](../benchmarks/i1_10k_present.benchmark) present the same frames as `sample` and `i1_10k`.
 
 ### Manifests
 
@@ -107,7 +123,8 @@ upload_mib 64                # per-frame upload memory; each instance takes 256 
 warmup 300
 samples 3000
 runs 3
-overhead on                  # also a matched run without CPU scopes
+overhead on                  # also a matched run without CPU scopes or GPU pass timing
+present off                  # on: present every frame to a window and measure display pacing
 ```
 
 | Workload | What it does |
@@ -146,7 +163,9 @@ The JSON holds:
 - counters, including `centers_in_view`: instances whose origin projects into the view;
 - baseline and resident memory, tracked and reported;
 - for each run: throughput, summaries of the frame, of each CPU scope, and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
-- the uninstrumented run, and the overhead of instrumentation;
+- for each run, per pass name: a summary of the GPU time of that frame's passes with the name (`gpu_pass_ms`), with the raw values; `gpu_pass_mismatches`, timed passes outside their frame's GPU time, which must be 0; and `untimed_passes`;
+- for presenting runs, under `presentation`: frames `shown`, `not_shown`, and `unreported`, the display's `refresh_hz`, a summary of present-to-present intervals of consecutive shown frames (`interval_ms`, raw in `present_interval_ms`), and `missed_deadlines`, intervals longer than 1.5 refresh periods. A frame that was never shown makes the interval across it two periods, so it counts as missed. `null` when the refresh rate is unknown. ProMotion displays may run below their maximum rate when the system chooses; the rate recorded is the maximum;
+- the uninstrumented run (no CPU scopes and no GPU pass timing), and the overhead of instrumentation on the CPU frame and on GPU time;
 - for cycles: summaries after the ten warmup cycles, the slope of the process footprint in bytes per cycle over `footprint_slope_cycles` (from `slope_from` to the last), whether counts returned to the baseline, and every cycle;
 - for physics, under `physics`: the recipe, the scene's counts, and for each run its worker threads, start time, and summaries per tick of the whole tick and each part (scripts, queries, other systems, body preparation, the step, synchronization, events, post-physics hooks, and the body commit), of active and sleeping bodies, touching pairs, solid contacts, events, and query hits; Jolt's heap at the start and end and its peak, the per-step scratch allocator's high water and capacity, the script VM's bytes, the process footprint at the start and end and its slope per tick, the state hash after the last tick, and the raw tick times. `deterministic` says whether every run and configuration ended in the same state; a mismatch, or a step that hit a physics limit, fails the benchmark;
 - the rejected cases;
@@ -206,6 +225,23 @@ Ranges are across the three runs.
   - Attributing it needs a memory profiler; it is recorded here, not called a leak or ignored.
 - **Results files.** The JSON files, with raw samples, are not committed; the manifests are, and running them reproduces the files.
 
+### Pass times and pacing (#1026)
+
+Observations, not budgets. The same machine and macOS, in the `nominal` thermal state throughout; a Release build of the uncommitted #1026 changes; 300 warmup and 3,000 sampled frames per run, three runs, at 1920×1080.
+
+| Manifest | Frame mean (ms) | GPU mean (ms) | GPU per pass, mean (ms) | Overhead: CPU frame, GPU |
+| --- | --- | --- | --- | --- |
+| `sample`, offscreen | 0.040–0.042 | 0.043–0.046 | `view` 0.036–0.038 | +2.8%, +2.5% |
+| `i1_10k`, offscreen | 2.12–2.14 | 0.77–0.91 | `view` 0.76–0.90 | −1.1%, −5.3% |
+| `sample_present` | 8.30–8.31 | 0.25–0.27 | `view` 0.16, `present view` 0.11–0.13 | 0.0%, +5.1% |
+| `i1_10k_present` | 8.30–8.34 | 2.00–2.05 | `view` 1.34–1.37, `present view` 0.65–0.68 | −0.1%, −4.4% |
+
+- **Instrumentation overhead.** The matched runs without CPU scopes and pass timing differ in both directions, within the variation between runs, so no overhead of pass timing is measurable.
+- **Every pass inside its frame.** No run had a pass outside its frame's GPU time, an untimed pass, or a missing GPU sample.
+- **Presented frames, at 120 Hz.** In five of the six presenting runs every frame was shown. Present-to-present intervals averaged 8.34–8.36 ms with P95 and P99 at 8.333 ms, and 2–11 of 3,000 frames missed their deadline, nearly all by one refresh (16.7 ms intervals). In the sixth (`i1_10k_present`, run 3) four frames were never shown and one gap lasted 5.3 s while the window was disturbed; the runner flagged it as not valid.
+- **Presenting runs are paced by the display.** Their frames take a refresh period, and their GPU times are higher than offscreen ones for the same work (`i1_10k`'s view pass 1.35 ms against 0.83 ms). Apple GPUs run lighter, paced work at lower clocks, so compare presenting runs only with each other.
+- **Valid presenting runs need a visible window and a display that stays awake.** Earlier attempts while the display slept, or with the window behind others, reported most frames as never shown. The runner now keeps the display awake and its window in front, and warns about any frame that was not shown.
+
 ## Tests
 
 - [metrics_tests.cpp](../tests/metrics_tests.cpp) checks aggregation on known samples:
@@ -219,7 +255,9 @@ Ranges are across the three runs.
   - tracked bytes for buffers, textures, pending retirements, and upload memory;
   - GPU time and platform memory being unavailable on the null device;
   - the bound on waiting GPU timings.
-- [rhi_tests.cpp](../tests/rhi_tests.cpp) checks that Metal reports one positive GPU time per completed frame, keyed by serial, and an allocated size that covers what was tracked.
+- [rhi_tests.cpp](../tests/rhi_tests.cpp) checks that Metal reports one positive GPU time per completed frame, keyed by serial, and an allocated size that covers what was tracked. Since #1026 it times three named and unnamed passes over twelve frames, taken only at the end, so most are resolved as their slots are reused. Every pass lies inside its frame and they finish in encoding order. The fragment stages add up to no more than the frame. Passes beyond the limit are counted, and turning timing off leaves frames without passes.
+- [rhi_validation_tests.cpp](../tests/rhi_validation_tests.cpp) (#1026) checks the reasons pass and present timing are unavailable on the null device, and, with a scripted timing device ([timing_device.hpp](../tests/support/timing_device.hpp)), which passes a backend is asked to time, the limit, turning timing off from the next frame, present reports for shown and never-shown frames, and the bound on waiting present reports.
+- [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) (#1026) presents 30 frames to a real window: each presented frame reports once (Metal occasionally misses one), the shown ones in order, a typical refresh period apart.
 - [asset_tests.cpp](../tests/asset_tests.cpp) covers registry residency (states, resident versions, outside leases, and mesh bytes) through eviction.
 - [engine_tests.cpp](../tests/engine_tests.cpp) checks that frame timing parts add up to the tick, that serials and intervals are right, and that a new session starts without an interval.
 - [benchmark_tests.cpp](../tests/benchmark_tests.cpp) runs the runner on the null device:
@@ -230,4 +268,6 @@ Ranges are across the three runs.
   - **Cycles:** load cycles return to the baseline after eviction and refuse the malformed and missing-asset scenes; play cycles leave the authored scene unchanged; the footprint is fitted from `slope_from`.
   - **Physics (#1024):** the physics keys; the recipe's proportions and a repeatable scene; a small run with and without workers that counts every part, renders nothing, and ends every run in the same state.
   - **JSON:** complete and balanced.
-- CTest runs the smoke manifests in [benchmarks/smoke](../benchmarks/smoke) on Metal, and [p1_small](../benchmarks/p1_small.benchmark), which must end every run in the same state. It also checks the runner's refusal of a file that is not a manifest.
+  - **Passes (#1026):** per-pass times summed by name for every sampled frame, none in the matched run, pass timing turned back on afterwards, passes outside their frame counted and flagged, and the reason when a device cannot time passes.
+  - **Presenting (#1026):** the window's events every frame; shown, never-shown, and unreported frames; intervals and a missed deadline across a dropped frame; refusal without a window; and offscreen runs saying pacing does not apply.
+- CTest runs the smoke manifests in [benchmarks/smoke](../benchmarks/smoke) on Metal, including `sample_present`, which presents to a window, and [p1_small](../benchmarks/p1_small.benchmark), which must end every run in the same state. It also checks the runner's refusal of a file that is not a manifest.

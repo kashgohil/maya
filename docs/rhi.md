@@ -128,6 +128,8 @@ Since [#1004](performance.md), the device measures as well as renders:
   - `upload_bytes`, the device's own per-frame memory times frames in flight.
 - **GPU time.** When a frame completes, the Metal backend records its command buffer's GPU execution time, `GPUEndTime − GPUStartTime`, keyed by the frame's serial. `take_gpu_timings()` hands these over, and at most 1,024 wait (older ones are dropped and counted). `gpu_timing_supported()` is false where GPU time cannot be measured, including the null device; GPU time is never inferred from CPU submission.
 - **Reported memory.** `reported_memory()` is the platform's figure for the device (Metal's `currentAllocatedSize`), or nullopt. It is kept apart from tracked bytes.
+- **Pass time** (#1026). Each `GpuFrameTiming` carries its passes' GPU times, from timestamps at each pass's vertex and fragment stage boundaries ([measuring](performance.md#what-is-measured)). Backends implement `backend_pass_timing_reason` (empty when they can time passes) and `backend_attach_pass_timings`, called on the owner thread for completed frames. `frame_pass_timing()` and `frame_pass_index()` tell them whether, and which, pass is being timed. `set_gpu_pass_timing` switches timing per frame; at most `max_timed_passes` passes a frame are timed.
+- **Present time** (#1026). `take_present_timings()` reports when presented frames were shown, or that they never were; `display_refresh_rate()` is the surface's display's maximum rate. The Metal backend registers a presented handler on each drawable it presents.
 
 ## Verification
 
