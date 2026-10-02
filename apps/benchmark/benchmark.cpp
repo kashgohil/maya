@@ -930,7 +930,10 @@ std::string to_json(const Result& r) {
     json.open('{');
     json.field("width", m.width);
     json.field("height", m.height);
-    json.field("color_format", "rgba8_unorm");
+    json.field("color_format", "rgba8_unorm, sRGB-encoded");
+    json.field("scene_format", "rgba16_float");
+    json.field("exposure", "the camera's, in EV100 (0 for generated scenes)");
+    json.field("tone_mapping", "the camera's (AgX for generated scenes)");
     json.field("depth_format", "depth32_float");
     json.field("antialiasing", "none");
     json.field("textures", "none (materials are factors)");

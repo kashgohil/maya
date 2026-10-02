@@ -25,10 +25,14 @@ struct MeshRendererComponent {
 };
 
 /// Window-independent data; aspect ratio belongs to the view, not the scene camera.
+/// How a camera maps scene light to the display (docs/renderer.md#exposure-and-tone-mapping).
+enum class ToneMapping : uint8_t { agx, pbr_neutral };
 struct CameraComponent {
     float vertical_fov = math::PI / 3.0f; // radians
     float near_clip = 0.1f; // metres
     float far_clip = 1000.0f;
+    float exposure = 0.0f; // EV100; scene values are scaled by 1 / (1.2 × 2^EV100) before tone mapping
+    ToneMapping tone_mapping = ToneMapping::agx;
 };
 
 enum class LightKind { directional, point, spot };

@@ -72,6 +72,12 @@ constexpr auto positive = NumericRange{0.0f, {}, false, true};
 constexpr auto nonnegative = NumericRange{0.0f, {}, true, true};
 constexpr auto angle = NumericRange{0.0f, math::PI, false, false};
 constexpr auto cone = NumericRange{0.0f, math::PI, true, false};
+constexpr auto exposure_range = NumericRange{-10.0f, 24.0f, true, true};
+/// Marks a property added in a later component version.
+Binding since(Binding binding, uint32_t version) {
+    binding.descriptor.since = version;
+    return binding;
+}
 constexpr auto unit_interval = NumericRange{0.0f, 1.0f, true, true};
 constexpr auto collision_groups = NumericRange{0.0f, 15.0f, true, true};
 constexpr auto collision_mask = NumericRange{0.0f, 65535.0f, true, true};
@@ -82,6 +88,9 @@ constexpr auto light_options = std::array{
     option(LightKind::directional, "directional", "Directional"),
     option(LightKind::point, "point", "Point"),
     option(LightKind::spot, "spot", "Spot")};
+constexpr auto tone_mapping_options = std::array{
+    option(ToneMapping::agx, "agx", "AgX"),
+    option(ToneMapping::pbr_neutral, "pbr_neutral", "PBR Neutral")};
 constexpr auto shape_options = std::array{
     option(ColliderShape::box, "box", "Box"),
     option(ColliderShape::sphere, "sphere", "Sphere"),
@@ -112,7 +121,11 @@ const auto& camera_bindings() {
     static const auto values = std::array{
         bind<&CameraComponent::vertical_fov>(1, "vertical_fov", "Vertical field of view", Hint::number, angle, "rad"),
         bind<&CameraComponent::near_clip>(2, "near_clip", "Near clip", Hint::number, positive, "m"),
-        bind<&CameraComponent::far_clip>(3, "far_clip", "Far clip", Hint::number, positive, "m", "Must exceed near clip.")};
+        bind<&CameraComponent::far_clip>(3, "far_clip", "Far clip", Hint::number, positive, "m", "Must exceed near clip."),
+        since(bind<&CameraComponent::exposure>(4, "exposure", "Exposure", Hint::number, exposure_range, "EV100",
+                                               "Scene values are scaled by 1 / (1.2 x 2^EV100); higher values darken."), 2),
+        since(bind<&CameraComponent::tone_mapping>(5, "tone_mapping", "Tone mapping", Hint::choice, {}, {},
+                                                   "AgX for scenes; PBR Neutral keeps base colors truest.", tone_mapping_options), 2)};
     return values;
 }
 const auto& light_bindings() {
@@ -349,7 +362,7 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
         ComponentDescriptor{ComponentId::mesh_renderer, "maya.mesh_renderer", "Mesh renderer", 1, meshes},
-        ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 1, cameras},
+        ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 2, cameras}, // 2: exposure, tone mapping (#1032)
         ComponentDescriptor{ComponentId::light, "maya.light", "Light", 1, lights},
         ComponentDescriptor{ComponentId::spin, "maya.spin", "Spin", 1, spins},
         ComponentDescriptor{ComponentId::fly_control, "maya.fly_control", "Fly control", 1, flights},

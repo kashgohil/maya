@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/renderer/render_snapshot.hpp"
 #include "maya/simulation/physics_debug.hpp"
 #include <filesystem>
 #include <iosfwd>
@@ -11,6 +12,7 @@ namespace maya::editor {
 /// ("maya-editor-preferences 1"), in ~/Library/Application Support/Maya by default.
 struct EditorPreferences {
     PhysicsDebugOptions physics_debug{}; // the viewport's physics debug views
+    ExposureView exposure_view = ExposureView::none; // the viewport's exposure view (docs/renderer.md#exposure-views)
     bool operator==(const EditorPreferences&) const = default;
 };
 

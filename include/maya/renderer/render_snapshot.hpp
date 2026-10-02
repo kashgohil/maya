@@ -78,6 +78,17 @@ struct RenderSnapshot {
 RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets,
                                        const RenderExtractOptions& options = {});
 
+/// What the tone-mapping pass shows (docs/renderer.md#exposure-views): the image, or diagnostic views
+/// of the exposed scene's luminance.
+enum class ExposureView : uint8_t {
+    none, // the tone-mapped image
+    luminance, // grey by stops from middle grey (0.18): black at -8, white at +8
+    false_color, // a color per band of stops from middle grey
+};
+/// The scale an exposure in EV100 applies to scene values: 1 / (1.2 x 2^EV100), the photometric
+/// saturation-based exposure (ISO 100, K = 12.5, q = 0.65).
+float exposure_scale(float ev100) noexcept;
+
 /// One camera's output description. Views are independent of Worlds and windows: several views
 /// can render the same snapshot, each into its own target.
 struct RenderView {
@@ -85,8 +96,11 @@ struct RenderView {
     uint32_t height = 0;
     CameraMatrices matrices{};
     math::Vec3 position{0.0f};
-    std::array<double, 4> clear_color{0.1, 0.1, 0.1, 1.0};
+    std::array<double, 4> clear_color{0.1, 0.1, 0.1, 1.0}; // scene light where nothing is drawn, before exposure
     float debug_line_width = 1.5f; // framebuffer pixels
+    float exposure = exposure_scale(0.0f); // the camera's, as a scale
+    ToneMapping tone_mapping = ToneMapping::agx;
+    ExposureView exposure_view = ExposureView::none;
 };
 /// A view from camera data and a rigid world pose, e.g. an editor camera that is tool state.
 /// Returns nullopt for a zero size or an invalid camera/pose.

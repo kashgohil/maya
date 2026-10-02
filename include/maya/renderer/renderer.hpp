@@ -36,12 +36,14 @@ public:
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    /// Inside a frame with no pass open: clears the target to the view's clear color, draws every
-    /// instance with its own constants, then the snapshot's debug lines and outlines (brightly where
-    /// they are in front of the scene, faintly behind it), and closes the pass. The view size must
-    /// match the target.
-    /// Returns the first error (e.g. exhausted upload memory); later instances are not drawn, the
-    /// pass is still closed, and the frame can still end.
+    /// Inside a frame with no pass open, in three passes (docs/renderer.md#exposure-and-tone-mapping):
+    /// `view` clears the target's HDR scene color to the view's clear color and draws every instance
+    /// with its own constants; `tone map` scales it by the view's exposure and tone-maps it into the
+    /// target's color, sRGB-encoded; `debug lines`, only when the snapshot has any, draws its lines and
+    /// outlines over that (brightly in front of the scene, faintly behind it) in their own colors. The
+    /// view size must match the target.
+    /// Returns the first error (e.g. exhausted upload memory); later instances are not drawn, each
+    /// open pass is still closed, and the frame can still end.
     RhiDiagnostic render(const RenderSnapshot& snapshot, const RenderView& view, const RenderTarget& target);
     /// Inside a frame with no pass open: clears `destination` (e.g. the acquired surface) to
     /// `background` and draws the target's color texture scaled into `area`.
@@ -50,7 +52,7 @@ public:
     const RendererStats& stats() const noexcept { return m_stats; }
 
 private:
-    enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind };
+    enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind, tone_map };
     struct CachedPipeline {
         Format format = Format::undefined;
         PipelineKind kind = PipelineKind::lit;

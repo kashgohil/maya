@@ -158,12 +158,17 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
     return snapshot;
 }
 
+float exposure_scale(float ev100) noexcept { return 1.0f / (1.2f * std::exp2(ev100)); }
+
 std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Mat4& pose,
                                            uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return std::nullopt;
     const auto matrices = camera_matrices(camera, pose, float(width) / float(height));
     if (!matrices) return std::nullopt;
-    return RenderView{width, height, *matrices, {pose.at(0, 3), pose.at(1, 3), pose.at(2, 3)}};
+    auto view = RenderView{width, height, *matrices, {pose.at(0, 3), pose.at(1, 3), pose.at(2, 3)}};
+    view.exposure = exposure_scale(camera.exposure);
+    view.tone_mapping = camera.tone_mapping;
+    return view;
 }
 
 std::optional<RenderView> extract_render_view(const World& world, EntityHandle camera,
@@ -177,6 +182,11 @@ std::optional<RenderView> extract_render_view(const World& world, EntityHandle c
     const auto matrices = world.camera(camera, float(width) / float(height));
     if (!matrices) return std::nullopt;
     const auto pose = *world.world_matrix(camera);
-    return RenderView{width, height, *matrices, {pose.at(0, 3), pose.at(1, 3), pose.at(2, 3)}};
+    auto view = RenderView{width, height, *matrices, {pose.at(0, 3), pose.at(1, 3), pose.at(2, 3)}};
+    world.with<CameraComponent>(camera, [&](const CameraComponent& value) {
+        view.exposure = exposure_scale(value.exposure);
+        view.tone_mapping = value.tone_mapping;
+    });
+    return view;
 }
 } // namespace maya

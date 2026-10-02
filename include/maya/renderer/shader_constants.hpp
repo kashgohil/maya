@@ -38,6 +38,13 @@ struct DebugConstants {
     math::Vec4 viewport; // width and height in pixels, line width in pixels, opacity
     uint32_t kind[4]; // x: 0 lines, else DebugShapeKind + 1; y: circle segments; the rest is padding
 };
+/// The tone-mapping pass's settings, uploaded once per view.
+struct ToneMapConstants {
+    float exposure; // a scale: exposure_scale(EV100)
+    uint32_t tone_mapping; // ToneMapping
+    uint32_t view; // ExposureView
+    uint32_t pad;
+};
 inline constexpr size_t debug_line_floats = 12;
 inline constexpr size_t debug_shape_floats = 24;
 
@@ -48,5 +55,6 @@ static_assert(sizeof(DrawConstants) == 144 && offsetof(DrawConstants, normal_mat
               offsetof(DrawConstants, base_color) == 112 && offsetof(DrawConstants, material) == 128,
               "DrawConstants must match renderer.metal");
 static_assert(sizeof(PresentConstants) == 16, "PresentConstants must match renderer.metal");
+static_assert(sizeof(ToneMapConstants) == 16, "ToneMapConstants must match renderer.metal");
 static_assert(sizeof(DebugConstants) == 32 && offsetof(DebugConstants, kind) == 16, "DebugConstants must match renderer.metal");
 } // namespace maya

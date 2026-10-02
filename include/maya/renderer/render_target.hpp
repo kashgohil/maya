@@ -7,13 +7,15 @@
 namespace maya {
 
 struct RenderTargetDesc {
-    Format color_format = Format::rgba8_unorm;
+    Format color_format = Format::rgba8_unorm; // the tone-mapped, sRGB-encoded output
     bool readback = false; // allow GraphicsDevice::read_texture on the color texture
     std::string label = "view";
+    Format scene_format = Format::rgba16_float; // the scene's HDR light, before exposure and tone mapping
 };
 
-/// Offscreen color and depth textures for one view. The color texture can be sampled, e.g. to
-/// present it in a window or an editor panel. Nothing is allocated until the first resize.
+/// Offscreen textures for one view: the HDR scene color and depth the scene is drawn into, and the
+/// color texture it is tone-mapped into, which can be sampled, e.g. to present it in a window or an
+/// editor panel. Nothing is allocated until the first resize.
 class RenderTarget {
 public:
     RenderTarget(GraphicsDevice& device, RenderTargetDesc desc = {});
@@ -27,6 +29,8 @@ public:
     RhiDiagnostic resize(uint32_t width, uint32_t height);
     bool valid() const noexcept;
     TextureHandle color() const noexcept { return m_color; }
+    TextureHandle scene_color() const noexcept { return m_scene; }
+    Format scene_format() const noexcept { return m_desc.scene_format; }
     TextureHandle depth() const noexcept { return m_depth; }
     uint32_t width() const noexcept { return m_width; }
     uint32_t height() const noexcept { return m_height; }
@@ -41,6 +45,7 @@ private:
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;
     RenderTargetDesc m_desc;
     TextureHandle m_color;
+    TextureHandle m_scene;
     TextureHandle m_depth;
     uint32_t m_width = 0;
     uint32_t m_height = 0;

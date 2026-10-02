@@ -43,6 +43,11 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
         desc.fragment_entry = "presentFragment";
         desc.cull = CullMode::none;
         desc.label = "present view";
+    } else if (kind == PipelineKind::tone_map) {
+        desc.vertex_entry = "toneMapVertex";
+        desc.fragment_entry = "toneMapFragment";
+        desc.cull = CullMode::none;
+        desc.label = "tone map";
     } else if (kind == PipelineKind::debug_front || kind == PipelineKind::debug_behind) {
         // Lines test against the scene's depth without writing it: in front of it, or behind it.
         desc.vertex_entry = "debugVertex";
@@ -78,8 +83,9 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     for (const auto& instance : snapshot.instances)
         if (instance.mesh >= snapshot.meshes.size())
             return {RhiError::invalid_usage, "Render snapshot instance refers to a mesh it does not hold"};
-    auto lit = PipelineHandle{};
-    if (auto error = pipeline(target.color_format(), PipelineKind::lit, lit)) return error;
+    auto lit = PipelineHandle{}, tone_map = PipelineHandle{};
+    if (auto error = pipeline(target.scene_format(), PipelineKind::lit, lit)) return error;
+    if (auto error = pipeline(target.color_format(), PipelineKind::tone_map, tone_map)) return error;
     auto debug_front = PipelineHandle{}, debug_behind = PipelineHandle{};
     if (!snapshot.debug.empty()) { // no debug pipelines until something is drawn with them
         if (auto error = pipeline(target.color_format(), PipelineKind::debug_front, debug_front)) return error;
@@ -97,9 +103,11 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     const auto uploaded_view = m_device.upload_transient(&constants, sizeof(constants));
     if (!uploaded_view) return uploaded_view.diagnostic;
 
+    const auto debug = !snapshot.debug.empty();
+    // The scene, into the HDR target. Depth is kept only when debug lines test against it.
     auto pass = RenderPassDesc{};
-    pass.colors.push_back({target.color(), LoadAction::clear, StoreAction::store, view.clear_color});
-    pass.depth = DepthAttachment{target.depth(), LoadAction::clear, StoreAction::dont_care, 1.0};
+    pass.colors.push_back({target.scene_color(), LoadAction::clear, StoreAction::store, view.clear_color});
+    pass.depth = DepthAttachment{target.depth(), LoadAction::clear, debug ? StoreAction::store : StoreAction::dont_care, 1.0};
     pass.label = "view";
     if (auto error = m_device.begin_render_pass(pass)) return error;
     ++m_stats.views;
@@ -118,12 +126,39 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             if (auto error = snapshot.meshes[instance.mesh].value().mesh().draw()) return error;
             ++m_stats.draws;
         }
-        if (!snapshot.debug.empty()) return encode_debug(snapshot.debug, view, uploaded_view.slice, debug_front, debug_behind);
         return {};
     };
-    const auto result = encode();
-    const auto closed = m_device.end_render_pass();
-    return result ? result : closed;
+    auto result = encode();
+    if (auto closed = m_device.end_render_pass(); !result) result = std::move(closed);
+    if (result) return result;
+
+    // Exposure and tone mapping, into the view's color.
+    auto output = RenderPassDesc{};
+    output.colors.push_back({target.color(), LoadAction::dont_care, StoreAction::store});
+    output.label = "tone map";
+    if (auto error = m_device.begin_render_pass(output)) return error;
+    const auto tone = [&]() -> RhiDiagnostic {
+        const auto constants = ToneMapConstants{view.exposure, uint32_t(view.tone_mapping), uint32_t(view.exposure_view), 0};
+        const auto uploaded = m_device.upload_transient(&constants, sizeof(constants));
+        if (!uploaded) return uploaded.diagnostic;
+        if (auto error = m_device.set_pipeline(tone_map)) return error;
+        if (auto error = m_device.set_uniform_buffer(0, uploaded.slice)) return error;
+        if (auto error = m_device.set_texture(0, target.scene_color())) return error;
+        return m_device.draw(3);
+    };
+    result = tone();
+    if (auto closed = m_device.end_render_pass(); !result) result = std::move(closed);
+    if (result || !debug) return result;
+
+    // Debug lines over the tone-mapped image, in their own colors, against the scene's depth.
+    auto lines = RenderPassDesc{};
+    lines.colors.push_back({target.color(), LoadAction::load, StoreAction::store});
+    lines.depth = DepthAttachment{target.depth(), LoadAction::load, StoreAction::dont_care, 1.0};
+    lines.label = "debug lines";
+    if (auto error = m_device.begin_render_pass(lines)) return error;
+    result = encode_debug(snapshot.debug, view, uploaded_view.slice, debug_front, debug_behind);
+    if (auto closed = m_device.end_render_pass(); !result) result = std::move(closed);
+    return result;
 }
 
 // Debug lines and outlines, over the scene: each kind's data is uploaded once and drawn twice, at

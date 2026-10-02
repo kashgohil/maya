@@ -445,9 +445,9 @@ private:
             return stop(SceneError::duplicate_property, std::string(m_component->name) + "." + keyword.text +
                 " is written more than once; keep one value");
         const auto descriptor = property_schema(m_component->id, keyword.text);
-        if (!descriptor)
+        if (!descriptor || descriptor->since > m_component_version)
             return stop(SceneError::unknown_property, "unknown property '" + keyword.text + "' in " +
-                std::string(m_component->name) + " version " + std::to_string(m_component->version) +
+                std::string(m_component->name) + " version " + std::to_string(m_component_version) +
                 "; remove it or open the scene with the Maya build that wrote it");
         m_properties.push_back({descriptor, {arguments.begin(), arguments.end()}, m_line});
         return true;
@@ -505,12 +505,11 @@ private:
             return stop(SceneError::unsupported_version, std::string(schema->name) + " version " +
                 std::to_string(version) + " is newer than this build supports (" +
                 std::to_string(schema->version) + "); open it with a newer Maya build");
-        if (version < schema->version)
-            // Initial schemas are version 1; a later version bump adds a keyed migration here.
-            return stop(SceneError::unsupported_version, "no migration from " + std::string(schema->name) +
-                " version " + std::to_string(version) + " to " + std::to_string(schema->version));
+        // Older versions migrate: every change so far only added properties, which take their defaults
+        // (PropertyDescriptor::since). A change that is not additive needs its own migration here.
         m_lines.fields[{index, schema->id, 0}] = m_line;
         m_component = schema;
+        m_component_version = version;
         m_component_line = m_line;
         return true;
     }
@@ -538,11 +537,13 @@ private:
             edits.push_back({raw.descriptor->id, std::move(*value)});
         }
         m_properties.clear();
+        // A file stores every property its component version had; later ones take their defaults.
         for (const auto& property : schema->properties) {
+            if (property.since > m_component_version) continue;
             if (std::ranges::none_of(edits, [&](const auto& edit) { return edit.property == property.id; })) {
                 m_line = m_component_line;
                 return stop(SceneError::missing_property, std::string(schema->name) + " is missing '" +
-                    std::string(property.name) + "'; version " + std::to_string(schema->version) +
+                    std::string(property.name) + "'; version " + std::to_string(m_component_version) +
                     " scene files store every property");
             }
         }
@@ -569,6 +570,7 @@ private:
     std::vector<Token> m_tokens;
     std::vector<RawProperty> m_properties;
     const ComponentDescriptor* m_component = nullptr;
+    uint32_t m_component_version = 0; // as written in the file; older than the schema's when migrating
     size_t m_component_line = 0;
     size_t m_line = 0;
     bool m_header = false;

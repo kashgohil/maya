@@ -54,6 +54,9 @@ struct PropertyDescriptor {
     PropertyEncoding encoding;
     std::span<const EnumOption> choices;
     std::string_view description;
+    /// The component version that added the property. A scene written at an older version has none
+    /// of the properties added since, and loads with their defaults (docs/scene.md#versions-and-migration).
+    uint32_t since = 1;
 };
 struct ComponentDescriptor {
     ComponentId id;

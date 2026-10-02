@@ -219,3 +219,88 @@ fragment float4 debugFragment(DebugOut in [[stage_in]], constant DebugConstants&
     const float coverage = saturate(in.half_width + 0.5 - abs(in.across));
     return float4(in.color.rgb, in.color.a * coverage * debug.viewport.w);
 }
+
+// Exposure and tone mapping (docs/renderer.md#exposure-and-tone-mapping): the scene's HDR light,
+// scaled by the camera's exposure, mapped to the display by AgX or Khronos PBR Neutral, and written
+// sRGB-encoded to the view's RGBA8 target. One triangle covers the target; each pixel reads its own
+// scene texel.
+struct ToneMapConstants {
+    float exposure; // 1 / (1.2 x 2^EV100)
+    uint tone_mapping; // 0 AgX, 1 PBR Neutral
+    uint view; // 0 the image, 1 luminance, 2 false-color exposure
+    uint pad;
+};
+
+struct ToneMapOut {
+    float4 position [[position]];
+};
+
+vertex ToneMapOut toneMapVertex(uint id [[vertex_id]]) {
+    const float2 corner = float2(float((id << 1) & 2), float(id & 2)); // (0,0), (2,0), (0,2)
+    ToneMapOut out;
+    out.position = float4(corner * 2.0 - 1.0, 0.0, 1.0);
+    return out;
+}
+
+// AgX, default look: the common minimal approximation of Troy Sobotka's AgX, returning linear sRGB.
+float3 agx(float3 v) {
+    const float3x3 inset = float3x3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+                                    0.0784335999999992, 0.878468636469772, 0.0784336,
+                                    0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const float3x3 outset = float3x3(1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+                                     -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+                                     -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+    const float min_ev = -12.47393, max_ev = 4.026069;
+    v = inset * v;
+    v = clamp(log2(max(v, 1e-10)), min_ev, max_ev);
+    v = (v - min_ev) / (max_ev - min_ev);
+    const float3 x2 = v * v, x4 = x2 * x2;
+    v = 15.5 * x4 * x2 - 40.14 * x4 * v + 31.96 * x4 - 6.868 * x2 * v + 0.4298 * x2 + 0.1191 * v - 0.00232;
+    v = outset * v;
+    return pow(max(v, 0.0), 2.2);
+}
+
+// Khronos PBR Neutral: base colors stay as authored up to about 0.76, then compress toward white.
+float3 pbr_neutral(float3 c) {
+    const float start = 0.8 - 0.04, desaturation = 0.15;
+    const float x = min(c.r, min(c.g, c.b));
+    c -= x < 0.08 ? x - 6.25 * x * x : 0.04;
+    const float peak = max(c.r, max(c.g, c.b));
+    if (peak < start) return c;
+    const float d = 1.0 - start;
+    const float new_peak = 1.0 - d * d / (peak + d - start);
+    c *= new_peak / peak;
+    const float g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    return mix(c, float3(new_peak), g);
+}
+
+float3 srgb_encode(float3 c) {
+    c = saturate(c);
+    return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
+}
+
+// False color by stops from middle grey (0.18), after exposure: blues under, grey around middle grey,
+// yellow to red over, pink where the image is clipped.
+float3 false_color(float stops) {
+    if (stops < -6.0) return float3(0.25, 0.0, 0.45);
+    if (stops < -4.0) return float3(0.0, 0.2, 0.9);
+    if (stops < -2.0) return float3(0.0, 0.65, 0.8);
+    if (stops < -0.5) return float3(0.2, 0.65, 0.25);
+    if (stops <= 0.5) return float3(0.5);
+    if (stops <= 2.0) return float3(0.85, 0.8, 0.2);
+    if (stops <= 4.0) return float3(1.0, 0.55, 0.0);
+    if (stops <= 6.0) return float3(0.9, 0.1, 0.1);
+    return float3(1.0, 0.6, 0.9);
+}
+
+fragment float4 toneMapFragment(ToneMapOut in [[stage_in]], texture2d<float> scene [[texture(0)]],
+                                constant ToneMapConstants& constants [[buffer(0)]]) {
+    const float3 light = max(scene.read(uint2(in.position.xy)).rgb, 0.0) * constants.exposure;
+    if (constants.view != 0) {
+        const float luminance = dot(light, float3(0.2126, 0.7152, 0.0722)); // Rec. 709
+        const float stops = log2(max(luminance, 1e-8) / 0.18);
+        if (constants.view == 2) return float4(false_color(stops), 1.0);
+        return float4(float3(saturate((stops + 8.0) / 16.0)), 1.0); // -8 stops black, +8 white
+    }
+    return float4(srgb_encode(constants.tone_mapping == 1 ? pbr_neutral(light) : agx(light)), 1.0);
+}

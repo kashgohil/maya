@@ -984,6 +984,12 @@ void EditorShell::set_physics_debug(const PhysicsDebugOptions& options) {
     save_preferences();
 }
 
+void EditorShell::set_exposure_view(ExposureView view) {
+    if (view == m_preferences.exposure_view) return;
+    m_preferences.exposure_view = view;
+    save_preferences();
+}
+
 void EditorShell::set_collider_editing(bool on) {
     if (!on && m_collider_drag) {
         m_scene->end_group(); // a drag in progress keeps what it did
@@ -1053,6 +1059,7 @@ void EditorShell::render_viewport() {
     }
     if (!m_debug_draw.empty()) options.debug = &m_debug_draw;
     view->debug_line_width = 1.5f * std::max(m_font_scale, 1.0f);
+    view->exposure_view = m_preferences.exposure_view;
     auto snapshot = extract_render_snapshot(world, *m_assets, options);
     m_performance.extract.add(clock.milliseconds());
     m_extraction = snapshot.stats;

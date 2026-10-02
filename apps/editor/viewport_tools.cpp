@@ -251,7 +251,8 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     ImGui::SameLine(0.0f, 8.0f);
     if (tool(icon::cube_transparent, m_collider_editing, "Edit collider   C")) set_collider_editing(!m_collider_editing);
     m_layout.controls.push_back({"tool.collider", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
-    if (tool(icon::eye, m_preferences.physics_debug.any(), "Physics debug views")) ImGui::OpenPopup("physics-debug");
+    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.exposure_view != ExposureView::none, "Debug views"))
+        ImGui::OpenPopup("physics-debug");
     m_layout.controls.push_back({"tool.physics-debug", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
     ImGui::PopStyleVar(3);
     ImGui::NewLine();
@@ -337,6 +338,22 @@ void EditorShell::draw_physics_debug_menu() {
     if (!ImGui::BeginPopup("physics-debug")) return;
     auto options = m_preferences.physics_debug;
     const auto remember = [&](const char* key) { m_layout.controls.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()}); };
+    // Exposure views replace the image with its exposed luminance (docs/renderer.md#exposure-views).
+    theme::caption(m_fonts, "EXPOSURE");
+    const auto exposure = [&](ExposureView view, const char* label, const char* key, const char* tip) {
+        if (ImGui::RadioButton(label, m_preferences.exposure_view == view)) set_exposure_view(view);
+        remember(key);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    };
+    exposure(ExposureView::none, "Image", "debug.exposure.none", "The tone-mapped image.");
+    ImGui::SameLine();
+    exposure(ExposureView::luminance, "Luminance", "debug.exposure.luminance",
+             "Exposed luminance in grey by stops from middle grey: black at -8, white at +8.");
+    ImGui::SameLine();
+    exposure(ExposureView::false_color, "False color", "debug.exposure.false-color",
+             "A color per band of stops from middle grey: blues under, grey within half a stop, yellow to red over, "
+             "pink past +6.");
+    ImGui::Dummy({0.0f, 4.0f});
     theme::caption(m_fonts, "PHYSICS DEBUG");
     const auto category = [&](PhysicsDebugCategory value, const char* label, const char* key, const char* tip) {
         auto on = options.has(value);

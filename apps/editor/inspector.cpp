@@ -647,6 +647,21 @@ void EditorShell::draw_inspector() {
             auto fov = m_camera.camera.vertical_fov * degrees_per_radian;
             if (ImGui::InputFloat("##fov", &fov, 0.0f, 0.0f, "%.0f\xC2\xB0") && std::isfinite(fov))
                 m_camera.camera.vertical_fov = std::clamp(fov, 20.0f, 120.0f) / degrees_per_radian;
+            // The Scene view's exposure and tone mapping; the Game view uses the scene camera's.
+            theme::property("Exposure");
+            auto exposure = m_camera.camera.exposure;
+            if (ImGui::InputFloat("##exposure", &exposure, 0.5f, 1.0f, "%.1f EV100") && std::isfinite(exposure))
+                m_camera.camera.exposure = std::clamp(exposure, -10.0f, 24.0f);
+            m_layout.controls.push_back({"camera.exposure", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scene values are scaled by 1 / (1.2 x 2^EV100); higher values darken.");
+            theme::property("Tone mapping");
+            const auto neutral = m_camera.camera.tone_mapping == ToneMapping::pbr_neutral;
+            if (ImGui::BeginCombo("##tone", neutral ? "PBR Neutral" : "AgX")) {
+                if (ImGui::Selectable("AgX", !neutral)) m_camera.camera.tone_mapping = ToneMapping::agx;
+                if (ImGui::Selectable("PBR Neutral", neutral)) m_camera.camera.tone_mapping = ToneMapping::pbr_neutral;
+                ImGui::EndCombo();
+            }
+            m_layout.controls.push_back({"camera.tone-mapping", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
             theme::end_properties();
         }
     }
