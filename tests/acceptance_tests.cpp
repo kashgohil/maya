@@ -181,7 +181,7 @@ TEST_CASE("The authored scene runs through the player's path and draws each obje
     const auto residency = assets.registry->residency();
     CHECK(residency.meshes == 2);
     CHECK(gpu.device.stats().buffers == 4);
-    CHECK(gpu.device.stats().frame_draws == 4);
+    CHECK(gpu.device.stats().frame_draws == 4 + 1); // and the tone-mapping triangle
 }
 
 TEST_CASE("The V1 reference scene matches its reference images, and authoring and play views agree", "[visual][gpu]") {
@@ -239,6 +239,44 @@ TEST_CASE("The V1 reference scene matches its reference images, and authoring an
                             images);
 }
 
+TEST_CASE("The V1 overview through exposure, both tone mappers, and the exposure views matches its HDR references", "[visual][gpu]") {
+    const auto project = open_project(sample_project());
+    REQUIRE(project);
+    Gpu gpu;
+    auto assets = open_project_assets(project.project, std::make_unique<FileAssetProvider>(gpu.device));
+    REQUIRE(assets);
+    const auto context = asset_property_context(*assets.registry);
+    auto loaded = load_scene_file(*project.project.resolve("v1_reference.scene"), context);
+    REQUIRE(loaded);
+    auto authored = instantiate_scene(loaded.document, context);
+    REQUIRE(authored);
+    constexpr uint32_t width = 256, height = 144;
+    auto images = std::vector<std::pair<std::string, RgbImage>>{};
+    const auto overview = [&](const char* name, float exposure, ToneMapping tone, ExposureView shown = ExposureView::none) {
+        auto camera = CameraComponent{};
+        camera.exposure = exposure;
+        camera.tone_mapping = tone;
+        auto view = make_render_view(camera, pose({0.0f, 18.0f, 14.0f}, {0.0f, 0.0f, -1.0f}), width, height);
+        REQUIRE(view);
+        view->exposure_view = shown;
+        images.emplace_back(name, gpu.render(*authored.world, *assets.registry, *view));
+    };
+    overview("ev-minus2", -2.0f, ToneMapping::agx); // brighter: the lit floor rolls off toward white without clipping
+    overview("ev-plus2", 2.0f, ToneMapping::agx);
+    overview("pbr-neutral", 0.0f, ToneMapping::pbr_neutral);
+    overview("luminance", 0.0f, ToneMapping::agx, ExposureView::luminance);
+    overview("false-color", 0.0f, ToneMapping::agx, ExposureView::false_color);
+    // Four stops of exposure apart, the brighter image is brighter on average.
+    const auto mean = [&](const RgbImage& image) {
+        auto total = 0.0;
+        for (const auto value : image.rgb) total += value;
+        return total / double(image.rgb.size());
+    };
+    CHECK(mean(images[0].second) > mean(images[1].second) + 40.0);
+    compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/hdr", fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs",
+                            images);
+}
+
 TEST_CASE("Resizing, reloading, and play resets settle at a steady state without stale handles", "[acceptance][gpu]") {
     Gpu gpu;
     const auto project = open_project(sample_project());
@@ -248,7 +286,7 @@ TEST_CASE("Resizing, reloading, and play resets settle at a steady state without
     const auto context = asset_property_context(*assets.registry);
     auto& registry = *assets.registry;
 
-    // Resizing: one color and one depth texture at the current size, whatever came before.
+    // Resizing: one color, one HDR scene color, and one depth texture at the current size, whatever came before.
     const auto sizes = std::array<std::pair<uint32_t, uint32_t>, 5>{{{320, 180}, {640, 360}, {97, 31}, {1280, 720}, {320, 180}}};
     auto old_color = TextureHandle{};
     std::optional<size_t> reported_after_first;
@@ -266,8 +304,8 @@ TEST_CASE("Resizing, reloading, and play resets settle at a steady state without
     }
     gpu.device.wait_idle();
     auto stats = gpu.device.stats();
-    CHECK(stats.textures == 2);
-    CHECK(stats.texture_bytes == size_t{320} * 180 * 8);
+    CHECK(stats.textures == 3); // color, HDR scene color, and depth
+    CHECK(stats.texture_bytes == size_t{320} * 180 * (4 + 8 + 4));
     CHECK(stats.pending_retirements == 0);
     CHECK(gpu.device.describe(old_color) == nullptr); // the first round's texture is gone for good
     REQUIRE(reported_after_first);

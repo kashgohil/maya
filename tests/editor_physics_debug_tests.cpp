@@ -60,10 +60,17 @@ TEST_CASE("Editor preferences round-trip, skip lines they do not know, and refus
     preferences.physics_debug = {uint8_t(PhysicsDebugCategory::colliders) | uint8_t(PhysicsDebugCategory::queries), 0x00F3};
     auto text = std::stringstream{};
     write_preferences(text, preferences);
-    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\n");
+    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\nexposure-view none\n");
     auto read = read_preferences(text);
     CHECK(read.error.empty());
     CHECK(read.preferences == preferences);
+    preferences.exposure_view = ExposureView::false_color; // #1032
+    auto exposure = std::stringstream{};
+    write_preferences(exposure, preferences);
+    CHECK(exposure.str().ends_with("exposure-view false-color\n"));
+    CHECK(read_preferences(exposure).preferences.exposure_view == ExposureView::false_color);
+    auto unknown_view = std::istringstream("maya-editor-preferences 1\nexposure-view sepia\n");
+    CHECK(read_preferences(unknown_view).error == "exposure-view needs none, luminance, or false-color");
 
     auto newer = std::istringstream("maya-editor-preferences 1\ntheme \"night\"\nphysics-debug contacts sparkles\n");
     read = read_preferences(newer);
@@ -249,4 +256,46 @@ TEST_CASE("Handles never make a size the Inspector would refuse: pulled past the
     pull_through(harness, "collider.+y");
     CHECK(collider_of(scene, crate).half_height == Approx(0.005f)); // still positive, as validation requires
     CHECK(harness.shell.edit_error().empty());
+}
+
+TEST_CASE("Exposure views come from the eye menu and are saved; the editor camera has its own exposure", "[editor][tone]") {
+    const auto folder = fs::temp_directory_path() / ("maya-exposure-" + std::to_string(::getpid()));
+    fs::remove_all(folder);
+    const auto file = folder / "editor.preferences";
+    {
+        Harness harness;
+        harness.shell.use_preferences_file(file);
+        harness.frames(3);
+        CHECK(harness.shell.exposure_view() == ExposureView::none);
+        press(harness, control(harness, "tool.physics-debug"));
+        harness.frames(2); // the menu sizes itself on its first frame
+        press(harness, control(harness, "debug.exposure.false-color"));
+        harness.frames(2);
+        CHECK(harness.shell.exposure_view() == ExposureView::false_color);
+        CHECK(fs::exists(file));
+        press(harness, control(harness, "debug.exposure.luminance"));
+        harness.frames(2);
+        CHECK(harness.shell.exposure_view() == ExposureView::luminance);
+    }
+    // A new editor starts with it.
+    Harness again;
+    again.shell.use_preferences_file(file);
+    CHECK(again.shell.exposure_view() == ExposureView::luminance);
+    again.frames(3);
+
+    // The Scene view's exposure is the editor camera's, typed in the Inspector; the scene is not edited.
+    CHECK(again.shell.camera().camera.exposure == 0.0f);
+    const auto field = control(again, "camera.exposure");
+    click(again, {field.x - 30.0f, field.y}); // the value, left of the step buttons
+    again.frame({MouseButtonEvent{MouseButton::left, false, KeyModifiers::none}});
+    REQUIRE(again.shell.ui_wants_text());
+    chord(again, {KeyCode::LeftSuper}, KeyCode::A);
+    for (const auto c : std::string("-1.5")) again.frame({TextEvent{uint32_t(c)}});
+    again.frame(key(KeyCode::Enter, true));
+    again.frame(key(KeyCode::Enter, false));
+    again.frames(1);
+    CHECK(again.shell.camera().camera.exposure == -1.5f);
+    CHECK_FALSE(again.shell.scene()->dirty());
+    CHECK(again.shell.layout().control("camera.tone-mapping"));
+    fs::remove_all(folder);
 }

@@ -134,10 +134,11 @@ TEST_CASE("Repeated instances share one mesh and material, and every instance is
     CHECK(counters.entities == 52); // the instances, a camera, and a light
     CHECK(counters.mesh_renderers == 50);
     CHECK(counters.spinning == 5); // exactly 10%, chosen by the seed
-    CHECK(counters.draws == 50);
-    CHECK(counters.instances == 50);
-    CHECK(counters.triangles == 50 * 12); // the cube has 12 triangles
-    CHECK(counters.passes == 1);
+    // One draw per instance, and the tone-mapping triangle in its own pass.
+    CHECK(counters.draws == 50 + 1);
+    CHECK(counters.instances == 50 + 1);
+    CHECK(counters.triangles == 50 * 12 + 1); // the cube has 12 triangles
+    CHECK(counters.passes == 2);
     // Sharing: the unique allocations do not grow with the instance count.
     CHECK(counters.unique_meshes == 1);
     CHECK(counters.unique_materials == 1);
@@ -354,12 +355,14 @@ TEST_CASE("Per-pass GPU times are summed by label, checked against their frame, 
     INFO(result.failure);
     REQUIRE(result.failure.empty());
     for (const auto& run : result.runs) {
-        REQUIRE(run.gpu_passes.size() == 1); // the renderer's one pass a frame
-        const auto& view = run.gpu_passes.at("view");
-        REQUIRE(view.size() == manifest.samples);
-        for (const auto& value : view) {
-            REQUIRE(value);
-            CHECK(*value == device.pass_ms + 0.01); // vertex and fragment stages
+        REQUIRE(run.gpu_passes.size() == 2); // the renderer's passes: the scene, then tone mapping
+        for (const auto* label : {"view", "tone map"}) {
+            const auto& series = run.gpu_passes.at(label);
+            REQUIRE(series.size() == manifest.samples);
+            for (const auto& value : series) {
+                REQUIRE(value);
+                CHECK(*value == device.pass_ms + 0.01); // vertex and fragment stages
+            }
         }
         CHECK(run.gpu_pass_mismatches == 0);
         CHECK(run.untimed_passes == 0);
@@ -368,7 +371,8 @@ TEST_CASE("Per-pass GPU times are summed by label, checked against their frame, 
     CHECK(result.uninstrumented->gpu_passes.empty()); // matched without pass timing...
     CHECK(device.gpu_pass_timing_enabled()); // ...which is turned back on afterwards
     const auto json = to_json(result);
-    CHECK(has(json, "\"gpu_pass_ms\":{\"view\":{\"count\":6"));
+    CHECK(has(json, "\"gpu_pass_ms\":{\"tone map\":{\"count\":6"));
+    CHECK(has(json, "\"view\":{\"count\":6"));
     CHECK(has(json, "\"gpu_pass_mismatches\":0"));
     CHECK(has(json, "\"gpu_difference_percent\":"));
     CHECK_FALSE(std::ranges::any_of(result.unavailable, [](const auto& entry) { return entry.first == "gpu_pass_time"; }));

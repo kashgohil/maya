@@ -301,7 +301,10 @@ TEST_CASE("Malformed and unsupported scene text fails with located diagnostics",
         {"maya-scene x\n", SceneError::malformed, 1, "header"},
         {"maya-scene 0\n", SceneError::malformed, 1, "header"},
         {"maya-scene 2\n", SceneError::unsupported_version, 1, "newer Maya build"},
-        {replace(block, "maya.camera 1", "maya.camera 2"), SceneError::unsupported_version, 3, "maya.camera version 2"},
+        {replace(block, "maya.camera 1", "maya.camera 3"), SceneError::unsupported_version, 3, "maya.camera version 3"},
+        // Version 1 cameras had no exposure; version 2 files store it.
+        {replace(block, "    far_clip 100\n", "    far_clip 100\n    exposure 2\n"), SceneError::unknown_property, 7, "maya.camera version 1"},
+        {replace(block, "maya.camera 1", "maya.camera 2"), SceneError::missing_property, 3, "'exposure'; version 2"},
         {replace(block, "maya.camera 1", "maya.physics 1"), SceneError::unknown_component, 3, "maya.transform"},
         {replace(block, "near_clip", "near"), SceneError::unknown_property, 5, "'near'"},
         {replace(block, "    far_clip 100\n", ""), SceneError::missing_property, 3, "'far_clip'"},
@@ -448,7 +451,8 @@ TEST_CASE("Failed loads keep the active scene", "[scene]") {
     const auto* original = active.get();
 
     const auto corrupt = project.root / "corrupt.scene";
-    write_file(corrupt, read_file(good).substr(0, read_file(good).size() / 2));
+    const auto text = read_file(good);
+    write_file(corrupt, text.substr(0, text.rfind('\n', text.size() / 2) + 1) + "component\n"); // cut short, then a bad line
     fs::create_directory(project.root / "folder.scene");
     const auto failures = std::vector<std::pair<fs::path, SceneError>>{
         {corrupt, SceneError::malformed},
@@ -682,4 +686,52 @@ TEST_CASE("Script components round-trip with their typed values", "[scene][scrip
     bad("greeting string \"hi \\\"there\\\"\"", "greeting string hi");
     const auto empty = read_scene(std::string_view(replace(text, text.substr(text.find("values 8"), text.find('\n', text.find("values 8")) - text.find("values 8")), "values 0")), any);
     CHECK(empty);
+}
+
+TEST_CASE("Version 1 cameras load with the documented exposure and tone mapping, and save as version 2", "[scene][tone]") {
+    Project project;
+    // A camera written before #1032: no exposure or tone mapping.
+    const auto loaded = read_scene(std::string_view(camera_block), project.context());
+    REQUIRE(loaded);
+    const auto& components = loaded.document.entities.front().components;
+    REQUIRE(components.size() == 1);
+    const auto& camera = std::get<CameraComponent>(components.front());
+    CHECK(camera.vertical_fov == 1.0f);
+    CHECK(camera.exposure == 0.0f); // EV100 0
+    CHECK(camera.tone_mapping == ToneMapping::agx);
+    // Saving writes the current version with every property.
+    const auto saved = encode(loaded.document, project.context());
+    CHECK(saved.find("component maya.camera 2\n") != std::string::npos);
+    CHECK(saved.find("    exposure 0\n") != std::string::npos);
+    CHECK(saved.find("    tone_mapping agx\n") != std::string::npos);
+
+    // Version 2 values round-trip.
+    auto document = loaded.document;
+    auto& edited = std::get<CameraComponent>(document.entities.front().components.front());
+    edited.exposure = -2.5f;
+    edited.tone_mapping = ToneMapping::pbr_neutral;
+    const auto text = encode(document, project.context());
+    CHECK(text.find("    exposure -2.5\n") != std::string::npos);
+    CHECK(text.find("    tone_mapping pbr_neutral\n") != std::string::npos);
+    const auto again = read_scene(std::string_view(text), project.context());
+    REQUIRE(again);
+    const auto& round_trip = std::get<CameraComponent>(again.document.entities.front().components.front());
+    CHECK(round_trip.exposure == -2.5f);
+    CHECK(round_trip.tone_mapping == ToneMapping::pbr_neutral);
+
+    // Values are validated as any other: an unknown tone mapper names the choices, exposure has a range.
+    const auto refused = [&](const std::string& from, const std::string& to, SceneError code, const std::string& excerpt) {
+        auto bad = text;
+        bad.replace(bad.find(from), from.size(), to);
+        const auto result = read_scene(std::string_view(bad), project.context());
+        INFO(bad);
+        REQUIRE_FALSE(result);
+        CHECK(result.diagnostics.front().code == code);
+        CHECK(result.diagnostics.front().message.find(excerpt) != std::string::npos);
+    };
+    refused("tone_mapping pbr_neutral", "tone_mapping aces", SceneError::malformed, "agx pbr_neutral");
+    refused("exposure -2.5", "exposure 40", SceneError::invalid_value, "exposure");
+    // The schema records when each property arrived.
+    for (const auto& property : component_schema("maya.camera")->properties)
+        CHECK(property.since == (property.name == "exposure" || property.name == "tone_mapping" ? 2u : 1u));
 }

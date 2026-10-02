@@ -25,6 +25,10 @@ public:
         PresentConstants constants;
         uint32_t texture;
     };
+    struct ToneMap {
+        ToneMapConstants constants;
+        uint32_t texture; // the scene color it read
+    };
     struct DebugCall {
         std::string pipeline; // its label: in front of the scene, or behind it
         DebugConstants constants;
@@ -40,6 +44,7 @@ public:
 
     std::vector<Draw> draws;
     std::vector<Present> presents;
+    std::vector<ToneMap> tone_maps;
     std::vector<DebugCall> debug;
     std::vector<RenderPassDesc> passes;
     size_t pipelines_created = 0;
@@ -71,6 +76,10 @@ protected:
         NullGraphicsDevice::backend_set_pipeline(slot);
     }
     void backend_draw(uint32_t vertices, uint32_t, uint32_t instances) override {
+        if (m_pipeline == "tone map") {
+            tone_maps.push_back({read<ToneMapConstants>(0), m_texture});
+            return;
+        }
         if (!m_pipeline.starts_with("debug")) {
             presents.push_back({read<PresentConstants>(1), m_texture});
             return;
@@ -415,10 +424,22 @@ TEST_CASE("One snapshot renders several views of different sizes without another
 
     CHECK(renderer.stats().views == 2);
     REQUIRE(device.draws.size() == 6);
-    REQUIRE(device.passes.size() == 2);
-    CHECK(device.passes[0].colors[0].texture == player_target.color());
-    CHECK(device.passes[1].colors[0].texture == editor_target.color());
-    CHECK(device.passes[1].depth->texture == editor_target.depth());
+    // Each view: the scene into its HDR color and depth, then tone mapping into its color.
+    REQUIRE(device.passes.size() == 4);
+    CHECK(device.passes[0].colors[0].texture == player_target.scene_color());
+    CHECK(device.passes[0].label == "view");
+    CHECK(device.passes[1].colors[0].texture == player_target.color());
+    CHECK(device.passes[1].label == "tone map");
+    CHECK_FALSE(device.passes[1].depth);
+    CHECK(device.passes[2].colors[0].texture == editor_target.scene_color());
+    CHECK(device.passes[2].depth->texture == editor_target.depth());
+    CHECK(device.passes[2].depth->store == StoreAction::dont_care); // no debug lines need it
+    CHECK(device.passes[3].colors[0].texture == editor_target.color());
+    REQUIRE(device.tone_maps.size() == 2);
+    CHECK(device.tone_maps[0].texture == player_target.scene_color().slot);
+    CHECK(device.tone_maps[1].texture == editor_target.scene_color().slot);
+    CHECK(device.tone_maps[0].constants.exposure == Approx(exposure_scale(0.0f)));
+    CHECK(device.tone_maps[0].constants.tone_mapping == uint32_t(ToneMapping::agx));
     CHECK(same(device.draws[0].view.view_projection, player->matrices.view_projection));
     CHECK(same(device.draws[3].view.view_projection, editor->matrices.view_projection));
     for (size_t i = 0; i < 3; ++i) CHECK(same(device.draws[i].constants.model, device.draws[i + 3].constants.model));
@@ -486,7 +507,7 @@ TEST_CASE("Render targets reallocate only on resize and retire replaced textures
     CHECK(target.height() == 40);
     CHECK_FALSE(device.describe(old_color));
     CHECK(device.stats().textures == textures);
-    CHECK(device.stats().pending_retirements == 2);
+    CHECK(device.stats().pending_retirements == 3); // color, scene color, and depth
     device.finish_frames();
     device.wait_idle();
     CHECK(device.stats().pending_retirements == 0);
@@ -580,7 +601,7 @@ TEST_CASE("Renderer recreates its pipelines in a new device session", "[renderer
     };
     frame();
     const auto pipelines = device.stats().pipelines;
-    CHECK(pipelines == 2);
+    CHECK(pipelines == 3); // lit, tone map, present
     frame();
     CHECK(device.stats().pipelines == pipelines); // cached per format
     device.shutdown();
@@ -612,14 +633,15 @@ TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw e
 
     // Off: no debug pipelines, uploads, or draws.
     render(extract_render_snapshot(world, *project.registry));
-    CHECK(device.pipelines_created == 1); // the lit pipeline only
+    CHECK(device.pipelines_created == 2); // lit and tone map only
     CHECK(device.debug.empty());
+    CHECK(device.passes.size() == 2); // no debug pass
     CHECK(renderer.stats().debug_draws == 0);
     auto empty = DebugDraw{};
     auto options = RenderExtractOptions{};
     options.debug = &empty;
     render(extract_render_snapshot(world, *project.registry, options));
-    CHECK(device.pipelines_created == 1);
+    CHECK(device.pipelines_created == 2);
     CHECK(renderer.stats().debug_draws == 0);
 
     // On: extraction copies the lines and outlines, and each kind is uploaded once and drawn in front
@@ -635,8 +657,17 @@ TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw e
     debug.clear(); // the snapshot keeps its own copy
     REQUIRE(snapshot.debug.lines.size() == 4);
     REQUIRE(snapshot.debug.shapes.size() == 3);
+    device.passes.clear();
     render(snapshot);
-    CHECK(device.pipelines_created == 3);
+    CHECK(device.pipelines_created == 4);
+    // After tone mapping, a pass over the view's color tests the lines against the scene's kept depth.
+    REQUIRE(device.passes.size() == 3);
+    CHECK(device.passes[0].depth->store == StoreAction::store);
+    CHECK(device.passes[2].label == "debug lines");
+    CHECK(device.passes[2].colors[0].texture == target.color());
+    CHECK(device.passes[2].colors[0].load == LoadAction::load);
+    CHECK(device.passes[2].depth->texture == target.depth());
+    CHECK(device.passes[2].depth->load == LoadAction::load);
     REQUIRE(device.debug.size() == 6); // lines, boxes, capsules; twice each
     for (size_t i = 0; i < 6; ++i) {
         const auto& call = device.debug[i];
