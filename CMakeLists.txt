@@ -397,6 +397,7 @@ if(BUILD_TESTING)
 
     add_executable(maya_rhi_tests tests/rhi_validation_tests.cpp)
     target_link_libraries(maya_rhi_tests PRIVATE MayaRHI Catch2::Catch2WithMain)
+    target_include_directories(maya_rhi_tests PRIVATE tests)
     maya_target_options(maya_rhi_tests)
     add_test(NAME maya_rhi_api COMMAND maya_rhi_tests)
     set_tests_properties(maya_rhi_api PROPERTIES LABELS "cpu;rhi" TIMEOUT 60)
@@ -643,13 +644,14 @@ if(BUILD_TESTING)
     if(TARGET MayaBenchmark)
         add_executable(maya_benchmark_tests tests/benchmark_tests.cpp)
         target_link_libraries(maya_benchmark_tests PRIVATE MayaBenchmark Catch2::Catch2WithMain)
+        target_include_directories(maya_benchmark_tests PRIVATE tests)
         maya_target_options(maya_benchmark_tests)
         add_test(NAME maya_benchmark COMMAND maya_benchmark_tests "~[gpu]")
         set_tests_properties(maya_benchmark PROPERTIES LABELS "cpu;benchmark" TIMEOUT 120)
         add_test(NAME maya_benchmark_gpu COMMAND maya_benchmark_tests "[gpu]")
         set_tests_properties(maya_benchmark_gpu PROPERTIES LABELS "gpu;benchmark" TIMEOUT 120 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
-        foreach(manifest sample i1_1k l1_load l1_play)
+        foreach(manifest sample sample_present i1_1k l1_load l1_play)
             add_test(NAME maya_benchmark_smoke_${manifest} COMMAND ${CMAKE_COMMAND}
                 "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/${manifest}.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-${manifest}.json"
                 -DEXIT_CODE=0 "-DEXPECT=results: " -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)

@@ -288,6 +288,81 @@ TEST_CASE("Metal measures each frame's GPU execution time and reports its alloca
     CHECK_FALSE(device.reported_memory());
 }
 
+TEST_CASE("Metal times each pass of a frame from GPU timestamps, inside the frame's GPU time", "[rhi]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr));
+    INFO(device.gpu_pass_timing_unavailable());
+    REQUIRE(device.gpu_pass_timing_supported());
+    const auto color = color_target(device, 256);
+    const auto pipeline = rectangle_pipeline(device, Format::undefined);
+    const auto params = params_buffer(device, {{{1, 0, 0, 1}, 0.5f, -1, 1, 0}});
+    const auto first = device.stats().submitted_frames + 1;
+    // More frames than slots, taken only at the end: early frames are resolved as their slots are reused.
+    constexpr uint64_t frames = 12;
+    for (uint64_t frame = 0; frame < frames; ++frame) {
+        REQUIRE_FALSE(device.begin_frame());
+        for (const auto* label : {"shadows", "view", ""}) {
+            REQUIRE_FALSE(device.begin_render_pass({{{color}}, {}, label}));
+            for (int draw = 0; draw < 20; ++draw) draw_rectangle(device, pipeline, params, 0);
+            REQUIRE_FALSE(device.end_render_pass());
+        }
+        REQUIRE_FALSE(device.end_frame());
+    }
+    device.wait_idle();
+    const auto timings = device.take_gpu_timings();
+    REQUIRE(timings.size() == frames);
+    for (const auto& timing : timings) {
+        INFO("frame " << timing.frame << ", " << timing.milliseconds << " ms");
+        CHECK(timing.frame >= first);
+        REQUIRE(timing.passes.size() == 3);
+        CHECK(timing.untimed_passes == 0);
+        CHECK(timing.passes[0].label == "shadows");
+        CHECK(timing.passes[1].label == "view");
+        CHECK(timing.passes[2].label == "pass 3");
+        auto previous_end = 0.0, fragments = 0.0;
+        for (const auto& pass : timing.passes) {
+            INFO(pass.label << ": " << pass.start_ms << " to " << pass.end_ms << ", vertex " << pass.vertex_ms << ", fragment " << pass.fragment_ms);
+            // Every pass lies inside its frame's GPU execution: pass times are never estimated.
+            CHECK(pass.start_ms >= -0.01);
+            CHECK(pass.end_ms <= timing.milliseconds + 0.01);
+            CHECK(pass.start_ms <= pass.end_ms);
+            CHECK(pass.fragment_ms > 0.0);
+            CHECK(pass.milliseconds() <= pass.end_ms - pass.start_ms + 0.001);
+            CHECK(pass.end_ms >= previous_end); // passes finish in encoding order
+            previous_end = pass.end_ms;
+            fragments += pass.fragment_ms;
+        }
+        CHECK(fragments <= timing.milliseconds + 0.01); // fragment stages run one after another
+    }
+
+    // Passes beyond the limit are counted, not timed.
+    REQUIRE_FALSE(device.begin_frame());
+    for (uint32_t pass = 0; pass < GraphicsDevice::max_timed_passes + 6; ++pass) {
+        REQUIRE_FALSE(device.begin_render_pass({{{color}}, {}, "many"}));
+        REQUIRE_FALSE(device.end_render_pass());
+    }
+    REQUIRE_FALSE(device.end_frame());
+    device.wait_idle();
+    auto many = device.take_gpu_timings();
+    REQUIRE(many.size() == 1);
+    CHECK(many[0].passes.size() == GraphicsDevice::max_timed_passes);
+    CHECK(many[0].untimed_passes == 6);
+
+    // Turned off, frames carry no passes, and the reason says so.
+    device.set_gpu_pass_timing(false);
+    CHECK_FALSE(device.gpu_pass_timing_supported());
+    CHECK(device.gpu_pass_timing_unavailable() == "pass timing is turned off");
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(device.begin_render_pass({{{color}}, {}, "off"}));
+    REQUIRE_FALSE(device.end_render_pass());
+    REQUIRE_FALSE(device.end_frame());
+    device.wait_idle();
+    const auto off = device.take_gpu_timings();
+    REQUIRE(off.size() == 1);
+    CHECK(off[0].passes.empty());
+    CHECK(off[0].milliseconds > 0.0);
+}
+
 TEST_CASE("Metal sessions handle headless surfaces, open-frame shutdown, and stale handles", "[rhi]") {
     MetalDevice device;
     for (int session = 0; session < 3; ++session) {

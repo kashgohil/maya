@@ -84,6 +84,16 @@ TEST_CASE("Metal editor draws docked panels and the scene viewport at Retina sca
         CHECK(brightness(panel) < 150);
         CHECK(shell.ui_renderer().stats().missing_textures == 0);
         CHECK(shell.extraction().skipped == 0);
+        // Performance keeps each pass's GPU time by name (#1026): the viewport, the UI, and thumbnails.
+        render(2);
+        device.wait_idle();
+        render(1); // takes the timings of the frames that completed
+        const auto& passes = shell.performance().gpu_passes;
+        for (const auto* label : {"view", "editor ui", "texture thumbnail"}) {
+            INFO(label);
+            REQUIRE(passes.contains(label));
+            CHECK(passes.at(label).samples.summary().mean > 0.0);
+        }
 
         // The Assets panel's texture thumbnails, from each texture's mips in the display's encoding.
         const auto thumbnail = [&](uint64_t low) {

@@ -2,6 +2,7 @@
 #include "maya/core/file_system.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/rhi/null_device.hpp"
+#include "support/timing_device.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <sstream>
 
@@ -65,6 +66,7 @@ runs 2
 cycles 5
 ticks 6
 overhead off
+present on
 )");
     REQUIRE(full);
     const auto& m = full.manifest;
@@ -87,6 +89,7 @@ overhead off
     CHECK(m.cycles == 5);
     CHECK(m.ticks == 6);
     CHECK_FALSE(m.overhead);
+    CHECK(m.present);
     // Defaults follow the measurement protocol: 300 warmup frames, 3,000 samples, three runs.
     const auto defaults = parse(minimal);
     REQUIRE(defaults);
@@ -94,6 +97,7 @@ overhead off
     CHECK(defaults.manifest.samples == 3000);
     CHECK(defaults.manifest.runs == 3);
     CHECK(defaults.manifest.seed == 990);
+    CHECK_FALSE(defaults.manifest.present); // offscreen unless asked
 
     const auto rejected = [](const std::string& text, const std::string& reason) {
         const auto result = parse(text);
@@ -109,6 +113,7 @@ overhead off
     rejected(minimal + "rotating 1.5\n", "invalid value for 'rotating'");
     rejected(minimal + "camera 1 1 1 1 1 1\n", "invalid value for 'camera'"); // looking at itself
     rejected(minimal + "samples 10 20\n", "unexpected '20' after 'samples'");
+    rejected(minimal + "present maybe\n", "invalid value for 'present'");
     rejected(minimal + "workload fast\n", "'workload' appears twice");
     rejected("maya-benchmark 1\nname \"t\"\nworkload fast\n", "unknown workload 'fast'");
     rejected("maya-benchmark 1\nname \"t\"\nworkload scene\n", "missing 'project'");
@@ -340,6 +345,103 @@ TEST_CASE("The physics workload runs headless, counts every part, and ends every
     CHECK(device.stats().submitted_frames == 0); // headless: nothing rendered
 }
 
+TEST_CASE("Per-pass GPU times are summed by label, checked against their frame, and left out of the matched run", "[benchmark]") {
+    const auto shader = FileSystem::read_text("resources/shaders/metal/renderer.metal");
+    test::TimingDevice device;
+    REQUIRE(device.initialize(nullptr, {3, size_t{8} << 20}));
+    const auto manifest = small(Workload::instances);
+    const auto result = run(manifest, device, shader);
+    INFO(result.failure);
+    REQUIRE(result.failure.empty());
+    for (const auto& run : result.runs) {
+        REQUIRE(run.gpu_passes.size() == 1); // the renderer's one pass a frame
+        const auto& view = run.gpu_passes.at("view");
+        REQUIRE(view.size() == manifest.samples);
+        for (const auto& value : view) {
+            REQUIRE(value);
+            CHECK(*value == device.pass_ms + 0.01); // vertex and fragment stages
+        }
+        CHECK(run.gpu_pass_mismatches == 0);
+        CHECK(run.untimed_passes == 0);
+    }
+    REQUIRE(result.uninstrumented);
+    CHECK(result.uninstrumented->gpu_passes.empty()); // matched without pass timing...
+    CHECK(device.gpu_pass_timing_enabled()); // ...which is turned back on afterwards
+    const auto json = to_json(result);
+    CHECK(has(json, "\"gpu_pass_ms\":{\"view\":{\"count\":6"));
+    CHECK(has(json, "\"gpu_pass_mismatches\":0"));
+    CHECK(has(json, "\"gpu_difference_percent\":"));
+    CHECK_FALSE(std::ranges::any_of(result.unavailable, [](const auto& entry) { return entry.first == "gpu_pass_time"; }));
+
+    // A pass outside its frame's GPU time is a measurement fault, counted and reported.
+    device.overrun = true;
+    const auto faulty = run(manifest, device, shader);
+    CHECK(faulty.runs.front().gpu_pass_mismatches == manifest.samples);
+    CHECK(has(to_text(faulty), "OUTSIDE THEIR FRAME"));
+
+    // A device that cannot time passes says why.
+    Device null;
+    const auto unavailable = run(manifest, null, shader);
+    CHECK(std::ranges::find(unavailable.unavailable, std::pair<std::string, std::string>{"gpu_pass_time", "the null device executes no GPU work"}) !=
+          unavailable.unavailable.end());
+}
+
+TEST_CASE("Presenting runs record when each frame was shown, its interval, and missed deadlines", "[benchmark]") {
+    const auto shader = FileSystem::read_text("resources/shaders/metal/renderer.metal");
+    auto manifest = small(Workload::scene);
+    manifest.present = true;
+    manifest.runs = 1;
+    manifest.overhead = false;
+    test::TimingDevice device({.surface = true, .surface_width = 64, .surface_height = 36});
+    auto window = 1;
+    REQUIRE(device.initialize(&window, {3, size_t{8} << 20}));
+    // The fourth sampled frame is never shown: the interval across it is two refresh periods.
+    device.dropped = {device.stats().submitted_frames + manifest.warmup + 4};
+    auto polls = 0;
+    const auto result = run(manifest, device, shader, [&] { ++polls; });
+    INFO(result.failure);
+    REQUIRE(result.failure.empty());
+    CHECK(polls >= int(manifest.warmup + manifest.samples)); // the window's events, every frame
+    REQUIRE(result.refresh_hz == 120.0);
+    const auto& run = result.runs.front();
+    REQUIRE(run.presented.size() == manifest.samples);
+    const auto paced = pacing(run, result.refresh_hz);
+    CHECK(paced.shown == manifest.samples - 1);
+    CHECK(paced.not_shown == 1);
+    CHECK(paced.unreported == 0);
+    REQUIRE(paced.intervals.size() == manifest.samples - 2);
+    CHECK(std::abs(paced.intervals[0] - 1000.0 / 120.0) < 1e-6);
+    CHECK(paced.missed == 1);
+    CHECK(run.gpu_passes.contains("present view")); // the presentation pass is timed too
+    const auto json = to_json(result);
+    CHECK(has(json, "\"present\":true"));
+    CHECK(has(json, "presented to a window every frame"));
+    CHECK(has(json, "\"presentation\":{\"shown\":5,\"not_shown\":1,\"unreported\":0,\"refresh_hz\":120"));
+    CHECK(has(json, "\"missed_deadlines\":1"));
+    CHECK(has(json, "\"present_interval_ms\":["));
+    CHECK(has(to_text(result), "(presenting)"));
+    CHECK(has(to_text(result), "1 missed deadlines at 120.000 Hz"));
+    CHECK(has(to_text(result), "WARNING: 1 frames were never shown and 0 not reported")); // not valid pacing
+    CHECK_FALSE(std::ranges::any_of(result.unavailable, [](const auto& entry) { return entry.first == "present_pacing"; }));
+
+    // A device that does not report presents: every frame is unreported, and the reason is given.
+    device.presents = false;
+    const auto silent = benchmark::run(manifest, device, shader);
+    CHECK(pacing(silent.runs.front(), silent.refresh_hz).unreported == manifest.samples);
+    CHECK(std::ranges::find(silent.unavailable, std::pair<std::string, std::string>{"present_pacing", "this device does not report when frames are shown"}) !=
+          silent.unavailable.end());
+
+    // Without a window there is nothing to present into.
+    Device headless;
+    const auto refused = benchmark::run(manifest, headless, shader);
+    CHECK(refused.failure == "'present on' needs a window; this device has no surface");
+    // Offscreen runs say pacing does not apply.
+    manifest.present = false;
+    const auto offscreen = benchmark::run(manifest, headless, shader);
+    CHECK(std::ranges::any_of(offscreen.unavailable, [](const auto& entry) { return entry.first == "present_pacing"; }));
+    CHECK(has(to_json(offscreen), "offscreen, never presented"));
+}
+
 TEST_CASE("On Metal every sampled frame gets its own GPU time, and warmup frames none", "[benchmark][gpu]") {
     MetalDevice device;
     REQUIRE(device.initialize(nullptr, {3, size_t{8} << 20}));
@@ -363,5 +465,14 @@ TEST_CASE("On Metal every sampled frame gets its own GPU time, and warmup frames
     CHECK(result.resident.gpu_reported);
     CHECK(result.resident.gpu_reported.value_or(0) > 0);
     CHECK_FALSE(std::ranges::any_of(result.unavailable, [](const auto& entry) { return entry.first == "gpu_frame_time"; }));
+    // Every sampled frame's one pass is timed from GPU timestamps, inside its frame; none in the matched run.
+    const auto& passes = result.runs.front().gpu_passes;
+    REQUIRE(passes.contains("view"));
+    for (const auto& value : passes.at("view")) {
+        REQUIRE(value);
+        CHECK(*value > 0.0);
+    }
+    CHECK(result.runs.front().gpu_pass_mismatches == 0);
+    CHECK(result.uninstrumented->gpu_passes.empty());
     device.shutdown();
 }

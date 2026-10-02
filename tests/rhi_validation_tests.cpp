@@ -1,5 +1,7 @@
 #include "maya/rhi/null_device.hpp"
+#include "support/timing_device.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 
@@ -730,6 +732,95 @@ TEST_CASE("GPU timings are kept up to a bound until taken", "[rhi-api]") {
     CHECK(completion.timings.front().frame == 6); // the oldest were dropped and counted
     CHECK(completion.dropped_timings == 5);
     CHECK(completion.timings.back().milliseconds == 1.5);
+}
+
+TEST_CASE("Pass and present timing are unavailable without a GPU, and say why", "[rhi-api]") {
+    NullGraphicsDevice device({.surface = true, .surface_width = 32, .surface_height = 32});
+    CHECK_FALSE(device.gpu_pass_timing_supported());
+    CHECK(device.gpu_pass_timing_unavailable() == "the device is not initialized");
+    auto window = 1;
+    REQUIRE(device.initialize(&window));
+    CHECK_FALSE(device.gpu_pass_timing_supported());
+    CHECK(device.gpu_pass_timing_unavailable() == "the null device executes no GPU work");
+    CHECK_FALSE(device.present_timing_supported());
+    CHECK_FALSE(device.display_refresh_rate());
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE(device.acquire_surface());
+    REQUIRE_FALSE(device.end_frame());
+    device.wait_idle();
+    CHECK(device.take_gpu_timings().empty()); // nothing is ever estimated
+    CHECK(device.take_present_timings().empty());
+}
+
+TEST_CASE("Frames carry the passes a backend timed, and pass timing can be turned off", "[rhi-api]") {
+    test::TimingDevice device({.surface = true, .surface_width = 32, .surface_height = 32});
+    auto window = 1;
+    REQUIRE(device.initialize(&window));
+    CHECK(device.gpu_pass_timing_supported());
+    CHECK(device.gpu_pass_timing_unavailable().empty());
+    const auto color = target(device);
+    const auto frame = [&](std::vector<std::string> labels, bool present = false, std::function<void()> during = {}) {
+        REQUIRE_FALSE(device.begin_frame());
+        for (const auto& label : labels) {
+            auto pass = color_pass(color);
+            pass.label = label;
+            REQUIRE_FALSE(device.begin_render_pass(pass));
+            REQUIRE_FALSE(device.end_render_pass());
+            if (during) during();
+        }
+        if (present) REQUIRE(device.acquire_surface());
+        REQUIRE_FALSE(device.end_frame());
+    };
+    frame({"shadows", "view", "ui"});
+    auto timings = device.take_gpu_timings();
+    REQUIRE(timings.size() == 1);
+    REQUIRE(timings[0].passes.size() == 3);
+    CHECK(timings[0].passes[0].label == "shadows");
+    CHECK(timings[0].passes[2].label == "ui");
+    CHECK(timings[0].passes[1].milliseconds() == timings[0].passes[1].vertex_ms + timings[0].passes[1].fragment_ms);
+
+    // The backend sees which passes are timed: at most max_timed_passes a frame.
+    frame(std::vector<std::string>(GraphicsDevice::max_timed_passes + 3, "many"));
+    timings = device.take_gpu_timings();
+    REQUIRE(timings.size() == 1);
+    CHECK(timings[0].passes.size() == GraphicsDevice::max_timed_passes);
+    CHECK(timings[0].untimed_passes == 3);
+
+    // Turning it off applies from the next frame, and the reason says so.
+    frame({"before", "after"}, false, [&] { device.set_gpu_pass_timing(false); });
+    CHECK(device.take_gpu_timings().front().passes.size() == 2);
+    CHECK_FALSE(device.gpu_pass_timing_supported());
+    CHECK(device.gpu_pass_timing_unavailable() == "pass timing is turned off");
+    frame({"off"});
+    timings = device.take_gpu_timings();
+    REQUIRE(timings.size() == 1);
+    CHECK(timings[0].passes.empty());
+    CHECK(timings[0].untimed_passes == 0);
+    CHECK(timings[0].milliseconds == device.frame_ms); // the frame's own time is still measured
+    device.set_gpu_pass_timing(true);
+    frame({"on"});
+    CHECK(device.take_gpu_timings().front().passes.size() == 1);
+
+    // Presented frames report when they were shown, or that they never were.
+    device.dropped = {device.stats().submitted_frames + 2};
+    for (int i = 0; i < 3; ++i) frame({"view"}, true);
+    frame({"view"}); // not presented: no report
+    const auto presents = device.take_present_timings();
+    REQUIRE(presents.size() == 3);
+    CHECK(presents[0].presented);
+    CHECK_FALSE(presents[1].presented);
+    CHECK(*presents[2].presented > *presents[0].presented);
+    CHECK(device.display_refresh_rate() == 120.0);
+}
+
+TEST_CASE("Present timings are kept up to a bound until taken", "[rhi-api]") {
+    auto completion = RhiCompletion{};
+    for (uint64_t frame = 1; frame <= RhiCompletion::timing_capacity + 2; ++frame) completion.record_present(frame, double(frame));
+    CHECK(completion.presents.size() == RhiCompletion::timing_capacity);
+    CHECK(completion.presents.front().frame == 3);
+    CHECK(completion.dropped_presents == 2);
+    completion.record_timing(7, 1.0, 42.0);
+    CHECK(completion.timings.back().started == 42.0);
 }
 
 TEST_CASE("Mip chains and block-compressed formats have exact sizes", "[rhi-api]") {

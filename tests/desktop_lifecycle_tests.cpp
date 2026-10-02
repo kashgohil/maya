@@ -7,6 +7,8 @@
 #include "maya/core/file_system.hpp"
 #include "maya/platform/input.hpp"
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #if MAYA_TEST_PLAYER
 #include "player_application.hpp"
 #endif
@@ -158,6 +160,72 @@ TEST_CASE("Surface presentation follows resizes and is independent of offscreen 
         device.shutdown();
         CHECK(device.native_texture_count() == 0);
     }
+}
+
+TEST_CASE("Presented frames report when the display showed them, a refresh period apart", "[desktop]") {
+    maya::Window window(160, 120, "Maya present timing test");
+    REQUIRE(window.get_native_handle());
+    window.set_floating(true); // a covered window's frames are not shown when expected
+    maya::MetalDevice device;
+    REQUIRE(device.initialize(window.get_native_handle()));
+    CHECK(device.present_timing_supported());
+    const auto refresh = device.display_refresh_rate();
+    REQUIRE(refresh);
+    CHECK(*refresh >= 30.0);
+    const auto [width, height] = window.framebuffer_size();
+    device.resize(uint32_t(width), uint32_t(height));
+    const auto pipeline = surface_pipeline(device);
+    const auto first = device.stats().submitted_frames + 1;
+    constexpr int frames = 30;
+    for (int frame = 0; frame < frames; ++frame) {
+        window.poll_events();
+        REQUIRE_FALSE(device.begin_frame());
+        const auto surface = device.acquire_surface();
+        REQUIRE(surface);
+        REQUIRE_FALSE(device.begin_render_pass(surface_pass(surface.target.texture)));
+        REQUIRE_FALSE(device.set_pipeline(pipeline));
+        REQUIRE_FALSE(device.draw(3));
+        REQUIRE_FALSE(device.end_render_pass());
+        REQUIRE_FALSE(device.end_frame());
+    }
+    device.wait_idle();
+    // The last frames are shown at later refreshes. Presented frames report, shown or not, except that
+    // Metal occasionally never reports one (about one run in four here): such frames are unreported.
+    auto presents = std::vector<maya::PresentTiming>{};
+    for (int attempt = 0; attempt < 1500 && presents.size() < frames; ++attempt) {
+        window.poll_events();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        for (const auto& present : device.take_present_timings()) presents.push_back(present);
+    }
+    CHECK(presents.size() >= frames - 2);
+    CHECK(presents.size() <= frames);
+    std::ranges::sort(presents, {}, &maya::PresentTiming::frame);
+    REQUIRE_FALSE(presents.empty());
+    CHECK(presents.front().frame >= first);
+    CHECK(presents.back().frame < first + frames);
+    CHECK(std::ranges::adjacent_find(presents, {}, &maya::PresentTiming::frame) == presents.end()); // one report each
+    auto previous = std::optional<double>{};
+    auto intervals = std::vector<double>{};
+    for (const auto& present : presents) {
+        if (!present.presented) continue;
+        // Shown in order on the host clock. Two frames can share a refresh (e.g. while the new window
+        // first appears), so single intervals may be 0; the typical one is a refresh period.
+        if (previous) {
+            CHECK(*present.presented >= *previous);
+            intervals.push_back(*present.presented - *previous);
+        }
+        previous = present.presented;
+    }
+    // Submitted faster than the display refreshes, drawables are replaced before they are shown and
+    // report so; how many depends on timing (fewer are shown in slower builds), so only enough shown
+    // frames to judge their intervals are required.
+    CHECK(intervals.size() >= 4);
+    std::ranges::sort(intervals);
+    REQUIRE_FALSE(intervals.empty());
+    const auto median = intervals[intervals.size() / 2];
+    CHECK(median > 0.75 / *refresh);
+    CHECK(median < 1.25 / *refresh);
+    device.shutdown();
 }
 
 TEST_CASE("Metal keeps encoded mesh resources alive after the final asset lease is released", "[desktop][assets]") {
