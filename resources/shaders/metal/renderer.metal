@@ -8,6 +8,7 @@ struct Vertex {
     float3 normal;
     float4 color;
     float2 uv;
+    float4 tangent; // xyz along increasing u; w the bitangent's sign
 };
 
 struct DirectionalLight {
@@ -23,11 +24,16 @@ struct ViewConstants {
     DirectionalLight lights[4];
 };
 
-struct DrawConstants {
+struct DrawConstants { // per draw, for the vertex stage
     float4x4 model;
     float4 normal_matrix[3];
+};
+
+struct MaterialConstants { // per material, for the fragment stage
     float4 base_color;
-    float4 material; // x metallic, y roughness
+    float4 factors; // x metallic, y roughness, z normal scale, w occlusion strength
+    float4 emissive; // rgb emitted light, w alpha cutoff
+    uint4 flags; // x a bit per texture slot in use, y alpha mode (0 opaque, 1 mask, 2 blend)
 };
 
 struct PresentConstants {
@@ -38,50 +44,130 @@ struct LitOut {
     float4 position [[position]];
     float3 world_position;
     float3 world_normal;
+    float4 world_tangent; // xyz, and w the bitangent's sign
     float4 color;
+    float2 uv;
 };
 
 vertex LitOut litVertex(uint id [[vertex_id]],
                         constant Vertex* vertices [[buffer(0)]],
                         constant DrawConstants& draw [[buffer(1)]],
                         constant ViewConstants& view [[buffer(2)]]) {
-    const float4 world = draw.model * float4(vertices[id].position, 1.0);
-    // Inverse transpose of the model's linear part keeps normals perpendicular under nonuniform scale.
+    const Vertex v = vertices[id];
+    const float4 world = draw.model * float4(v.position, 1.0);
+    // Inverse transpose of the model's linear part keeps normals perpendicular under nonuniform scale;
+    // tangents lie in the surface, so the model matrix itself carries them.
     const float3x3 normal_matrix = float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
                                             draw.normal_matrix[2].xyz);
+    const float3x3 linear = float3x3(draw.model[0].xyz, draw.model[1].xyz, draw.model[2].xyz);
     LitOut out;
     out.position = view.view_projection * world;
     out.world_position = world.xyz;
-    out.world_normal = normal_matrix * vertices[id].normal;
-    out.color = vertices[id].color;
+    out.world_normal = normal_matrix * v.normal;
+    out.world_tangent = float4(linear * v.tangent.xyz, v.tangent.w);
+    out.color = v.color;
+    out.uv = v.uv;
     return out;
 }
 
-// Blinn-Phong direct lighting with material factors: metallic tints the highlight and removes the
-// diffuse term; roughness widens the highlight.
-fragment float4 litFragment(LitOut in [[stage_in]],
-                            constant DrawConstants& draw [[buffer(1)]],
-                            constant ViewConstants& view [[buffer(2)]]) {
-    const float4 base = in.color * draw.base_color;
-    const float metallic = saturate(draw.material.x);
-    const float roughness = clamp(draw.material.y, 0.05, 1.0);
-    const float roughness4 = roughness * roughness * roughness * roughness;
-    const float shininess = clamp(2.0 / roughness4 - 2.0, 1.0, 2048.0);
-    const float3 diffuse_color = base.rgb * (1.0 - metallic);
-    const float3 specular_color = mix(float3(0.04), base.rgb, metallic);
+// glTF's metallic-roughness BRDF (docs/renderer.md#materials), as tests/support/shading.hpp mirrors it.
+constant float min_roughness = 0.045; // keeps GGX finite for a mirror under a directional light
 
-    const float3 N = normalize(in.world_normal);
+float3 fresnel_schlick(float3 f0, float VdotH) {
+    return f0 + (1.0 - f0) * pow(1.0 - VdotH, 5.0);
+}
+// GGX normal distribution, alpha the squared roughness.
+float ggx(float NdotH, float alpha) {
+    const float a2 = alpha * alpha;
+    const float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / (M_PI_F * d * d);
+}
+// Height-correlated Smith visibility, the masking-shadowing term over 4 NdotL NdotV.
+float smith_visibility(float NdotL, float NdotV, float alpha) {
+    const float a2 = alpha * alpha;
+    const float v = NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2);
+    const float l = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
+    return v + l > 0.0 ? 0.5 / (v + l) : 0.0;
+}
+// The specular reflectance of a uniform environment, from Karis's analytic fit of the split-sum
+// table ("Physically Based Shading on Mobile", 2014).
+float3 environment_specular(float3 f0, float roughness, float NdotV) {
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    const float4 r = roughness * c0 + c1;
+    const float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    const float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
+
+// Texture slots, as MaterialSlot in include/maya/renderer/render_snapshot.hpp.
+constant uint slot_base_color = 0, slot_metallic_roughness = 1, slot_normal = 2, slot_occlusion = 3, slot_emissive = 4;
+bool has_map(constant MaterialConstants& material, uint slot) { return (material.flags.x >> slot & 1u) != 0; }
+
+fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
+                            constant ViewConstants& view [[buffer(2)]],
+                            constant MaterialConstants& material [[buffer(3)]],
+                            texture2d<float> base_color_map [[texture(0)]], sampler base_color_sampler [[sampler(0)]],
+                            texture2d<float> metallic_roughness_map [[texture(1)]], sampler metallic_roughness_sampler [[sampler(1)]],
+                            texture2d<float> normal_map [[texture(2)]], sampler normal_sampler [[sampler(2)]],
+                            texture2d<float> occlusion_map [[texture(3)]], sampler occlusion_sampler [[sampler(3)]],
+                            texture2d<float> emissive_map [[texture(4)]], sampler emissive_sampler [[sampler(4)]]) {
+    float4 base = in.color * material.base_color;
+    if (has_map(material, slot_base_color)) base *= base_color_map.sample(base_color_sampler, in.uv);
+    const uint alpha_mode = material.flags.y;
+    if (alpha_mode == 1 && base.a < material.emissive.w) discard_fragment();
+
+    float metallic = material.factors.x, roughness = material.factors.y;
+    if (has_map(material, slot_metallic_roughness)) {
+        const float4 sample = metallic_roughness_map.sample(metallic_roughness_sampler, in.uv);
+        roughness *= sample.g;
+        metallic *= sample.b;
+    }
+    metallic = saturate(metallic);
+    roughness = clamp(roughness, min_roughness, 1.0);
+    const float alpha = roughness * roughness;
+
+    // The geometric frame; a double-sided surface seen from behind turns all of it around, as glTF says.
+    float3 N = normalize(in.world_normal);
+    if (has_map(material, slot_normal)) {
+        const float3 T = normalize(in.world_tangent.xyz - N * dot(N, in.world_tangent.xyz));
+        const float3 B = cross(N, T) * (in.world_tangent.w < 0.0 ? -1.0 : 1.0);
+        // x in red, green, and blue and y in alpha (docs/assets.md#textures); z rebuilt, then x and y scaled.
+        const float4 sample = normal_map.sample(normal_sampler, in.uv);
+        const float2 xy = float2(sample.r, sample.a) * 2.0 - 1.0;
+        const float3 tangent_normal = normalize(float3(xy * material.factors.z, sqrt(saturate(1.0 - dot(xy, xy)))));
+        N = normalize(T * tangent_normal.x + B * tangent_normal.y + N * tangent_normal.z);
+    }
+    if (!front) N = -N;
+
+    const float3 c_diff = base.rgb * (1.0 - metallic);
+    const float3 f0 = mix(float3(0.04), base.rgb, metallic);
     const float3 V = normalize(view.camera_position.xyz - in.world_position);
-    float3 rgb = view.ambient.rgb * base.rgb;
+    const float NdotV = max(dot(N, V), 1e-4);
+
+    // Ambient light is a uniform environment: diffuse where the environment's specular leaves energy.
+    float occlusion = 1.0;
+    if (has_map(material, slot_occlusion)) occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, in.uv).r - 1.0);
+    const float3 specular_environment = environment_specular(f0, roughness, NdotV);
+    float3 rgb = view.ambient.rgb * (c_diff * (1.0 - specular_environment) + specular_environment) * occlusion;
+
     const uint lights = min(view.light_count.x, 4u);
     for (uint i = 0; i < lights; ++i) {
         const float3 L = view.lights[i].direction_to_light.xyz;
-        const float ndotl = saturate(dot(N, L));
+        const float NdotL = dot(N, L);
+        if (NdotL <= 0.0) continue;
         const float3 H = normalize(L + V);
-        const float highlight = ndotl > 0.0 ? pow(saturate(dot(N, H)), shininess) : 0.0;
-        rgb += view.lights[i].radiance.rgb * (diffuse_color * ndotl + specular_color * highlight);
+        const float NdotH = saturate(dot(N, H)), VdotH = saturate(dot(V, H));
+        const float3 F = fresnel_schlick(f0, VdotH);
+        const float3 diffuse = (1.0 - F) * c_diff / M_PI_F;
+        const float3 specular = F * ggx(NdotH, alpha) * smith_visibility(NdotL, NdotV, alpha);
+        rgb += view.lights[i].radiance.rgb * (diffuse + specular) * NdotL;
     }
-    return float4(rgb, base.a);
+
+    float3 emitted = material.emissive.rgb;
+    if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, in.uv).rgb;
+    rgb += emitted;
+    return float4(rgb, alpha_mode == 2 ? base.a : 1.0);
 }
 
 struct PresentOut {

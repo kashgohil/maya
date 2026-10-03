@@ -36,6 +36,7 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, uint32_t>) return PropertyType::flags;
     else if constexpr (std::same_as<T, AssetRef<ScriptAsset>>) return PropertyType::script_ref;
     else if constexpr (std::same_as<T, std::vector<ScriptValue>>) return PropertyType::script_values;
+    else if constexpr (std::same_as<T, AssetRef<TextureAsset>>) return PropertyType::texture_ref;
     else { static_assert(std::same_as<T, AssetRef<MaterialAsset>>); return PropertyType::material_ref; }
 }
 /// Enumerations are held in PropertyValue as ChoiceValue; everything else as itself.
@@ -50,7 +51,8 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
     using C = typename MemberTraits<decltype(Member)>::Owner;
     using V = typename MemberTraits<decltype(Member)>::Value;
     constexpr auto type = property_type<V>();
-    constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::script_ref
+    constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::script_ref ||
+                              type == PropertyType::texture_ref
         ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
     return {{id, name, label, type, property_value(C{}.*Member), range, units, presentation, encoding, choices, description},
         [](const ComponentValue& value) -> PropertyValue { return property_value(std::get<C>(value).*Member); },
@@ -203,6 +205,91 @@ const auto& script_bindings() {
     return values;
 }
 
+
+// Material assets: the same descriptors, read from and written to a MaterialAsset.
+struct MaterialBinding {
+    PropertyDescriptor descriptor;
+    PropertyValue (*read)(const MaterialAsset&);
+    bool (*write)(MaterialAsset&, const PropertyValue&);
+};
+template<auto Member>
+MaterialBinding bind_material(PropertyId id, std::string_view name, std::string_view label, PropertyPresentation presentation,
+                              NumericRange range = {}, std::string_view units = {}, std::string_view description = {},
+                              std::span<const EnumOption> choices = {}) {
+    using V = typename MemberTraits<decltype(Member)>::Value;
+    constexpr auto type = property_type<V>();
+    constexpr auto encoding = type == PropertyType::texture_ref ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
+    return {{id, name, label, type, property_value(MaterialAsset{}.*Member), range, units, presentation, encoding, choices, description},
+        [](const MaterialAsset& material) -> PropertyValue { return property_value(material.*Member); },
+        [](MaterialAsset& material, const PropertyValue& input) {
+            if constexpr (std::is_enum_v<V>) {
+                const auto choice = std::get_if<ChoiceValue>(&input);
+                if (!choice) return false;
+                material.*Member = static_cast<V>(choice->value);
+            } else {
+                const auto typed = std::get_if<V>(&input);
+                if (!typed) return false;
+                material.*Member = *typed;
+            }
+            return true;
+        }};
+}
+constexpr auto alpha_mode_options = std::array{
+    option(AlphaMode::opaque, "opaque", "Opaque"),
+    option(AlphaMode::mask, "mask", "Mask"),
+    option(AlphaMode::blend, "blend", "Blend")};
+constexpr auto normal_scale_range = NumericRange{0.0f, 10.0f, true, true};
+constexpr auto emissive_strength_range = NumericRange{0.0f, 100000.0f, true, true};
+const auto& material_bindings() {
+    // Base color is RGBA in the asset; the Inspector edits its color and alpha apart.
+    static const auto base_color = MaterialBinding{
+        {1, "base_color", "Base color", PropertyType::vector3, math::Vec3{1, 1, 1}, unit_interval, "linear RGB",
+         Hint::color, PropertyEncoding::value, {}, "Multiplies the base color map and the vertex color."},
+        [](const MaterialAsset& m) -> PropertyValue { return math::Vec3{m.base_color.x, m.base_color.y, m.base_color.z}; },
+        [](MaterialAsset& m, const PropertyValue& input) {
+            const auto color = std::get_if<math::Vec3>(&input);
+            if (!color) return false;
+            m.base_color = {color->x, color->y, color->z, m.base_color.w};
+            return true;
+        }};
+    static const auto alpha = MaterialBinding{
+        {2, "alpha", "Alpha", PropertyType::scalar, 1.0f, unit_interval, {}, Hint::number, PropertyEncoding::value, {},
+         "Base color alpha; used by the mask and blend alpha modes."},
+        [](const MaterialAsset& m) -> PropertyValue { return m.base_color.w; },
+        [](MaterialAsset& m, const PropertyValue& input) {
+            const auto value = std::get_if<float>(&input);
+            if (!value) return false;
+            m.base_color.w = *value;
+            return true;
+        }};
+    static const auto values = std::array{
+        base_color, alpha,
+        bind_material<&MaterialAsset::base_color_texture>(3, "base_color_texture", "Base color map", Hint::asset, {}, {},
+            "A color texture; RGB multiplies the base color and alpha its alpha."),
+        bind_material<&MaterialAsset::metallic>(4, "metallic", "Metallic", Hint::number, unit_interval),
+        bind_material<&MaterialAsset::roughness>(5, "roughness", "Roughness", Hint::number, unit_interval),
+        bind_material<&MaterialAsset::metallic_roughness_texture>(6, "metallic_roughness_texture", "Metallic-roughness map", Hint::asset,
+            {}, {}, "A data texture: green multiplies roughness and blue metallic."),
+        bind_material<&MaterialAsset::normal_texture>(7, "normal_texture", "Normal map", Hint::asset, {}, {},
+            "A normal texture in tangent space, +Y up the texture."),
+        bind_material<&MaterialAsset::normal_scale>(8, "normal_scale", "Normal scale", Hint::number, normal_scale_range, {},
+            "Scales the normal map's X and Y."),
+        bind_material<&MaterialAsset::occlusion_texture>(9, "occlusion_texture", "Occlusion map", Hint::asset, {}, {},
+            "A data texture whose red darkens ambient light."),
+        bind_material<&MaterialAsset::occlusion_strength>(10, "occlusion_strength", "Occlusion strength", Hint::number, unit_interval),
+        bind_material<&MaterialAsset::emissive>(11, "emissive", "Emissive", Hint::color, unit_interval, "linear RGB",
+            "Light the surface gives off, times the strength and the emissive map."),
+        bind_material<&MaterialAsset::emissive_strength>(12, "emissive_strength", "Emissive strength", Hint::number,
+            emissive_strength_range),
+        bind_material<&MaterialAsset::emissive_texture>(13, "emissive_texture", "Emissive map", Hint::asset, {}, {}, "A color texture."),
+        bind_material<&MaterialAsset::alpha_mode>(14, "alpha_mode", "Alpha mode", Hint::choice, {}, {},
+            "Mask cuts out below the cutoff; blend draws see-through, back to front.", alpha_mode_options),
+        bind_material<&MaterialAsset::alpha_cutoff>(15, "alpha_cutoff", "Alpha cutoff", Hint::number, unit_interval, {}, "Mask only."),
+        bind_material<&MaterialAsset::double_sided>(16, "double_sided", "Double sided", Hint::toggle, {}, {},
+            "Drawn from behind too; otherwise back faces are culled.")};
+    return values;
+}
+
 } // namespace
 
 const char* script_value_type_name(ScriptValueType type) noexcept {
@@ -287,39 +374,44 @@ bool in_range(float value, const NumericRange& range) {
     if (range.maximum && (range.maximum_inclusive ? value > *range.maximum : value >= *range.maximum)) return false;
     return true;
 }
-PropertyResult validate(ComponentValue& value, const PropertyValidationContext& context) {
-    const auto id = component_id(value);
-    for (const auto& item : bindings(id)) {
-        const auto& d = item.descriptor;
-        const auto input = item.read(value);
-        const auto invalid = [&] { return PropertyResult{PropertyError::invalid_value, d.id, "Value is nonfinite or outside its allowed range"}; };
-        if (const auto scalar = std::get_if<float>(&input)) {
-            if (!in_range(*scalar, d.range)) return invalid();
-        } else if (const auto vector = std::get_if<math::Vec3>(&input)) {
-            if (!in_range(vector->x, d.range) || !in_range(vector->y, d.range) || !in_range(vector->z, d.range)) return invalid();
-        } else if (const auto choice = std::get_if<ChoiceValue>(&input)) {
-            auto found = false;
-            for (const auto& option : d.choices) found |= option.value == choice->value;
-            if (!found) return {PropertyError::invalid_value, d.id, "Value is not one of the property's choices"};
-        } else if (const auto whole = std::get_if<int32_t>(&input)) {
-            if (!in_range(float(*whole), d.range)) return invalid();
-        } else if (const auto bits = std::get_if<uint32_t>(&input)) {
-            if (d.range.maximum && float(*bits) > *d.range.maximum) return invalid();
-        } else if (const auto values = std::get_if<std::vector<ScriptValue>>(&input)) {
-            if (!script_values_problem(*values).empty())
-                return {PropertyError::invalid_value, d.id,
-                        "Script property values need identifier names, one value each, and finite values of their type"};
-        } else if (d.encoding == PropertyEncoding::persistent_asset_id) {
-            const auto mesh = std::get_if<AssetRef<MeshAsset>>(&input);
-            const auto script = std::get_if<AssetRef<ScriptAsset>>(&input);
-            const auto asset = mesh ? mesh->id : script ? script->id : std::get<AssetRef<MaterialAsset>>(input).id;
-            if (!asset.valid()) continue;
-            if (!context.resolve_asset) return {PropertyError::validation_context_required, d.id, "A catalog resolver is required for nonempty asset references"};
-            const auto status = context.resolve_asset(asset, mesh ? ReferenceKind::mesh : script ? ReferenceKind::script : ReferenceKind::material);
-            if (status == ReferenceStatus::missing) return {PropertyError::missing_reference, d.id, "Asset ID is not registered in this project"};
-            if (status != ReferenceStatus::valid) return {PropertyError::wrong_reference_type, d.id, "Asset catalog kind does not match the property"};
-        }
+/// One property's value against its descriptor; an error, or none.
+std::optional<PropertyResult> check(const PropertyDescriptor& d, const PropertyValue& input, const PropertyValidationContext& context) {
+    const auto invalid = [&] { return PropertyResult{PropertyError::invalid_value, d.id, "Value is nonfinite or outside its allowed range"}; };
+    if (const auto scalar = std::get_if<float>(&input)) {
+        if (!in_range(*scalar, d.range)) return invalid();
+    } else if (const auto vector = std::get_if<math::Vec3>(&input)) {
+        if (!in_range(vector->x, d.range) || !in_range(vector->y, d.range) || !in_range(vector->z, d.range)) return invalid();
+    } else if (const auto choice = std::get_if<ChoiceValue>(&input)) {
+        auto found = false;
+        for (const auto& option : d.choices) found |= option.value == choice->value;
+        if (!found) return PropertyResult{PropertyError::invalid_value, d.id, "Value is not one of the property's choices"};
+    } else if (const auto whole = std::get_if<int32_t>(&input)) {
+        if (!in_range(float(*whole), d.range)) return invalid();
+    } else if (const auto bits = std::get_if<uint32_t>(&input)) {
+        if (d.range.maximum && float(*bits) > *d.range.maximum) return invalid();
+    } else if (const auto values = std::get_if<std::vector<ScriptValue>>(&input)) {
+        if (!script_values_problem(*values).empty())
+            return PropertyResult{PropertyError::invalid_value, d.id,
+                    "Script property values need identifier names, one value each, and finite values of their type"};
+    } else if (d.encoding == PropertyEncoding::persistent_asset_id) {
+        const auto [asset, kind] = std::visit([]<class T>(const T& reference) -> std::pair<AssetId, ReferenceKind> {
+            if constexpr (std::same_as<T, AssetRef<MeshAsset>>) return {reference.id, ReferenceKind::mesh};
+            else if constexpr (std::same_as<T, AssetRef<MaterialAsset>>) return {reference.id, ReferenceKind::material};
+            else if constexpr (std::same_as<T, AssetRef<ScriptAsset>>) return {reference.id, ReferenceKind::script};
+            else if constexpr (std::same_as<T, AssetRef<TextureAsset>>) return {reference.id, ReferenceKind::texture};
+            else return {AssetId{}, ReferenceKind::mesh};
+        }, input);
+        if (!asset.valid()) return std::nullopt;
+        if (!context.resolve_asset) return PropertyResult{PropertyError::validation_context_required, d.id, "A catalog resolver is required for nonempty asset references"};
+        const auto status = context.resolve_asset(asset, kind);
+        if (status == ReferenceStatus::missing) return PropertyResult{PropertyError::missing_reference, d.id, "Asset ID is not registered in this project"};
+        if (status != ReferenceStatus::valid) return PropertyResult{PropertyError::wrong_reference_type, d.id, "Asset catalog kind does not match the property"};
     }
+    return std::nullopt;
+}
+PropertyResult validate(ComponentValue& value, const PropertyValidationContext& context) {
+    for (const auto& item : bindings(component_id(value)))
+        if (auto error = check(item.descriptor, item.read(value), context)) return *error;
     if (auto transform = std::get_if<TransformComponent>(&value)) {
         const auto normalized = validated_transform(*transform);
         if (!normalized) return {PropertyError::invalid_value, 0,
@@ -465,5 +557,47 @@ PropertyResult edit_properties(World& world, EntityHandle entity, ComponentId co
     const auto result = world.commit(commands);
     if (!result) return {PropertyError::world_rejected, 0, "World rejected property publication", result.error};
     return {};
+}
+
+std::span<const PropertyDescriptor> material_properties() {
+    static const auto values = [] {
+        const auto& bindings = material_bindings();
+        auto result = std::array<PropertyDescriptor, std::tuple_size_v<std::remove_cvref_t<decltype(bindings)>>>{};
+        for (size_t i = 0; i < result.size(); ++i) result[i] = bindings[i].descriptor;
+        return result;
+    }();
+    return values;
+}
+const PropertyDescriptor* material_property(PropertyId property) {
+    for (const auto& item : material_properties()) if (item.id == property) return &item;
+    return nullptr;
+}
+const PropertyDescriptor* material_property(std::string_view name) {
+    for (const auto& item : material_properties()) if (item.name == name) return &item;
+    return nullptr;
+}
+std::optional<PropertyValue> read_property(const MaterialAsset& material, PropertyId property) {
+    for (const auto& item : material_bindings()) if (item.descriptor.id == property) return item.read(material);
+    return std::nullopt;
+}
+PropertyResult edit_properties(MaterialAsset& material, std::span<const PropertyEdit> edits,
+                               const PropertyValidationContext& context) {
+    auto candidate = material;
+    for (size_t i = 0; i < edits.size(); ++i) {
+        const auto& edit = edits[i];
+        const auto item = std::ranges::find(material_bindings(), edit.property, [](const MaterialBinding& b) { return b.descriptor.id; });
+        if (item == material_bindings().end()) return {PropertyError::unknown_property, edit.property, "Property ID is not a material property"};
+        for (size_t j = 0; j < i; ++j) if (edits[j].property == edit.property)
+            return {PropertyError::duplicate_property, edit.property, "Property appears more than once in this edit"};
+        if (!item->write(candidate, edit.value))
+            return {PropertyError::type_mismatch, edit.property, "Value type does not match the property"};
+    }
+    for (const auto& item : material_bindings())
+        if (auto error = check(item.descriptor, item.read(candidate), context)) return *error;
+    material = candidate;
+    return {};
+}
+PropertyResult validate_material(MaterialAsset& material, const PropertyValidationContext& context) {
+    return edit_properties(material, {}, context);
 }
 } // namespace maya

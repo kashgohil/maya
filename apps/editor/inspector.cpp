@@ -132,6 +132,211 @@ bool EditorShell::edit_property(EntityId id, const ComponentValue& value, Proper
     return true;
 }
 
+// One property's widget, for a component or a material. `edit` receives each new value; drags and
+// text entry group their edits into one undo step labelled `group`. `owner` keeps a rotation's Euler
+// angles stable while it is dragged.
+void EditorShell::draw_property(const PropertyDescriptor& property, const PropertyValue& value, const std::string& key,
+                                const std::string& group, EntityId owner, const std::function<void(PropertyValue)>& edit) {
+    const auto remember = [&] {
+        m_layout.inspector_fields.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    };
+    // Angles, and rates per second or per point, are shown in degrees.
+    const auto radians = property.units.starts_with("rad");
+    switch (property.type) {
+    case PropertyType::text: {
+        auto buffer = std::get<std::string>(value);
+        char text[256];
+        std::snprintf(text, sizeof(text), "%s", buffer.c_str());
+        if (ImGui::InputText("##text", text, sizeof(text))) edit(std::string(text));
+        remember();
+        track_edit(group);
+        break;
+    }
+    case PropertyType::boolean: {
+        auto checked = std::get<bool>(value);
+        if (ImGui::Checkbox("##toggle", &checked)) edit(checked);
+        remember();
+        break;
+    }
+    case PropertyType::scalar: {
+        auto number = std::get<float>(value) * (radians ? degrees_per_radian : 1.0f);
+        auto minimum = 0.0f, maximum = 0.0f;
+        limits(property.range, radians ? degrees_per_radian : 1.0f, minimum, maximum);
+        const auto format = radians ? (std::abs(std::get<float>(property.default_value)) < 0.1f ? "%.3f\xC2\xB0" : "%.1f\xC2\xB0") +
+                                          std::string(property.units.substr(3))
+            : property.units.empty() || property.units.size() > 3 ? std::string("%.3f")
+            : "%.3f " + std::string(property.units);
+        if (ImGui::DragFloat("##number", &number, radians ? 0.25f : 0.01f, minimum, maximum, format.c_str(),
+                             ImGuiSliderFlags_AlwaysClamp) && !typing_into_last_item())
+            edit(number / (radians ? degrees_per_radian : 1.0f));
+        remember();
+        track_edit(group);
+        break;
+    }
+    case PropertyType::vector3: {
+        auto vector = std::get<math::Vec3>(value);
+        if (property.presentation == PropertyPresentation::color) {
+            float rgb[3] = {vector.x, vector.y, vector.z};
+            if (ImGui::ColorEdit3("##color", rgb, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR |
+                                                  ImGuiColorEditFlags_NoLabel))
+                edit(math::Vec3{rgb[0], rgb[1], rgb[2]});
+            remember();
+            track_edit(group);
+            break;
+        }
+        float values[3] = {vector.x, vector.y, vector.z};
+        auto minimum = 0.0f, maximum = 0.0f;
+        limits(property.range, 1.0f, minimum, maximum);
+        auto activated = false, deactivated = false;
+        const auto changed = axis_fields("vector", values, 0.01f, minimum, maximum, "%.3f", m_layout, key,
+                                         activated, deactivated);
+        if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
+        if (changed) edit(math::Vec3{values[0], values[1], values[2]});
+        if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
+        break;
+    }
+    case PropertyType::quaternion: {
+        // Euler degrees for editing; the cache keeps angles stable while a drag crosses +-180.
+        const auto rotation = std::get<math::Quat>(value);
+        if (m_euler_entity != owner || !m_edit_group_open) {
+            m_euler = euler_degrees(rotation);
+            m_euler_entity = owner;
+        }
+        float values[3] = {m_euler.x, m_euler.y, m_euler.z};
+        auto activated = false, deactivated = false;
+        const auto changed = axis_fields("rotation", values, 0.25f, -FLT_MAX, FLT_MAX, "%.1f\xC2\xB0", m_layout, key,
+                                         activated, deactivated);
+        if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
+        if (changed) {
+            m_euler = {values[0], values[1], values[2]};
+            edit(from_euler_degrees(m_euler));
+        }
+        if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
+        break;
+    }
+    case PropertyType::choice: {
+        const auto choice = std::get<ChoiceValue>(value).value;
+        const auto selected = std::ranges::find(property.choices, choice, &EnumOption::value);
+        const auto preview = selected != property.choices.end() ? std::string(selected->label) : "?";
+        if (ImGui::BeginCombo("##choice", preview.c_str())) {
+            for (const auto& option : property.choices)
+                if (ImGui::Selectable(std::string(option.label).c_str(), option.value == choice))
+                    edit(ChoiceValue{option.value});
+            ImGui::EndCombo();
+        }
+        remember();
+        break;
+    }
+    case PropertyType::integer: {
+        auto number = std::get<int32_t>(value);
+        if (property.presentation == PropertyPresentation::collision_group) {
+            const auto groups = collision_groups();
+            if (ImGui::BeginCombo("##group", collision_group_label(groups, size_t(number)).c_str())) {
+                for (int32_t group = 0; group < int32_t(collision_group_names); ++group) {
+                    ImGui::PushID(group);
+                    if (ImGui::Selectable(collision_group_label(groups, size_t(group)).c_str(), group == number))
+                        edit(group);
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            remember();
+            break;
+        }
+        const auto minimum = property.range.minimum ? int(*property.range.minimum) : INT32_MIN;
+        const auto maximum = property.range.maximum ? int(*property.range.maximum) : INT32_MAX;
+        if (ImGui::DragInt("##integer", &number, 0.1f, minimum, maximum, "%d", ImGuiSliderFlags_AlwaysClamp) &&
+            !typing_into_last_item())
+            edit(number);
+        remember();
+        track_edit(group);
+        break;
+    }
+    case PropertyType::flags: {
+        // Collision masks: one check box per group, named as in the project.
+        const auto mask = std::get<uint32_t>(value);
+        const auto groups = collision_groups();
+        if (ImGui::BeginCombo("##mask", mask_summary(mask, groups).c_str())) {
+            for (size_t group = 0; group < collision_group_names; ++group) {
+                ImGui::PushID(int(group));
+                auto included = (mask >> group & 1u) != 0;
+                if (ImGui::Checkbox(collision_group_label(groups, group).c_str(), &included))
+                    edit(included ? mask | (1u << group) : mask & ~(1u << group));
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            if (ImGui::Selectable("All groups", false, ImGuiSelectableFlags_NoAutoClosePopups))
+                edit(uint32_t{0xFFFF});
+            if (ImGui::Selectable("None", false, ImGuiSelectableFlags_NoAutoClosePopups))
+                edit(uint32_t{0});
+            ImGui::EndCombo();
+        }
+        remember();
+        break;
+    }
+    case PropertyType::mesh_ref:
+    case PropertyType::material_ref:
+    case PropertyType::script_ref:
+    case PropertyType::texture_ref: {
+        const auto kind = property.type == PropertyType::mesh_ref ? AssetKind::mesh
+                        : property.type == PropertyType::material_ref ? AssetKind::material
+                        : property.type == PropertyType::script_ref ? AssetKind::script : AssetKind::texture;
+        const auto asset = std::visit([]<class T>(const T& reference) -> AssetId {
+            if constexpr (requires { reference.id; }) return reference.id;
+            else return {};
+        }, value);
+        const auto reference = [&](AssetId chosen) -> PropertyValue {
+            if (kind == AssetKind::mesh) return AssetRef<MeshAsset>{chosen};
+            if (kind == AssetKind::material) return AssetRef<MaterialAsset>{chosen};
+            if (kind == AssetKind::texture) return AssetRef<TextureAsset>{chosen};
+            return AssetRef<ScriptAsset>{chosen};
+        };
+        auto preview = std::string("None");
+        auto missing = false;
+        auto problem = std::string{}; // why a cataloged asset cannot be used
+        if (asset.valid()) {
+            const auto info = m_assets ? m_assets->info(asset) : std::nullopt;
+            missing = !info;
+            preview = info ? info->record.path.stem().string() : "Missing " + id_text(asset.high, asset.low);
+            if (info && info->diagnostic) problem = info->diagnostic.message;
+        }
+        if (missing || !problem.empty())
+            ImGui::PushStyleColor(ImGuiCol_Text, missing ? theme::color::warning : theme::color::danger);
+        const auto open = ImGui::BeginCombo("##asset", preview.c_str());
+        if (missing || !problem.empty()) ImGui::PopStyleColor();
+        if (!problem.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", problem.c_str());
+        else if (missing && ImGui::IsItemHovered())
+            ImGui::SetTooltip("This asset is not in the project's catalog; saving is refused until it is replaced");
+        // Dropping an asset of the right kind from the Assets panel chooses it.
+        if (ImGui::BeginDragDropTarget()) {
+            if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
+                auto payload = AssetPayload{};
+                std::memcpy(&payload, dragged->Data, sizeof(payload));
+                if (payload.kind == kind && ImGui::AcceptDragDropPayload("MAYA_ASSET"))
+                    edit(reference(payload.id));
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (open) {
+            const auto choose = [&](AssetId chosen) { edit(reference(chosen)); };
+            if (ImGui::Selectable("None", !asset.valid())) choose({});
+            if (m_assets)
+                for (const auto& record : m_assets->records()) {
+                    if (record.kind != kind) continue;
+                    ImGui::PushID(static_cast<int>(record.id.low));
+                    if (ImGui::Selectable(record.path.stem().string().c_str(), record.id == asset)) choose(record.id);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", record.path.generic_string().c_str());
+                    ImGui::PopID();
+                }
+            ImGui::EndCombo();
+        }
+        remember();
+        break;
+    }
+    case PropertyType::script_values: break; // drawn by draw_script_properties, one row per declared property
+    }
+}
+
 void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
     const auto component = component_id(value);
     const auto* schema = component_schema(component);
@@ -170,201 +375,9 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
             const auto key = std::string(schema->name.substr(schema->name.rfind('.') + 1)) + "." + std::string(property.name);
             theme::property(std::string(property.label).c_str());
             ImGui::PushID(static_cast<int>(property.id));
-            const auto remember = [&] {
-                m_layout.inspector_fields.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
-            };
-            // Angles, and rates per second or per point, are shown in degrees.
-            const auto radians = property.units.starts_with("rad");
-            switch (property.type) {
-            case PropertyType::text: {
-                auto buffer = std::get<std::string>(*current);
-                char text[256];
-                std::snprintf(text, sizeof(text), "%s", buffer.c_str());
-                if (ImGui::InputText("##text", text, sizeof(text))) edit_property(id, value, property.id, std::string(text));
-                remember();
-                track_edit(group);
-                break;
-            }
-            case PropertyType::boolean: {
-                auto checked = std::get<bool>(*current);
-                if (ImGui::Checkbox("##toggle", &checked)) edit_property(id, value, property.id, checked);
-                remember();
-                break;
-            }
-            case PropertyType::scalar: {
-                auto number = std::get<float>(*current) * (radians ? degrees_per_radian : 1.0f);
-                auto minimum = 0.0f, maximum = 0.0f;
-                limits(property.range, radians ? degrees_per_radian : 1.0f, minimum, maximum);
-                const auto format = radians ? (std::abs(std::get<float>(property.default_value)) < 0.1f ? "%.3f\xC2\xB0" : "%.1f\xC2\xB0") +
-                                                  std::string(property.units.substr(3))
-                    : property.units.empty() || property.units.size() > 3 ? std::string("%.3f")
-                    : "%.3f " + std::string(property.units);
-                if (ImGui::DragFloat("##number", &number, radians ? 0.25f : 0.01f, minimum, maximum, format.c_str(),
-                                     ImGuiSliderFlags_AlwaysClamp) && !typing_into_last_item())
-                    edit_property(id, value, property.id, number / (radians ? degrees_per_radian : 1.0f));
-                remember();
-                track_edit(group);
-                break;
-            }
-            case PropertyType::vector3: {
-                auto vector = std::get<math::Vec3>(*current);
-                if (property.presentation == PropertyPresentation::color) {
-                    float rgb[3] = {vector.x, vector.y, vector.z};
-                    if (ImGui::ColorEdit3("##color", rgb, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR |
-                                                          ImGuiColorEditFlags_NoLabel))
-                        edit_property(id, value, property.id, math::Vec3{rgb[0], rgb[1], rgb[2]});
-                    remember();
-                    track_edit(group);
-                    break;
-                }
-                float values[3] = {vector.x, vector.y, vector.z};
-                auto minimum = 0.0f, maximum = 0.0f;
-                limits(property.range, 1.0f, minimum, maximum);
-                auto activated = false, deactivated = false;
-                const auto changed = axis_fields("vector", values, 0.01f, minimum, maximum, "%.3f", m_layout, key,
-                                                 activated, deactivated);
-                if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
-                if (changed) edit_property(id, value, property.id, math::Vec3{values[0], values[1], values[2]});
-                if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
-                break;
-            }
-            case PropertyType::quaternion: {
-                // Euler degrees for editing; the cache keeps angles stable while a drag crosses +-180.
-                const auto rotation = std::get<math::Quat>(*current);
-                if (m_euler_entity != id || !m_edit_group_open) {
-                    m_euler = euler_degrees(rotation);
-                    m_euler_entity = id;
-                }
-                float values[3] = {m_euler.x, m_euler.y, m_euler.z};
-                auto activated = false, deactivated = false;
-                const auto changed = axis_fields("rotation", values, 0.25f, -FLT_MAX, FLT_MAX, "%.1f\xC2\xB0", m_layout, key,
-                                                 activated, deactivated);
-                if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
-                if (changed) {
-                    m_euler = {values[0], values[1], values[2]};
-                    edit_property(id, value, property.id, from_euler_degrees(m_euler));
-                }
-                if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
-                break;
-            }
-            case PropertyType::choice: {
-                const auto choice = std::get<ChoiceValue>(*current).value;
-                const auto selected = std::ranges::find(property.choices, choice, &EnumOption::value);
-                const auto preview = selected != property.choices.end() ? std::string(selected->label) : "?";
-                if (ImGui::BeginCombo("##choice", preview.c_str())) {
-                    for (const auto& option : property.choices)
-                        if (ImGui::Selectable(std::string(option.label).c_str(), option.value == choice))
-                            edit_property(id, value, property.id, ChoiceValue{option.value});
-                    ImGui::EndCombo();
-                }
-                remember();
-                break;
-            }
-            case PropertyType::integer: {
-                auto number = std::get<int32_t>(*current);
-                if (property.presentation == PropertyPresentation::collision_group) {
-                    const auto groups = collision_groups();
-                    if (ImGui::BeginCombo("##group", collision_group_label(groups, size_t(number)).c_str())) {
-                        for (int32_t group = 0; group < int32_t(collision_group_names); ++group) {
-                            ImGui::PushID(group);
-                            if (ImGui::Selectable(collision_group_label(groups, size_t(group)).c_str(), group == number))
-                                edit_property(id, value, property.id, group);
-                            ImGui::PopID();
-                        }
-                        ImGui::EndCombo();
-                    }
-                    remember();
-                    break;
-                }
-                const auto minimum = property.range.minimum ? int(*property.range.minimum) : INT32_MIN;
-                const auto maximum = property.range.maximum ? int(*property.range.maximum) : INT32_MAX;
-                if (ImGui::DragInt("##integer", &number, 0.1f, minimum, maximum, "%d", ImGuiSliderFlags_AlwaysClamp) &&
-                    !typing_into_last_item())
-                    edit_property(id, value, property.id, number);
-                remember();
-                track_edit(group);
-                break;
-            }
-            case PropertyType::flags: {
-                // Collision masks: one check box per group, named as in the project.
-                const auto mask = std::get<uint32_t>(*current);
-                const auto groups = collision_groups();
-                if (ImGui::BeginCombo("##mask", mask_summary(mask, groups).c_str())) {
-                    for (size_t group = 0; group < collision_group_names; ++group) {
-                        ImGui::PushID(int(group));
-                        auto included = (mask >> group & 1u) != 0;
-                        if (ImGui::Checkbox(collision_group_label(groups, group).c_str(), &included))
-                            edit_property(id, value, property.id, included ? mask | (1u << group) : mask & ~(1u << group));
-                        ImGui::PopID();
-                    }
-                    ImGui::Separator();
-                    if (ImGui::Selectable("All groups", false, ImGuiSelectableFlags_NoAutoClosePopups))
-                        edit_property(id, value, property.id, uint32_t{0xFFFF});
-                    if (ImGui::Selectable("None", false, ImGuiSelectableFlags_NoAutoClosePopups))
-                        edit_property(id, value, property.id, uint32_t{0});
-                    ImGui::EndCombo();
-                }
-                remember();
-                break;
-            }
-            case PropertyType::mesh_ref:
-            case PropertyType::material_ref:
-            case PropertyType::script_ref: {
-                const auto kind = property.type == PropertyType::mesh_ref ? AssetKind::mesh
-                                : property.type == PropertyType::material_ref ? AssetKind::material : AssetKind::script;
-                const auto asset = std::visit([]<class T>(const T& reference) -> AssetId {
-                    if constexpr (requires { reference.id; }) return reference.id;
-                    else return {};
-                }, *current);
-                const auto reference = [&](AssetId chosen) -> PropertyValue {
-                    if (kind == AssetKind::mesh) return AssetRef<MeshAsset>{chosen};
-                    if (kind == AssetKind::material) return AssetRef<MaterialAsset>{chosen};
-                    return AssetRef<ScriptAsset>{chosen};
-                };
-                auto preview = std::string("None");
-                auto missing = false;
-                auto problem = std::string{}; // why a cataloged asset cannot be used
-                if (asset.valid()) {
-                    const auto info = m_assets ? m_assets->info(asset) : std::nullopt;
-                    missing = !info;
-                    preview = info ? info->record.path.stem().string() : "Missing " + id_text(asset.high, asset.low);
-                    if (info && info->diagnostic) problem = info->diagnostic.message;
-                }
-                if (missing || !problem.empty())
-                    ImGui::PushStyleColor(ImGuiCol_Text, missing ? theme::color::warning : theme::color::danger);
-                const auto open = ImGui::BeginCombo("##asset", preview.c_str());
-                if (missing || !problem.empty()) ImGui::PopStyleColor();
-                if (!problem.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", problem.c_str());
-                else if (missing && ImGui::IsItemHovered())
-                    ImGui::SetTooltip("This asset is not in the project's catalog; saving is refused until it is replaced");
-                // Dropping an asset of the right kind from the Assets panel chooses it.
-                if (ImGui::BeginDragDropTarget()) {
-                    if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
-                        auto payload = AssetPayload{};
-                        std::memcpy(&payload, dragged->Data, sizeof(payload));
-                        if (payload.kind == kind && ImGui::AcceptDragDropPayload("MAYA_ASSET"))
-                            edit_property(id, value, property.id, reference(payload.id));
-                    }
-                    ImGui::EndDragDropTarget();
-                }
-                if (open) {
-                    const auto choose = [&](AssetId chosen) { edit_property(id, value, property.id, reference(chosen)); };
-                    if (ImGui::Selectable("None", !asset.valid())) choose({});
-                    if (m_assets)
-                        for (const auto& record : m_assets->records()) {
-                            if (record.kind != kind) continue;
-                            ImGui::PushID(static_cast<int>(record.id.low));
-                            if (ImGui::Selectable(record.path.stem().string().c_str(), record.id == asset)) choose(record.id);
-                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", record.path.generic_string().c_str());
-                            ImGui::PopID();
-                        }
-                    ImGui::EndCombo();
-                }
-                remember();
-                break;
-            }
-            case PropertyType::script_values: break; // drawn below, one row per declared property
-            }
+            draw_property(property, *current, key, group, id, [&](PropertyValue input) {
+                edit_property(id, value, property.id, std::move(input));
+            });
             if (!property.description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("%s", std::string(property.description).c_str());
             ImGui::PopID();
@@ -379,6 +392,121 @@ void EditorShell::draw_component(EntityId id, const ComponentValue& value) {
         ImGui::TextWrapped("%s", note.text.c_str());
         ImGui::PopStyleColor();
     }
+    ImGui::PopID();
+}
+
+bool EditorShell::edit_material(AssetId id, PropertyId property, PropertyValue input) {
+    const auto* current = m_scene ? m_scene->material(id) : nullptr;
+    if (!current || !m_assets) return false;
+    auto edited = *current;
+    const auto edit = PropertyEdit{property, std::move(input)};
+    if (const auto result = edit_properties(edited, std::span(&edit, 1), asset_property_context(*m_assets)); !result) {
+        m_material_error = std::string(result.message);
+        m_material_error_id = id;
+        return false;
+    }
+    const auto info = m_assets->info(id);
+    const auto name = info ? info->record.path.stem().string() : std::string("material");
+    const auto applied = m_scene->set_material(id, std::move(edited), "Edit " + name);
+    if (!applied && applied.error != "Nothing to change") {
+        m_material_error = applied.error;
+        m_material_error_id = id;
+        return false;
+    }
+    m_material_error.clear();
+    return true;
+}
+
+void EditorShell::draw_material(AssetId id, bool folded) {
+    if (!m_scene || !m_assets) return;
+    const auto info = m_assets->info(id);
+    const auto name = info ? info->record.path.stem().string() : "Missing " + id_text(id.high, id.low);
+    ImGui::PushID("material");
+    ImGui::PushID(static_cast<int>(id.low ^ (id.high << 7)));
+    ImGui::Separator();
+    ImGui::Dummy({0.0f, 4.0f});
+    if (folded) {
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once);
+        const auto open = ImGui::TreeNodeEx("##fold", ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_AllowOverlap);
+        m_layout.controls.push_back({"material.fold", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        ImGui::SameLine();
+        if (!open) {
+            icon_text(icon::circle_half, theme::color::muted);
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextUnformatted("Material");
+            ImGui::PopStyleColor();
+            ImGui::PopID();
+            ImGui::PopID();
+            return;
+        }
+    }
+    icon_text(icon::circle_half, theme::color::muted);
+    ImGui::PushFont(m_fonts.strong);
+    ImGui::TextUnformatted(name.c_str());
+    ImGui::PopFont();
+    if (!m_scene->material(id)) { // opened on first use, at its file's value
+        const auto loaded = m_assets->acquire(AssetRef<MaterialAsset>{id});
+        if (!loaded) {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::danger);
+            ImGui::TextWrapped("%s", loaded.diagnostic.message.c_str());
+            ImGui::PopStyleColor();
+            ImGui::PopID();
+            ImGui::PopID();
+            return;
+        }
+        m_scene->open_material(id, loaded.lease.value());
+    }
+    const auto material = *m_scene->material(id); // a copy, since an edit replaces it
+    const auto unsaved = m_scene->dirty_materials();
+    const auto dirty = std::ranges::find(unsaved, id) != unsaved.end();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+    ImGui::TextUnformatted(dirty ? "Material, unsaved" : "Material");
+    ImGui::PopStyleColor();
+    m_layout.controls.push_back({"material." + name, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    const auto group = "Edit " + name;
+    if (theme::begin_properties("material")) {
+        for (const auto& property : material_properties()) {
+            if (property.name == "alpha_cutoff" && material.alpha_mode != AlphaMode::mask) continue;
+            theme::property(std::string(property.label).c_str());
+            ImGui::PushID(static_cast<int>(property.id));
+            draw_property(property, *read_property(material, property.id), "material." + std::string(property.name), group, {},
+                          [&](PropertyValue input) { edit_material(id, property.id, std::move(input)); });
+            if (!property.description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("%s", std::string(property.description).c_str());
+            ImGui::PopID();
+        }
+        theme::end_properties();
+    }
+    // Maps of the wrong kind draw the placeholder; say which, here as well as in Diagnostics.
+    const std::tuple<AssetRef<TextureAsset>, TextureRole, const char*> maps[] = {
+        {material.base_color_texture, TextureRole::color, "base_color_texture"},
+        {material.metallic_roughness_texture, TextureRole::data, "metallic_roughness_texture"},
+        {material.normal_texture, TextureRole::normal, "normal_texture"},
+        {material.occlusion_texture, TextureRole::data, "occlusion_texture"},
+        {material.emissive_texture, TextureRole::color, "emissive_texture"}};
+    for (const auto& [map, role, slot] : maps) {
+        if (!map.valid()) continue;
+        const auto texture = m_assets->acquire(map);
+        if (!texture || texture.lease.value().role() == role) continue;
+        const auto texture_info = m_assets->info(map.id);
+        icon_text(icon::warning, theme::color::warning, 6.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::warning);
+        ImGui::TextWrapped("%s is a %s texture; this slot needs %s, so the placeholder is drawn.",
+                           texture_info ? texture_info->record.path.stem().string().c_str() : "A map",
+                           texture_role_name(texture.lease.value().role()), texture_role_name(role));
+        m_layout.controls.push_back({"material.warning." + std::string(slot), ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        ImGui::PopStyleColor();
+    }
+    if (!m_material_error.empty() && m_material_error_id == id) {
+        icon_text(icon::warning, theme::color::danger, 6.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::danger);
+        ImGui::TextWrapped("%s", m_material_error.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
     ImGui::PopID();
 }
 
@@ -561,7 +689,13 @@ void EditorShell::draw_inspector() {
     m_layout.inspector_fields.clear();
     if (open) {
         const auto primary = m_scene ? m_scene->primary() : std::nullopt;
-        if (!primary) {
+        if (m_inspected_material && (!m_scene || m_scene->selection() != m_inspected_selection)) m_inspected_material.reset();
+        if (m_inspected_material) {
+            theme::caption(m_fonts, "MATERIAL");
+            ImGui::BeginDisabled(m_play != nullptr);
+            draw_material(*m_inspected_material, false);
+            ImGui::EndDisabled();
+        } else if (!primary) {
             theme::caption(m_fonts, "SELECTION");
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
             ImGui::TextWrapped("Nothing selected.");
@@ -613,6 +747,10 @@ void EditorShell::draw_inspector() {
                 ImGui::Separator();
                 draw_component(id, value);
             }
+            // The mesh renderer's material, folded by default; an edit reaches every object that uses it.
+            for (const auto& value : components)
+                if (const auto* renderer = std::get_if<MeshRendererComponent>(&value); renderer && renderer->material.valid())
+                    draw_material(renderer->material.id, true);
             ImGui::Separator();
             ImGui::Dummy({0.0f, 4.0f});
             if (ImGui::Button((std::string(icon::plus) + "  Add component").c_str(), {-FLT_MIN, 0.0f})) ImGui::OpenPopup("add");

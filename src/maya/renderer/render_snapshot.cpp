@@ -70,23 +70,77 @@ public:
         m_meshes.emplace(ref.id, index);
         return index;
     }
-    RenderMaterial material(AssetRef<MaterialAsset> ref, EntityId entity) {
-        const auto copy = [](const MaterialAsset& value) {
-            return RenderMaterial{value.base_color, value.metallic, value.roughness};
+    /// A texture's index in the snapshot, or placeholder_texture when it cannot be drawn in `slot`.
+    /// Problems are reported once per material, with the first entity that uses it.
+    uint32_t texture(AssetRef<TextureAsset> ref, MaterialSlot slot, AssetId material, EntityId entity) {
+        if (!ref.valid()) return no_texture;
+        constexpr const char* slot_names[] = {"base color map", "metallic-roughness map", "normal map", "occlusion map", "emissive map"};
+        const auto name = slot_names[size_t(slot)];
+        auto found = m_textures.find(ref.id);
+        if (found == m_textures.end()) {
+            auto acquired = m_assets.acquire(ref);
+            auto entry = TextureEntry{};
+            if (acquired && acquired.lease.value().valid()) {
+                entry.index = uint32_t(m_out.textures.size());
+                entry.role = acquired.lease.value().role();
+                m_out.textures.push_back(std::move(acquired.lease));
+            } else {
+                entry.problem = acquired.diagnostic ? acquired.diagnostic.message : "its GPU texture is gone";
+            }
+            found = m_textures.emplace(ref.id, std::move(entry)).first;
+        }
+        const auto& entry = found->second;
+        if (!entry.index) {
+            report(RenderIssue::missing_texture, entity, ref.id, "Material " + id_text(material) + "'s " + name + " " +
+                id_text(ref.id) + " is unavailable, so the placeholder is drawn: " + entry.problem);
+            return placeholder_texture;
+        }
+        // glTF's roles: color maps are sRGB; normal maps hold normals; the others hold linear data.
+        const auto expected = slot == MaterialSlot::base_color || slot == MaterialSlot::emissive ? TextureRole::color
+                            : slot == MaterialSlot::normal ? TextureRole::normal : TextureRole::data;
+        if (entry.role != expected) {
+            report(RenderIssue::texture_role, entity, ref.id, "Material " + id_text(material) + "'s " + name + " " + id_text(ref.id) +
+                " is a " + texture_role_name(entry.role) + " texture, but the slot needs " + texture_role_name(expected) +
+                ", so the placeholder is drawn; change the texture's usage");
+            return placeholder_texture;
+        }
+        return *entry.index;
+    }
+    RenderMaterial copy(const MaterialAsset& value, AssetId id, EntityId entity) {
+        auto material = RenderMaterial{};
+        material.base_color = value.base_color;
+        material.metallic = value.metallic;
+        material.roughness = value.roughness;
+        material.normal_scale = value.normal_scale;
+        material.occlusion_strength = value.occlusion_strength;
+        material.emissive = value.emissive * value.emissive_strength;
+        material.alpha_mode = value.alpha_mode;
+        material.alpha_cutoff = value.alpha_cutoff;
+        material.double_sided = value.double_sided;
+        const auto slot = [&](MaterialSlot which, AssetRef<TextureAsset> ref) {
+            material.textures[size_t(which)] = texture(ref, which, id, entity);
         };
-        if (!ref.valid()) return copy(MaterialAsset{});
+        slot(MaterialSlot::base_color, value.base_color_texture);
+        slot(MaterialSlot::metallic_roughness, value.metallic_roughness_texture);
+        slot(MaterialSlot::normal, value.normal_texture);
+        slot(MaterialSlot::occlusion, value.occlusion_texture);
+        slot(MaterialSlot::emissive, value.emissive_texture);
+        return material;
+    }
+    RenderMaterial material(AssetRef<MaterialAsset> ref, EntityId entity) {
+        if (!ref.valid()) return copy(MaterialAsset{}, {}, entity);
         if (const auto found = m_materials.find(ref.id); found != m_materials.end()) {
             if (!found->second) report(RenderIssue::missing_material, entity, ref.id,
                 "Entity " + id_text(entity) + " uses the fallback material: " + id_text(ref.id) + " is unavailable");
-            return found->second.value_or(copy(fallback_material()));
+            return found->second ? *found->second : copy(fallback_material(), {}, entity);
         }
         const auto acquired = m_assets.acquire(ref);
         auto value = std::optional<RenderMaterial>{};
-        if (acquired) value = copy(acquired.lease.value());
+        if (acquired) value = copy(acquired.lease.value(), ref.id, entity);
         else report(RenderIssue::missing_material, entity, ref.id, "Entity " + id_text(entity) +
             " uses the fallback material: " + id_text(ref.id) + " is unavailable: " + acquired.diagnostic.message);
         m_materials.emplace(ref.id, value);
-        return value.value_or(copy(fallback_material()));
+        return value ? *value : copy(fallback_material(), {}, entity);
     }
 
 private:
@@ -95,6 +149,12 @@ private:
     // Each asset is acquired once per extraction, so every instance draws the same version.
     std::unordered_map<AssetId, std::optional<uint32_t>, PersistentIdHash> m_meshes;
     std::unordered_map<AssetId, std::optional<RenderMaterial>, PersistentIdHash> m_materials;
+    struct TextureEntry {
+        std::optional<uint32_t> index; // into the snapshot's textures, when it could be acquired
+        TextureRole role = TextureRole::color;
+        std::string problem; // why it could not
+    };
+    std::unordered_map<AssetId, TextureEntry, PersistentIdHash> m_textures;
 };
 } // namespace
 

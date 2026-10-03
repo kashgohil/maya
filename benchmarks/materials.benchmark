@@ -1,0 +1,11 @@
+maya-benchmark 1
+# The material test scene (#1033): spheres across metallic and roughness, and surfaces with every
+# kind of map, a masked cutout, and blended glass. It measures physically based shading with textures.
+name "materials-scene"
+workload scene
+project "../samples/basic_scene"
+scene "materials.scene"
+resolution 1920 1080
+warmup 300
+samples 3000
+runs 3

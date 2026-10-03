@@ -54,6 +54,10 @@ public:
         return {AssetLease<T>{std::get<std::shared_ptr<const T>>(entry.payload),handle,{entry.record.id}}, {}};
     }
     size_t evict_unused();
+    /// Publishes `value` as the material's next version, as a successful reload would, without reading
+    /// its file: an editor's unsaved edit (docs/editor.md#materials). Later acquisitions and extractions
+    /// see it; leases of the previous version keep it. Fails for an ID that is not a cataloged material.
+    AssetDiagnostic publish(AssetRef<MaterialAsset> ref, MaterialAsset value);
 
 private:
     using Payload = std::variant<std::shared_ptr<const MeshAsset>, std::shared_ptr<const MaterialAsset>,

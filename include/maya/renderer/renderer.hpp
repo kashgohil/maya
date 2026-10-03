@@ -38,7 +38,8 @@ public:
 
     /// Inside a frame with no pass open, in three passes (docs/renderer.md#exposure-and-tone-mapping):
     /// `view` clears the target's HDR scene color to the view's clear color and draws every instance
-    /// with its own constants; `tone map` scales it by the view's exposure and tone-maps it into the
+    /// with its own constants and material (docs/renderer.md#materials): opaque and masked ones in
+    /// snapshot order, then blended ones back to front; `tone map` scales it by the view's exposure and tone-maps it into the
     /// target's color, sRGB-encoded; `debug lines`, only when the snapshot has any, draws its lines and
     /// outlines over that (brightly in front of the scene, faintly behind it) in their own colors. The
     /// view size must match the target.
@@ -52,7 +53,9 @@ public:
     const RendererStats& stats() const noexcept { return m_stats; }
 
 private:
-    enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind, tone_map };
+    // Lit surfaces by alpha mode (blend or not) and sidedness; masks discard in the opaque pipelines.
+    enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind, tone_map, lit_double_sided, lit_blend,
+                                        lit_blend_double_sided };
     struct CachedPipeline {
         Format format = Format::undefined;
         PipelineKind kind = PipelineKind::lit;
@@ -70,6 +73,8 @@ private:
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;
     std::vector<CachedPipeline> m_pipelines;
     SamplerHandle m_sampler;
+    std::shared_ptr<const TextureAsset> m_placeholder; // drawn for missing textures, and bound to empty slots
+    std::vector<uint32_t> m_order; // instances in drawing order, reused
     RendererStats m_stats{};
     std::vector<float> m_debug_data; // packed debug lines or outlines of one kind, reused
     std::vector<uint32_t> m_debug_segments; // each outline's circle segments, reused

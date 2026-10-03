@@ -1,0 +1,241 @@
+maya-scene 1
+
+entity 6d617961 500
+  component maya.name 1
+    value "Camera"
+  component maya.transform 1
+    translation 0 0.8 5.4
+    rotation -0.004999979 0 0 0.9999875
+    scale 1 1 1
+  component maya.camera 2
+    vertical_fov 1.0471976
+    near_clip 0.1
+    far_clip 100
+    exposure 0
+    tone_mapping agx
+end
+
+entity 6d617961 501
+  component maya.name 1
+    value "Sun"
+  component maya.transform 1
+    translation 0 6 0
+    rotation -0.2904595 -0.2468401 -0.07782839 0.9212198
+    scale 1 1 1
+  component maya.light 1
+    kind directional
+    color 1 1 1
+    intensity 3.1415927
+    range 10
+    inner_cone 0.5235988
+    outer_cone 0.7853982
+    enabled true
+end
+
+entity 6d617961 502
+  component maya.name 1
+    value "Dielectric roughness 0"
+  component maya.transform 1
+    translation -2.6 2.1 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 70
+    visible true
+end
+
+entity 6d617961 503
+  component maya.name 1
+    value "Dielectric roughness 0.25"
+  component maya.transform 1
+    translation -1.3 2.1 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 71
+    visible true
+end
+
+entity 6d617961 504
+  component maya.name 1
+    value "Dielectric roughness 0.5"
+  component maya.transform 1
+    translation 0 2.1 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 72
+    visible true
+end
+
+entity 6d617961 505
+  component maya.name 1
+    value "Dielectric roughness 0.75"
+  component maya.transform 1
+    translation 1.3 2.1 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 73
+    visible true
+end
+
+entity 6d617961 506
+  component maya.name 1
+    value "Dielectric roughness 1"
+  component maya.transform 1
+    translation 2.6 2.1 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 74
+    visible true
+end
+
+entity 6d617961 507
+  component maya.name 1
+    value "Metal roughness 0"
+  component maya.transform 1
+    translation -2.6 0.85 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 75
+    visible true
+end
+
+entity 6d617961 508
+  component maya.name 1
+    value "Metal roughness 0.25"
+  component maya.transform 1
+    translation -1.3 0.85 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 76
+    visible true
+end
+
+entity 6d617961 509
+  component maya.name 1
+    value "Metal roughness 0.5"
+  component maya.transform 1
+    translation 0 0.85 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 77
+    visible true
+end
+
+entity 6d617961 50a
+  component maya.name 1
+    value "Metal roughness 0.75"
+  component maya.transform 1
+    translation 1.3 0.85 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 78
+    visible true
+end
+
+entity 6d617961 50b
+  component maya.name 1
+    value "Metal roughness 1"
+  component maya.transform 1
+    translation 2.6 0.85 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 79
+    visible true
+end
+
+entity 6d617961 50c
+  component maya.name 1
+    value "Textured"
+  component maya.transform 1
+    translation -3.25 -0.5 0
+    rotation 0.1677313 0.254887 -0.04494346 0.9512512
+    scale 0.85 0.85 0.85
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 7a
+    visible true
+end
+
+entity 6d617961 50d
+  component maya.name 1
+    value "Normal mapped"
+  component maya.transform 1
+    translation -1.95 -0.5 0
+    rotation 0.1677313 0.254887 -0.04494346 0.9512512
+    scale 0.85 0.85 0.85
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 7b
+    visible true
+end
+
+entity 6d617961 50e
+  component maya.name 1
+    value "Occlusion roughness metallic"
+  component maya.transform 1
+    translation -0.65 -0.5 0
+    rotation 0.1677313 0.254887 -0.04494346 0.9512512
+    scale 0.85 0.85 0.85
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 7c
+    visible true
+end
+
+entity 6d617961 50f
+  component maya.name 1
+    value "Emissive"
+  component maya.transform 1
+    translation 0.65 -0.5 0
+    rotation 0.1677313 0.254887 -0.04494346 0.9512512
+    scale 0.85 0.85 0.85
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 7d
+    visible true
+end
+
+entity 6d617961 510
+  component maya.name 1
+    value "Cutout"
+  component maya.transform 1
+    translation 1.95 -0.5 0
+    rotation 0.1677313 0.254887 -0.04494346 0.9512512
+    scale 0.85 0.85 0.85
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 7e
+    visible true
+end
+
+entity 6d617961 511
+  component maya.name 1
+    value "Glass"
+  component maya.transform 1
+    translation 3.25 -0.5 0
+    rotation 0 0 0 1
+    scale 0.85 0.85 0.85
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 7f
+    visible true
+end

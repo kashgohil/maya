@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/assets/material.hpp"
 #include "maya/world/world.hpp"
 #include <functional>
 #include <span>
@@ -23,11 +24,12 @@ struct ChoiceValue {
 };
 using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat, ChoiceValue,
                                   AssetRef<MeshAsset>, AssetRef<MaterialAsset>, int32_t, uint32_t,
-                                  AssetRef<ScriptAsset>, std::vector<ScriptValue>>;
+                                  AssetRef<ScriptAsset>, std::vector<ScriptValue>, AssetRef<TextureAsset>>;
 /// integer is a whole number within the range; flags is a bit set no greater than range.maximum;
 /// script_values is the named values of a script component's declared properties.
 enum class PropertyType {
-    text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags, script_ref, script_values
+    text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags, script_ref, script_values,
+    texture_ref
 };
 enum class PropertyPresentation {
     text, toggle, number, vector, rotation, color, choice, asset,
@@ -66,7 +68,7 @@ struct ComponentDescriptor {
     std::span<const PropertyDescriptor> properties;
 };
 
-enum class ReferenceKind { mesh, material, script };
+enum class ReferenceKind { mesh, material, script, texture };
 enum class ReferenceStatus { valid, missing, wrong_type };
 struct PropertyValidationContext {
     // Synchronous, read-only callback. Must not mutate/re-enter World or asset services.
@@ -112,4 +114,15 @@ std::optional<ComponentValue> read_component(const World& world, EntityHandle en
 PropertyResult edit_properties(World& world, EntityHandle entity, ComponentId component,
                                std::span<const PropertyEdit> edits,
                                const PropertyValidationContext& context = {});
+
+/// A material asset's properties (docs/properties.md#materials), edited like a component's. Their
+/// names are the material file's keys; base color's alpha is its own property.
+std::span<const PropertyDescriptor> material_properties();
+const PropertyDescriptor* material_property(PropertyId property);
+const PropertyDescriptor* material_property(std::string_view name);
+std::optional<PropertyValue> read_property(const MaterialAsset& material, PropertyId property);
+/// Applies all edits to a copy, validates the whole material, then publishes; as for components.
+PropertyResult edit_properties(MaterialAsset& material, std::span<const PropertyEdit> edits,
+                               const PropertyValidationContext& context = {});
+PropertyResult validate_material(MaterialAsset& material, const PropertyValidationContext& context = {});
 } // namespace maya

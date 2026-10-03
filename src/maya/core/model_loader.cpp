@@ -1,9 +1,9 @@
 #include "maya/core/model_loader.hpp"
+#include "maya/core/tangents.hpp"
 #include <charconv>
 #include <cmath>
 #include <fstream>
 #include <iostream>
-#include <map>
 #include <sstream>
 #include <tuple>
 
@@ -37,9 +37,7 @@ ModelLoadResult ModelLoader::load_obj_checked(GraphicsDevice& device, const std:
     if (!file) return {{}, "Cannot open OBJ: " + path, {}};
     std::vector<math::Vec3> positions, normals;
     std::vector<math::Vec2> uvs;
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-    std::map<ObjIndex,uint32_t> index_map;
+    std::vector<Vertex> corners; // three per face; shared once tangents are known
     std::string line;
     size_t line_number = 0;
     const auto fail = [&](const std::string& why) -> ModelLoadResult {
@@ -69,21 +67,18 @@ ModelLoadResult ModelLoader::load_obj_checked(GraphicsDevice& device, const std:
                 ObjIndex index;
                 if (!parse_index(segment,positions.size(),uvs.size(),normals.size(),index))
                     return fail("Invalid face index '" + segment + "'; expected existing positive OBJ indices");
-                auto found = index_map.find(index);
-                if (found == index_map.end()) {
-                    if (vertices.size() >= std::numeric_limits<uint32_t>::max())
-                        return fail("Too many unique vertices");
-                    const auto id = static_cast<uint32_t>(vertices.size());
-                    found = index_map.emplace(index,id).first;
-                    vertices.emplace_back(positions[index.v], index.vn < 0 ? math::Vec3{} : normals[index.vn],
-                        math::Vec4{1,1,1,1}, index.vt < 0 ? math::Vec2{} : uvs[index.vt]);
-                }
-                indices.push_back(found->second);
+                if (corners.size() >= std::numeric_limits<uint32_t>::max())
+                    return fail("Too many face corners");
+                corners.emplace_back(positions[index.v], index.vn < 0 ? math::Vec3{} : normals[index.vn],
+                    math::Vec4{1,1,1,1}, index.vt < 0 ? math::Vec2{} : uvs[index.vt]);
             }
         }
     }
     if (file.bad()) return fail("I/O failure while reading OBJ");
-    if (indices.empty()) return fail("OBJ contains no triangular faces");
+    if (corners.empty()) return fail("OBJ contains no triangular faces");
+    // OBJ has no tangents: MikkTSpace generates them per corner, and corners that agree are shared.
+    if (!generate_tangents(corners)) return fail("Generating tangents failed");
+    const auto [vertices, indices] = weld_vertices(corners);
     auto mesh = std::make_unique<Mesh>(device,vertices,indices);
     if (!mesh->valid()) return fail("GPU mesh allocation failed or device session is unavailable");
     return {std::move(mesh), {}, MeshGeometry::from(vertices, indices)};

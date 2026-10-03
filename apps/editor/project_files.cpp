@@ -2,6 +2,7 @@
 
 #include "editor_shell.hpp"
 #include "shell_detail.hpp"
+#include "maya/assets/material_file.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
 #include <imgui_internal.h>
@@ -172,6 +173,11 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
 
 void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path) {
     stop_play(); // a play World belongs to the scene it was started from
+    discard_material_edits(); // they belong to the closing scene's history
+    // Material edits show at once: each value they make current is published to the registry.
+    scene->set_material_publisher([this](AssetId id, const MaterialAsset& value) {
+        if (m_assets) m_assets->publish(AssetRef<MaterialAsset>{id}, value);
+    });
     // References are checked against whichever catalog is current, including after a refresh.
     scene->set_validation_context({[this](AssetId id, ReferenceKind kind) {
         return m_assets ? asset_property_context(*m_assets).resolve_asset(id, kind) : ReferenceStatus::missing;
@@ -181,6 +187,8 @@ void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesys
     m_renaming.reset();
     m_edit_group_open = false; // the group belonged to the previous scene's history
     m_edit_error.clear();
+    m_material_error.clear();
+    m_inspected_material.reset();
     m_euler_entity = m_name_entity = EntityId{};
     m_snapshot.reset();
     m_pick_hits.clear();
@@ -257,6 +265,8 @@ std::string EditorShell::save_scene(const std::filesystem::path& path) {
     std::filesystem::create_directories(target->parent_path(), error);
     if (error) return fail("Cannot create the folder " + m_project->relative(target->parent_path()).generic_string() +
                            ": " + error.message());
+    // Edited materials first: a scene saved without them would not look as it did.
+    if (auto failed = save_materials(); !failed.empty()) return fail(failed);
     const auto problems = save_scene_file(*target, m_scene->document(), asset_property_context(*m_assets));
     if (!problems.empty()) {
         // The summary names the first few; the rest go to the log on their own.
@@ -321,6 +331,8 @@ void EditorShell::refresh_project() {
     } else {
         m_thumbnails.clear(); // their versions belong to the old registry
         m_assets = std::move(registry); // loaded versions are reloaded from their files on next use
+        if (m_scene) // edits not yet saved stay shown
+            for (const auto id : m_scene->dirty_materials()) m_assets->publish(AssetRef<MaterialAsset>{id}, *m_scene->material(id));
         m_scripts.clear();
         check_script_files();
     }
@@ -337,6 +349,25 @@ void EditorShell::notice(std::string title, std::string message) {
     m_prompt_title = std::move(title);
     m_prompt_message = std::move(message);
     m_prompt_caution = false;
+}
+
+std::string EditorShell::save_materials() {
+    if (!m_scene || !m_project || !m_assets) return {};
+    for (const auto id : m_scene->dirty_materials()) {
+        const auto info = m_assets->info(id);
+        const auto file = info ? m_project->resolve(info->record.path) : std::nullopt;
+        if (!file) return "Material " + id_text(id.high, id.low) + " is no longer in the project's catalog, so its edits cannot be saved";
+        const auto& value = *m_scene->material(id);
+        if (auto failed = save_material_file(*file, value); !failed.empty()) return failed;
+        m_scene->material_file_changed(id, value);
+        m_log.add(DiagnosticSource::asset, "Saved " + info->record.path.generic_string(), m_frame);
+    }
+    return {};
+}
+
+void EditorShell::discard_material_edits() {
+    if (!m_scene || !m_assets) return;
+    for (const auto id : m_scene->dirty_materials()) m_assets->reload(AssetRef<MaterialAsset>{id});
 }
 
 void EditorShell::ask_save_as() {
@@ -730,8 +761,13 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : icon::circle_half;
     ImGui::PushID(static_cast<int>(record.id.low ^ (record.id.high << 7)));
     const auto selected = m_selected_asset == record.id;
-    if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()}))
+    if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()})) {
         m_selected_asset = record.id;
+        if (record.kind == AssetKind::material && m_scene) { // the Inspector shows it until the selection changes
+            m_inspected_material = record.id;
+            m_inspected_selection = m_scene->selection();
+        }
+    }
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     m_layout.controls.push_back({"asset." + record.path.generic_string(), min, max});
     const auto hovered = ImGui::IsItemHovered();
@@ -740,13 +776,14 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         else if (script) open_script(record.id);
         else if (!texture) assign_to_selection(record.id);
     }
-    if (!texture && ImGui::BeginDragDropSource()) { // textures go in material slots, which come later
+    if (ImGui::BeginDragDropSource()) {
         const auto payload = AssetPayload{record.id, record.kind};
         ImGui::SetDragDropPayload("MAYA_ASSET", &payload, sizeof(payload));
         icon_text(glyph, theme::color::muted);
         ImGui::TextUnformatted(record.path.stem().string().c_str());
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
-        ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : script ? "Drop on an object to attach it" : "Drop on an object to assign it");
+        ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : script ? "Drop on an object to attach it"
+                               : texture ? "Drop on a material's map in the Inspector" : "Drop on an object to assign it");
         ImGui::PopStyleColor();
         ImGui::EndDragDropSource();
     }
@@ -765,9 +802,13 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         if (reload && script) {
             reload_script(record.id);
         } else if (reload) {
-            const auto diagnostic = mesh      ? m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic
-                                    : texture ? m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic
-                                              : m_assets->reload(AssetRef<MaterialAsset>{record.id}).diagnostic;
+            auto diagnostic = AssetDiagnostic{};
+            if (mesh) diagnostic = m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic;
+            else if (texture) diagnostic = m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic;
+            else if (const auto material = m_assets->reload(AssetRef<MaterialAsset>{record.id}); !material)
+                diagnostic = material.diagnostic;
+            else if (m_scene) // an edit not yet saved stays, and is shown again
+                m_scene->material_file_changed(record.id, material.lease.value());
             m_log.add(DiagnosticSource::asset, diagnostic ? record.path.generic_string() + ": " + diagnostic.message
                                                           : "Reloaded " + record.path.generic_string(), m_frame);
             m_rescan = true; // after the rows are drawn: rescanning replaces them

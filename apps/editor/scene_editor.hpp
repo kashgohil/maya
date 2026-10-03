@@ -27,11 +27,13 @@ struct SceneState {
     const std::vector<EntityId>& children_of(EntityId parent) const;
 };
 
-/// A reversible change: the before and after states of just the entities and child lists it touched.
+/// A reversible change: the before and after states of just the entities, child lists, and material
+/// assets it touched.
 struct SceneChange {
     std::unordered_map<EntityId, std::optional<EntityRecord>, PersistentIdHash> before, after;
     std::unordered_map<EntityId, std::vector<EntityId>, PersistentIdHash> order_before, order_after;
-    bool empty() const noexcept { return before.empty() && order_before.empty(); }
+    std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> materials_before, materials_after;
+    bool empty() const noexcept { return before.empty() && order_before.empty() && materials_before.empty(); }
 };
 /// Entities and child lists that differ between two states.
 SceneChange diff(const SceneState& before, const SceneState& after);
@@ -126,9 +128,27 @@ public:
     void unlock() noexcept { m_lock_reason.clear(); }
     bool locked() const noexcept { return !m_lock_reason.empty(); }
 
-    /// Unsaved changes: the history position differs from the one at the last save or open.
-    bool dirty() const noexcept { return !m_saved || *m_saved != m_position; }
+    /// Unsaved changes: the history position differs from the one at the last save or open, or a
+    /// material differs from its file.
+    bool dirty() const noexcept;
     void mark_saved() noexcept { m_saved = m_position; }
+
+    // Material assets (docs/editor.md#materials), edited in the same history as the scene. The editor
+    // holds a value for each material it has opened; edits publish it, so views show it at once, and
+    // saving writes it to the material's file.
+    /// Starts editing a material whose file holds `saved`, unless it is already open.
+    void open_material(AssetId id, MaterialAsset saved);
+    /// The material's edited value, or null if it is not open.
+    const MaterialAsset* material(AssetId id) const;
+    /// Replaces an open material's value (validated by the caller) as one undo step, or part of a group.
+    EditResult set_material(AssetId id, MaterialAsset value, std::string label);
+    /// The material's file now holds `saved` (it was reloaded or written). An unedited material takes the
+    /// file's value; an edited one keeps its edit, which is published again, and stays unsaved.
+    void material_file_changed(AssetId id, MaterialAsset saved);
+    /// Open materials whose value differs from their file, by ID.
+    std::vector<AssetId> dirty_materials() const;
+    /// Called with each material value that edits, undo, and redo make current, e.g. to publish it.
+    void set_material_publisher(std::function<void(AssetId, const MaterialAsset&)> publish) { m_publish_material = std::move(publish); }
 
 private:
     struct Step {
@@ -155,6 +175,9 @@ private:
     std::string m_group_label;
     SceneChange m_group_change; // merged changes of the open group
     std::vector<EntityId> m_group_selection;
+    std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> m_materials; // open materials, as edited
+    std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> m_material_files; // what their files hold
+    std::function<void(AssetId, const MaterialAsset&)> m_publish_material;
 };
 
 /// Reads a World's authored state (schema components and hierarchy). Roots are ordered by EntityId.

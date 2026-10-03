@@ -14,7 +14,9 @@ inline constexpr size_t max_directional_lights = 4;
 inline constexpr size_t max_render_diagnostics = 64;
 
 enum class RenderIssue {
-    none, missing_mesh, missing_material, missing_transform, invalid_transform, unsupported_light, light_limit
+    none, missing_mesh, missing_material, missing_transform, invalid_transform, unsupported_light, light_limit,
+    missing_texture, // a material's texture is missing or failed to load: the placeholder is drawn
+    texture_role, // a material's texture has the wrong role for its slot (e.g. a color texture as a normal map)
 };
 struct RenderDiagnostic {
     RenderIssue code = RenderIssue::none;
@@ -23,11 +25,25 @@ struct RenderDiagnostic {
     std::string message;
 };
 
-/// Material factors copied at extraction. Later edits and reloads affect only later snapshots.
+/// A material's texture slots, in the order the shader binds them.
+enum class MaterialSlot : uint8_t { base_color, metallic_roughness, normal, occlusion, emissive };
+inline constexpr size_t material_slots = 5;
+inline constexpr uint32_t no_texture = UINT32_MAX; // the slot is empty: only its factor applies
+inline constexpr uint32_t placeholder_texture = UINT32_MAX - 1; // missing or unusable: the renderer's placeholder
+/// A material copied at extraction (docs/renderer.md#materials). Later edits and reloads affect only
+/// later snapshots.
 struct RenderMaterial {
     math::Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f}; // linear RGBA, multiplies the vertex color
     float metallic = 0.0f;
     float roughness = 1.0f;
+    float normal_scale = 1.0f;
+    float occlusion_strength = 1.0f;
+    math::Vec3 emissive{0.0f}; // linear RGB, times its strength
+    AlphaMode alpha_mode = AlphaMode::opaque;
+    float alpha_cutoff = 0.5f;
+    bool double_sided = false;
+    /// Per MaterialSlot: an index into RenderSnapshot::textures, no_texture, or placeholder_texture.
+    std::array<uint32_t, material_slots> textures{no_texture, no_texture, no_texture, no_texture, no_texture};
 };
 struct RenderInstance {
     EntityId entity{}; // identity for picking and diagnostics; resolve it again before touching a World
@@ -57,13 +73,14 @@ struct RenderSnapshotStats {
 };
 
 /// Immutable renderer input extracted from one World. It holds no World handles or pointers into
-/// component storage, and it leases every mesh version it draws, so deleting entities, evicting or
-/// reloading assets, or destroying the registry after extraction cannot invalidate it. Instances of
-/// one mesh share a single lease and GPU allocation. Release a snapshot once its frames are encoded;
+/// component storage, and it leases every mesh and texture version it draws, so deleting entities,
+/// evicting or reloading assets, or destroying the registry after extraction cannot invalidate it.
+/// Instances of one mesh, and materials using one texture, share a single lease and GPU allocation. Release a snapshot once its frames are encoded;
 /// the graphics device keeps the GPU buffers alive until those frames complete.
 struct RenderSnapshot {
     uint64_t world = 0; // World::token() of the source
     std::vector<AssetLease<MeshAsset>> meshes; // one per distinct mesh asset
+    std::vector<AssetLease<TextureAsset>> textures; // one per distinct texture the materials use
     std::vector<RenderInstance> instances;
     std::vector<RenderDirectionalLight> lights; // enabled directional lights in EntityId order
     math::Vec3 ambient{0.0f};
@@ -75,6 +92,7 @@ struct RenderSnapshot {
 /// Reads the World without modifying it and acquires assets through the registry, which loads
 /// unloaded assets synchronously. Missing or failed meshes skip their draw; missing or failed
 /// materials use fallback_material(); an unassigned material uses default MaterialAsset factors.
+/// Missing or failed textures, and textures of the wrong role, draw the placeholder.
 RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets,
                                        const RenderExtractOptions& options = {});
 

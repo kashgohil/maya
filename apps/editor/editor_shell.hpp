@@ -19,6 +19,7 @@
 #include <array>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -301,7 +302,18 @@ private:
     void draw_hierarchy();
     void draw_component(EntityId id, const ComponentValue& value);
     bool edit_property(EntityId id, const ComponentValue& value, PropertyId property, PropertyValue input);
+    void draw_property(const PropertyDescriptor& property, const PropertyValue& value, const std::string& key,
+                       const std::string& group, EntityId owner, const std::function<void(PropertyValue)>& edit);
     void track_edit(const std::string& label);
+    /// A material asset's properties, opening it for editing on first use (docs/editor.md#materials);
+    /// `folded` starts it closed under a header that opens it.
+    void draw_material(AssetId id, bool folded);
+    bool edit_material(AssetId id, PropertyId property, PropertyValue input);
+    /// Writes each edited material to its file. Returns why one could not be written, or empty.
+    std::string save_materials();
+    /// Puts the files' values back into the registry for materials edited but not saved, as the editor
+    /// that holds the edits closes.
+    void discard_material_edits();
     void draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2 max);
     void draw_physics_debug_menu();
     /// Size and offset handles on the primary selection's collider. Returns whether they are shown.
@@ -377,6 +389,11 @@ private:
     // Inspector
     std::string m_edit_error;
     EntityId m_edit_error_entity{};
+    std::string m_material_error;
+    AssetId m_material_error_id{};
+    // A material chosen in the Assets panel, shown until the scene selection changes.
+    std::optional<AssetId> m_inspected_material;
+    std::vector<EntityId> m_inspected_selection;
     EntityId m_euler_entity{}; // rotation shown as Euler angles, kept stable while dragging
     math::Vec3 m_euler{0.0f};
     bool m_edit_group_open = false;

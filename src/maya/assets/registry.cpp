@@ -201,6 +201,21 @@ AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind,
     return {it->second,{}};
 }
 
+AssetDiagnostic AssetRegistry::publish(AssetRef<MaterialAsset> ref, MaterialAsset value) {
+    const auto it = m_ids.find(ref.id);
+    if (it == m_ids.end()) return {AssetError::not_registered,"Asset " + id_text(ref.id) + " is not in the project catalog"};
+    auto& entry = m_entries[it->second];
+    if (entry.record.kind != AssetKind::material) return {AssetError::wrong_type,"Asset type mismatch: " + entry.record.path.string()};
+    if (entry.state == AssetState::loading || m_loading)
+        return {AssetError::busy,"Nested asset loads are not supported; stage dependencies before publication"};
+    if (entry.generation == std::numeric_limits<uint64_t>::max()) return {AssetError::load_failed,"Asset version counter exhausted"};
+    entry.payload = std::make_shared<const MaterialAsset>(std::move(value));
+    ++entry.generation;
+    entry.diagnostic = {};
+    entry.state = AssetState::ready;
+    return {};
+}
+
 size_t AssetRegistry::evict_unused() {
     if (m_loading) return 0;
     size_t count = 0;

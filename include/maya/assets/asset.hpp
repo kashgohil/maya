@@ -1,5 +1,6 @@
 #pragma once
 #include "maya/assets/asset_ref.hpp"
+#include "maya/assets/material.hpp"
 #include "maya/assets/texture_data.hpp"
 #include "maya/core/mesh.hpp"
 #include "maya/core/texture.hpp"
@@ -35,12 +36,6 @@ public:
 private:
     std::unique_ptr<Mesh> m_mesh;
     MeshGeometry m_geometry;
-};
-/// Initial material factors, interpreted by the future renderer; linear base color.
-struct MaterialAsset {
-    math::Vec4 base_color{1,1,1,1};
-    float metallic = 0;
-    float roughness = 1;
 };
 /// Luau source text (docs/scripting.md). Play sessions compile it; bytecode is never stored or loaded.
 struct ScriptAsset {

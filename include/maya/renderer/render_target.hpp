@@ -8,7 +8,7 @@ namespace maya {
 
 struct RenderTargetDesc {
     Format color_format = Format::rgba8_unorm; // the tone-mapped, sRGB-encoded output
-    bool readback = false; // allow GraphicsDevice::read_texture on the color texture
+    bool readback = false; // allow GraphicsDevice::read_texture on the color and scene textures
     std::string label = "view";
     Format scene_format = Format::rgba16_float; // the scene's HDR light, before exposure and tone mapping
 };

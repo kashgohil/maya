@@ -1,0 +1,17 @@
+maya-material 2
+base_color 0.6 0.8 1
+alpha 0.35
+base_color_texture none
+metallic 0
+roughness 0.05
+metallic_roughness_texture none
+normal_texture none
+normal_scale 1
+occlusion_texture none
+occlusion_strength 1
+emissive 0 0 0
+emissive_strength 1
+emissive_texture none
+alpha_mode blend
+alpha_cutoff 0.5
+double_sided false

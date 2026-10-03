@@ -33,8 +33,7 @@ RhiDiagnostic RenderTarget::resize(uint32_t width, uint32_t height) {
     if (m_desc.readback) usage = usage | TextureUsage::readback;
     auto color = m_device.create_texture({width, height, m_desc.color_format, usage, m_desc.label + " color"});
     if (!color) return color.diagnostic;
-    auto scene = m_device.create_texture({width, height, m_desc.scene_format, TextureUsage::render_target | TextureUsage::sampled,
-                                          m_desc.label + " scene"});
+    auto scene = m_device.create_texture({width, height, m_desc.scene_format, usage, m_desc.label + " scene"});
     if (!scene) {
         m_device.destroy(color.handle);
         return scene.diagnostic;

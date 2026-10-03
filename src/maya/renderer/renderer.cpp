@@ -1,6 +1,8 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/renderer/shader_constants.hpp"
 #include <algorithm>
+#include <cstring>
+#include <optional>
 
 namespace maya {
 
@@ -16,6 +18,7 @@ void Renderer::release() noexcept {
     }
     m_pipelines.clear();
     m_sampler = {};
+    m_placeholder.reset(); // a lost session already retired its texture
 }
 
 bool Renderer::session_changed() noexcept {
@@ -58,13 +61,17 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
         desc.blend = BlendMode::alpha;
         desc.label = kind == PipelineKind::debug_front ? "debug lines in front" : "debug lines behind";
     } else {
+        const auto blend = kind == PipelineKind::lit_blend || kind == PipelineKind::lit_blend_double_sided;
+        const auto double_sided = kind == PipelineKind::lit_double_sided || kind == PipelineKind::lit_blend_double_sided;
         desc.vertex_entry = "litVertex";
         desc.fragment_entry = "litFragment";
         desc.depth_format = Format::depth32_float;
-        desc.depth = {true, true, CompareFunction::less};
-        desc.cull = CullMode::back; // positive-scale transforms never flip winding
+        // Blended surfaces are tested against the opaque ones but do not hide what is drawn after them.
+        desc.depth = {true, !blend, CompareFunction::less};
+        desc.blend = blend ? BlendMode::alpha : BlendMode::opaque;
+        desc.cull = double_sided ? CullMode::none : CullMode::back; // positive-scale transforms never flip winding
         desc.front_face = Winding::counter_clockwise;
-        desc.label = "lit mesh";
+        desc.label = std::string(blend ? "blended" : "lit") + (double_sided ? " double-sided" : "") + " mesh";
     }
     auto created = m_device.create_pipeline(desc);
     // A lost session is not cached, so the next session tries again.
@@ -80,12 +87,47 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     if (view.width != target.width() || view.height != target.height())
         return {RhiError::invalid_usage, "View is " + std::to_string(view.width) + "x" + std::to_string(view.height) +
             " but its target is " + std::to_string(target.width()) + "x" + std::to_string(target.height())};
-    for (const auto& instance : snapshot.instances)
+    for (const auto& instance : snapshot.instances) {
         if (instance.mesh >= snapshot.meshes.size())
             return {RhiError::invalid_usage, "Render snapshot instance refers to a mesh it does not hold"};
-    auto lit = PipelineHandle{}, tone_map = PipelineHandle{};
-    if (auto error = pipeline(target.scene_format(), PipelineKind::lit, lit)) return error;
+        for (const auto texture : instance.material.textures)
+            if (texture != no_texture && texture != placeholder_texture && texture >= snapshot.textures.size())
+                return {RhiError::invalid_usage, "Render snapshot instance refers to a texture it does not hold"};
+    }
+    // Lit pipelines are created when a material first needs them.
+    const auto lit_kind = [](const RenderMaterial& material) {
+        if (material.alpha_mode == AlphaMode::blend)
+            return material.double_sided ? PipelineKind::lit_blend_double_sided : PipelineKind::lit_blend;
+        return material.double_sided ? PipelineKind::lit_double_sided : PipelineKind::lit;
+    };
+    auto lit = std::array<PipelineHandle, 4>{}; // lit, double-sided, blend, blend double-sided
+    const auto lit_index = [](PipelineKind kind) {
+        return kind == PipelineKind::lit ? 0 : kind == PipelineKind::lit_double_sided ? 1 : kind == PipelineKind::lit_blend ? 2 : 3;
+    };
+    for (const auto& instance : snapshot.instances) {
+        const auto kind = lit_kind(instance.material);
+        if (!lit[lit_index(kind)].valid())
+            if (auto error = pipeline(target.scene_format(), kind, lit[lit_index(kind)])) return error;
+    }
+    auto tone_map = PipelineHandle{};
     if (auto error = pipeline(target.color_format(), PipelineKind::tone_map, tone_map)) return error;
+    if (!m_placeholder) { // pipeline() above drops it when the device session changed
+        m_placeholder = make_placeholder_texture(m_device);
+        if (!m_placeholder) return {RhiError::device_unavailable, "The texture placeholder could not be created"};
+    }
+    // Opaque and masked surfaces in snapshot order, then blended ones back to front.
+    m_order.clear();
+    for (uint32_t i = 0; i < snapshot.instances.size(); ++i)
+        if (snapshot.instances[i].material.alpha_mode != AlphaMode::blend) m_order.push_back(i);
+    const auto opaque = m_order.size();
+    for (uint32_t i = 0; i < snapshot.instances.size(); ++i)
+        if (snapshot.instances[i].material.alpha_mode == AlphaMode::blend) m_order.push_back(i);
+    const auto distance = [&](uint32_t i) {
+        const auto& world = snapshot.instances[i].world;
+        return (math::Vec3{world.at(0, 3), world.at(1, 3), world.at(2, 3)} - view.position).length_squared();
+    };
+    std::stable_sort(m_order.begin() + std::ptrdiff_t(opaque), m_order.end(),
+                     [&](uint32_t a, uint32_t b) { return distance(a) > distance(b); });
     auto debug_front = PipelineHandle{}, debug_behind = PipelineHandle{};
     if (!snapshot.debug.empty()) { // no debug pipelines until something is drawn with them
         if (auto error = pipeline(target.color_format(), PipelineKind::debug_front, debug_front)) return error;
@@ -112,14 +154,47 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     if (auto error = m_device.begin_render_pass(pass)) return error;
     ++m_stats.views;
     const auto encode = [&]() -> RhiDiagnostic {
-        if (auto error = m_device.set_pipeline(lit)) return error;
-        if (auto error = m_device.set_uniform_buffer(2, uploaded_view.slice)) return error;
-        for (const auto& instance : snapshot.instances) {
+        auto bound_pipeline = PipelineHandle{};
+        auto bound = std::array<const TextureAsset*, material_slots>{}; // rebound only when they change
+        auto bound_material = std::optional<MaterialConstants>{}; // uploaded only when it changes
+        auto bound_maps = std::optional<std::array<uint32_t, material_slots>>{};
+        for (const auto index : m_order) {
+            const auto& instance = snapshot.instances[index];
+            const auto& material = instance.material;
+            if (const auto pipeline = lit[lit_index(lit_kind(material))]; pipeline != bound_pipeline) {
+                if (auto error = m_device.set_pipeline(pipeline)) return error;
+                if (!bound_pipeline.valid())
+                    if (auto error = m_device.set_uniform_buffer(2, uploaded_view.slice)) return error;
+                bound_pipeline = pipeline;
+            }
+            auto constants = MaterialConstants{};
+            constants.base_color = material.base_color;
+            constants.factors = {material.metallic, material.roughness, material.normal_scale, material.occlusion_strength};
+            constants.emissive = {material.emissive, material.alpha_cutoff};
+            constants.flags[1] = uint32_t(material.alpha_mode);
+            for (uint32_t slot = 0; slot < material_slots; ++slot)
+                if (material.textures[slot] != no_texture) constants.flags[0] |= 1u << slot;
+            if (bound_maps != material.textures) {
+                for (uint32_t slot = 0; slot < material_slots; ++slot) {
+                    // Empty slots are not sampled, but every slot is bound.
+                    const auto texture = material.textures[slot];
+                    const auto* asset = texture < snapshot.textures.size() ? &snapshot.textures[texture].value() : m_placeholder.get();
+                    if (asset == bound[slot]) continue;
+                    if (auto error = m_device.set_texture(slot, asset->texture().handle())) return error;
+                    if (auto error = m_device.set_sampler(slot, asset->sampler().handle())) return error;
+                    bound[slot] = asset;
+                }
+                bound_maps = material.textures;
+            }
+            if (!bound_material || std::memcmp(&*bound_material, &constants, sizeof(constants)) != 0) {
+                const auto uploaded = m_device.upload_transient(&constants, sizeof(constants));
+                if (!uploaded) return uploaded.diagnostic;
+                if (auto error = m_device.set_uniform_buffer(3, uploaded.slice)) return error;
+                bound_material = constants;
+            }
             auto draw = DrawConstants{};
             draw.model = instance.world;
             for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
-            draw.base_color = instance.material.base_color;
-            draw.material = {instance.material.metallic, instance.material.roughness, 0.0f, 0.0f};
             const auto uploaded = m_device.upload_transient(&draw, sizeof(draw));
             if (!uploaded) return uploaded.diagnostic;
             if (auto error = m_device.set_uniform_buffer(1, uploaded.slice)) return error;

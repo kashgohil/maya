@@ -36,7 +36,7 @@ entity 6d617961 302
   component maya.light 1
     kind directional
     color 1 1 1
-    intensity 1
+    intensity 3.1415927
     range 10
     inner_cone 0.5235988
     outer_cone 0.7853982

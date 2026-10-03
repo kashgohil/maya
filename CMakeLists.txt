@@ -38,6 +38,7 @@ find_library(COCOA_LIBRARY Cocoa REQUIRED)
 # Explicit source lists prevent editor/sample code from silently entering the runtime.
 add_library(MayaWorld STATIC
     src/maya/core/identity.cpp
+    src/maya/core/file_replace.cpp
     src/maya/world/world.cpp
     src/maya/world/spatial.cpp
     src/maya/properties/schema.cpp)
@@ -88,14 +89,24 @@ if(MAYA_ENABLE_SANITIZERS)
     set_source_files_properties(src/maya/assets/stb_implementation.cpp PROPERTIES COMPILE_OPTIONS "-fno-sanitize=all")
 endif()
 
+# MikkTSpace (zlib), the reference tangent generator glTF requires; no releases are tagged, so pinned
+# by commit. Its one C file is built as C, unchanged and without Maya's warnings.
+enable_language(C)
+FetchContent_Declare(mikktspace GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git GIT_TAG 3e895b49d05ea07e4c2133156cfa94369e19e409)
+FetchContent_MakeAvailable(mikktspace)
+add_library(MayaMikkTSpace STATIC ${mikktspace_SOURCE_DIR}/mikktspace.c)
+target_include_directories(MayaMikkTSpace SYSTEM PUBLIC ${mikktspace_SOURCE_DIR})
+
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/property_context.cpp
     src/maya/assets/file_provider.cpp
+    src/maya/assets/material_file.cpp
     src/maya/assets/project.cpp
-    src/maya/core/model_loader.cpp)
+    src/maya/core/model_loader.cpp
+    src/maya/core/tangents.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
-target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures)
+target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures PRIVATE MayaMikkTSpace)
 maya_target_options(MayaAssets)
 
 # Scene persistence depends only on World data and a caller-supplied asset-reference resolver.

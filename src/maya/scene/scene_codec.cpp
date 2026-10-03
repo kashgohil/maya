@@ -1,15 +1,11 @@
 #include "scene_detail.hpp"
+#include "maya/core/file_replace.hpp"
 #include <algorithm>
-#include <cerrno>
 #include <charconv>
 #include <cmath>
-#include <cstring>
-#include <fcntl.h>
 #include <fstream>
 #include <iterator>
 #include <sstream>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace maya {
 namespace {
@@ -300,7 +296,8 @@ std::string expectation(const PropertyDescriptor& property) {
     case PropertyType::material_ref: return "'none' or two hexadecimal asset ID words";
     case PropertyType::integer: return "one whole number";
     case PropertyType::flags: return "a hexadecimal bit set such as 0xffff";
-    case PropertyType::script_ref: return "'none' or two hexadecimal asset ID words";
+    case PropertyType::script_ref:
+    case PropertyType::texture_ref: return "'none' or two hexadecimal asset ID words";
     case PropertyType::script_values:
         return "a count, then for each value a name, a type (number integer boolean string vector color entity), and "
                "its data";
@@ -346,6 +343,11 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::spa
         auto id = AssetId{};
         if (!(single_word && tokens[0].text == "none") && !parse_id(tokens, id)) return std::nullopt;
         return AssetRef<ScriptAsset>{id};
+    }
+    case PropertyType::texture_ref: {
+        auto id = AssetId{};
+        if (!(single_word && tokens[0].text == "none") && !parse_id(tokens, id)) return std::nullopt;
+        return AssetRef<TextureAsset>{id};
     }
     case PropertyType::script_values: return decode_script_values(tokens);
     case PropertyType::flags: {
@@ -583,7 +585,6 @@ void prefix(SceneDiagnostics& diagnostics, const std::filesystem::path& path) {
 SceneDiagnostics io_failure(const std::filesystem::path& path, const std::string& message) {
     return {{SceneError::io_error, path.string() + ": " + message, 0, {}}};
 }
-std::string system_error(int code) { return std::strerror(code); }
 } // namespace
 
 SceneDocumentResult read_scene(std::string_view text, const PropertyValidationContext& context) {
@@ -641,41 +642,7 @@ SceneDiagnostics save_scene_file(const std::filesystem::path& path, SceneDocumen
     if (error && exists) return io_failure(path, "cannot inspect the existing scene file: " + error.message());
     if (exists && !std::filesystem::is_regular_file(status))
         return io_failure(path, "exists and is not a regular file; choose another path");
-    const auto text = encode(document);
-
-    // A unique sibling keeps the final rename on one filesystem, so it replaces the file atomically.
-    const auto directory = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
-    const auto temporary = directory / ("." + path.filename().string() + ".tmp-" +
-        hex(static_cast<uint64_t>(::getpid())) + "-" + hex(detail::next_lifetime_token()));
-    const auto descriptor = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-    if (descriptor < 0)
-        return io_failure(path, "cannot create a temporary file in '" + directory.string() + "': " +
-            system_error(errno) + ". The existing scene file was not changed");
-    auto descriptor_open = true;
-    const auto abandon = [&](const std::string& what, int code) {
-        if (descriptor_open) ::close(descriptor);
-        ::unlink(temporary.c_str());
-        return io_failure(path, what + ": " + system_error(code) + ". The existing scene file was not changed");
-    };
-    for (size_t written = 0; written < text.size();) {
-        const auto count = ::write(descriptor, text.data() + written, text.size() - written);
-        if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) return abandon("cannot write the scene", count < 0 ? errno : EIO);
-        written += static_cast<size_t>(count);
-    }
-    if (exists) ::fchmod(descriptor, static_cast<mode_t>(status.permissions()) & 07777); // best effort
-    // F_FULLFSYNC asks the drive to persist data; fall back where the filesystem does not support it.
-    if (::fcntl(descriptor, F_FULLFSYNC) == -1 && ::fsync(descriptor) == -1)
-        return abandon("cannot flush the scene to storage", errno);
-    descriptor_open = false;
-    if (::close(descriptor) != 0) return abandon("cannot finish writing the scene", errno);
-    if (::rename(temporary.c_str(), path.c_str()) != 0)
-        return abandon("cannot replace the scene file", errno);
-    // Persist the directory entry. The new file is already in place, so failure here is not reported.
-    if (const auto folder = ::open(directory.c_str(), O_RDONLY | O_CLOEXEC); folder >= 0) {
-        ::fsync(folder);
-        ::close(folder);
-    }
+    if (auto failed = replace_file(path, encode(document), "scene"); !failed.empty()) return io_failure(path, failed);
     return {};
 }
 } // namespace maya

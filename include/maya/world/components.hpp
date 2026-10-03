@@ -39,7 +39,9 @@ enum class LightKind { directional, point, spot };
 struct LightComponent {
     LightKind kind = LightKind::directional;
     math::Vec3 color{1.0f}; // linear RGB
-    float intensity = 1.0f; // lux for directional; lumens for point/spot
+    // Lux for directional; lumens for point/spot. A white diffuse surface facing a directional light
+    // reflects intensity / pi, so the default shows it at scene light 1 (docs/renderer.md#materials).
+    float intensity = math::PI;
     float range = 10.0f; // metres, local lights only
     float inner_cone = math::PI / 6.0f; // full angle in radians, spot only
     float outer_cone = math::PI / 4.0f;

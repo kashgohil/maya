@@ -1,0 +1,9 @@
+maya-texture 1
+source "cutout.png"
+usage color
+compression rgba8
+mips on
+filter linear linear
+mip_filter linear
+anisotropy 8
+address repeat repeat

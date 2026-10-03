@@ -1,4 +1,5 @@
 #include "maya/assets/asset.hpp"
+#include "maya/assets/material_file.hpp"
 #include "maya/assets/texture_cook.hpp"
 #include "maya/core/model_loader.hpp"
 #include <array>
@@ -16,19 +17,9 @@ AssetLoadResult<MeshAsset> FileAssetProvider::load_mesh(const std::filesystem::p
 AssetLoadResult<MaterialAsset> FileAssetProvider::load_material(const std::filesystem::path& path) {
     auto input = std::ifstream(path);
     if (!input) return {{},{AssetError::missing_file,"Cannot read material: " + path.string()}};
-    std::string magic, color_key, metallic_key, roughness_key, extra;
-    unsigned version=0;
-    auto material = MaterialAsset{};
-    auto& color = material.base_color;
-    if (!(input >> magic >> version >> color_key >> color.x >> color.y >> color.z >> color.w
-                >> metallic_key >> material.metallic >> roughness_key >> material.roughness) ||
-        magic != "maya-material" || version != 1 || color_key != "base_color" ||
-        metallic_key != "metallic" || roughness_key != "roughness" || input >> extra || input.bad())
-        return {{},{AssetError::invalid_data,"Expected maya-material 1, base_color RGBA, metallic, roughness: " + path.string()}};
-    for (const float value : {color.x,color.y,color.z,color.w,material.metallic,material.roughness})
-        if (!std::isfinite(value) || value < 0 || value > 1)
-            return {{},{AssetError::invalid_data,"Material factors must be finite in [0,1]: " + path.string()}};
-    return {std::make_shared<const MaterialAsset>(material),{}};
+    auto read = read_material_file(input);
+    if (!read) return {{},{AssetError::invalid_data,path.string() + ": " + read.error}};
+    return {std::make_shared<const MaterialAsset>(read.material),{}};
 }
 namespace {
 std::optional<std::vector<std::byte>> read_bytes(const std::filesystem::path& path) {
@@ -142,7 +133,7 @@ std::shared_ptr<const TextureAsset> make_placeholder_texture(GraphicsDevice& dev
 }
 
 const MaterialAsset& fallback_material() noexcept {
-    static const auto material = MaterialAsset{{1,0,1,1},0,1};
+    static const auto material = MaterialAsset{{1,0,1,1},0,1}; // magenta, rough, untextured
     return material;
 }
 } // namespace maya

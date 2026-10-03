@@ -330,6 +330,10 @@ EditResult SceneEditor::apply(const SceneChange& change, bool forward) {
         if (list.empty()) m_state.children.erase(parent);
         else m_state.children.insert_or_assign(parent, list);
     }
+    for (const auto& [id, value] : forward ? change.materials_after : change.materials_before) {
+        m_materials.insert_or_assign(id, value);
+        if (m_publish_material) m_publish_material(id, value);
+    }
     ++m_revision; // callers then set the selection, which prunes missing entities
     return {true, {}};
 }
@@ -403,6 +407,14 @@ void drop_unchanged(SceneChange& change) {
             ++it;
         }
     }
+    for (auto it = change.materials_after.begin(); it != change.materials_after.end();) {
+        if (change.materials_before.at(it->first) == it->second) {
+            change.materials_before.erase(it->first);
+            it = change.materials_after.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 } // namespace
 
@@ -422,6 +434,10 @@ EditResult SceneEditor::commit(std::string label, SceneChange change, std::vecto
         for (auto& [parent, after] : change.order_after) {
             m_group_change.order_before.try_emplace(parent, change.order_before.at(parent));
             m_group_change.order_after.insert_or_assign(parent, std::move(after));
+        }
+        for (auto& [id, after] : change.materials_after) {
+            m_group_change.materials_before.try_emplace(id, change.materials_before.at(id));
+            m_group_change.materials_after.insert_or_assign(id, std::move(after));
         }
     } else {
         record({std::move(label), std::move(change), selection_before, m_selection});
@@ -625,6 +641,48 @@ EditResult SceneEditor::redo() {
     ++m_position;
     set_selection(step.selection_after);
     return {true, {}};
+}
+
+void SceneEditor::open_material(AssetId id, MaterialAsset saved) {
+    if (m_materials.contains(id)) return;
+    m_materials.emplace(id, saved);
+    m_material_files.emplace(id, std::move(saved));
+}
+
+const MaterialAsset* SceneEditor::material(AssetId id) const {
+    const auto found = m_materials.find(id);
+    return found == m_materials.end() ? nullptr : &found->second;
+}
+
+EditResult SceneEditor::set_material(AssetId id, MaterialAsset value, std::string label) {
+    const auto found = m_materials.find(id);
+    if (found == m_materials.end()) return {false, "The material is not open for editing"};
+    auto change = SceneChange{};
+    change.materials_before.emplace(id, found->second);
+    change.materials_after.emplace(id, std::move(value));
+    return commit(std::move(label), std::move(change), m_selection);
+}
+
+void SceneEditor::material_file_changed(AssetId id, MaterialAsset saved) {
+    const auto file = m_material_files.find(id);
+    if (file == m_material_files.end()) return;
+    auto& current = m_materials.at(id);
+    if (current == file->second) current = saved;
+    else if (m_publish_material) m_publish_material(id, current); // a reload replaced the published edit
+    file->second = std::move(saved);
+}
+
+bool SceneEditor::dirty() const noexcept {
+    if (!m_saved || *m_saved != m_position) return true;
+    return std::ranges::any_of(m_materials, [&](const auto& entry) { return !(entry.second == m_material_files.at(entry.first)); });
+}
+
+std::vector<AssetId> SceneEditor::dirty_materials() const {
+    auto result = std::vector<AssetId>{};
+    for (const auto& [id, value] : m_materials)
+        if (!(value == m_material_files.at(id))) result.push_back(id);
+    std::ranges::sort(result);
+    return result;
 }
 
 } // namespace maya::editor

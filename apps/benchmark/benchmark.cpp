@@ -776,7 +776,12 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (manifest.present && device.surface_format() == Format::undefined)
             throw std::runtime_error("'present on' needs a window; this device has no surface");
         const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll};
-        // The warmed empty session: the device, the project's catalog, and the view target, no content.
+        // The warmed empty session: the device, the project's catalog, the view target, and what the
+        // renderer keeps (its texture placeholder), with no content.
+        if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
+        auto warmed = renderer.render(RenderSnapshot{}, RenderView{manifest.width, manifest.height}, target);
+        if (auto ended = device.end_frame(); !warmed) warmed = std::move(ended);
+        if (warmed) throw std::runtime_error(warmed.message);
         result.baseline = memory(device, registry, 0);
 
         if (manifest.workload == Workload::instances || manifest.workload == Workload::scene) {
