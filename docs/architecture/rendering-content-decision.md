@@ -124,7 +124,8 @@ Tone mapping 1920 × 1080 from an RGBA16F target to RGBA8 with sRGB encoding (GP
 ## Shading and lights
 
 - **The model** is glTF's metallic-roughness: GGX specular with height-correlated Smith visibility and Schlick Fresnel, and Lambert diffuse. Base color, metallic-roughness, normal, occlusion, and emissive maps, with glTF's alpha modes.
-- **Tangents.** glTF requires MikkTSpace tangents where a mesh has none, so the importer generates them with the reference `mikktspace.c` (zlib license).
+- **Tangents.** glTF requires MikkTSpace tangents where a mesh has none, so the importer generates them with the reference `mikktspace.c` (zlib license). Since [#1033](https://work.rezee.app/kash/issues/1033) the OBJ loader does too; `mikktspace.c` is pinned at commit `3e895b49` (MikkTSpace has no tagged releases), built as C into `MayaMikkTSpace`.
+- **Implemented** by #1033 ([materials](../renderer.md#materials)). Its measured energy behavior, and the version-1 content's change, are recorded there. `KHR_texture_transform` and `KHR_materials_emissive_strength` are read by the importer ([#1036](https://work.rezee.app/kash/issues/1036)): materials hold an emissive strength, and texture transforms are added to materials with the importer that needs them.
 - **Units** follow glTF's `KHR_lights_punctual`: lux for directional lights and candela for point and spot lights, so imported lights keep their values. The Inspector may show lumens beside candela.
 - **Light count.** A fixed number of local lights per view, measured in [#1034](https://work.rezee.app/kash/issues/1034), with lights beyond it reported. Clustered shading is the next step if R1 needs more.
 

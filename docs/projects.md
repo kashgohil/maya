@@ -73,13 +73,13 @@ The Assets panel is the bottom panel shown first (Diagnostics is its neighbourin
 
 - **Scenes:** the `.scene` files in the content folder, with the open scene highlighted. Double-click one to open it.
 - **Meshes:** meshes from the catalog, by file name.
-- **Materials:** materials from the catalog, each with a swatch of its base color.
+- **Materials:** materials from the catalog, each with a swatch of its base color. Clicking one shows it in the Inspector to [edit](editor.md#materials).
 - **Scripts:** [scripts](scripting.md) from the catalog (#1020). Their status is kept current, since the editor watches script files.
 - **Textures:** [textures](assets.md#textures) from the catalog (#1031), each with a thumbnail.
 
-A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, **error** (red) for a script that does not compile, or **not loaded** for a mesh no frame has drawn yet or a texture waiting its turn. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Open** (scripts: in the application the system uses for the file, else the default text editor), **Assign to selection** (not textures), **Reload** (read the file again), and **Copy ID**.
+A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, **error** (red) for a script that does not compile, or **not loaded** for a mesh no frame has drawn yet or a texture waiting its turn. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Open** (scripts: in the application the system uses for the file, else the default text editor), **Assign to selection** (not textures), **Reload** (read the file again; a material with unsaved edits keeps them), and **Copy ID**.
 
-**Texture thumbnails.** Textures load when their row is shown, at most one a frame, since cooking a source image can take tens or hundreds of milliseconds ([cooking at load](assets.md#cooking-at-load)); a failed load is reported in Diagnostics under **asset** once. Each thumbnail is drawn on the GPU from the texture's own mip levels into a small image, once per texture version, and shown in the display's encoding: color as authored (over a checkerboard where it is transparent), data as stored, and normal maps with z rebuilt, so flat areas look light blue. A missing or failed texture shows the [placeholder](assets.md#texture-assets). Hovering a row shows a larger preview with the size, format, mip levels, GPU memory, usage, and sampler settings. At most 256 row thumbnails are kept, least recently shown first out. Textures are not placed or assigned: materials use them from [#1033](https://work.rezee.app/kash/issues/1033).
+**Texture thumbnails.** Textures load when their row is shown, at most one a frame, since cooking a source image can take tens or hundreds of milliseconds ([cooking at load](assets.md#cooking-at-load)); a failed load is reported in Diagnostics under **asset** once. Each thumbnail is drawn on the GPU from the texture's own mip levels into a small image, once per texture version, and shown in the display's encoding: color as authored (over a checkerboard where it is transparent), data as stored, and normal maps with z rebuilt, so flat areas look light blue. A missing or failed texture shows the [placeholder](assets.md#texture-assets). Hovering a row shows a larger preview with the size, format, mip levels, GPU memory, usage, and sampler settings. At most 256 row thumbnails are kept, least recently shown first out. Textures are not placed or assigned to objects: since [#1033](https://work.rezee.app/kash/issues/1033) they are dragged onto a material's map slots in the Inspector.
 
 | Gesture | Result |
 | --- | --- |
@@ -87,7 +87,7 @@ A row may show a status: **missing** (amber) when its file is not in the content
 | Drag a material or script onto an object in the viewport | Assigns it to that object. |
 | Drag a mesh, material, or script onto a Hierarchy row | Assigns it to that entity. An entity with a transform but no mesh renderer gets one for a mesh or material. A script replaces the entity's script, keeping the values the new script declares. |
 | Drag a mesh onto the Hierarchy's empty space | Places it in view, as a double-click does. |
-| Drag onto an Inspector mesh, material, or script field | Chooses it, when the kind matches. |
+| Drag onto an Inspector mesh, material, script, or texture field | Chooses it, when the kind matches. Texture fields are a material's maps (#1033). |
 | Double-click a mesh | Places it where the center of the view meets the scene. |
 | Double-click a material | Assigns it to every selected entity. |
 | Double-click a script | Opens it, as **Open** does. |

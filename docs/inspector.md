@@ -23,7 +23,7 @@ Each property's control comes from its schema descriptor:
 | choice | Menu of the schema's choices (a light's kind, a collider's shape, a body's motion). |
 | integer | Drag field clamped to the schema range. A collision group shows a menu of the project's group names instead. |
 | flags, collision mask | A menu with one check box per collision group, named as in the project, plus All groups and None. Its label summarizes the mask: All groups, None, one group's name, or how many. |
-| mesh / material / script reference | Menu of catalog assets of that kind, plus None. An asset of that kind dragged from the [Assets panel](projects.md#the-assets-panel) can be dropped on it. A reference to an asset missing from the catalog shows as "Missing" in amber; an asset that failed to load shows in red, with the reason as a tooltip. |
+| mesh / material / script / texture reference | Menu of catalog assets of that kind, plus None. An asset of that kind dragged from the [Assets panel](projects.md#the-assets-panel) can be dropped on it. A reference to an asset missing from the catalog shows as "Missing" in amber; an asset that failed to load shows in red, with the reason as a tooltip. |
 
 A light shows only the properties its kind uses: range for point and spot lights, cone angles for spot lights. A collider shows only its shape's size (half extents for a box, a radius for a sphere, a radius and half height for a capsule), and a kinematic body hides the initial velocities that only dynamic bodies use. Descriptions appear as tooltips. The editor camera's settings sit below the selection's components: speed, field of view, and (since #1032) the Scene view's exposure in EV100 and tone mapping, which are tool state and never edit the scene. A camera component's own exposure and tone mapping are ordinary properties, used by the Game view and the player.
 
@@ -61,6 +61,16 @@ Below the fields, **Open script** opens the file in an external editor ([Assets 
 - **Stored values that do not fit,** in amber: one for a property the script no longer declares, of another type, or out of range. **Remove unused values** drops those for undeclared properties, as one undo step.
 
 The editor compiles each script when the project opens, and again whenever its file changes ([reload](scripting.md#reload)), so the fields follow the script as it is edited.
+
+### Materials
+
+[Issue #1033](https://work.rezee.app/kash/issues/1033) edits material assets in the Inspector, through the [material schema](properties.md#materials) and the same controls as components ([how editing works](editor.md#materials)):
+
+- **Under an object.** Below the components of an object with a mesh renderer, its material appears folded, under its name; the arrow opens it. Folded by default, it leaves the components where they were.
+- **From the Assets panel.** Clicking a material's row shows that material alone, unfolded, until the scene selection changes.
+- **Controls.** Base color (a color editor) and its alpha, metallic, roughness, normal scale, occlusion strength, emissive (a color editor) and its strength, alpha mode, alpha cutoff (shown only for `mask`), and double-sided. The five maps are texture references: a menu of the catalog's textures, plus None, and a drop target for a texture dragged from the Assets panel.
+- **Notes.** The header says "Material, unsaved" while the material differs from its file. A map of the wrong kind for its slot (a color texture as the normal map, say) is noted in amber, since it draws the placeholder. A rejected value shows its reason in red.
+- **One step per interaction**, as for components, labelled "Edit ⟨material⟩", in the scene's history. Every object that uses the material shows each change at once.
 
 ## Gizmos
 
@@ -104,7 +114,8 @@ That is fine for picking on click; a spatial acceleration structure is the next 
   - a child of a rotated, scaled parent hit at its world position;
   - view rays that project back onto their pixels;
   - Euler round trips, gimbal lock, and no negative zero.
-- [scene_editor_tests.cpp](../tests/scene_editor_tests.cpp) covers adding and removing components as undoable steps, removal rules for transforms in a hierarchy, and schema validation of whole-component edits.
+- [scene_editor_tests.cpp](../tests/scene_editor_tests.cpp) covers adding and removing components as undoable steps, removal rules for transforms in a hierarchy, and schema validation of whole-component edits; since #1033, material edits in the shared history and groups, what they publish, and how unsaved materials meet changed files.
+- [editor_material_tests.cpp](../tests/editor_material_tests.cpp) (#1033) drags a material's roughness in the Inspector and checks that the registry serves the edit at once, that undo and redo interleave it with a scene edit, and that ⌘S writes it as version 2; that edits are refused while playing; that closing or opening another scene asks first, and Don't save puts the file's value back; that a reload follows the file unless the material has an unsaved edit; and that textures dropped from the Assets panel fill map slots, with a map of the wrong kind noted and a mesh refused.
 - [editor_tests.cpp](../tests/editor_tests.cpp) drives the editor with synthetic input:
   - clicking the viewport picks the nearest object, clicking again steps to the one behind, ⌘-click adds, empty space clears, and camera and light icons are clickable;
   - a 20-frame Inspector drag is one undo step that undo reverses;

@@ -20,7 +20,7 @@
 | 10 / `maya.physics_settings` | 1 `gravity` (#1019) |
 | 11 / `maya.script` | 1 `script`, 2 `values` — [scripting](scripting.md) (#1018) |
 
-Property values are one of: text, boolean, scalar (float), vector3, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh or material reference, integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
+Property values are one of: text, boolean, scalar (float), vector3, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh, material, or (since #1033, for [materials](#materials)) texture reference, integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
 
 A persistent property identity is the pair `(ComponentId, PropertyId)`. Property IDs are scoped to their component; zero is reserved. Display labels, table order, RTTI, C++ layout, variant indices, and pointer addresses never identify saved data. Lookup returns null for unknown identities. The initial built-in schema set is deliberately closed; adding another component requires a typed variant alternative, schema bindings, default/snapshot dispatch, and validation tests. There is no dynamic plugin registration. A script's declared properties are not schema properties: they live inside the one `values` property, named rather than numbered, and the Inspector draws them from the script's [description](scripting.md#properties).
 
@@ -67,12 +67,36 @@ The detached API lets a future scene loader validate an entire unpublished scene
 | Collider | Positive half extents, radius, and half height; finite offset; a finite nonzero rotation, normalized; friction ≥ 0; restitution 0 to 1; group 0 to 15; mask at most 0xFFFF. |
 | Rigid body | Mass ≥ 0 (0 derives it from the density); density > 0; damping ≥ 0; finite gravity factor and velocities. A kinematic body has no initial velocity. |
 | Physics settings | Finite gravity. |
-| Asset references | Empty means unassigned. Nonempty ID must exist in the supplied catalog and have the correct mesh, material, or script kind. |
+| Asset references | Empty means unassigned. Nonempty ID must exist in the supplied catalog and have the correct mesh, material, script, or texture kind. |
+| Light intensity default | π since #1033, so a default light shows a white diffuse surface facing it at scene light 1 under [physically based shading](renderer.md#materials). Saved scenes write every property, so the change affects only new lights. |
 | Script values | Names are identifiers of at most 64 characters, each used once; data matches its type; numbers, vectors, and colors are finite. `script_values_problem(values)` says which value is wrong. Whether values fit the script's declarations is checked when play starts, not here, so values survive a script's changes ([scripting](scripting.md#properties)). |
 
 Numbers are rejected instead of clamped. Numeric ranges in descriptors drive generic validation; complete-component rules handle relationships and transform normalization. Rotation is the only normalization. Camera property validity does not guarantee a representable projection at every aspect/pose/extreme scale; `camera_matrices` retains its numerical checks. Local transform validity similarly does not guarantee that composing an arbitrarily deep hierarchy will stay representable.
 
 Pass `asset_property_context(registry)` when editing components with nonempty references. The returned context borrows the registry, which must outlive it. Validation does not load an asset, pin a resource, or require a source file to exist. Registered unloaded/failed assets retain valid identity; loading diagnostics and [fallback policies](assets.md) remain the registry/renderer responsibility. A missing catalog entry, a wrong asset kind, and an omitted resolver are distinct errors. Validation checks the entire final component, including unchanged reference fields; clearing all references needs no resolver. It is not a check that a GPU mesh remains resident.
+
+## Materials
+
+[Issue #1033](https://work.rezee.app/kash/issues/1033) describes material assets with the same descriptors, so the Inspector edits them with the same controls and validation ([inspector](inspector.md#materials)). `material_properties()` lists them; `material_property` looks one up by ID or name; `read_property(material, id)`, `edit_properties(material, edits, context)`, and `validate_material` work on a `MaterialAsset` as their component overloads work on a `ComponentValue`: on a copy, validating the whole result, publishing only on success. The names are the [material file](assets.md#materials)'s keys.
+
+| ID / name | Type | Range |
+| --- | --- | --- |
+| 1 `base_color` | vector3, color (linear RGB) | 0 to 1 |
+| 2 `alpha` | scalar (base color's alpha) | 0 to 1 |
+| 3 `base_color_texture` | texture reference | |
+| 4 `metallic`, 5 `roughness` | scalar | 0 to 1 |
+| 6 `metallic_roughness_texture`, 7 `normal_texture` | texture reference | |
+| 8 `normal_scale` | scalar | 0 to 10 |
+| 9 `occlusion_texture` | texture reference | |
+| 10 `occlusion_strength` | scalar | 0 to 1 |
+| 11 `emissive` | vector3, color (linear RGB) | 0 to 1 |
+| 12 `emissive_strength` | scalar | 0 to 100,000 |
+| 13 `emissive_texture` | texture reference | |
+| 14 `alpha_mode` | choice: `opaque`, `mask`, `blend` | |
+| 15 `alpha_cutoff` | scalar | 0 to 1 |
+| 16 `double_sided` | boolean | |
+
+Texture references take a texture from the catalog; which role a slot needs is the renderer's to check ([materials](renderer.md#materials)), since a texture's role is known only once it loads.
 
 ## Persistence and schema evolution
 

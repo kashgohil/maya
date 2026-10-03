@@ -47,7 +47,7 @@ On its first frame the shell docks the panels: Hierarchy on the left, Inspector 
 - **Hierarchy:** the scene's entities in display order, each marked by type. Select, rename, create, duplicate, delete, and drag to reparent or reorder, all undoable; see [scene editing](editing.md).
 - **Viewport:** the scene from the editor camera, with a tool bar for gizmo modes, the transform gizmo, camera and light icons, selection outlines, click-to-select, and a small hint about the controls; see [inspector, gizmos, and picking](inspector.md).
 - **Inspector:** the selection's name and components, with controls generated from the property schemas, plus the editor camera's settings; see [inspector, gizmos, and picking](inspector.md).
-- **Assets:** the project's scenes, meshes, and materials, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
+- **Assets:** the project's scenes, meshes, materials, scripts, and textures, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 
 The top bar shows the project and the open scene. The project's name opens a menu with its settings (the [collision groups](projects.md#collision-groups)); the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
@@ -128,6 +128,17 @@ To support this, the RHI gained three general features (see [the graphics device
   Each drag is one undo step, named "Resize the collider of …" or "Move the collider of …", and goes through `SceneEditor::set_component`, so it is validated as the Inspector's edits are. Sizes never go below 5 mm. Handles are hidden while playing, and an entity without a collider keeps its gizmo.
 
 **Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories, a `physics-debug-groups` mask, and an `exposure-view` line (`none`, `luminance`, or `false-color`). They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
+
+## Materials
+
+[Issue #1033](https://work.rezee.app/kash/issues/1033) edits [material assets](assets.md#materials) in the editor, with the same history as the scene:
+
+- **Where.** The [Inspector](inspector.md#materials) shows a selected object's material folded below its components, and a material clicked in the Assets panel on its own.
+- **Opening.** The first time a material is shown, the open scene's `SceneEditor` takes its value from the registry as its file's (`open_material`). From then on the editor holds the material's edited value.
+- **Editing.** Each change is validated by the [material schema](properties.md#materials), applied through `SceneEditor::set_material` as an undo step (or part of a drag's group), and published to the registry (`AssetRegistry::publish`). Every object that uses the material, in the Scene view, the Game view, and a Play started afterwards, shows it at the next frame. Undo and redo publish the values they restore, in the same history as scene edits. While the scene plays, material edits are refused, as scene edits are.
+- **Saving.** A material that differs from its file counts as an unsaved change: the top bar shows "modified", and closing, opening another scene, or ⌘N asks first. ⌘S (and Save from that prompt, and Save as) writes every edited material to its file at version 2, atomically, before the scene; the Diagnostics log names each file. A version-1 file is migrated by that save.
+- **Discarding.** Don't save, or opening another scene, reloads each edited material from its file, so nothing unsaved stays published.
+- **Reloading.** The Assets panel's Reload reads the file again. An unedited material takes the file's value. An edited one keeps its edit, published again over the reload, and stays unsaved against the file's new value. Material files are not watched; scripts are ([reload](scripting.md#reload)).
 
 ## Diagnostics
 

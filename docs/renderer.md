@@ -39,12 +39,13 @@ The [player](../apps/player/player_application.cpp) uses exactly this path: it r
 | --- | --- |
 | `world` | The source `World::token()`, so snapshots from authoring and play Worlds stay distinguishable. |
 | `meshes` | One `AssetLease<MeshAsset>` per distinct mesh asset. Every instance of a mesh shares its lease and GPU buffers. |
-| `instances` | Entity ID, mesh index, world matrix, normal matrix, and copied material factors for each drawable entity. |
+| `textures` | One `AssetLease<TextureAsset>` per distinct texture the instances' materials use (since #1033). |
+| `instances` | Entity ID, mesh index, world matrix, normal matrix, and a copied material, with its maps as texture indices, for each drawable entity. |
 | `lights` | Enabled directional lights in EntityId order, at most `max_directional_lights` (4). |
 | `ambient` | Linear ambient color, from `RenderExtractOptions`. |
 | `diagnostics`, `stats` | Why entities were skipped or substituted (capped at 64), with counts that are never capped. |
 
-A snapshot holds no World handles and no pointers into component storage. Its entity IDs are for picking and diagnostics; resolve them in a World again before use. The snapshot owns leases on the exact mesh versions it draws. Deleting entities, evicting or reloading assets, or destroying the registry or the World after extraction does not change the snapshot. Those changes appear in the next extraction. Release the snapshot once its frames are encoded. The graphics device keeps the native buffers until the GPU completes those frames ([deferred retirement](rhi.md)). Material factors are copied by value, so the snapshot does not keep material leases.
+A snapshot holds no World handles and no pointers into component storage. Its entity IDs are for picking and diagnostics; resolve them in a World again before use. The snapshot owns leases on the exact mesh and texture versions it draws. Deleting entities, evicting or reloading assets, or destroying the registry or the World after extraction does not change the snapshot. Those changes appear in the next extraction. Release the snapshot once its frames are encoded. The graphics device keeps the native buffers until the GPU completes those frames ([deferred retirement](rhi.md)). Materials are copied by value, so the snapshot does not keep material leases.
 
 Extraction acquires assets through the registry. Assets that are not resident load synchronously at that point, so a scene's first extraction pays for its loads. Each asset is acquired once per extraction, so every instance draws the same version. Failed assets are not retried on later extractions; call `AssetRegistry::reload` after fixing the source.
 
@@ -54,6 +55,7 @@ Extraction acquires assets through the registry. Assets that are not resident lo
 | Mesh missing, failed, not in the catalog, or from an ended device session | Draw skipped; `missing_mesh` names the entity, the asset, and the registry's reason. |
 | Material missing or failed | Drawn with `fallback_material()` (magenta); `missing_material`. |
 | No material assigned | Drawn with default `MaterialAsset` factors (white, not metallic, fully rough). |
+| A material's map missing, failed, or of the wrong role | Drawn with the placeholder in that slot; `missing_texture` or `texture_role`, once per material ([materials](#materials)). |
 | No transform, or a degenerate world matrix | Draw skipped; `missing_transform` or `invalid_transform`. |
 | Point or spot light | Ignored with `unsupported_light`; only directional lights are rendered so far. |
 | More than four directional lights | The four with the lowest EntityIds are used; the rest report `light_limit`. |
@@ -72,15 +74,15 @@ A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatri
 
 `Renderer::render(snapshot, view, target)` runs inside a frame with no pass open, in up to three named passes (each timed on the GPU, [measuring](performance.md#what-is-measured)):
 
-1. **`view`.** It uploads one `ViewConstants` block, opens a pass that clears the target's HDR scene color to the view's clear color and its depth to 1, and binds the lit pipeline. Then, for each instance, it uploads that instance's `DrawConstants` to its own slice of frame upload memory and draws the shared mesh. Depth is stored only when debug lines will test against it.
+1. **`view`.** It uploads one `ViewConstants` block and opens a pass that clears the target's HDR scene color to the view's clear color and its depth to 1. Then, for each instance (opaque and masked ones first, then blended ones back to front), it binds the lit pipeline its [material](#materials) needs and the material's maps, uploads that instance's `DrawConstants` to its own slice of frame upload memory, and draws the shared mesh. Depth is stored only when debug lines will test against it.
 2. **`tone map`.** One triangle over the target's color reads each pixel's scene light, scales it by the view's exposure, and writes it [tone-mapped and sRGB-encoded](#exposure-and-tone-mapping).
 3. **`debug lines`**, only when the snapshot has any: [debug lines](#debug-lines) over the tone-mapped color, against the scene's depth.
 
-It checks that the view size matches the target, that the target is live, and that every instance refers to a mesh the snapshot holds. It returns the first device error, such as exhausted upload memory. The remaining work is skipped, each open pass is still closed, and the frame can still end. The clear color is scene light like any other, before exposure: the views' default 0.1 grey shows as about 35% grey through AgX at EV100 0.
+It checks that the view size matches the target, that the target is live, and that every instance refers to meshes and textures the snapshot holds. It returns the first device error, such as exhausted upload memory. The remaining work is skipped, each open pass is still closed, and the frame can still end. The clear color is scene light like any other, before exposure: the views' default 0.1 grey shows as about 35% grey through AgX at EV100 0.
 
 `Renderer::present(target, destination, area, background)` opens a pass on `destination`, clears it to `background`, and draws the target's color texture scaled into `area`. The area is a `PixelRect` in the destination's pixels, with its origin at the top left. The destination is usually the acquired window surface, but any render-target texture works. The player presents to the whole surface; the same call can present into any rectangle, such as a panel. When the area and the view have the same size, presentation copies the view's pixels exactly (bilinear sampling at texel centers).
 
-Pipelines are created on first use for each target format (lit, for the scene format, with `depth32_float`, back-face culling, and counter-clockwise front faces; tone map, for the color format; and the two debug pipelines, only once a snapshot has debug lines) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles and recreates what it needs. `stats()` counts views, draws, presents, and debug draws, outlines, and lines.
+Pipelines are created on first use for each target format (the four lit pipelines, for the scene format, with `depth32_float` and counter-clockwise front faces, each once a material needs it; tone map, for the color format; and the two debug pipelines, only once a snapshot has debug lines) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles, and its texture placeholder, and recreates what it needs. `stats()` counts views, draws, presents, and debug draws, outlines, and lines.
 
 ## Debug lines
 
@@ -137,33 +139,85 @@ The GPU times are the device's own timestamps for the frame, with and without th
 
 The views ignore the tone mapper. They help set exposure: a well-exposed subject is mostly grey to yellow in false color.
 
-## Lighting and materials
+## Materials
 
-[renderer.metal](../resources/shaders/metal/renderer.metal) keeps the initial Blinn-Phong model, but every input is now data:
+[Issue #1033](https://work.rezee.app/kash/issues/1033) replaces the Blinn-Phong factors with glTF's metallic-roughness model, as the [rendering and content record](architecture/rendering-content-decision.md#shading-and-lights) chose. [renderer.metal](../resources/shaders/metal/renderer.metal)'s `litFragment` and the CPU reference [tests/support/shading.hpp](../tests/support/shading.hpp) are the same model:
 
-| Input | Source |
+- **Specular:** GGX distribution with α = roughness², height-correlated Smith visibility, and Schlick Fresnel with F0 = mix(0.04, base color, metallic). Roughness is clamped to at least 0.045, so a mirror under a directional light stays finite.
+- **Diffuse:** Lambert, base color × (1 − metallic) / π, weighted by 1 − F, as glTF's appendix B writes it.
+- **Lights.** A directional light's `color × intensity` is the illuminance E (lux) on a surface facing it; the surface sends (diffuse + specular) × E × N·L toward the eye. A white diffuse surface facing a light therefore shows E / π, about E × 0.96 / π with Fresnel. The default intensity is π, so a default light still shows such a surface at scene light 1.
+- **Ambient** (`RenderExtractOptions::ambient`) is a uniform environment of that radiance. Its specular reflectance E_spec comes from Karis's analytic fit of the split-sum table, and diffuse takes what is left: ambient × (c_diff × (1 − E_spec) + E_spec) × occlusion. A white dielectric in it shows exactly the ambient light (the white furnace). Image-based lighting replaces this with [#1034](https://work.rezee.app/kash/issues/1034).
+
+| Input | From |
 | --- | --- |
-| Camera | View-projection and position from the view. |
-| Lights | Each directional light shines along its entity's local −Z; `direction_to_light` is its world +Z. Radiance is `color × intensity`. Intensity still acts as a linear multiplier rather than lux until [#1034](https://work.rezee.app/kash/issues/1034); the camera's [exposure](#exposure-and-tone-mapping) scales the result. |
-| Ambient | `RenderExtractOptions::ambient`, default (0.06, 0.07, 0.09). |
-| Base color | `MaterialAsset::base_color` multiplied by the vertex color. |
-| Metallic | Removes the diffuse term and tints the highlight: specular color = mix(0.04, base, metallic). |
-| Roughness | Highlight exponent = 2 / roughness⁴ − 2, clamped to [1, 2048], with roughness clamped to [0.05, 1]. |
+| Base color | `base_color` (linear RGBA) × the base color map (sRGB, decoded by the sampler) × the vertex color. |
+| Metallic, roughness | The factors × the metallic-roughness map's blue and green. |
+| Normal | The normal map in tangent space: x in red, green, and blue and y in alpha, as [textures](assets.md#textures) store normals; z is rebuilt, then x and y scaled by `normal_scale`. +Y points up the texture. |
+| Occlusion | 1 + `occlusion_strength` × (the occlusion map's red − 1), on ambient light only. |
+| Emissive | `emissive` × `emissive_strength` × the emissive map, added after lighting. |
+| Alpha | Base color alpha. `opaque` ignores it; `mask` discards fragments below `alpha_cutoff`; `blend` blends over what is behind. |
+| Double-sided | Drawn without culling; seen from behind, the normal, tangent, and bitangent all turn around. |
 
-This is not physically based shading. Shadows, environment lighting, and textures in materials are later work (DOC-58 milestone 3); since #1032 the result is HDR scene light, exposed and tone-mapped. `MaterialAsset` has no texture reference yet, so the lit shader samples no textures. The sample's old checkerboard texture was removed with the legacy `Material`.
+**Tangents.** `Vertex` carries a tangent (xyz along increasing u, w the bitangent's sign) and grew from 64 to 80 bytes. Where a mesh has none, as every OBJ, the loader generates them with the reference MikkTSpace ([tangents.hpp](../include/maya/core/tangents.hpp)), per triangle corner, and then shares the corners that agree. Texture v grows downward, as in glTF, so MikkTSpace is given t = 1 − v: its sign is then glTF's, and cross(normal, tangent) × w points up the texture. A mirrored half of a model gets w = −1. The shader moves tangents by the model matrix (they lie in the surface) and normals by the [normal matrix](#normals), then makes the tangent perpendicular again.
+
+**Energy.** The direct-light model is glTF's, so it has glTF's limits. Its directional albedo (all light from the hemisphere, as the white furnace test measures it) stays at or below 1 for metals at every angle, and for everything where N·V ≥ 0.7. Smooth dielectrics at grazing angles exceed it, because 1 − F(V·H) barely shrinks the diffuse there while the specular grows. Rough surfaces lose energy instead, since there is no multiple scattering:
+
+| White surface | N·V 0.1 | 0.25 | 0.4 | 0.7 | 1.0 |
+| --- | --- | --- | --- | --- | --- |
+| Dielectric, roughness 0.25 | 1.35 | 1.18 | 1.06 | 1.00 | 1.00 |
+| Dielectric, roughness 1 | 0.99 | 0.98 | 0.98 | 0.97 | 0.97 |
+| Metal, roughness 0.25 | 0.90 | 0.96 | 0.98 | 0.99 | 1.00 |
+| Metal, roughness 1 | 0.76 | 0.60 | 0.50 | 0.38 | 0.31 |
+
+The Sample Viewer comparison that this model must pass belongs to the glTF importer, [#1036](https://work.rezee.app/kash/issues/1036).
+
+**Materials in a snapshot.** Extraction copies each material into its instances (`RenderMaterial`), with the emissive already times its strength. It leases each texture once per snapshot (`RenderSnapshot::textures`), however many materials use it, and records each slot as an index, `no_texture`, or `placeholder_texture`. A material's map that is missing, failed, or of the wrong role for its slot (base color and emissive need color textures, normal needs normal, metallic-roughness and occlusion need data) draws the [placeholder](assets.md#textures) and is reported once per material (`missing_texture`, `texture_role`). Edits, reloads, and [the editor's live edits](editor.md#materials) reach every instance at the next extraction.
+
+**Drawing.** Opaque and masked instances draw first, in snapshot order; blended ones follow, back to front by the distance from the camera to their origin, and test depth without writing it. There are four lit pipelines (opaque or blended, single- or double-sided), each created when a material first needs it. Each draw's transforms go to the vertex stage (`DrawConstants`, buffer 1); its material's factors and flags go to the fragment stage (`MaterialConstants`, buffer 3), with five texture and sampler slots, all uploaded and bound only when they differ from the previous draw's. An empty slot holds the renderer's own placeholder, which a flag tells the shader not to sample. Blending sorts whole instances, so intersecting or overlapping blended surfaces can still sort wrong; order-independent transparency is not planned.
+
+**Cost** (Release on the M4 Pro reference machine, thermal state nominal but the machine otherwise busy; 1920 × 1080, 3,000 sampled frames, three runs each, before and after #1033 back to back; GPU time per pass from #1026's timestamps). Observations, not budgets:
+
+| Manifest | `view` before | `view` after | CPU frame before | CPU frame after |
+| --- | --- | --- | --- | --- |
+| `sample` | 0.037–0.043 ms | 0.069 ms | 0.089–0.093 ms | 0.118–0.119 ms |
+| `i1_10k` | 0.53–0.58 ms | 0.50–0.56 ms | 2.14–2.15 ms | 1.96–1.97 ms |
+| `materials` (new) | | 0.077–0.090 ms | | 0.122 ms |
+
+- **The shading pass** costs about 0.03 ms more for the sample's few large surfaces at 1080p: GGX, Smith, and Fresnel per light, and the environment fit, per pixel. With 10,000 small cubes it is within the run-to-run variation (the `tone map` pass, unchanged, read 0.16–0.22 ms in the same runs, so the GPU's clocks moved more than the shading did). The material scene, with every kind of map, a cutout, and blending, costs 0.08–0.09 ms.
+- **The CPU** pays less than before. Per-draw constants (the transforms) now go to the vertex stage and material constants to the fragment stage, uploaded only when a draw's material differs from the previous draw's. Binding new constants to the fragment stage makes Metal's driver re-emit that stage's whole argument table, now five textures and five samplers larger. Before the split, that put `i1_10k`'s encoding at 1.73–1.77 ms; with it, encoding is 1.27 ms, against 1.47 ms before #1033. Extraction is 0.03 ms slower, copying the larger materials.
+
+### Version-1 content
+
+Version-1 materials (base color, metallic, roughness) load as before and keep their meaning. The sample scenes' lights were multiplied by π (from 1 to 3.1415927) so they keep their brightness; a scene of your own from before #1033 shows about a third as bright until you do the same. Against the V1 references, rendered by the old model through the same exposure and tone mapping (256 × 144, the old images re-blessed afterwards):
+
+| Image | Mean difference | Pixels over 6 levels | Largest | Mean level, before → after |
+| --- | --- | --- | --- | --- |
+| `v1/overview` | 1.9 | 4.4% | 18 | 114.5 → 113.0 |
+| `v1/overlap` | 2.8 | 10.0% | 21 | 125.4 → 124.0 |
+| `v1/path-0000` | 4.4 | 14.2% | 18 | 138.9 → 136.0 |
+| `v1/path-0450` | 4.1 | 7.8% | 92 | 131.0 → 129.3 |
+| `hdr/pbr-neutral` | 3.0 | 25.9% | 28 | 90.8 → 88.3 |
+| `hdr/false-color` | 3.0 | 3.9% | 77 | 113.9 → 112.5 |
+
+Large surfaces are slightly darker (Fresnel takes a little from diffuse) and within 18 levels. The largest differences are new GGX highlights: the blue metal bar's top face catches the sun in `path-0450`, and highlights move a band in false color. The other V1 and HDR images lie between these.
+
+### Normals
 
 Normals are transformed by the inverse transpose of the world matrix's linear part. Extraction computes it in double precision from the cofactor matrix and scales it to stay representable; the shader renormalizes. Normals therefore stay perpendicular to surfaces under nonuniform scale, including scale inherited through the hierarchy. Transforms have strictly positive scale, so no world matrix is a reflection and triangle winding never flips. Extraction rejects a nonpositive or degenerate determinant as `invalid_transform`.
 
-The shader's `Vertex` uses `float3`, which occupies 16 bytes in Metal and matches the padded C++ [Vertex](../include/maya/rhi/vertex.hpp). The legacy shader used `packed_float3`, which put the normal at byte offset 12 instead of 16. As a result, every earlier lit draw read its normals from the wrong bytes. The layouts of `ViewConstants`, `DrawConstants`, and `PresentConstants` are defined in [shader_constants.hpp](../include/maya/renderer/shader_constants.hpp), with static assertions. Buffer index 0 holds vertices, 1 holds per-draw constants, and 2 holds per-view constants.
+The shader's `Vertex` uses `float3`, which occupies 16 bytes in Metal and matches the padded C++ [Vertex](../include/maya/rhi/vertex.hpp). The legacy shader used `packed_float3`, which put the normal at byte offset 12 instead of 16. As a result, every earlier lit draw read its normals from the wrong bytes. The layouts of `ViewConstants`, `DrawConstants`, and `PresentConstants` are defined in [shader_constants.hpp](../include/maya/renderer/shader_constants.hpp), with static assertions. Buffer index 0 holds vertices, 1 holds per-draw constants, 2 holds per-view constants, and 3 holds material constants; texture and sampler slots 0 to 4 hold the material's maps, in `MaterialSlot` order.
 
 ## Sample content
 
-The [basic scene](../samples/basic_scene/assets/basic.scene) is an ordinary [scene file](scene.md): a camera, a directional sun, the pyramid, and one [cube mesh](../samples/basic_scene/assets/cube.obj) drawn three times (a red cube, a blue metal cube, and a ground slab scaled 6 × 0.1 × 6). Four [material files](../samples/basic_scene/assets/materials) supply their factors. The sample's fly controller writes the camera entity's transform and animates the pyramid through World commands. The renderer only reads the result. The pyramid's side normals were also corrected; three of its four side faces had been using another face's normal.
+The [basic scene](../samples/basic_scene/assets/basic.scene) is an ordinary [scene file](scene.md): a camera, a directional sun, the pyramid, and one [cube mesh](../samples/basic_scene/assets/cube.obj) drawn three times (a red cube, a blue metal cube, and a ground slab scaled 6 × 0.1 × 6). Four [material files](../samples/basic_scene/assets/materials) supply their factors; they are still version 1, which loads unchanged. The sample's fly controller writes the camera entity's transform and animates the pyramid through World commands. The renderer only reads the result. The pyramid's side normals were also corrected; three of its four side faces had been using another face's normal.
+
+The [material test scene](../samples/basic_scene/assets/materials.scene) (#1033) shows the model: a [UV sphere](../samples/basic_scene/assets/sphere.obj) in two rows, a red dielectric and a gold metal, each at roughness 0, 0.25, 0.5, 0.75, and 1, and below them six surfaces: a base color map, a normal map, a packed occlusion-roughness-metallic map in tiles, an emissive map, a masked double-sided cutout, and blended glass. Its version-2 materials are in `materials/spheres` and `materials/surfaces`, and its two maps (`orm`, `cutout`, RGBA8 so their texels stay exact) in `textures`. With only a sun and the uniform ambient, the smooth metals reflect little but the dim ambient until environment lighting arrives ([#1034](https://work.rezee.app/kash/issues/1034)).
 
 ## Tests
 
 - [renderer_tests.cpp](../tests/renderer_tests.cpp) (`maya_renderer_tests`, labels `cpu;renderer`) uses a null device that mirrors buffer contents and records the constants bound at every draw. It covers mesh sharing, copied transforms and materials, and each missing-asset rule. It checks normal matrices under nonuniform scale in a hierarchy and light selection and limits. It checks that snapshot ownership survives entity deletion, eviction, and registry/World destruction, with deferred retirement. It also covers two views of one snapshot, target reallocation and retirement, upload exhaustion, presentation rectangles, and pipeline recreation across sessions.
 - [renderer_gpu_tests.cpp](../tests/renderer_gpu_tests.cpp) (in `maya_tests`, tag `[rhi]`, run under Metal API validation) reads pixels back. It checks per-instance colors from one shared mesh and a skipped missing mesh. It checks diffuse lighting of a slanted quad scaled 1 × 1 × 4, which only the inverse-transpose normal passes. It checks identical output presented into a player-sized window and an editor viewport rectangle, rendering at six sizes with target reuse and retirement, and ten rounds of deleting the drawn entity and evicting its mesh while its frame is still in flight.
+- **Materials** (#1033). [material_gpu_tests.cpp](../tests/material_gpu_tests.cpp) (in `maya_tests`, tag `[materials]`) reads the HDR scene color (`rgba16_float`, before exposure) of quads seen head-on and compares it with the CPU reference in [shading.hpp](../tests/support/shading.hpp): every metallic and roughness under several lights and angles (within 1%); the white furnace, where a white dielectric in a uniform environment shows exactly its light; the reference's directional albedo; each map (base color with sRGB decoding, metallic-roughness channels, occlusion by strength on ambient only, emissive by strength); normal-map orientation (+X toward +u, +Y up the texture, on plain and mirrored UVs, and by scale); alpha cutoffs; blending back to front; double-sided back faces; and the placeholder for missing maps and maps of the wrong role. [renderer_tests.cpp](../tests/renderer_tests.cpp) checks pipeline choice, draw order, constants, and the textures bound in each slot; [material_tests.cpp](../tests/material_tests.cpp) the material files, the schema, publishing, and tangents. The [material test scene](#sample-content) has reference images ([acceptance](acceptance.md#regression-scenes)).
 - [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) drives the real player and editor applications through window resizes, including a zero-sized one.
 - **Debug lines** (#1022), in renderer_tests.cpp: an empty `DebugDraw` creates no pipelines and draws nothing; lines, boxes, and capsules are uploaded once per kind, with their matrices, sizes, and colors, and drawn in front and then behind at their opacities; outlines take 8, 16, or 32 segments by their size on screen; and the helpers make the lines they promise. Reference images of every physics debug category are compared on Metal ([physics](physics.md#debug-views)).
 

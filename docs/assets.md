@@ -41,22 +41,43 @@ texture 6d617961 50 "textures/bark.texture"
 
 Relative paths resolve strictly against the supplied existing project directory. Missing files can be registered so their identity/diagnostics survive. Absolute paths, traversal outside the root, and symlink escapes are rejected; symlinks are rechecked on every actual load. The registry does not consult the working directory or application search roots. Moving the project directory preserves references when its relative layout and catalog move with it. Changing paths/IDs, dependency remapping, file watching, and atomic catalog saves are later editor/import work.
 
-The initial material source contains linear base-color RGBA, metallic, and roughness factors:
+### Materials
+
+A material file holds a [MaterialAsset](../include/maya/assets/material.hpp): glTF's metallic-roughness inputs, each a factor and, for most, an optional texture ([how they shade](renderer.md#materials)). Since #1033 it is written at version 2, one line per [material property](properties.md#materials), keyed by the property's name ([material_file.hpp](../include/maya/assets/material_file.hpp)):
 
 ```text
-maya-material 1
-base_color 0.8 0.5 0.2 1
+maya-material 2
+base_color 1 1 1
+alpha 1
+base_color_texture 6d617961 50
 metallic 0
-roughness 0.7
+roughness 0.6
+metallic_roughness_texture none
+normal_texture 6d617961 51
+normal_scale 1
+occlusion_texture none
+occlusion_strength 1
+emissive 0 0 0
+emissive_strength 1
+emissive_texture none
+alpha_mode opaque
+alpha_cutoff 0.5
+double_sided false
 ```
 
-All six factors must be finite and in [0,1]. Field order is fixed in version one; extra data, unsupported versions, and malformed values fail. These immutable material values are ready for renderer integration; this issue does not implement PBR shading, textures, material graphs, or shader cooking. `fallback_material()` returns explicit magenta/opaque, nonmetallic, rough data for callers choosing a fallback. Missing meshes skip their draw. Neither fallback replaces the missing reference's ID or reports the source as successfully loaded.
+- **Reading.** Lines may come in any order, blank lines and `#` comments are skipped, and a property without a line has its default, so a hand-written file can be short. Each value is checked as the property system checks an edit: colors, alpha, metallic, roughness, occlusion strength, and the cutoff in [0, 1]; normal scale in [0, 10]; emissive strength in [0, 100,000]; textures `none` or two hexadecimal ID words, not both zero. Unknown keys, a key given twice, and bad values fail with the line number and what was expected. Texture references are checked for form only; extraction reports a [missing one or one of the wrong role](renderer.md#materials).
+- **Writing** (`write_material_file`, `save_material_file`) writes every property in schema order, with floats in their shortest exact form, so the same material always writes the same bytes. `save_material_file` replaces the file atomically, as scenes are saved (`replace_file`, [file_replace.hpp](../include/maya/core/file_replace.hpp)): a failure leaves the old file untouched.
+- **Version 1** (base color RGBA, metallic, and roughness, in that fixed order, separated by any whitespace) still loads unchanged, with the other inputs at their defaults. Saving it, as the [editor](editor.md#materials) does after an edit, writes version 2. Base color's alpha is its own `alpha` line at version 2.
+
+`fallback_material()` returns explicit magenta/opaque, nonmetallic, rough data for callers choosing a fallback. Missing meshes skip their draw. Neither fallback replaces the missing reference's ID or reports the source as successfully loaded.
+
+**Publishing.** `AssetRegistry::publish(ref, material)` makes an in-memory material the entry's next version, as a successful reload would, without reading its file: later acquisitions and extractions see it, leases of the previous version keep theirs, and a failed entry becomes ready. The editor publishes its unsaved edits this way; `reload` reads the file again.
 
 Script assets (`script`, `ScriptAsset`, since #1018) are Luau source text. `AssetProvider::load_script` reads the file as text, and every provider inherits it; the registry neither compiles nor checks the source. Play sessions and the editor compile it ([scripting](scripting.md)), and bytecode is never stored. Since #1020 the editor watches script files and reloads changed ones through `reload` ([scripting](scripting.md#reload)); the Assets panel lists scripts.
 
 ## Textures
 
-[#1031](https://work.rezee.app/kash/issues/1031) adds textures (`texture`, `TextureAsset`), in the stack the [rendering and content record](architecture/rendering-content-decision.md#gpu-formats-astc-in-ktx2) chose. Materials sample them from [#1033](https://work.rezee.app/kash/issues/1033); until then the editor's [Assets panel](projects.md#the-assets-panel) lists them with thumbnails.
+[#1031](https://work.rezee.app/kash/issues/1031) adds textures (`texture`, `TextureAsset`), in the stack the [rendering and content record](architecture/rendering-content-decision.md#gpu-formats-astc-in-ktx2) chose. Materials sample them since [#1033](https://work.rezee.app/kash/issues/1033) ([materials](#materials)); the editor's [Assets panel](projects.md#the-assets-panel) lists them with thumbnails, and they are dragged from it into a material's map slots.
 
 ### Texture files
 
@@ -135,7 +156,7 @@ A `TextureAsset` owns a sampled texture with every level and a sampler built fro
 
 `info(id)` returns a copy of metadata/state/generation/diagnostics. A failed reload leaves a previously ready version and its generation available, with the failure recorded separately. The provider's candidate is private until validation succeeds; incomplete/failed candidates release their resources. Allocation failure restores the previous loading state and propagates; ordinary provider exceptions become diagnostics. Generation exhaustion refuses further publication rather than wrapping.
 
-`AssetProvider` is replaceable and returns owned candidates plus diagnostics. The initial `FileAssetProvider` calls the existing OBJ loader through a checked entry point, validates material files, and uploads one vertex/index buffer pair per loaded mesh version. OBJ support is deliberately limited to positive indices and triangular faces with optional UVs/normals. Malformed numbers, missing coordinates, invalid indices, unsupported polygons, and empty geometry report file/line diagnostics before upload. Absent UVs/normals retain the legacy zero defaults; authored normals are needed for useful lighting. The legacy `ModelLoader::load_obj` adapter retains application search-root resolution.
+`AssetProvider` is replaceable and returns owned candidates plus diagnostics. The initial `FileAssetProvider` calls the existing OBJ loader through a checked entry point, validates material files, and uploads one vertex/index buffer pair per loaded mesh version. OBJ support is deliberately limited to positive indices and triangular faces with optional UVs/normals. Malformed numbers, missing coordinates, invalid indices, unsupported polygons, and empty geometry report file/line diagnostics before upload. Absent UVs/normals retain the legacy zero defaults; authored normals are needed for useful lighting. Since #1033 the loader generates [MikkTSpace tangents](renderer.md#materials) per triangle corner and then shares the corners that agree (`generate_tangents`, `weld_vertices`), so a vertex on a UV seam may be split where it was not before. The legacy `ModelLoader::load_obj` adapter retains application search-root resolution.
 
 Loading is **synchronous** and registry/device access, including final mesh-lease release and cache eviction, belongs to one owner thread. Call it at a controlled scene/asset boundary, not accidentally in a per-draw path. The separation between persistent identity, immutable candidate publication, provider, and residency leaves room for asynchronous CPU import and dependency bundles. Worker scheduling, cancellation/request tokens, dependency graphs, retries, load budgets, glTF, and cooking are not implemented. An async extension must tag completions by registry/request generation, reject stale results, and keep GPU upload/publication on the owning thread. Future composite assets must retain dependency leases for the complete lifetime of their loaded version; a plain dependency AssetRef does not pin it.
 
