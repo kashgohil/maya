@@ -9,19 +9,20 @@ using namespace maya::math;
 // Vertex Struct Size and Alignment Tests
 // =============================================================================
 TEST_CASE("Vertex struct size", "[rhi][vertex]") {
-    SECTION("Size is 64 bytes") {
+    SECTION("Size is 80 bytes") {
         // Metal requires 16-byte alignment for float4
         // position: 12 bytes (Vec3) + 4 pad = 16
         // normal: 12 bytes (Vec3) + 4 pad = 16
         // color: 16 bytes (Vec4)
         // uv: 8 bytes (Vec2) + 8 pad = 16
-        // Total: 64 bytes
-        CHECK(sizeof(Vertex) == 64);
+        // tangent: 16 bytes (Vec4)
+        // Total: 80 bytes
+        CHECK(sizeof(Vertex) == 80);
     }
 
     SECTION("Size matches Metal shader expectations") {
         // This is critical for GPU compatibility
-        static_assert(sizeof(Vertex) == 64, "Vertex struct must be 64 bytes for Metal");
+        static_assert(sizeof(Vertex) == 80, "Vertex struct must be 80 bytes for Metal");
     }
 }
 
@@ -117,12 +118,12 @@ TEST_CASE("Vertex array layout", "[rhi][vertex]") {
         vertices.emplace_back(Vec3(0,1,0), Vec3(0,1,0), Vec4(0,0,1,1));
         
         // Verify size
-        CHECK(vertices.size() * sizeof(Vertex) == 3 * 64);
+        CHECK(vertices.size() * sizeof(Vertex) == 3 * 80);
         
         // Verify contiguity
         uintptr_t addr1 = reinterpret_cast<uintptr_t>(&vertices[0]);
         uintptr_t addr2 = reinterpret_cast<uintptr_t>(&vertices[1]);
-        CHECK(addr2 - addr1 == 64);
+        CHECK(addr2 - addr1 == 80);
     }
 
     SECTION("Vertex buffer offset calculation") {
@@ -139,9 +140,10 @@ TEST_CASE("Vertex array layout", "[rhi][vertex]") {
         CHECK(normal_offset == 16);
         CHECK(color_offset == 32);
         CHECK(uv_offset == 48);
+        CHECK(offsetof(Vertex, tangent) == 64);
         
         // Total size matches
-        CHECK(vertex_size == 64);
+        CHECK(vertex_size == 80);
     }
 }
 
@@ -238,21 +240,24 @@ TEST_CASE("Vertex memory layout", "[rhi][vertex]") {
         //   packed_float3 normal;
         //   float4 color;
         //   float2 uv;
+        //   float4 tangent;
         //
         // With std140 alignment rules:
         //   position: offset 0, size 12 (but aligned to 16)
         //   normal: offset 16, size 12 (but aligned to 16)
         //   color: offset 32, size 16
         //   uv: offset 48, size 8 (padded to 16)
+        //   tangent: offset 64, size 16
         
         // Verify our offsets match
         CHECK(offsetof(Vertex, position) == 0);
         CHECK(offsetof(Vertex, normal) == 16);
         CHECK(offsetof(Vertex, color) == 32);
         CHECK(offsetof(Vertex, uv) == 48);
+        CHECK(offsetof(Vertex, tangent) == 64);
         
         // Verify total size
-        CHECK(sizeof(Vertex) == 64);
+        CHECK(sizeof(Vertex) == 80);
     }
 
     SECTION("Can be used in contiguous buffer") {
@@ -271,7 +276,7 @@ TEST_CASE("Vertex memory layout", "[rhi][vertex]") {
         
         // Verify buffer size
         CHECK(buffer.size() == 100);
-        CHECK(buffer.size() * sizeof(Vertex) == 100 * 64);
+        CHECK(buffer.size() * sizeof(Vertex) == 100 * 80);
         
         // Verify we can access all vertices
         for (int i = 0; i < 100; ++i) {

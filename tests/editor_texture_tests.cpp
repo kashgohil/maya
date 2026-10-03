@@ -86,7 +86,7 @@ TEST_CASE("A texture that cannot load is reported once, shows the placeholder, a
     CHECK(state(harness, grid) == AssetState::failed);
     CHECK(state(harness, grid_normal) == AssetState::ready);
     CHECK(reports(harness, "grid.texture: line 3: usage must be color, data, or normal") == 1);
-    CHECK(count(labels, "texture placeholder") == 1);
+    CHECK(count(labels, "texture placeholder") == 2); // the thumbnails' and the renderer's
     CHECK(count(labels, "thumbnail texture placeholder") == 1);
 
     // Fixed on disk, it reloads from the row's menu.

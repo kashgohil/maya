@@ -171,7 +171,7 @@ TEST_CASE("The authored scene runs through the player's path and draws each obje
         REQUIRE(y < 180);
         const auto [r, g, b] = at(image, x, y);
         INFO("color " << r << " " << g << " " << b);
-        if (renderer.material.id == red) CHECK((r > 2 * g && r > 2 * b));
+        if (renderer.material.id == red) CHECK((r > g + 60 && r > b + 60)); // a 4% white highlight lifts green and blue
         else if (renderer.material.id == blue) CHECK((b > r && b > g));
         else if (renderer.material.id == amber) CHECK((r > b && g > b));
         ++checked;
@@ -275,6 +275,40 @@ TEST_CASE("The V1 overview through exposure, both tone mappers, and the exposure
     CHECK(mean(images[0].second) > mean(images[1].second) + 40.0);
     compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/hdr", fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs",
                             images);
+}
+
+TEST_CASE("The material test scene matches its references: spheres across metallic and roughness, and textured surfaces", "[visual][gpu]") {
+    const auto project = open_project(sample_project());
+    REQUIRE(project);
+    Gpu gpu;
+    auto assets = open_project_assets(project.project, std::make_unique<FileAssetProvider>(gpu.device));
+    REQUIRE(assets);
+    const auto context = asset_property_context(*assets.registry);
+    auto loaded = load_scene_file(*project.project.resolve("materials.scene"), context);
+    REQUIRE(loaded);
+    auto authored = instantiate_scene(loaded.document, context);
+    REQUIRE(authored);
+    constexpr uint32_t width = 512, height = 288;
+    auto images = std::vector<std::pair<std::string, RgbImage>>{};
+    const auto camera = authored.world->find(EntityId{0x6d617961, 0x500});
+    REQUIRE(camera);
+    auto view = extract_render_view(*authored.world, *camera, width, height);
+    REQUIRE(view);
+    images.emplace_back("overview", gpu.render(*authored.world, *assets.registry, *view));
+    view->tone_mapping = ToneMapping::pbr_neutral;
+    images.emplace_back("pbr-neutral", gpu.render(*authored.world, *assets.registry, *view));
+    // The textured row from close by, and from behind so the cutout's back faces and the glass show.
+    const auto close = [&](const char* name, const math::Vec3& from, const math::Vec3& to) {
+        auto lens = CameraComponent{};
+        lens.vertical_fov = 0.6f;
+        auto near = make_render_view(lens, pose(from, to), width, height);
+        REQUIRE(near);
+        images.emplace_back(name, gpu.render(*authored.world, *assets.registry, *near));
+    };
+    close("textured", {0.0f, 0.6f, 7.0f}, {0.0f, -0.5f, 0.0f});
+    close("textured-behind", {-2.0f, 0.8f, -6.0f}, {0.6f, -0.5f, 0.0f});
+    compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/materials",
+                            fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs", images);
 }
 
 TEST_CASE("Resizing, reloading, and play resets settle at a steady state without stale handles", "[acceptance][gpu]") {

@@ -17,9 +17,12 @@ class CapturingDevice final : public NullGraphicsDevice {
 public:
     struct Draw {
         DrawConstants constants;
+        MaterialConstants material; // as bound at the draw, whichever draw uploaded it
         ViewConstants view;
         uint32_t vertex_buffer;
         uint32_t index_buffer;
+        std::string pipeline; // its label
+        std::array<uint32_t, material_slots> textures; // bound per MaterialSlot, by native slot
     };
     struct Present {
         PresentConstants constants;
@@ -48,6 +51,7 @@ public:
     std::vector<DebugCall> debug;
     std::vector<RenderPassDesc> passes;
     size_t pipelines_created = 0;
+    size_t material_binds = 0; // material constants bound (buffer 3)
 
 protected:
     RhiDiagnostic backend_create_buffer(uint32_t slot, const BufferDesc& desc, const void* data) override {
@@ -64,8 +68,14 @@ protected:
         return NullGraphicsDevice::backend_begin_pass(desc);
     }
     void backend_set_vertex_buffer(uint32_t index, uint32_t slot, size_t offset) override { m_bound[index] = {slot, offset}; }
-    void backend_set_uniform_buffer(uint32_t index, uint32_t slot, size_t offset) override { m_bound[index] = {slot, offset}; }
-    void backend_set_texture(uint32_t, uint32_t slot) override { m_texture = slot; }
+    void backend_set_uniform_buffer(uint32_t index, uint32_t slot, size_t offset) override {
+        m_bound[index] = {slot, offset};
+        if (index == 3) ++material_binds;
+    }
+    void backend_set_texture(uint32_t index, uint32_t slot) override {
+        m_texture = slot;
+        if (index < material_slots) m_textures[index] = slot;
+    }
     RhiDiagnostic backend_create_pipeline(uint32_t slot, const PipelineDesc& desc) override {
         m_labels[slot] = desc.label;
         ++pipelines_created;
@@ -80,7 +90,7 @@ protected:
             tone_maps.push_back({read<ToneMapConstants>(0), m_texture});
             return;
         }
-        if (!m_pipeline.starts_with("debug")) {
+        if (!m_pipeline.starts_with("debug")) { // the present pipeline
             presents.push_back({read<PresentConstants>(1), m_texture});
             return;
         }
@@ -92,7 +102,8 @@ protected:
         debug.push_back({m_pipeline, constants, vertices, instances, std::move(data)});
     }
     void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t) override {
-        draws.push_back({read<DrawConstants>(1), read<ViewConstants>(2), m_bound.at(0).first, slot});
+        draws.push_back({read<DrawConstants>(1), read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot,
+                         m_pipeline, m_textures});
     }
 
 private:
@@ -107,6 +118,7 @@ private:
     std::unordered_map<uint32_t, std::string> m_labels;
     std::string m_pipeline;
     uint32_t m_texture = 0;
+    std::array<uint32_t, material_slots> m_textures{};
 };
 
 constexpr auto camera_component = CameraComponent{};
@@ -186,9 +198,9 @@ TEST_CASE("Extraction shares one mesh lease across instances and copies transfor
         CHECK(device.draws[i].vertex_buffer == mesh.vertex_buffer().slot);
         CHECK(device.draws[i].index_buffer == mesh.index_buffer().slot);
         CHECK(same(device.draws[i].constants.model, snapshot.instances[i].world));
-        CHECK(device.draws[i].constants.base_color.x == snapshot.instances[i].material.base_color.x);
-        CHECK(device.draws[i].constants.material.x == snapshot.instances[i].material.metallic);
-        CHECK(device.draws[i].constants.material.y == snapshot.instances[i].material.roughness);
+        CHECK(device.draws[i].material.base_color.x == snapshot.instances[i].material.base_color.x);
+        CHECK(device.draws[i].material.factors.x == snapshot.instances[i].material.metallic);
+        CHECK(device.draws[i].material.factors.y == snapshot.instances[i].material.roughness);
     }
     CHECK(renderer.stats().draws == 3);
 }
@@ -326,7 +338,7 @@ TEST_CASE("Directional lights come from entity rotation, color, and intensity", 
     (void)created;
 
     // Light and ambient values reach the per-view constants.
-    const auto one = RenderSnapshot{snapshot.world, {}, {}, {snapshot.lights[0]}, snapshot.ambient, {}, {}, {}};
+    const auto one = RenderSnapshot{snapshot.world, {}, {}, {}, {snapshot.lights[0]}, snapshot.ambient, {}, {}, {}};
     auto renderer = Renderer(device, "test source");
     auto target = RenderTarget(device);
     REQUIRE_FALSE(target.resize(4, 4));
@@ -553,7 +565,7 @@ TEST_CASE("Renderer validates views and closes its pass when upload memory runs 
 
     const auto error = renderer.render(snapshot, view_of(8, 8), target);
     CHECK(error.code == RhiError::out_of_memory);
-    CHECK(device.draws.size() == 3); // 256-byte slices: view constants, then three draws
+    CHECK(device.draws.size() == 2); // 256-byte slices: view constants, the material's, then two draws
     CHECK_FALSE(device.end_frame()); // the pass was closed, so the frame ends cleanly
     CHECK(device.stats().transient_failures == 1);
 }
@@ -601,14 +613,14 @@ TEST_CASE("Renderer recreates its pipelines in a new device session", "[renderer
     };
     frame();
     const auto pipelines = device.stats().pipelines;
-    CHECK(pipelines == 3); // lit, tone map, present
+    CHECK(pipelines == 2); // tone map and present; lit pipelines wait for a surface that needs them
     frame();
     CHECK(device.stats().pipelines == pipelines); // cached per format
     device.shutdown();
     REQUIRE(device.initialize(nullptr));
     frame();
     CHECK(device.stats().pipelines == pipelines);
-    CHECK(device.stats().samplers == 1);
+    CHECK(device.stats().samplers == 2); // presenting's, and the texture placeholder's
 }
 
 TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw each kind twice when there are", "[renderer][debug]") {
@@ -760,4 +772,182 @@ TEST_CASE("Debug helpers make the lines they promise", "[renderer][debug]") {
     CHECK(debug_template_lines(DebugShapeKind::capsule) == 132);
     debug.clear();
     CHECK(debug.empty());
+}
+
+TEST_CASE("Materials choose their pipelines and bind their maps, and blended surfaces draw last, back to front", "[renderer][materials]") {
+    CapturingDevice device;
+    auto opaque = MaterialAsset{{1, 1, 1, 1}, 0.5f, 0.4f};
+    opaque.normal_scale = 0.75f;
+    opaque.occlusion_strength = 0.5f;
+    opaque.emissive = {1.0f, 0.5f, 0.25f};
+    opaque.emissive_strength = 4.0f;
+    auto masked = MaterialAsset{};
+    masked.alpha_mode = AlphaMode::mask;
+    masked.alpha_cutoff = 0.3f;
+    masked.double_sided = true;
+    auto glass = MaterialAsset{{0.5f, 0.7f, 1.0f, 0.4f}, 0.0f, 0.1f};
+    glass.alpha_mode = AlphaMode::blend;
+    TestProject project(device, {{"cube.mesh", unit_cube()}},
+                        {{"opaque.material", opaque}, {"masked.material", masked}, {"glass.material", glass}},
+                        {{"base.texture", solid_image({255, 255, 255, 255})}, {"normal.texture", solid_image({128, 128, 128, 128}, TextureRole::normal)}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto base = project.add<TextureAsset>(20, "base.texture");
+    const auto normal = project.add<TextureAsset>(21, "normal.texture");
+    // The opaque and masked materials share the base color map.
+    opaque.base_color_texture = base;
+    opaque.normal_texture = normal;
+    masked.base_color_texture = base;
+    const auto materials = std::array{project.add<MaterialAsset>(10, "opaque.material"), project.add<MaterialAsset>(11, "masked.material"),
+                                      project.add<MaterialAsset>(12, "glass.material")};
+    REQUIRE_FALSE(project.registry->publish(materials[0], opaque));
+    REQUIRE_FALSE(project.registry->publish(materials[1], masked));
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        // Listed near glass first, then far glass, the opaque cube, and the masked one.
+        for (const auto& [z, material] : {std::pair{2.0f, 2}, std::pair{-2.0f, 2}, std::pair{0.0f, 0}, std::pair{0.5f, 1}}) {
+            auto entity = commands.create();
+            commands.add(entity, TransformComponent{{0, 0, z}, {}, {1.0f}});
+            commands.add(entity, MeshRendererComponent{cube, materials[size_t(material)], true});
+        }
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry);
+    REQUIRE(snapshot.diagnostics.empty());
+    REQUIRE(snapshot.textures.size() == 2); // one lease per texture, however many materials use it
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(8, 8));
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(renderer.render(snapshot, view_of(8, 8), target));
+    REQUIRE_FALSE(device.end_frame());
+    REQUIRE(device.draws.size() == 4);
+    const auto& d = device.draws;
+    CHECK(d[0].pipeline == "lit mesh");
+    CHECK(d[1].pipeline == "lit double-sided mesh");
+    CHECK(d[2].pipeline == "blended mesh");
+    CHECK(d[3].pipeline == "blended mesh");
+    // The far glass (z -2) before the near one (z 2): back to front from the camera at z 5.
+    CHECK(d[2].constants.model.at(2, 3) == -2.0f);
+    CHECK(d[3].constants.model.at(2, 3) == 2.0f);
+    // Factors and flags: a bit per map in use, and the alpha mode.
+    CHECK(d[0].material.factors.z == 0.75f);
+    CHECK(d[0].material.factors.w == 0.5f);
+    CHECK(d[0].material.emissive.x == 4.0f); // times its strength
+    CHECK(d[0].material.emissive.z == 1.0f);
+    CHECK(d[0].material.flags[0] == 0b00101u); // base color and normal
+    CHECK(d[0].material.flags[1] == uint32_t(AlphaMode::opaque));
+    CHECK(d[1].material.flags[0] == 0b00001u);
+    CHECK(d[1].material.flags[1] == uint32_t(AlphaMode::mask));
+    CHECK(d[1].material.emissive.w == 0.3f); // the cutoff
+    CHECK(d[2].material.flags[0] == 0u);
+    CHECK(d[2].material.flags[1] == uint32_t(AlphaMode::blend));
+    CHECK(d[2].material.base_color.w == 0.4f);
+    // Maps are bound in their slots; empty slots hold the placeholder, which is never sampled.
+    const auto base_slot = snapshot.textures[0].value().texture().handle().slot;
+    const auto normal_slot = snapshot.textures[1].value().texture().handle().slot;
+    CHECK(d[0].textures[size_t(MaterialSlot::base_color)] == base_slot);
+    CHECK(d[0].textures[size_t(MaterialSlot::normal)] == normal_slot);
+    const auto placeholder = d[0].textures[size_t(MaterialSlot::emissive)];
+    CHECK(placeholder != base_slot);
+    CHECK(d[1].textures[size_t(MaterialSlot::normal)] == placeholder);
+    CHECK(d[2].textures[size_t(MaterialSlot::base_color)] == placeholder);
+    CHECK(device.stats().pipelines == 4); // three lit kinds and tone mapping; none for double-sided blending
+    CHECK(device.material_binds == 3); // opaque, masked, then glass for both blended draws
+}
+
+TEST_CASE("Extraction leases each texture once, and draws the placeholder for missing maps and maps of the wrong role", "[renderer][materials]") {
+    CapturingDevice device;
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {{"a.material", {}}, {"b.material", {}}},
+                        {{"color.texture", solid_image({255, 0, 0, 255})}, {"data.texture", solid_image({0, 255, 0, 255}, TextureRole::data)}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto color = project.add<TextureAsset>(20, "color.texture");
+    const auto data = project.add<TextureAsset>(21, "data.texture");
+    const auto missing = project.add<TextureAsset>(22, "missing.texture"); // cataloged, no file
+    auto a = MaterialAsset{};
+    a.base_color_texture = color;
+    a.normal_texture = color; // a color map is not a normal map
+    a.metallic_roughness_texture = data;
+    a.occlusion_texture = data; // packed maps share a texture
+    a.emissive_texture = missing;
+    auto b = MaterialAsset{};
+    b.base_color_texture = color;
+    const auto refs = std::array{project.add<MaterialAsset>(10, "a.material"), project.add<MaterialAsset>(11, "b.material")};
+    REQUIRE_FALSE(project.registry->publish(refs[0], a));
+    REQUIRE_FALSE(project.registry->publish(refs[1], b));
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        for (int i = 0; i < 3; ++i) { // two instances of a, one of b
+            auto entity = commands.create(EntityId{1, uint64_t(i + 1)});
+            commands.add(entity, TransformComponent{});
+            commands.add(entity, MeshRendererComponent{cube, refs[i == 2 ? 1 : 0], true});
+        }
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry);
+    CHECK(snapshot.textures.size() == 2);
+    // Each problem is reported once for the material, naming its first entity.
+    REQUIRE(snapshot.diagnostics.size() == 2);
+    CHECK(snapshot.diagnostics[0].code == RenderIssue::texture_role);
+    CHECK(snapshot.diagnostics[0].asset == color.id);
+    CHECK(snapshot.diagnostics[0].message.find("normal map") != std::string::npos);
+    CHECK(snapshot.diagnostics[0].entity == EntityId{1, 1});
+    CHECK(snapshot.diagnostics[1].code == RenderIssue::missing_texture);
+    CHECK(snapshot.diagnostics[1].asset == missing.id);
+    const auto& material = snapshot.instances[0].material;
+    CHECK(material.textures[size_t(MaterialSlot::base_color)] == 0);
+    CHECK(material.textures[size_t(MaterialSlot::normal)] == placeholder_texture);
+    CHECK(material.textures[size_t(MaterialSlot::metallic_roughness)] == 1);
+    CHECK(material.textures[size_t(MaterialSlot::occlusion)] == 1);
+    CHECK(material.textures[size_t(MaterialSlot::emissive)] == placeholder_texture);
+    CHECK(snapshot.instances[2].material.textures[size_t(MaterialSlot::normal)] == no_texture);
+    // A snapshot that names a texture it does not hold is refused.
+    auto broken = snapshot;
+    broken.instances[0].material.textures[0] = 7;
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(8, 8));
+    REQUIRE_FALSE(device.begin_frame());
+    CHECK(renderer.render(broken, view_of(8, 8), target).code == RhiError::invalid_usage);
+    CHECK_FALSE(renderer.render(snapshot, view_of(8, 8), target));
+    REQUIRE_FALSE(device.end_frame());
+}
+
+TEST_CASE("Material constants and maps are uploaded and bound only when they change between draws", "[renderer][materials]") {
+    CapturingDevice device;
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {{"a.material", red}, {"b.material", blue}},
+                        {{"one.texture", solid_image({255, 255, 255, 255})}, {"two.texture", solid_image({0, 0, 0, 255})}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto one = project.add<TextureAsset>(20, "one.texture"), two = project.add<TextureAsset>(21, "two.texture");
+    const auto a = project.add<MaterialAsset>(10, "a.material"), b = project.add<MaterialAsset>(11, "b.material");
+    // Same factors, different maps: still told apart.
+    auto first = red, second = red;
+    first.base_color_texture = one;
+    second.base_color_texture = two;
+    REQUIRE_FALSE(project.registry->publish(a, first));
+    REQUIRE_FALSE(project.registry->publish(b, second));
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        for (const auto material : {a, a, a, b, b, a}) {
+            auto entity = commands.create();
+            commands.add(entity, TransformComponent{});
+            commands.add(entity, MeshRendererComponent{cube, material, true});
+        }
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry);
+    REQUIRE(snapshot.diagnostics.empty());
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(8, 8));
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(renderer.render(snapshot, view_of(8, 8), target));
+    REQUIRE_FALSE(device.end_frame());
+    REQUIRE(device.draws.size() == 6);
+    const auto slot_of = [&](size_t texture) { return snapshot.textures[texture].value().texture().handle().slot; };
+    const auto expected = std::array{0, 0, 0, 1, 1, 0};
+    for (size_t i = 0; i < 6; ++i) {
+        INFO("draw " << i);
+        CHECK(device.draws[i].textures[0] == slot_of(snapshot.instances[i].material.textures[0]));
+        CHECK(snapshot.instances[i].material.textures[0] == uint32_t(expected[i]));
+        CHECK(device.draws[i].material.flags[0] == 1u);
+    }
+    CHECK(device.material_binds == 1); // a and b have the same factors: only their maps are rebound
+    CHECK(device.draws[3].material.base_color.x == device.draws[0].material.base_color.x);
 }

@@ -68,7 +68,7 @@ TEST_CASE("A scene is authored from project assets, saved, and reopened from ano
         REQUIRE(harness.shell.project());
         CHECK(harness.shell.project()->content_root == copy.content);
         CHECK(harness.shell.scene_path() == copy.content / "basic.scene");
-        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "physics.scene", "v1_reference.scene"});
+        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "materials.scene", "physics.scene", "v1_reference.scene"});
         harness.frames(3);
 
         // ⌘N: the open scene has no changes, so it is replaced at once by a camera and a light.
@@ -141,7 +141,7 @@ TEST_CASE("A scene is authored from project assets, saved, and reopened from ano
         CHECK(harness.shell.prompt() == EditorPrompt::none);
         CHECK(harness.shell.scene_path() == copy.content / "levels/workshop.scene");
         CHECK_FALSE(scene->dirty());
-        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "levels/workshop.scene", "physics.scene", "v1_reference.scene"});
+        CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "levels/workshop.scene", "materials.scene", "physics.scene", "v1_reference.scene"});
         harness.frames(1);
         CHECK(harness.shell.layout().control("scene.levels/workshop.scene")); // listed in the Assets panel
         expected = saved_text(harness);
@@ -368,7 +368,7 @@ TEST_CASE("Failed saves and loads explain why and change nothing", "[editor][pro
         auto catalog = copy.read("catalog.maya");
         copy.write("catalog.maya", catalog.erase(catalog.find("material 6d617961 11"), 46));
         harness.shell.refresh_project();
-        REQUIRE(harness.shell.assets()->records().size() == 8); // the sample's 9, less the removed material
+        REQUIRE(harness.shell.assets()->records().size() == 27); // the sample's 28, less the removed material
         const auto error = harness.shell.save_scene();
         INFO(error);
         CHECK(error.find("6d617961:11") != std::string::npos);
@@ -416,8 +416,8 @@ TEST_CASE("Missing asset files leave the project usable and say what is missing"
     copy.write("empty.scene", "maya-scene 1\n");
     harness.shell.refresh_project();
     CHECK(harness.shell.missing_asset_files().empty());
-    CHECK(harness.shell.assets()->records().size() == 10);
-    CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "empty.scene", "physics.scene", "v1_reference.scene"});
+    CHECK(harness.shell.assets()->records().size() == 29);
+    CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "empty.scene", "materials.scene", "physics.scene", "v1_reference.scene"});
     harness.frames(3);
     CHECK(harness.shell.extraction().skipped == 0);
     CHECK(harness.shell.assets()->info(red_material)->state == AssetState::ready);
@@ -426,7 +426,7 @@ TEST_CASE("Missing asset files leave the project usable and say what is missing"
     copy.write("catalog.maya", "maya-assets 1\nmesh nonsense\n");
     harness.shell.refresh_project();
     CHECK(harness.shell.prompt() == EditorPrompt::notice);
-    CHECK(harness.shell.assets()->records().size() == 10);
+    CHECK(harness.shell.assets()->records().size() == 29);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::project, "catalog.maya"));
 }
 

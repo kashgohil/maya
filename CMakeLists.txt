@@ -457,10 +457,11 @@ if(BUILD_TESTING)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_library_headers.cmake)
     set_tests_properties(maya_library_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
 
-    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp)
+    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp tests/material_tests.cpp)
     # The system zlib writes test PNGs (tests/support/png.hpp).
     target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain z)
     target_include_directories(maya_asset_tests PRIVATE tests)
+    target_compile_definitions(maya_asset_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     maya_target_options(maya_asset_tests)
     add_test(NAME maya_assets COMMAND maya_asset_tests)
     set_tests_properties(maya_assets PROPERTIES LABELS "cpu;assets" TIMEOUT 60)
@@ -484,6 +485,7 @@ if(BUILD_TESTING)
         tests/math_tests.cpp
         tests/rhi_tests.cpp
         tests/renderer_gpu_tests.cpp
+        tests/material_gpu_tests.cpp
         tests/camera_tests.cpp
         tests/vector_tests.cpp
         tests/matrix_tests.cpp
@@ -526,7 +528,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
@@ -662,7 +664,7 @@ if(BUILD_TESTING)
         add_test(NAME maya_benchmark_gpu COMMAND maya_benchmark_tests "[gpu]")
         set_tests_properties(maya_benchmark_gpu PROPERTIES LABELS "gpu;benchmark" TIMEOUT 120 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
-        foreach(manifest sample sample_present i1_1k l1_load l1_play)
+        foreach(manifest sample sample_present materials i1_1k l1_load l1_play)
             add_test(NAME maya_benchmark_smoke_${manifest} COMMAND ${CMAKE_COMMAND}
                 "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/${manifest}.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-${manifest}.json"
                 -DEXIT_CODE=0 "-DEXPECT=results: " -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)

@@ -3,11 +3,13 @@
 #include "maya/assets/registry.hpp"
 #include "maya/world/world.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <unistd.h>
 
@@ -45,13 +47,28 @@ inline Geometry slanted_quad() {
     return geometry;
 }
 
-/// Serves meshes and materials from memory, keyed by catalog file name. The registry still requires
+/// A texture served from memory: one level of RGBA8 texels, sampled with nearest filtering and repeat.
+struct TestImage {
+    uint32_t width = 1, height = 1;
+    std::vector<uint8_t> rgba; // rows top to bottom
+    TextureRole role = TextureRole::color; // color is sRGB; data and normal are linear
+};
+/// A size x size texture of one texel value.
+inline TestImage solid_image(std::array<uint8_t, 4> texel, TextureRole role = TextureRole::color, uint32_t size = 4) {
+    auto image = TestImage{size, size, {}, role};
+    for (uint32_t i = 0; i < size * size; ++i) image.rgba.insert(image.rgba.end(), texel.begin(), texel.end());
+    return image;
+}
+
+/// Serves meshes, materials, and textures from memory, keyed by catalog file name. The registry still requires
 /// each file to exist, so missing or removed files behave like missing project content.
 class InlineProvider final : public AssetProvider {
 public:
     InlineProvider(GraphicsDevice& device, std::map<std::string, Geometry> meshes,
-                   std::map<std::string, MaterialAsset> materials, std::shared_ptr<size_t> loads)
-        : m_device(device), m_meshes(std::move(meshes)), m_materials(std::move(materials)), m_loads(std::move(loads)) {}
+                   std::map<std::string, MaterialAsset> materials, std::shared_ptr<size_t> loads,
+                   std::map<std::string, TestImage> textures = {})
+        : m_device(device), m_meshes(std::move(meshes)), m_materials(std::move(materials)), m_textures(std::move(textures)),
+          m_loads(std::move(loads)) {}
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override {
         ++*m_loads;
         const auto found = m_meshes.find(path.filename().string());
@@ -67,11 +84,25 @@ public:
         if (found == m_materials.end()) return {{}, {AssetError::invalid_data, "no inline material " + path.string()}};
         return {std::make_shared<const MaterialAsset>(found->second), {}};
     }
+    AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override {
+        ++*m_loads;
+        const auto found = m_textures.find(path.filename().string());
+        if (found == m_textures.end()) return {{}, {AssetError::invalid_data, "no inline texture " + path.string()}};
+        const auto& image = found->second;
+        const auto format = image.role == TextureRole::color ? Format::rgba8_srgb : Format::rgba8_unorm;
+        auto texture = std::make_unique<Texture>(m_device, TextureDesc{image.width, image.height, format, TextureUsage::sampled, path.stem().string()},
+                                                 std::as_bytes(std::span(image.rgba)));
+        auto sampler = std::make_unique<Sampler>(m_device, SamplerDesc{Filter::nearest, Filter::nearest, AddressMode::repeat,
+                                                                       AddressMode::repeat, path.stem().string()});
+        if (!texture->valid() || !sampler->valid()) return {{}, {AssetError::device_unavailable, "texture upload failed"}};
+        return {std::make_shared<const TextureAsset>(std::move(texture), std::move(sampler), image.role), {}};
+    }
 
 private:
     GraphicsDevice& m_device;
     std::map<std::string, Geometry> m_meshes;
     std::map<std::string, MaterialAsset> m_materials;
+    std::map<std::string, TestImage> m_textures;
     std::shared_ptr<size_t> m_loads;
 };
 
@@ -79,15 +110,16 @@ private:
 class TestProject {
 public:
     TestProject(GraphicsDevice& device, std::map<std::string, Geometry> meshes,
-                std::map<std::string, MaterialAsset> materials = {}) {
+                std::map<std::string, MaterialAsset> materials = {}, std::map<std::string, TestImage> textures = {}) {
         static std::atomic<int> counter{0};
         m_root = std::filesystem::temp_directory_path() /
             ("maya-render-" + std::to_string(::getpid()) + "-" + std::to_string(counter++));
         std::filesystem::create_directories(m_root);
         for (const auto& [name, geometry] : meshes) touch(name);
         for (const auto& [name, material] : materials) touch(name);
+        for (const auto& [name, texture] : textures) touch(name);
         registry = std::make_unique<AssetRegistry>(m_root,
-            std::make_unique<InlineProvider>(device, std::move(meshes), std::move(materials), loads));
+            std::make_unique<InlineProvider>(device, std::move(meshes), std::move(materials), loads, std::move(textures)));
     }
     ~TestProject() {
         registry.reset();

@@ -63,7 +63,7 @@ SceneDocument debug_scene() {
     sphere.radius = 0.4f;
     auto document = SceneDocument{};
     auto light = LightComponent{};
-    light.intensity = 2.0f;
+    light.intensity = 2.0f * math::PI; // as bright as 2 was before physically based shading (#1033)
     document.entities = {
         entity(1, "Sun", {placed({0, 5, 0}, math::Vec3(1.0f), math::Quat::from_axis_angle({1, 0, 0}, -1.0f)), light}),
         entity(2, "Floor", {placed({0, -0.5f, 0}, {12, 1, 8}), cube(ground), floor}),

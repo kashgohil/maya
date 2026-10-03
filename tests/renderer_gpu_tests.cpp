@@ -130,7 +130,7 @@ TEST_CASE("Metal renderer lights nonuniformly scaled surfaces by their true norm
     World world;
     build_world(world, [&](WorldCommands& commands) {
         fixture.add_light(commands);
-        // Scaling z by 4 tilts the quad toward +Y: its true normal is (0, 0.970, 0.243), so a light
+        // Scaling z by 4 tilts the quad toward +Y: its true normal is (0, 0.970, 0.243), so the default light
         // along -Z gives diffuse 0.243. Transforming the normal by the model matrix would give 0.970.
         fixture.add_mesh(commands, fixture.quad, fixture.white, {{0, 0, 0}, {}, {1.0f, 1.0f, 4.0f}});
     });
@@ -212,7 +212,8 @@ TEST_CASE("Metal views render at sizes independent of any window and survive res
     }
     CHECK(target.allocations() == 4); // repeated sizes reuse the textures
     fixture.device.wait_idle();
-    CHECK(fixture.device.native_texture_count() == baseline + 3); // replaced targets were retired
+    // Replaced targets were retired: the last target's three textures and the renderer's placeholder remain.
+    CHECK(fixture.device.native_texture_count() == baseline + 4);
 }
 
 TEST_CASE("Metal frames in flight keep their meshes when entities and assets go away", "[rhi][renderer]") {

@@ -1,0 +1,10 @@
+maya-benchmark 1
+# The material test scene at a small size: it must load, shade every kind of map, and report results.
+name "smoke-materials-scene"
+workload scene
+project "../../samples/basic_scene"
+scene "materials.scene"
+resolution 320 180
+warmup 5
+samples 20
+runs 2

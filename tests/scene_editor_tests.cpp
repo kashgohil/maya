@@ -379,3 +379,85 @@ TEST_CASE("Root order comes from the scene file and is written back when saving"
     // The document matches the World exactly apart from root order.
     CHECK(text(reopened.world()) == text(editor.world()));
 }
+
+TEST_CASE("Material edits share the scene's history, groups, and unsaved state, and publish each value they make current", "[editor][materials]") {
+    auto ids = std::vector<EntityId>{};
+    SceneEditor editor(scene({{"A", std::nullopt}}, &ids));
+    auto published = std::vector<std::pair<AssetId, float>>{};
+    editor.set_material_publisher([&](AssetId id, const MaterialAsset& value) { published.emplace_back(id, value.roughness); });
+    const auto stone = AssetId{0x6d61, 1}, glass = AssetId{0x6d61, 2};
+    auto file = MaterialAsset{{0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0.8f};
+    CHECK(editor.set_material(stone, file, "Edit stone").error == "The material is not open for editing");
+    editor.open_material(stone, file);
+    editor.open_material(stone, MaterialAsset{}); // already open: kept as it was
+    CHECK(*editor.material(stone) == file);
+    CHECK_FALSE(editor.material(glass));
+    CHECK_FALSE(editor.dirty());
+
+    auto edited = file;
+    edited.roughness = 0.3f;
+    REQUIRE(editor.set_material(stone, edited, "Edit stone"));
+    CHECK(editor.dirty());
+    CHECK(editor.dirty_materials() == std::vector{stone});
+    CHECK(published == std::vector<std::pair<AssetId, float>>{{stone, 0.3f}});
+    CHECK(editor.set_material(stone, edited, "Edit stone").error == "Nothing to change");
+    // A group merges scene and material edits into one step.
+    editor.open_material(glass, MaterialAsset{});
+    editor.begin_group("Restyle");
+    REQUIRE(editor.rename(ids[0], "B"));
+    for (const auto roughness : {0.2f, 0.1f}) {
+        edited.roughness = roughness;
+        REQUIRE(editor.set_material(stone, edited, "Edit stone"));
+    }
+    auto clear = MaterialAsset{};
+    clear.alpha_mode = AlphaMode::blend;
+    REQUIRE(editor.set_material(glass, clear, "Edit glass"));
+    editor.end_group();
+    CHECK(editor.undo_label() == "Restyle");
+    const auto steps = editor.history_size();
+    REQUIRE(editor.undo());
+    CHECK(editor.display_name(ids[0]) == "A");
+    CHECK(editor.material(stone)->roughness == 0.3f); // the group's first "before"
+    CHECK(*editor.material(glass) == MaterialAsset{});
+    CHECK((published.back().first == glass || published.back().first == stone));
+    REQUIRE(editor.undo());
+    CHECK(*editor.material(stone) == file);
+    CHECK_FALSE(editor.dirty());
+    REQUIRE(editor.redo());
+    REQUIRE(editor.redo());
+    CHECK(editor.material(stone)->roughness == 0.1f);
+    CHECK(editor.material(glass)->alpha_mode == AlphaMode::blend);
+    CHECK(editor.history_size() == steps);
+    CHECK(editor.dirty_materials() == std::vector{stone, glass});
+
+    // Saved: the files hold the values, and the scene's position is marked.
+    editor.material_file_changed(stone, *editor.material(stone));
+    editor.material_file_changed(glass, *editor.material(glass));
+    editor.mark_saved();
+    CHECK_FALSE(editor.dirty());
+    // A file changed elsewhere: an unedited material follows it without a step; an edited one keeps its
+    // edit and publishes it again over the reload.
+    auto changed = *editor.material(stone);
+    changed.metallic = 1.0f;
+    published.clear();
+    editor.material_file_changed(stone, changed);
+    CHECK(*editor.material(stone) == changed);
+    CHECK(published.empty());
+    CHECK_FALSE(editor.dirty());
+    edited = changed;
+    edited.roughness = 0.9f;
+    REQUIRE(editor.set_material(stone, edited, "Edit stone"));
+    published.clear();
+    editor.material_file_changed(stone, file);
+    CHECK(*editor.material(stone) == edited);
+    CHECK(published == std::vector<std::pair<AssetId, float>>{{stone, 0.9f}});
+    CHECK(editor.dirty_materials() == std::vector{stone});
+    // Undone to the saved position, the material still differs from its changed file: still unsaved.
+    REQUIRE(editor.undo());
+    CHECK(*editor.material(stone) == changed);
+    CHECK(editor.dirty());
+    // Locked, as while playing, material edits are refused too.
+    editor.lock("Playing");
+    CHECK(editor.set_material(stone, file, "Edit stone").error == "Playing");
+    editor.unlock();
+}
