@@ -148,15 +148,15 @@ To support this, the RHI gained three general features (see [the graphics device
 - **Using one.** Double-clicking an environment, choosing **Use in scene** from its menu, dropping it in the viewport or on a Hierarchy row, or assigning it to a selection all set the scene's environment (`use_environment`): the Environment component with the lowest EntityId gets it, or, when the scene has none, a new root entity named Environment is created with one. Each is one undo step.
 - **Editing.** The Environment component is edited in the Inspector like any other: its environment field takes environments only (from its menu, or dragged from the Assets panel), and its intensity, rotation (in degrees), and sky.
 - **Both views** show it: the Scene view under the editor camera's exposure, and the Game view and Play under the scene camera's.
-- **Reloading.** A changed environment file reloads by itself ([watched files](#watched-files)) and cooks again. A changed source image does not, until Reload in its menu.
+- **Reloading.** A changed environment file or source image reloads by itself ([watched files](#watched-files)) and cooks again; Reload in its menu does so at once.
 
 ## Watched files
 
-The editor watches the files of loaded materials (#1033) and environments (#1035), as it watches scripts ([reload](scripting.md#reload)). Four times a second, `check_asset_files` ([watched_files.cpp](../apps/editor/watched_files.cpp)) compares each one's presence, modification time, and size with what it last read. A file changed outside the editor is reloaded into the registry, so every view shows it at the next frame, and Diagnostics logs "Reloaded".
+The editor watches the files of loaded materials (#1033), textures, and environments (#1035), and the source images textures and environments name, as it watches scripts ([reload](scripting.md#reload)). Four times a second, `check_asset_files` ([watched_files.cpp](../apps/editor/watched_files.cpp)) compares each one's presence, modification time, and size with what it last read; for a texture or an environment, it reads the file's `source` and compares that image too. An asset whose file or source changed outside the editor is reloaded into the registry, cooked again if it is a texture or an environment, so every view shows it at the next frame, and Diagnostics logs "Reloaded".
 
 - **Not an outside change:** the editor's own saves, discards, and Reloads note the file as they leave it (`note_watched_file`), so the watcher does not read it again.
 - **A file that cannot be read**, such as one caught half-written by another program or deleted, keeps the last good version in use. Diagnostics reports it once per problem, and the asset reloads when the file is whole again.
-- **Not watched:** an asset no frame or row has loaded yet, since it reads its file when first used; an environment's source image (only its `.environment` file is compared); meshes and textures (Reload in their menu). The player never watches files.
+- **Not watched:** an asset no frame or row has loaded yet, since it reads its file when first used; meshes (Reload in their menu). The player never watches files.
 
 ## Diagnostics
 
@@ -217,7 +217,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
   - **Toggles:** off by default, with no debug draw encoded; the menu's checks turn outlines on and a group off; saved, and read by a new editor; off again, debug draws stop.
   - **Play:** contacts captured only while their check is on, outlines from the physics world, and the Physics section's counts, cleared at Stop.
   - **Handles:** a box face resized with the opposite face held, one undo step that undoes and redoes; the centre moving the offset; a sphere's radius; a capsule lengthened from one end; the gizmo back when editing stops; no handles in Play; and drags past the centre stopping at the smallest size, which validation accepts.
-- [editor_material_tests.cpp](../tests/editor_material_tests.cpp) (#1033) and [editor_environment_tests.cpp](../tests/editor_environment_tests.cpp) (#1035) cover [material editing](#materials) and [environments](#environments): using an environment by double-click and by dropping it in the viewport, as one undo step that sets the scene's one Environment component; the Inspector's environment fields; the material scene lit by its environment; and [watched files](#watched-files), with a changed environment file cooked again and a broken one keeping the last version.
+- [editor_material_tests.cpp](../tests/editor_material_tests.cpp) (#1033) and [editor_environment_tests.cpp](../tests/editor_environment_tests.cpp) (#1035) cover [material editing](#materials) and [environments](#environments): using an environment by double-click and by dropping it in the viewport, as one undo step that sets the scene's one Environment component; the Inspector's environment fields; the material scene lit by its environment; and [watched files](#watched-files), with a changed environment file or source image cooked again and a broken file keeping the last version. [editor_texture_tests.cpp](../tests/editor_texture_tests.cpp) checks the same for a texture's source image and file, and that Reload from its menu is not read again by the watcher.
 
 #999 validation on 24 September 2026:
 
