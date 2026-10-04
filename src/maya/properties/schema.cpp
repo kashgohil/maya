@@ -37,6 +37,7 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, AssetRef<ScriptAsset>>) return PropertyType::script_ref;
     else if constexpr (std::same_as<T, std::vector<ScriptValue>>) return PropertyType::script_values;
     else if constexpr (std::same_as<T, AssetRef<TextureAsset>>) return PropertyType::texture_ref;
+    else if constexpr (std::same_as<T, AssetRef<EnvironmentAsset>>) return PropertyType::environment_ref;
     else { static_assert(std::same_as<T, AssetRef<MaterialAsset>>); return PropertyType::material_ref; }
 }
 /// Enumerations are held in PropertyValue as ChoiceValue; everything else as itself.
@@ -52,7 +53,7 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
     using V = typename MemberTraits<decltype(Member)>::Value;
     constexpr auto type = property_type<V>();
     constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::script_ref ||
-                              type == PropertyType::texture_ref
+                              type == PropertyType::texture_ref || type == PropertyType::environment_ref
         ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
     return {{id, name, label, type, property_value(C{}.*Member), range, units, presentation, encoding, choices, description},
         [](const ComponentValue& value) -> PropertyValue { return property_value(std::get<C>(value).*Member); },
@@ -194,6 +195,21 @@ const auto& rigid_body_bindings() {
 const auto& physics_settings_bindings() {
     static const auto values = std::array{
         bind<&PhysicsSettingsComponent::gravity>(1, "gravity", "Gravity", Hint::vector, {}, "m/s\xC2\xB2")};
+    return values;
+}
+
+constexpr auto environment_intensity = NumericRange{0.0f, 100000.0f, true, true};
+constexpr auto half_turn = NumericRange{-math::PI, math::PI, true, true};
+const auto& environment_bindings() {
+    static const auto values = std::array{
+        bind<&EnvironmentComponent::environment>(1, "environment", "Environment", Hint::asset, {}, {},
+            "An environment asset: an HDR image of the surroundings."),
+        bind<&EnvironmentComponent::intensity>(2, "intensity", "Intensity", Hint::number, environment_intensity, {},
+            "Multiplies the environment's light and sky."),
+        bind<&EnvironmentComponent::rotation>(3, "rotation", "Rotation", Hint::number, half_turn, "rad",
+            "Turns the environment about the vertical axis."),
+        bind<&EnvironmentComponent::background>(4, "background", "Sky", Hint::toggle, {}, {},
+            "Draws the environment behind the scene, in place of the clear color.")};
     return values;
 }
 
@@ -361,6 +377,7 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::rigid_body: return rigid_body_bindings();
     case ComponentId::physics_settings: return physics_settings_bindings();
     case ComponentId::script: return script_bindings();
+    case ComponentId::environment: return environment_bindings();
     }
     return {};
 }
@@ -399,6 +416,7 @@ std::optional<PropertyResult> check(const PropertyDescriptor& d, const PropertyV
             else if constexpr (std::same_as<T, AssetRef<MaterialAsset>>) return {reference.id, ReferenceKind::material};
             else if constexpr (std::same_as<T, AssetRef<ScriptAsset>>) return {reference.id, ReferenceKind::script};
             else if constexpr (std::same_as<T, AssetRef<TextureAsset>>) return {reference.id, ReferenceKind::texture};
+            else if constexpr (std::same_as<T, AssetRef<EnvironmentAsset>>) return {reference.id, ReferenceKind::environment};
             else return {AssetId{}, ReferenceKind::mesh};
         }, input);
         if (!asset.valid()) return std::nullopt;
@@ -450,6 +468,7 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto bodies = descriptors(rigid_body_bindings());
     static const auto physics = descriptors(physics_settings_bindings());
     static const auto scripts = descriptors(script_bindings());
+    static const auto environments = descriptors(environment_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
@@ -461,7 +480,8 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::collider, "maya.collider", "Collider", 1, colliders},
         ComponentDescriptor{ComponentId::rigid_body, "maya.rigid_body", "Rigid body", 1, bodies},
         ComponentDescriptor{ComponentId::physics_settings, "maya.physics_settings", "Physics settings", 1, physics},
-        ComponentDescriptor{ComponentId::script, "maya.script", "Script", 1, scripts}};
+        ComponentDescriptor{ComponentId::script, "maya.script", "Script", 1, scripts},
+        ComponentDescriptor{ComponentId::environment, "maya.environment", "Environment", 1, environments}}; // #1035
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -494,7 +514,8 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, ColliderComponent>) return ComponentId::collider;
         else if constexpr (std::same_as<T, RigidBodyComponent>) return ComponentId::rigid_body;
         else if constexpr (std::same_as<T, PhysicsSettingsComponent>) return ComponentId::physics_settings;
-        else { static_assert(std::same_as<T, ScriptComponent>); return ComponentId::script; }
+        else if constexpr (std::same_as<T, ScriptComponent>) return ComponentId::script;
+        else { static_assert(std::same_as<T, EnvironmentComponent>); return ComponentId::environment; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -510,6 +531,7 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::rigid_body: return RigidBodyComponent{};
     case ComponentId::physics_settings: return PhysicsSettingsComponent{};
     case ComponentId::script: return ScriptComponent{};
+    case ComponentId::environment: return EnvironmentComponent{};
     }
     return std::nullopt;
 }

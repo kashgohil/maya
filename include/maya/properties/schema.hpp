@@ -11,12 +11,13 @@ namespace maya {
 // Explicit persistent IDs. Never derive identity from RTTI, ordering, labels, or hashes.
 enum class ComponentId : uint32_t {
     name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5, spin = 6, fly_control = 7,
-    collider = 8, rigid_body = 9, physics_settings = 10, script = 11
+    collider = 8, rigid_body = 9, physics_settings = 10, script = 11, environment = 12
 };
 using PropertyId = uint32_t; // scoped to ComponentId; zero is reserved
 using ComponentValue = std::variant<NameComponent, TransformComponent, MeshRendererComponent,
                                     CameraComponent, LightComponent, SpinComponent, FlyControlComponent,
-                                    ColliderComponent, RigidBodyComponent, PhysicsSettingsComponent, ScriptComponent>;
+                                    ColliderComponent, RigidBodyComponent, PhysicsSettingsComponent, ScriptComponent,
+                                    EnvironmentComponent>;
 /// One of a property's named choices (an enumeration such as a light's kind), by its value.
 struct ChoiceValue {
     uint32_t value = 0;
@@ -24,12 +25,13 @@ struct ChoiceValue {
 };
 using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat, ChoiceValue,
                                   AssetRef<MeshAsset>, AssetRef<MaterialAsset>, int32_t, uint32_t,
-                                  AssetRef<ScriptAsset>, std::vector<ScriptValue>, AssetRef<TextureAsset>>;
+                                  AssetRef<ScriptAsset>, std::vector<ScriptValue>, AssetRef<TextureAsset>,
+                                  AssetRef<EnvironmentAsset>>;
 /// integer is a whole number within the range; flags is a bit set no greater than range.maximum;
 /// script_values is the named values of a script component's declared properties.
 enum class PropertyType {
     text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags, script_ref, script_values,
-    texture_ref
+    texture_ref, environment_ref
 };
 enum class PropertyPresentation {
     text, toggle, number, vector, rotation, color, choice, asset,
@@ -68,7 +70,7 @@ struct ComponentDescriptor {
     std::span<const PropertyDescriptor> properties;
 };
 
-enum class ReferenceKind { mesh, material, script, texture };
+enum class ReferenceKind { mesh, material, script, texture, environment };
 enum class ReferenceStatus { valid, missing, wrong_type };
 struct PropertyValidationContext {
     // Synchronous, read-only callback. Must not mutate/re-enter World or asset services.

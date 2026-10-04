@@ -22,6 +22,10 @@ struct ViewConstants {
     float4 ambient;
     uint4 light_count;
     DirectionalLight lights[4];
+    float4x4 inverse_view_projection; // for the sky's view rays
+    float4 environment; // x intensity, y cos and z sin of the rotation, w the specular cube's last level
+    uint4 environment_flags; // x an environment lights the scene, y the sky is drawn
+    float4 irradiance[9]; // spherical-harmonic coefficients, rgb
 };
 
 struct DrawConstants { // per draw, for the vertex stage
@@ -89,15 +93,27 @@ float smith_visibility(float NdotL, float NdotV, float alpha) {
     const float l = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
     return v + l > 0.0 ? 0.5 / (v + l) : 0.0;
 }
-// The specular reflectance of a uniform environment, from Karis's analytic fit of the split-sum
-// table ("Physically Based Shading on Mobile", 2014).
-float3 environment_specular(float3 f0, float roughness, float NdotV) {
-    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
-    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
-    const float4 r = roughness * c0 + c1;
-    const float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
-    const float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
-    return f0 * ab.x + ab.y;
+// Environments (docs/renderer.md#environments). A world direction's direction in the environment, which
+// is turned by the rotation about +Y.
+float3 to_environment(constant ViewConstants& view, float3 d) {
+    const float c = view.environment.y, s = view.environment.z;
+    return float3(c * d.x - s * d.z, d.y, s * d.x + c * d.z);
+}
+// Irradiance from the spherical-harmonic coefficients (l <= 2), as cook_environment computes them.
+float3 environment_irradiance(constant ViewConstants& view, float3 n) {
+    const float basis[9] = {0.282095, 0.488603 * n.y, 0.488603 * n.z, 0.488603 * n.x, 1.092548 * n.x * n.y,
+                            1.092548 * n.y * n.z, 0.315392 * (3.0 * n.z * n.z - 1.0), 1.092548 * n.x * n.z,
+                            0.546274 * (n.x * n.x - n.y * n.y)};
+    float3 e = float3(0.0);
+    for (uint i = 0; i < 9; ++i) e += view.irradiance[i].rgb * basis[i];
+    return max(e, float3(0.0));
+}
+// The split-sum table holds 0 and 1 at its first and last texels' centres (brdf_table_size texels a side).
+constant float brdf_table_size = 64.0;
+float2 table_uv(float2 value) { return (value * (brdf_table_size - 1.0) + 0.5) / brdf_table_size; }
+// The equirectangular background's coordinates: u 0.5 along -Z, growing toward +X; v 0 straight up.
+float2 equirect_uv(float3 d) {
+    return float2(0.5 + atan2(d.x, -d.z) / (2.0 * M_PI_F), acos(clamp(d.y, -1.0, 1.0)) / M_PI_F);
 }
 
 // Texture slots, as MaterialSlot in include/maya/renderer/render_snapshot.hpp.
@@ -111,7 +127,9 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                             texture2d<float> metallic_roughness_map [[texture(1)]], sampler metallic_roughness_sampler [[sampler(1)]],
                             texture2d<float> normal_map [[texture(2)]], sampler normal_sampler [[sampler(2)]],
                             texture2d<float> occlusion_map [[texture(3)]], sampler occlusion_sampler [[sampler(3)]],
-                            texture2d<float> emissive_map [[texture(4)]], sampler emissive_sampler [[sampler(4)]]) {
+                            texture2d<float> emissive_map [[texture(4)]], sampler emissive_sampler [[sampler(4)]],
+                            texturecube<float> specular_cube [[texture(5)]], sampler environment_sampler [[sampler(5)]],
+                            texture2d<float> brdf_table [[texture(7)]], sampler table_sampler [[sampler(7)]]) {
     float4 base = in.color * material.base_color;
     if (has_map(material, slot_base_color)) base *= base_color_map.sample(base_color_sampler, in.uv);
     const uint alpha_mode = material.flags.y;
@@ -145,11 +163,20 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     const float3 V = normalize(view.camera_position.xyz - in.world_position);
     const float NdotV = max(dot(N, V), 1e-4);
 
-    // Ambient light is a uniform environment: diffuse where the environment's specular leaves energy.
+    // Light from the surroundings: the environment's, or the uniform ambient light. The split-sum table
+    // gives the specular's share; diffuse takes what it leaves. Occlusion darkens both.
     float occlusion = 1.0;
     if (has_map(material, slot_occlusion)) occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, in.uv).r - 1.0);
-    const float3 specular_environment = environment_specular(f0, roughness, NdotV);
-    float3 rgb = view.ambient.rgb * (c_diff * (1.0 - specular_environment) + specular_environment) * occlusion;
+    const float2 scale_bias = brdf_table.sample(table_sampler, table_uv(float2(NdotV, roughness))).rg;
+    const float3 specular_share = f0 * scale_bias.x + scale_bias.y;
+    float3 diffuse_light = view.ambient.rgb, specular_light = view.ambient.rgb;
+    if (view.environment_flags.x != 0) {
+        const float intensity = view.environment.x;
+        diffuse_light = environment_irradiance(view, to_environment(view, N)) / M_PI_F * intensity;
+        const float3 R = to_environment(view, reflect(-V, N));
+        specular_light = specular_cube.sample(environment_sampler, R, level(roughness * view.environment.w)).rgb * intensity;
+    }
+    float3 rgb = (c_diff * (1.0 - specular_share) * diffuse_light + specular_share * specular_light) * occlusion;
 
     const uint lights = min(view.light_count.x, 4u);
     for (uint i = 0; i < lights; ++i) {
@@ -168,6 +195,30 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, in.uv).rgb;
     rgb += emitted;
     return float4(rgb, alpha_mode == 2 ? base.a : 1.0);
+}
+
+// The sky: one triangle over the view at the far plane, behind every surface, showing the environment's
+// background along each pixel's view ray.
+struct SkyOut {
+    float4 position [[position]];
+    float2 ndc;
+};
+
+vertex SkyOut skyVertex(uint id [[vertex_id]]) {
+    const float2 corner = float2(float((id << 1) & 2), float(id & 2)) * 2.0 - 1.0; // (-1,-1), (3,-1), (-1,3)
+    SkyOut out;
+    out.position = float4(corner, 1.0, 1.0);
+    out.ndc = corner;
+    return out;
+}
+
+fragment float4 skyFragment(SkyOut in [[stage_in]], constant ViewConstants& view [[buffer(2)]],
+                            texture2d<float> background [[texture(6)]], sampler environment_sampler [[sampler(5)]]) {
+    const float4 far = view.inverse_view_projection * float4(in.ndc, 1.0, 1.0);
+    const float3 ray = normalize(far.xyz / far.w - view.camera_position.xyz);
+    // The finest level: the seam where u wraps would otherwise pick a coarse one.
+    const float3 sky = background.sample(environment_sampler, equirect_uv(to_environment(view, ray)), level(0.0)).rgb;
+    return float4(sky * view.environment.x, 1.0);
 }
 
 struct PresentOut {

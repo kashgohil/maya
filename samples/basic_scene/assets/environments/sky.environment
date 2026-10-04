@@ -1,0 +1,4 @@
+maya-environment 1
+source "kloofendal_48d_partly_cloudy_puresky_1k.hdr"
+specular_size 128
+samples 256

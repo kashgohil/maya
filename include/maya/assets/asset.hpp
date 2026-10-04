@@ -4,6 +4,7 @@
 #include "maya/assets/texture_data.hpp"
 #include "maya/core/mesh.hpp"
 #include "maya/core/texture.hpp"
+#include <array>
 #include <concepts>
 #include <filesystem>
 #include <memory>
@@ -11,8 +12,9 @@
 #include <string>
 
 namespace maya {
-enum class AssetKind { mesh, material, script, texture };
-const char* asset_kind_name(AssetKind kind) noexcept; // "mesh", "material", "script", or "texture"
+enum class AssetKind { mesh, material, script, texture, environment };
+/// "mesh", "material", "script", "texture", or "environment".
+const char* asset_kind_name(AssetKind kind) noexcept;
 enum class AssetState { unloaded, loading, ready, failed };
 enum class AssetError {
     none, invalid_id, duplicate_id, duplicate_path, invalid_path, not_registered,
@@ -60,11 +62,38 @@ private:
     std::unique_ptr<Sampler> m_sampler;
     TextureRole m_role;
 };
+/// An environment for image-based lighting (docs/assets.md#environments): its HDR image as the sky
+/// background (equirectangular RGBA16F, with mips), its GGX-prefiltered specular cube (RGBA16F, one level
+/// per roughness step), and its irradiance as spherical-harmonic coefficients, cooked when it loads.
+class EnvironmentAsset {
+public:
+    EnvironmentAsset(std::unique_ptr<Texture> background, std::unique_ptr<Texture> specular, std::unique_ptr<Sampler> sampler,
+                     std::array<math::Vec3, 9> irradiance, double cook_milliseconds)
+        : m_background(std::move(background)), m_specular(std::move(specular)), m_sampler(std::move(sampler)),
+          m_irradiance(irradiance), m_cook_milliseconds(cook_milliseconds) {
+        if (!m_background || !m_background->valid() || !m_specular || !m_specular->valid() || !m_sampler || !m_sampler->valid())
+            throw std::invalid_argument("EnvironmentAsset requires valid textures and a sampler");
+    }
+    const Texture& background() const noexcept { return *m_background; }
+    const Texture& specular() const noexcept { return *m_specular; }
+    /// Linear filtering between levels; the background repeats around the horizon.
+    const Sampler& sampler() const noexcept { return *m_sampler; }
+    const std::array<math::Vec3, 9>& irradiance() const noexcept { return m_irradiance; }
+    uint32_t specular_levels() const noexcept { return m_specular->desc().mip_levels; }
+    bool valid() const noexcept { return m_background->valid() && m_specular->valid() && m_sampler->valid(); }
+    size_t gpu_bytes() const noexcept { return m_background->gpu_bytes() + m_specular->gpu_bytes(); }
+    double cook_milliseconds() const noexcept { return m_cook_milliseconds; }
+private:
+    std::unique_ptr<Texture> m_background, m_specular;
+    std::unique_ptr<Sampler> m_sampler;
+    std::array<math::Vec3, 9> m_irradiance;
+    double m_cook_milliseconds;
+};
 template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset> || std::same_as<T,ScriptAsset> ||
-                                  std::same_as<T,TextureAsset>;
+                                  std::same_as<T,TextureAsset> || std::same_as<T,EnvironmentAsset>;
 template<Asset T> inline constexpr AssetKind asset_kind =
     std::same_as<T,MeshAsset> ? AssetKind::mesh : std::same_as<T,MaterialAsset> ? AssetKind::material :
-    std::same_as<T,ScriptAsset> ? AssetKind::script : AssetKind::texture;
+    std::same_as<T,ScriptAsset> ? AssetKind::script : std::same_as<T,TextureAsset> ? AssetKind::texture : AssetKind::environment;
 
 template<Asset T> struct AssetHandle {
     uint64_t registry = 0;
@@ -120,15 +149,19 @@ public:
     virtual AssetLoadResult<ScriptAsset> load_script(const std::filesystem::path& absolute_path);
     /// `absolute_path` is a texture descriptor (.texture). The default refuses: this provider loads no textures.
     virtual AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& absolute_path);
+    /// `absolute_path` is an environment file (.environment). The default refuses.
+    virtual AssetLoadResult<EnvironmentAsset> load_environment(const std::filesystem::path& absolute_path);
 };
-/// Initial adapter: the OBJ loader, a small versioned material-factor file, and texture descriptors
-/// whose source is cooked at load (PNG or JPEG) or read as cooked KTX2.
+/// Initial adapter: the OBJ loader, material files, texture descriptors whose source is cooked at load
+/// (PNG or JPEG) or read as cooked KTX2, and environments cooked at load from Radiance HDR images.
 class FileAssetProvider final : public AssetProvider {
 public:
     explicit FileAssetProvider(GraphicsDevice& device) : m_device(device), m_lifetime(device.resource_lifetime()) {}
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override;
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override;
     AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override;
+    /// Decodes the source .hdr and cooks it (cook_environment) on every core.
+    AssetLoadResult<EnvironmentAsset> load_environment(const std::filesystem::path& path) override;
 private:
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;

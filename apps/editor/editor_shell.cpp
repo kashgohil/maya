@@ -261,7 +261,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     if ((m_file_check_timer += io.DeltaTime) >= 0.25f) {
         m_file_check_timer = 0.0f;
         check_script_files();
-        check_material_files();
+        check_asset_files();
     }
 
     const auto routed = m_router.route(events, {m_viewport_hovered, showing_game()});

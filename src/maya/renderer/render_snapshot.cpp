@@ -214,6 +214,24 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
                 " ignored: at most " + std::to_string(max_directional_lights) + " directional lights are rendered");
         snapshot.lights.resize(max_directional_lights);
     }
+    // At most one environment: the lowest EntityId's. An unassigned one lights nothing and says nothing.
+    auto environments = std::vector<std::pair<EntityId, EnvironmentComponent>>{};
+    world.for_each<EnvironmentComponent>([&](EntityHandle entity, const EnvironmentComponent& environment) {
+        environments.emplace_back(*world.persistent_id(entity), environment);
+    });
+    std::ranges::sort(environments, {}, &std::pair<EntityId, EnvironmentComponent>::first);
+    for (size_t i = 1; i < environments.size(); ++i)
+        extraction.report(RenderIssue::environment_limit, environments[i].first, {}, "Environment " + id_text(environments[i].first) +
+            " ignored: a scene uses one environment, " + id_text(environments.front().first) + "'s");
+    if (!environments.empty() && environments.front().second.environment.valid()) {
+        const auto& [id, component] = environments.front();
+        if (auto acquired = assets.acquire(component.environment); acquired && acquired.lease.value().valid())
+            snapshot.environment = RenderEnvironment{id, std::move(acquired.lease), component.intensity, component.rotation, component.background};
+        else
+            extraction.report(RenderIssue::missing_environment, id, component.environment.id, "Environment " +
+                id_text(component.environment.id) + " is unavailable, so the ambient light is used: " +
+                (acquired.diagnostic ? acquired.diagnostic.message : std::string("its GPU textures are gone")));
+    }
     if (options.debug) snapshot.debug = *options.debug;
     return snapshot;
 }

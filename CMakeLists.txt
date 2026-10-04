@@ -72,11 +72,13 @@ set(ASTCENC_SHAREDLIB OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(astcenc)
 set_property(DIRECTORY ${astcenc_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
 
-# Texture descriptors, KTX2, and cooking source images (stb and astcenc stay private to it).
+# Texture descriptors, KTX2, cooking source images, and cooking environments (stb and astcenc stay
+# private to it).
 add_library(MayaTextures STATIC
     src/maya/assets/texture_settings.cpp
     src/maya/assets/ktx2.cpp
     src/maya/assets/texture_cook.cpp
+    src/maya/assets/environment_cook.cpp
     src/maya/assets/stb_implementation.cpp)
 add_library(Maya::Textures ALIAS MayaTextures)
 target_include_directories(MayaTextures PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -324,7 +326,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/project_files.cpp
         apps/editor/scene_editor.cpp
         apps/editor/script_files.cpp
-        apps/editor/material_files.cpp
+        apps/editor/watched_files.cpp
         apps/editor/texture_thumbnails.cpp
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)

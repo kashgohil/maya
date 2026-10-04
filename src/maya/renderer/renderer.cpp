@@ -1,10 +1,42 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/renderer/shader_constants.hpp"
+#include "maya/assets/environment_cook.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <optional>
 
 namespace maya {
+namespace {
+/// A general 4x4 inverse in double precision, for the sky's view rays; identity when singular.
+math::Mat4 inverse(const math::Mat4& m) {
+    double a[4][8];
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 8; ++c) a[r][c] = c < 4 ? m.at(r, c) : (c - 4 == r ? 1.0 : 0.0);
+    for (int c = 0; c < 4; ++c) {
+        auto pivot = c;
+        for (int r = c + 1; r < 4; ++r) if (std::abs(a[r][c]) > std::abs(a[pivot][c])) pivot = r;
+        if (std::abs(a[pivot][c]) < 1e-30) return math::Mat4::identity();
+        for (int k = 0; k < 8; ++k) std::swap(a[c][k], a[pivot][k]);
+        const auto scale = 1.0 / a[c][c];
+        for (int k = 0; k < 8; ++k) a[c][k] *= scale;
+        for (int r = 0; r < 4; ++r) {
+            if (r == c) continue;
+            const auto factor = a[r][c];
+            for (int k = 0; k < 8; ++k) a[r][k] -= factor * a[c][k];
+        }
+    }
+    auto result = math::Mat4::identity();
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) result.at(r, c) = float(a[r][c + 4]);
+    return result;
+}
+/// The split-sum table, computed once per process.
+std::span<const std::byte> split_sum_table() {
+    static const auto table = brdf_table();
+    return table;
+}
+} // namespace
 
 Renderer::Renderer(GraphicsDevice& device, std::string shader_source)
     : m_device(device), m_shader_source(std::move(shader_source)), m_lifetime(device.resource_lifetime()) {}
@@ -19,6 +51,9 @@ void Renderer::release() noexcept {
     m_pipelines.clear();
     m_sampler = {};
     m_placeholder.reset(); // a lost session already retired its texture
+    m_brdf_table.reset();
+    m_empty_cube.reset();
+    m_table_sampler.reset();
 }
 
 bool Renderer::session_changed() noexcept {
@@ -46,6 +81,14 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
         desc.fragment_entry = "presentFragment";
         desc.cull = CullMode::none;
         desc.label = "present view";
+    } else if (kind == PipelineKind::sky) {
+        // At the far plane, where the depth was cleared: only where no surface was drawn.
+        desc.vertex_entry = "skyVertex";
+        desc.fragment_entry = "skyFragment";
+        desc.depth_format = Format::depth32_float;
+        desc.depth = {true, false, CompareFunction::less_equal};
+        desc.cull = CullMode::none;
+        desc.label = "sky";
     } else if (kind == PipelineKind::tone_map) {
         desc.vertex_entry = "toneMapVertex";
         desc.fragment_entry = "toneMapFragment";
@@ -115,6 +158,22 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         m_placeholder = make_placeholder_texture(m_device);
         if (!m_placeholder) return {RhiError::device_unavailable, "The texture placeholder could not be created"};
     }
+    if (!m_brdf_table) {
+        m_brdf_table = std::make_unique<Texture>(m_device, TextureDesc{brdf_table_size, brdf_table_size, Format::rgba16_float,
+                                                                       TextureUsage::sampled, "split-sum table"}, split_sum_table());
+        const auto black = std::vector<std::byte>(6 * 8);
+        m_empty_cube = std::make_unique<Texture>(m_device, TextureDesc{1, 1, Format::rgba16_float, TextureUsage::sampled,
+                                                                       "no environment", 1, TextureType::cube}, black);
+        m_table_sampler = std::make_unique<Sampler>(m_device, SamplerDesc{Filter::linear, Filter::linear, AddressMode::clamp_to_edge,
+                                                                          AddressMode::clamp_to_edge, "split-sum table"});
+        if (!m_brdf_table->valid() || !m_empty_cube->valid() || !m_table_sampler->valid())
+            return {RhiError::device_unavailable, "The renderer's environment textures could not be created"};
+    }
+    const auto& environment = snapshot.environment;
+    const auto sky = environment && environment->background;
+    auto sky_pipeline = PipelineHandle{};
+    if (sky)
+        if (auto error = pipeline(target.scene_format(), PipelineKind::sky, sky_pipeline)) return error;
     // Opaque and masked surfaces in snapshot order, then blended ones back to front.
     m_order.clear();
     for (uint32_t i = 0; i < snapshot.instances.size(); ++i)
@@ -142,6 +201,15 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     constants.light_count[0] = static_cast<uint32_t>(lights);
     for (size_t i = 0; i < lights; ++i)
         constants.lights[i] = {{snapshot.lights[i].direction_to_light, 0.0f}, {snapshot.lights[i].radiance, 0.0f}};
+    constants.inverse_view_projection = inverse(view.matrices.view_projection);
+    if (environment) {
+        const auto& asset = environment->asset.value();
+        constants.environment = {environment->intensity, std::cos(environment->rotation), std::sin(environment->rotation),
+                                 float(asset.specular_levels() - 1)};
+        constants.environment_flags[0] = 1;
+        constants.environment_flags[1] = sky ? 1 : 0;
+        for (size_t i = 0; i < 9; ++i) constants.irradiance[i] = {asset.irradiance()[i], 0.0f};
+    }
     const auto uploaded_view = m_device.upload_transient(&constants, sizeof(constants));
     if (!uploaded_view) return uploaded_view.diagnostic;
 
@@ -158,9 +226,27 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         auto bound = std::array<const TextureAsset*, material_slots>{}; // rebound only when they change
         auto bound_material = std::optional<MaterialConstants>{}; // uploaded only when it changes
         auto bound_maps = std::optional<std::array<uint32_t, material_slots>>{};
+        // The environment's textures and the split-sum table stay bound for the whole pass.
+        const auto* cube = environment ? &environment->asset.value().specular() : m_empty_cube.get();
+        const auto* environment_sampler = environment ? &environment->asset.value().sampler() : m_table_sampler.get();
+        if (auto error = m_device.set_texture(5, cube->handle())) return error;
+        if (auto error = m_device.set_sampler(5, environment_sampler->handle())) return error;
+        if (auto error = m_device.set_texture(7, m_brdf_table->handle())) return error;
+        if (auto error = m_device.set_sampler(7, m_table_sampler->handle())) return error;
+        auto sky_drawn = !sky;
+        const auto draw_sky = [&]() -> RhiDiagnostic { // after opaque surfaces, before blended ones
+            sky_drawn = true;
+            if (auto error = m_device.set_pipeline(sky_pipeline)) return error;
+            bound_pipeline = sky_pipeline;
+            if (auto error = m_device.set_uniform_buffer(2, uploaded_view.slice)) return error;
+            if (auto error = m_device.set_texture(6, environment->asset.value().background().handle())) return error;
+            return m_device.draw(3);
+        };
         for (const auto index : m_order) {
             const auto& instance = snapshot.instances[index];
             const auto& material = instance.material;
+            if (!sky_drawn && material.alpha_mode == AlphaMode::blend)
+                if (auto error = draw_sky()) return error;
             if (const auto pipeline = lit[lit_index(lit_kind(material))]; pipeline != bound_pipeline) {
                 if (auto error = m_device.set_pipeline(pipeline)) return error;
                 if (!bound_pipeline.valid())
@@ -201,6 +287,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             if (auto error = snapshot.meshes[instance.mesh].value().mesh().draw()) return error;
             ++m_stats.draws;
         }
+        if (!sky_drawn) return draw_sky();
         return {};
     };
     auto result = encode();

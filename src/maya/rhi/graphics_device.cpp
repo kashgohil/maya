@@ -360,6 +360,12 @@ RhiResult<TextureHandle> GraphicsDevice::create_texture(const TextureDesc& desc,
             " textures can only be sampled, not rendered to or read back")};
     if (is_compressed_format(desc.format) && !m_limits.astc)
         return {{}, fail(RhiError::unsupported, name + ": this device cannot sample " + format_name(desc.format))};
+    if (desc.type > TextureType::cube) return {{}, fail(RhiError::invalid_descriptor, name + " has an unknown texture type")};
+    if (desc.type == TextureType::cube && desc.width != desc.height)
+        return {{}, fail(RhiError::invalid_descriptor, name + " is a cube, so its faces must be square, not " +
+            std::to_string(desc.width) + "x" + std::to_string(desc.height))};
+    if (desc.type == TextureType::cube && desc.usage != TextureUsage::sampled)
+        return {{}, fail(RhiError::unsupported, name + ": cube textures can only be sampled, not rendered to or read back")};
     const auto slot = allocate(m_textures);
     auto diagnostic = RhiDiagnostic{};
     try {
@@ -387,7 +393,8 @@ RhiResult<TextureHandle> GraphicsDevice::create_texture(const TextureDesc& desc,
         ? texture_bytes(desc) : initial_data.size();
     if (initial_data.size() != expected)
         return {{}, fail(RhiError::invalid_descriptor, "Texture" + quoted(desc.label) + " needs " + std::to_string(expected) +
-            " bytes of initial data for " + std::to_string(desc.mip_levels) + " level(s) of " + format_name(desc.format) +
+            " bytes of initial data for " + std::to_string(desc.mip_levels) + " level(s)" +
+            (desc.type == TextureType::cube ? " of six faces" : "") + " of " + format_name(desc.format) +
             ", not " + std::to_string(initial_data.size()))};
     return create_texture(desc, initial_data.data());
 }

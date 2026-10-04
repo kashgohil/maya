@@ -187,6 +187,9 @@ public:
     /// Assigns a mesh or material asset to an entity's mesh renderer, adding one to an entity with a
     /// transform when it has none, or a script to its script component, as one undo step.
     EditResult assign_asset(EntityId entity, AssetId asset);
+    /// Lights the scene with an environment: sets the scene's Environment component (the one with the
+    /// lowest EntityId), or creates an entity named Environment with one, as one undo step.
+    EditResult use_environment(AssetId asset);
     /// Where a mesh dropped at a viewport point lands: on the surface under it, else on the ground
     /// plane, else in front of the camera. Null when the viewport is not shown.
     /// `mesh`, when given, rests on the surface: it is lifted by how far it reaches below its origin.
@@ -243,9 +246,10 @@ public:
     /// Checks the project's script files for changes and reloads the changed ones, into play too. The
     /// editor checks every quarter second; this checks now.
     void check_script_files();
-    /// Checks the files of loaded materials for changes made outside the editor and reloads the
-    /// changed ones (docs/editor.md#materials). The editor checks every quarter second; this checks now.
-    void check_material_files();
+    /// Checks the files of loaded materials and environments for changes made outside the editor and
+    /// reloads the changed ones (docs/editor.md#watched-files). The editor checks every quarter second;
+    /// this checks now.
+    void check_asset_files();
     /// Opens a script's file in the application the system uses for it.
     void open_script(AssetId script);
     /// While playing, the script VM's memory in use; 0 otherwise.
@@ -317,9 +321,9 @@ private:
     /// Puts the files' values back into the registry for materials edited but not saved, as the editor
     /// that holds the edits closes.
     void discard_material_edits();
-    /// A material's file as last read, so the watcher does not take the editor's own saves or reloads
+    /// A watched file as last read, so the watcher does not take the editor's own saves or reloads
     /// for outside changes.
-    void note_material_file(AssetId id);
+    void note_watched_file(AssetId id);
     void draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2 max);
     void draw_physics_debug_menu();
     /// Size and offset handles on the primary selection's collider. Returns whether they are shown.
@@ -421,7 +425,7 @@ private:
     ScriptLimits script_limits() const;
     std::unordered_map<AssetId, ScriptVersion, PersistentIdHash> m_scripts;
     float m_file_check_timer = 0.0f; // scripts and materials are checked every quarter second
-    /// A watched file as last seen (material_files.cpp), and why its contents cannot be used.
+    /// A watched file as last seen (watched_files.cpp), and why its contents cannot be used.
     struct WatchedFile {
         bool present = false;
         std::filesystem::file_time_type stamp;
@@ -429,7 +433,7 @@ private:
         std::string error;
     };
     WatchedFile look_at(const std::filesystem::path& relative) const;
-    std::unordered_map<AssetId, WatchedFile, PersistentIdHash> m_material_files;
+    std::unordered_map<AssetId, WatchedFile, PersistentIdHash> m_watched_files;
     std::array<char, 256> m_script_text{}; // the script string property being typed into
     std::string m_script_text_key;
     char m_name_buffer[256] = {};
@@ -477,7 +481,7 @@ private:
     std::vector<std::filesystem::path> m_scene_files;
     std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
     std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
-    std::array<std::vector<size_t>, 5> m_shown_rows; // scenes, meshes, materials, scripts, and textures passing the filter
+    std::array<std::vector<size_t>, 6> m_shown_rows; // scenes, meshes, materials, scripts, textures, and environments passing the filter
     std::string m_shown_filter;
     bool m_shown_stale = true; // the rows or scene files changed
     bool m_rescan = false; // recheck the rows once they are drawn

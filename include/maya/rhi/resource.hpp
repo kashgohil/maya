@@ -111,6 +111,9 @@ struct BufferDesc {
 };
 /// Two-dimensional. Render targets and sampled textures live in GPU memory. Textures with more than
 /// one mip level, and compressed textures, can only be sampled.
+/// A cube texture has six square faces per level, in the order +X, -X, +Y, -Y, +Z, -Z, and is
+/// sampled by direction (since #1035).
+enum class TextureType : uint8_t { texture_2d, cube };
 struct TextureDesc {
     uint32_t width = 0;
     uint32_t height = 0;
@@ -118,12 +121,14 @@ struct TextureDesc {
     TextureUsage usage = TextureUsage::none;
     std::string label;
     uint32_t mip_levels = 1; // 1..full_mip_count(width, height)
+    TextureType type = TextureType::texture_2d;
 };
-/// Every level of a texture, tightly packed, level 0 first.
+constexpr uint32_t texture_faces(const TextureDesc& desc) noexcept { return desc.type == TextureType::cube ? 6 : 1; }
+/// Every level of a texture, tightly packed, level 0 first; within each level of a cube, its six faces in order.
 constexpr size_t texture_bytes(const TextureDesc& desc) noexcept {
     auto total = size_t{0};
     for (uint32_t level = 0; level < desc.mip_levels; ++level) total += mip_level_bytes(desc.format, desc.width, desc.height, level);
-    return total;
+    return total * texture_faces(desc);
 }
 enum class Filter : uint8_t { nearest, linear };
 /// How samples combine mip levels: none reads level 0 only.

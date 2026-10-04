@@ -7,7 +7,8 @@ PropertyValidationContext asset_property_context(const AssetRegistry& registry) 
         if (!info) return ReferenceStatus::missing;
         const auto expected = kind == ReferenceKind::mesh ? AssetKind::mesh
                             : kind == ReferenceKind::material ? AssetKind::material
-                            : kind == ReferenceKind::script ? AssetKind::script : AssetKind::texture;
+                            : kind == ReferenceKind::script ? AssetKind::script
+                            : kind == ReferenceKind::texture ? AssetKind::texture : AssetKind::environment;
         return info->record.kind == expected ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
     }};
 }

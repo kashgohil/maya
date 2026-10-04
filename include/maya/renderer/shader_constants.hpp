@@ -7,7 +7,9 @@
 
 namespace maya {
 // GPU layouts shared with resources/shaders/metal/renderer.metal. Buffer indices: 0 vertices,
-// 1 per-draw constants, 2 per-view constants, 3 material constants.
+// 1 per-draw constants, 2 per-view constants, 3 material constants. Texture slots: 0-4 a material's
+// maps, 5 the environment's specular cube, 6 its background, 7 the split-sum table; sampler slots 0-4
+// the maps', 5 the environment's, 7 the table's.
 
 struct GpuDirectionalLight {
     math::Vec4 direction_to_light; // xyz unit vector
@@ -20,6 +22,10 @@ struct ViewConstants {
     math::Vec4 ambient; // rgb
     uint32_t light_count[4]; // x; the rest is padding
     GpuDirectionalLight lights[max_directional_lights];
+    math::Mat4 inverse_view_projection; // for the sky's view rays
+    math::Vec4 environment; // x intensity, y cos and z sin of the rotation, w the specular cube's last level
+    uint32_t environment_flags[4]; // x an environment lights the scene, y the sky is drawn
+    math::Vec4 irradiance[9]; // spherical-harmonic coefficients (rgb) of the environment's irradiance
 };
 /// Uploaded once per drawn instance; read by the vertex stage only.
 struct DrawConstants {
@@ -54,9 +60,11 @@ struct ToneMapConstants {
 inline constexpr size_t debug_line_floats = 12;
 inline constexpr size_t debug_shape_floats = 24;
 
-static_assert(sizeof(ViewConstants) == 240 && offsetof(ViewConstants, camera_position) == 64 &&
+static_assert(sizeof(ViewConstants) == 480 && offsetof(ViewConstants, camera_position) == 64 &&
               offsetof(ViewConstants, ambient) == 80 && offsetof(ViewConstants, light_count) == 96 &&
-              offsetof(ViewConstants, lights) == 112, "ViewConstants must match renderer.metal");
+              offsetof(ViewConstants, lights) == 112 && offsetof(ViewConstants, inverse_view_projection) == 240 &&
+              offsetof(ViewConstants, environment) == 304 && offsetof(ViewConstants, environment_flags) == 320 &&
+              offsetof(ViewConstants, irradiance) == 336, "ViewConstants must match renderer.metal");
 static_assert(sizeof(DrawConstants) == 112 && offsetof(DrawConstants, normal_matrix) == 64,
               "DrawConstants must match renderer.metal");
 static_assert(sizeof(MaterialConstants) == 64 && offsetof(MaterialConstants, factors) == 16 &&

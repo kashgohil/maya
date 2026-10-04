@@ -165,7 +165,7 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     m_log.add(DiagnosticSource::project, "Opened project " + m_project->name() + " (" +
         std::to_string(m_assets->records().size()) + " assets, content in " + m_project->content_root.string() + ")", m_frame);
     m_scripts.clear();
-    m_material_files.clear(); // watched again once loaded
+    m_watched_files.clear(); // watched again once loaded
     check_script_files(); // compile errors are reported now, before anything plays
     // A startup scene that cannot be opened leaves a new scene, with the reason in a notice.
     if (!m_project->startup_scene || !open_scene(*m_project->startup_scene)) new_scene();
@@ -335,7 +335,7 @@ void EditorShell::refresh_project() {
         if (m_scene) // edits not yet saved stay shown
             for (const auto id : m_scene->dirty_materials()) m_assets->publish(AssetRef<MaterialAsset>{id}, *m_scene->material(id));
         m_scripts.clear();
-        m_material_files.clear();
+        m_watched_files.clear();
         check_script_files();
     }
     scan_project();
@@ -362,7 +362,7 @@ std::string EditorShell::save_materials() {
         const auto& value = *m_scene->material(id);
         if (auto failed = save_material_file(*file, value); !failed.empty()) return failed;
         m_scene->material_file_changed(id, value);
-        note_material_file(id); // the editor's own save is not an outside change
+        note_watched_file(id); // the editor's own save is not an outside change
         m_log.add(DiagnosticSource::asset, "Saved " + info->record.path.generic_string(), m_frame);
     }
     return {};
@@ -372,7 +372,7 @@ void EditorShell::discard_material_edits() {
     if (!m_scene || !m_assets) return;
     for (const auto id : m_scene->dirty_materials()) {
         m_assets->reload(AssetRef<MaterialAsset>{id});
-        note_material_file(id);
+        note_watched_file(id);
     }
 }
 
@@ -606,6 +606,7 @@ EditResult EditorShell::assign_asset(EntityId entity, AssetId asset) {
     const auto* record = m_scene->record(entity);
     if (!record) return {false, "The entity no longer exists"};
     if (info->record.kind == AssetKind::texture) return {false, "Textures are used through materials, not assigned to objects"};
+    if (info->record.kind == AssetKind::environment) return use_environment(asset); // the scene's, not one object's
     if (info->record.kind == AssetKind::script) {
         // Values the new script declares, with the same type, carry over; the rest belonged to the old one.
         auto script = ScriptComponent{AssetRef<ScriptAsset>{asset}, {}};
@@ -676,6 +677,23 @@ void EditorShell::place_in_view(AssetId mesh) {
     else m_reveal = m_scene->primary(); // show it in the hierarchy
 }
 
+EditResult EditorShell::use_environment(AssetId asset) {
+    if (!m_scene) return {false, "No scene is open"};
+    // The scene's environment is the Environment component with the lowest EntityId, as the renderer reads it.
+    auto owner = std::optional<EntityId>{};
+    auto component = EnvironmentComponent{};
+    m_scene->world().for_each<EnvironmentComponent>([&](EntityHandle entity, const EnvironmentComponent& value) {
+        const auto id = *m_scene->world().persistent_id(entity);
+        if (!owner || id < *owner) {
+            owner = id;
+            component = value;
+        }
+    });
+    component.environment = {asset};
+    if (owner) return m_scene->set_component(*owner, component);
+    return m_scene->create("Environment", std::nullopt, {component});
+}
+
 void EditorShell::assign_to_selection(AssetId asset) {
     if (!m_scene || m_scene->selection().empty()) return;
     const auto name = asset_name(asset);
@@ -689,10 +707,11 @@ void EditorShell::accept_asset_drop(EntityId target) {
     if (!dragged || !dragged->IsDataType("MAYA_ASSET")) return;
     auto asset = AssetPayload{};
     std::memcpy(&asset, dragged->Data, sizeof(asset));
-    if (!target.valid() && asset.kind != AssetKind::mesh) return; // a material needs an entity
+    if (!target.valid() && asset.kind != AssetKind::mesh && asset.kind != AssetKind::environment) return; // a material needs an entity
     if (target.valid())
         ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), theme::color::accent, 4.0f);
     if (!ImGui::AcceptDragDropPayload("MAYA_ASSET", ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) return;
+    if (!target.valid() && asset.kind == AssetKind::environment) return report(use_environment(asset.id), "Use " + asset_name(asset.id));
     if (!target.valid()) return place_in_view(asset.id);
     const auto name = asset_name(asset.id);
     report(assign_asset(target, asset.id), "Assign " + name);
@@ -704,18 +723,22 @@ void EditorShell::accept_viewport_drop() {
         auto asset = AssetPayload{};
         std::memcpy(&asset, dragged->Data, sizeof(asset));
         const auto point = ImGui::GetIO().MousePos;
-        // Meshes land where they are dropped; materials and scripts go to the object under the pointer.
-        const auto target = asset.kind != AssetKind::mesh ? mesh_at(point) : std::nullopt;
+        // Meshes land where they are dropped; materials and scripts go to the object under the pointer;
+        // an environment lights the whole scene.
+        const auto scene_wide = asset.kind == AssetKind::environment;
+        const auto target = asset.kind != AssetKind::mesh && !scene_wide ? mesh_at(point) : std::nullopt;
         if (ImGui::AcceptDragDropPayload("MAYA_ASSET", ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
             const auto name = asset_name(asset.id);
-            if (asset.kind == AssetKind::mesh) {
+            if (scene_wide) {
+                report(use_environment(asset.id), "Use " + name);
+            } else if (asset.kind == AssetKind::mesh) {
                 report(place_mesh(asset.id, drop_point(point, asset.id).value_or(math::Vec3{0.0f})), "Place " + name);
                 if (m_scene && m_scene->primary()) m_reveal = m_scene->primary();
             } else if (target) {
                 report(assign_asset(*target, asset.id), "Assign " + name);
             }
         }
-        if (asset.kind == AssetKind::mesh || target)
+        if (asset.kind == AssetKind::mesh || scene_wide || target)
             ImGui::GetWindowDrawList()->AddRect(m_layout.viewport_min, m_layout.viewport_max, theme::color::accent, 0.0f, 0, 2.0f);
     }
     ImGui::EndDragDropTarget();
@@ -744,6 +767,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto mesh = record.kind == AssetKind::mesh;
     const auto script = record.kind == AssetKind::script;
     const auto texture = record.kind == AssetKind::texture;
+    const auto environment = record.kind == AssetKind::environment;
     // Textures load for their thumbnails (or show the placeholder's), before their state is read.
     const auto thumbnail = texture ? texture_thumbnail(record.id, false) : ImTextureID{0};
     const auto info = m_assets->info(record.id);
@@ -764,7 +788,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         }
     const auto state = info ? info->state : AssetState::unloaded;
     const auto failed = version ? !missing && !problem.empty() : state == AssetState::failed || (info && info->diagnostic);
-    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : icon::circle_half;
+    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : environment ? icon::sun_horizon : icon::circle_half;
     ImGui::PushID(static_cast<int>(record.id.low ^ (record.id.high << 7)));
     const auto selected = m_selected_asset == record.id;
     if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()})) {
@@ -780,6 +804,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         if (mesh) place_in_view(record.id);
         else if (script) open_script(record.id);
+        else if (environment) report(use_environment(record.id), "Use " + record.path.stem().string());
         else if (!texture) assign_to_selection(record.id);
     }
     if (ImGui::BeginDragDropSource()) {
@@ -789,7 +814,8 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         ImGui::TextUnformatted(record.path.stem().string().c_str());
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
         ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : script ? "Drop on an object to attach it"
-                               : texture ? "Drop on a material's map in the Inspector" : "Drop on an object to assign it");
+                               : texture ? "Drop on a material's map in the Inspector"
+                               : environment ? "Drop in the viewport to light the scene with it" : "Drop on an object to assign it");
         ImGui::PopStyleColor();
         ImGui::EndDragDropSource();
     }
@@ -801,7 +827,9 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             open_script(record.id);
         const auto assign = std::string(icon::arrows_move) + "  Assign to selection" +
                             (selection ? " (" + std::to_string(selection) + ")" : std::string{});
-        if (!texture && ImGui::MenuItem(assign.c_str(), nullptr, false, selection > 0)) assign_to_selection(record.id);
+        if (environment && ImGui::MenuItem((std::string(icon::sun_horizon) + "  Use in scene").c_str(), nullptr, false, m_scene != nullptr))
+            report(use_environment(record.id), "Use " + record.path.stem().string());
+        if (!texture && !environment && ImGui::MenuItem(assign.c_str(), nullptr, false, selection > 0)) assign_to_selection(record.id);
         if (!texture) ImGui::Separator();
         const auto reload = ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str());
         m_layout.controls.push_back({"asset.reload", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
@@ -811,11 +839,12 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             auto diagnostic = AssetDiagnostic{};
             if (mesh) diagnostic = m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic;
             else if (texture) diagnostic = m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic;
+            else if (environment) diagnostic = m_assets->reload(AssetRef<EnvironmentAsset>{record.id}).diagnostic;
             else if (const auto material = m_assets->reload(AssetRef<MaterialAsset>{record.id}); !material)
                 diagnostic = material.diagnostic;
             else if (m_scene) // an edit not yet saved stays, and is shown again
                 m_scene->material_file_changed(record.id, material.lease.value());
-            if (record.kind == AssetKind::material) note_material_file(record.id); // read now, not again by the watcher
+            if (record.kind == AssetKind::material || environment) note_watched_file(record.id); // read now, not again by the watcher
             m_log.add(DiagnosticSource::asset, diagnostic ? record.path.generic_string() + ": " + diagnostic.message
                                                           : "Reloaded " + record.path.generic_string(), m_frame);
             m_rescan = true; // after the rows are drawn: rescanning replaces them
@@ -932,14 +961,15 @@ void EditorShell::draw_assets() {
             for (size_t i = 0; i < m_asset_rows.size(); ++i) {
                 const auto kind = m_asset_rows[i].record.kind;
                 if (passes(m_asset_rows[i].search))
-                    m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : kind == AssetKind::script ? 3 : 4].push_back(i);
+                    m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : kind == AssetKind::script ? 3
+                                 : kind == AssetKind::texture ? 4 : 5].push_back(i);
             }
             m_shown_filter = std::move(filter);
             m_shown_stale = false;
         }
         constexpr auto table_flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
         m_texture_loads = 0;
-        if (ImGui::BeginTable("asset_columns", 5, table_flags, ImGui::GetContentRegionAvail())) {
+        if (ImGui::BeginTable("asset_columns", 6, table_flags, ImGui::GetContentRegionAvail())) {
             // Each column scrolls on its own and draws only its visible rows.
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {
                 ImGui::TableNextColumn();
@@ -979,6 +1009,7 @@ void EditorShell::draw_assets() {
             column("materials", "MATERIALS", m_shown_rows[2], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("scripts", "SCRIPTS", m_shown_rows[3], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("textures", "TEXTURES", m_shown_rows[4], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
+            column("environments", "ENVIRONMENTS", m_shown_rows[5], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             ImGui::EndTable();
         }
         if (std::exchange(m_rescan, false)) scan_project();

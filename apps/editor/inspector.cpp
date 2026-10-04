@@ -27,6 +27,7 @@ const char* component_icon(ComponentId id) {
     case ComponentId::rigid_body: return icon::atom;
     case ComponentId::physics_settings: return icon::planet;
     case ComponentId::script: return icon::code;
+    case ComponentId::environment: return icon::sun_horizon;
     }
     return icon::circle_dashed;
 }
@@ -277,10 +278,12 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
     case PropertyType::mesh_ref:
     case PropertyType::material_ref:
     case PropertyType::script_ref:
-    case PropertyType::texture_ref: {
+    case PropertyType::texture_ref:
+    case PropertyType::environment_ref: {
         const auto kind = property.type == PropertyType::mesh_ref ? AssetKind::mesh
                         : property.type == PropertyType::material_ref ? AssetKind::material
-                        : property.type == PropertyType::script_ref ? AssetKind::script : AssetKind::texture;
+                        : property.type == PropertyType::script_ref ? AssetKind::script
+                        : property.type == PropertyType::texture_ref ? AssetKind::texture : AssetKind::environment;
         const auto asset = std::visit([]<class T>(const T& reference) -> AssetId {
             if constexpr (requires { reference.id; }) return reference.id;
             else return {};
@@ -289,6 +292,7 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
             if (kind == AssetKind::mesh) return AssetRef<MeshAsset>{chosen};
             if (kind == AssetKind::material) return AssetRef<MaterialAsset>{chosen};
             if (kind == AssetKind::texture) return AssetRef<TextureAsset>{chosen};
+            if (kind == AssetKind::environment) return AssetRef<EnvironmentAsset>{chosen};
             return AssetRef<ScriptAsset>{chosen};
         };
         auto preview = std::string("None");

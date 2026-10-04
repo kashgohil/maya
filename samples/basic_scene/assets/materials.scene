@@ -239,3 +239,17 @@ entity 6d617961 511
     material 6d617961 7f
     visible true
 end
+
+entity 6d617961 520
+  component maya.name 1
+    value "Environment"
+  component maya.transform 1
+    translation 0 0 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.environment 1
+    environment 6d617961 59
+    intensity 1
+    rotation 0
+    background true
+end

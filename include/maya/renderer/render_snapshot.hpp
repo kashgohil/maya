@@ -17,6 +17,8 @@ enum class RenderIssue {
     none, missing_mesh, missing_material, missing_transform, invalid_transform, unsupported_light, light_limit,
     missing_texture, // a material's texture is missing or failed to load: the placeholder is drawn
     texture_role, // a material's texture has the wrong role for its slot (e.g. a color texture as a normal map)
+    missing_environment, // the environment is missing or failed to load: the uniform ambient light is used
+    environment_limit, // more than one environment component: the one with the lowest EntityId is used
 };
 struct RenderDiagnostic {
     RenderIssue code = RenderIssue::none;
@@ -59,8 +61,17 @@ struct RenderDirectionalLight {
     math::Vec3 direction_to_light{0.0f, 0.0f, 1.0f}; // unit world vector: the light shines along its local -Z
     math::Vec3 radiance{1.0f}; // linear color × intensity; no exposure is applied yet
 };
+/// The scene's environment, from its Environment component (docs/renderer.md#environments).
+struct RenderEnvironment {
+    EntityId entity{};
+    AssetLease<EnvironmentAsset> asset;
+    float intensity = 1.0f;
+    float rotation = 0.0f; // radians about +Y
+    bool background = true;
+};
 struct RenderExtractOptions {
-    math::Vec3 ambient{0.06f, 0.07f, 0.09f}; // linear RGB added to every surface
+    /// Linear RGB light from every direction, used when the scene has no usable environment.
+    math::Vec3 ambient{0.06f, 0.07f, 0.09f};
     /// Poses shown in place of the World's, e.g. a play session's between ticks; none when null.
     const PresentationPoses* poses = nullptr;
     /// Debug lines and outlines drawn over the scene (docs/renderer.md#debug-lines); none when null.
@@ -84,6 +95,8 @@ struct RenderSnapshot {
     std::vector<RenderInstance> instances;
     std::vector<RenderDirectionalLight> lights; // enabled directional lights in EntityId order
     math::Vec3 ambient{0.0f};
+    /// The environment that lights the scene in place of the ambient light, when there is one.
+    std::optional<RenderEnvironment> environment;
     std::vector<RenderDiagnostic> diagnostics; // capped at max_render_diagnostics
     RenderSnapshotStats stats{};
     DebugDraw debug; // copied from RenderExtractOptions::debug; empty draws nothing and costs nothing
@@ -92,7 +105,8 @@ struct RenderSnapshot {
 /// Reads the World without modifying it and acquires assets through the registry, which loads
 /// unloaded assets synchronously. Missing or failed meshes skip their draw; missing or failed
 /// materials use fallback_material(); an unassigned material uses default MaterialAsset factors.
-/// Missing or failed textures, and textures of the wrong role, draw the placeholder.
+/// Missing or failed textures, and textures of the wrong role, draw the placeholder. A missing or failed
+/// environment leaves the ambient light, and is reported.
 RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets,
                                        const RenderExtractOptions& options = {});
 

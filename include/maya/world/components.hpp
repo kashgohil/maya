@@ -101,6 +101,15 @@ struct PhysicsSettingsComponent {
     math::Vec3 gravity{0.0f, -9.81f, 0.0f}; // m/s²
 };
 
+/// The scene's environment for image-based lighting (docs/renderer.md#environments); at most one is
+/// used. Without one, surfaces are lit by the uniform ambient light the view supplies.
+struct EnvironmentComponent {
+    AssetRef<EnvironmentAsset> environment{};
+    float intensity = 1.0f; // multiplies the environment's radiance
+    float rotation = 0.0f; // radians about +Y, counter-clockwise seen from above
+    bool background = true; // drawn where no surface is, in place of the view's clear color
+};
+
 // Scripting (docs/scripting.md).
 
 enum class ScriptValueType { number, integer, boolean, string, vector, color, entity };

@@ -278,10 +278,12 @@ RhiDiagnostic MetalDevice::backend_create_buffer(uint32_t slot, const BufferDesc
 
 RhiDiagnostic MetalDevice::backend_create_texture(uint32_t slot, const TextureDesc& desc, const void* data) {
     @autoreleasepool {
-        auto* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixel_format(desc.format)
-                                                                              width:desc.width
-                                                                             height:desc.height
-                                                                          mipmapped:NO];
+        auto* descriptor = desc.type == TextureType::cube
+            ? [MTLTextureDescriptor textureCubeDescriptorWithPixelFormat:pixel_format(desc.format) size:desc.width mipmapped:NO]
+            : [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixel_format(desc.format)
+                                                                 width:desc.width
+                                                                height:desc.height
+                                                             mipmapped:NO];
         descriptor.mipmapLevelCount = desc.mip_levels;
         descriptor.storageMode = MTLStorageModePrivate;
         descriptor.usage = MTLTextureUsageUnknown;
@@ -305,10 +307,12 @@ RhiDiagnostic MetalDevice::backend_create_texture(uint32_t slot, const TextureDe
                 const auto width = mip_extent(desc.width, level), height = mip_extent(desc.height, level);
                 const auto row = (size_t{width} + block - 1) / block * block_bytes(desc.format);
                 const auto bytes = mip_level_bytes(desc.format, desc.width, desc.height, level);
-                [blit copyFromBuffer:staging sourceOffset:offset sourceBytesPerRow:row sourceBytesPerImage:bytes
-                          sourceSize:MTLSizeMake(width, height, 1) toTexture:texture destinationSlice:0
-                    destinationLevel:level destinationOrigin:MTLOriginMake(0, 0, 0)];
-                offset += bytes;
+                for (uint32_t face = 0; face < texture_faces(desc); ++face) { // a cube's faces are its slices
+                    [blit copyFromBuffer:staging sourceOffset:offset sourceBytesPerRow:row sourceBytesPerImage:bytes
+                              sourceSize:MTLSizeMake(width, height, 1) toTexture:texture destinationSlice:face
+                        destinationLevel:level destinationOrigin:MTLOriginMake(0, 0, 0)];
+                    offset += bytes;
+                }
             }
             [blit endEncoding];
             upload.label = @"Maya texture upload";

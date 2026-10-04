@@ -1,4 +1,5 @@
 #include "maya/assets/asset.hpp"
+#include "maya/assets/environment_cook.hpp"
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/texture_cook.hpp"
 #include "maya/core/model_loader.hpp"
@@ -104,6 +105,49 @@ AssetLoadResult<TextureAsset> FileAssetProvider::load_texture(const std::filesys
     auto sampler = std::make_unique<Sampler>(m_device, sampler_desc);
     if (!sampler->valid()) return failed(AssetError::load_failed, sampler->error().message);
     return {std::make_shared<const TextureAsset>(std::move(texture), std::move(sampler), settings.role), {}};
+}
+
+AssetLoadResult<EnvironmentAsset> FileAssetProvider::load_environment(const std::filesystem::path& path) {
+    const auto failed = [&](AssetError code, const std::string& message) -> AssetLoadResult<EnvironmentAsset> {
+        return {nullptr, {code, path.string() + ": " + message}};
+    };
+    if (m_lifetime.expired()) return {nullptr, {AssetError::device_unavailable, "Environment provider's graphics session has ended"}};
+    auto input = std::ifstream(path);
+    if (!input) return failed(AssetError::missing_file, "cannot read the environment file");
+    const auto read = read_environment_settings(input);
+    if (!read) return failed(AssetError::invalid_data, read.error);
+    const auto& settings = read.settings;
+
+    // The source sits at or below the file's folder, symlinks included, as a texture's does.
+    std::error_code error;
+    const auto folder = std::filesystem::canonical(path.parent_path(), error);
+    if (error) return failed(AssetError::missing_file, "cannot resolve the environment file's folder");
+    const auto source = std::filesystem::weakly_canonical(folder / settings.source, error);
+    const auto relative = source.lexically_relative(folder);
+    if (error || relative.empty() || *relative.begin() == "..")
+        return failed(AssetError::invalid_path, "source '" + settings.source.generic_string() + "' leaves the environment file's folder");
+    if (!std::filesystem::is_regular_file(source, error))
+        return failed(AssetError::missing_file, "source '" + settings.source.generic_string() + "' is missing");
+    if (lowercase_extension(source) != ".hdr")
+        return failed(AssetError::invalid_data, "source '" + settings.source.generic_string() + "' must be a Radiance .hdr file");
+    const auto bytes = read_bytes(source);
+    if (!bytes) return failed(AssetError::missing_file, "cannot read source '" + settings.source.generic_string() + "'");
+    const auto decoded = decode_hdr_image(*bytes, std::min(m_device.limits().max_texture_dimension, 8192u));
+    if (!decoded) return failed(AssetError::invalid_data, "source '" + settings.source.generic_string() + "': " + decoded.error);
+
+    const auto cooked = cook_environment(decoded.image, settings);
+    const auto label = path.stem().string();
+    auto background = std::make_unique<Texture>(m_device, TextureDesc{cooked.background_width, cooked.background_height, Format::rgba16_float,
+        TextureUsage::sampled, label + " background", cooked.background_levels}, cooked.background);
+    if (!background->valid()) return failed(AssetError::load_failed, background->error().message);
+    auto specular = std::make_unique<Texture>(m_device, TextureDesc{cooked.specular_size, cooked.specular_size, Format::rgba16_float,
+        TextureUsage::sampled, label + " specular", cooked.specular_levels, TextureType::cube}, cooked.specular);
+    if (!specular->valid()) return failed(AssetError::load_failed, specular->error().message);
+    auto sampler = std::make_unique<Sampler>(m_device, SamplerDesc{Filter::linear, Filter::linear, AddressMode::repeat,
+        AddressMode::clamp_to_edge, label, MipFilter::linear, 1});
+    if (!sampler->valid()) return failed(AssetError::load_failed, sampler->error().message);
+    return {std::make_shared<const EnvironmentAsset>(std::move(background), std::move(specular), std::move(sampler),
+                                                     cooked.irradiance, cooked.milliseconds), {}};
 }
 
 std::span<const std::byte> placeholder_texture_pixels() noexcept {
