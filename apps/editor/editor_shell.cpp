@@ -257,8 +257,12 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     io.DisplaySize = {metrics.width, metrics.height};
     io.DisplayFramebufferScale = {scale_x, scale_y};
     io.DeltaTime = std::isfinite(delta_time) && delta_time > 0.0f ? delta_time : 1.0f / 60.0f;
-    // A few times a second, changed script files are reloaded (the player never watches files).
-    if ((m_script_check_timer += io.DeltaTime) >= 0.25f) check_script_files();
+    // A few times a second, changed script and material files are reloaded (the player never watches files).
+    if ((m_file_check_timer += io.DeltaTime) >= 0.25f) {
+        m_file_check_timer = 0.0f;
+        check_script_files();
+        check_material_files();
+    }
 
     const auto routed = m_router.route(events, {m_viewport_hovered, showing_game()});
     if (routed.capture) m_capture_request = routed.capture;

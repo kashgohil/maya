@@ -73,7 +73,6 @@ void EditorShell::reload_script(AssetId script) {
 }
 
 void EditorShell::check_script_files() {
-    m_script_check_timer = 0.0f;
     if (!m_project || !m_assets) return;
     for (const auto& record : m_assets->records()) {
         if (record.kind != AssetKind::script) continue;

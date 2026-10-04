@@ -165,6 +165,7 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     m_log.add(DiagnosticSource::project, "Opened project " + m_project->name() + " (" +
         std::to_string(m_assets->records().size()) + " assets, content in " + m_project->content_root.string() + ")", m_frame);
     m_scripts.clear();
+    m_material_files.clear(); // watched again once loaded
     check_script_files(); // compile errors are reported now, before anything plays
     // A startup scene that cannot be opened leaves a new scene, with the reason in a notice.
     if (!m_project->startup_scene || !open_scene(*m_project->startup_scene)) new_scene();
@@ -334,6 +335,7 @@ void EditorShell::refresh_project() {
         if (m_scene) // edits not yet saved stay shown
             for (const auto id : m_scene->dirty_materials()) m_assets->publish(AssetRef<MaterialAsset>{id}, *m_scene->material(id));
         m_scripts.clear();
+        m_material_files.clear();
         check_script_files();
     }
     scan_project();
@@ -360,6 +362,7 @@ std::string EditorShell::save_materials() {
         const auto& value = *m_scene->material(id);
         if (auto failed = save_material_file(*file, value); !failed.empty()) return failed;
         m_scene->material_file_changed(id, value);
+        note_material_file(id); // the editor's own save is not an outside change
         m_log.add(DiagnosticSource::asset, "Saved " + info->record.path.generic_string(), m_frame);
     }
     return {};
@@ -367,7 +370,10 @@ std::string EditorShell::save_materials() {
 
 void EditorShell::discard_material_edits() {
     if (!m_scene || !m_assets) return;
-    for (const auto id : m_scene->dirty_materials()) m_assets->reload(AssetRef<MaterialAsset>{id});
+    for (const auto id : m_scene->dirty_materials()) {
+        m_assets->reload(AssetRef<MaterialAsset>{id});
+        note_material_file(id);
+    }
 }
 
 void EditorShell::ask_save_as() {
@@ -809,6 +815,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
                 diagnostic = material.diagnostic;
             else if (m_scene) // an edit not yet saved stays, and is shown again
                 m_scene->material_file_changed(record.id, material.lease.value());
+            if (record.kind == AssetKind::material) note_material_file(record.id); // read now, not again by the watcher
             m_log.add(DiagnosticSource::asset, diagnostic ? record.path.generic_string() + ": " + diagnostic.message
                                                           : "Reloaded " + record.path.generic_string(), m_frame);
             m_rescan = true; // after the rows are drawn: rescanning replaces them

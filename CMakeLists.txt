@@ -324,6 +324,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/project_files.cpp
         apps/editor/scene_editor.cpp
         apps/editor/script_files.cpp
+        apps/editor/material_files.cpp
         apps/editor/texture_thumbnails.cpp
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)
