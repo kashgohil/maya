@@ -844,7 +844,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
                 diagnostic = material.diagnostic;
             else if (m_scene) // an edit not yet saved stays, and is shown again
                 m_scene->material_file_changed(record.id, material.lease.value());
-            if (record.kind == AssetKind::material || environment) note_watched_file(record.id); // read now, not again by the watcher
+            if (!mesh) note_watched_file(record.id); // read now, not again by the watcher
             m_log.add(DiagnosticSource::asset, diagnostic ? record.path.generic_string() + ": " + diagnostic.message
                                                           : "Reloaded " + record.path.generic_string(), m_frame);
             m_rescan = true; // after the rows are drawn: rescanning replaces them

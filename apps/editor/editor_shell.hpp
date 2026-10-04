@@ -246,9 +246,9 @@ public:
     /// Checks the project's script files for changes and reloads the changed ones, into play too. The
     /// editor checks every quarter second; this checks now.
     void check_script_files();
-    /// Checks the files of loaded materials and environments for changes made outside the editor and
-    /// reloads the changed ones (docs/editor.md#watched-files). The editor checks every quarter second;
-    /// this checks now.
+    /// Checks the files of loaded materials, textures, and environments, and the source images textures
+    /// and environments name, for changes made outside the editor, and reloads the changed ones
+    /// (docs/editor.md#watched-files). The editor checks every quarter second; this checks now.
     void check_asset_files();
     /// Opens a script's file in the application the system uses for it.
     void open_script(AssetId script);
@@ -426,13 +426,18 @@ private:
     std::unordered_map<AssetId, ScriptVersion, PersistentIdHash> m_scripts;
     float m_file_check_timer = 0.0f; // scripts and materials are checked every quarter second
     /// A watched file as last seen (watched_files.cpp), and why its contents cannot be used.
-    struct WatchedFile {
+    struct FileStamp {
         bool present = false;
-        std::filesystem::file_time_type stamp;
+        std::filesystem::file_time_type time;
         uintmax_t size = 0;
+        bool operator==(const FileStamp&) const = default;
+    };
+    struct WatchedFile {
+        FileStamp file; // the asset's own file
+        FileStamp source; // a texture's or environment's source image, as its file names it
         std::string error;
     };
-    WatchedFile look_at(const std::filesystem::path& relative) const;
+    WatchedFile look_at(const AssetRecord& record) const;
     std::unordered_map<AssetId, WatchedFile, PersistentIdHash> m_watched_files;
     std::array<char, 256> m_script_text{}; // the script string property being typed into
     std::string m_script_text_key;

@@ -1,46 +1,72 @@
-// Watched files in the editor (docs/editor.md#watched-files): the files of loaded materials and
-// environments are watched, and one changed outside the editor is reloaded into the registry, so every
-// view shows it next frame.
+// Watched files in the editor (docs/editor.md#watched-files): the files of loaded materials, textures,
+// and environments, and the source images textures and environments name, are watched; an asset whose
+// file or source changed outside the editor is reloaded into the registry, so every view shows it next
+// frame.
 
 #include "editor_shell.hpp"
 #include "shell_detail.hpp"
+#include "maya/assets/environment_cook.hpp"
+#include "maya/assets/texture_data.hpp"
+#include <fstream>
 
 namespace maya::editor {
 using namespace detail;
 
-EditorShell::WatchedFile EditorShell::look_at(const std::filesystem::path& relative) const {
-    auto file = WatchedFile{};
-    auto error = std::error_code{};
-    const auto path = m_project ? m_project->resolve(relative) : std::nullopt;
-    file.present = path && std::filesystem::is_regular_file(*path, error);
-    if (file.present) {
-        file.stamp = std::filesystem::last_write_time(*path, error);
-        file.size = std::filesystem::file_size(*path, error);
+namespace {
+bool watched(AssetKind kind) {
+    return kind == AssetKind::material || kind == AssetKind::texture || kind == AssetKind::environment;
+}
+} // namespace
+
+EditorShell::WatchedFile EditorShell::look_at(const AssetRecord& record) const {
+    const auto stamp = [](const std::optional<std::filesystem::path>& path) {
+        auto result = FileStamp{};
+        auto error = std::error_code{};
+        result.present = path && std::filesystem::is_regular_file(*path, error);
+        if (result.present) {
+            result.time = std::filesystem::last_write_time(*path, error);
+            result.size = std::filesystem::file_size(*path, error);
+        }
+        return result;
+    };
+    auto watched = WatchedFile{};
+    const auto path = m_project ? m_project->resolve(record.path) : std::nullopt;
+    watched.file = stamp(path);
+    // A texture's or environment's file names its source image, beside or below it.
+    if (watched.file.present && (record.kind == AssetKind::texture || record.kind == AssetKind::environment)) {
+        auto input = std::ifstream(*path);
+        auto source = std::optional<std::filesystem::path>{};
+        if (record.kind == AssetKind::texture) {
+            if (const auto read = read_texture_settings(input)) source = path->parent_path() / read.settings.source;
+        } else if (const auto read = read_environment_settings(input)) {
+            source = path->parent_path() / read.settings.source;
+        }
+        if (source) watched.source = stamp(source);
     }
-    return file;
+    return watched;
 }
 
 void EditorShell::note_watched_file(AssetId id) {
     const auto info = m_assets ? m_assets->info(id) : std::nullopt;
-    if (!info || (info->record.kind != AssetKind::material && info->record.kind != AssetKind::environment)) return;
-    m_watched_files.insert_or_assign(id, look_at(info->record.path));
+    if (!info || !watched(info->record.kind)) return;
+    m_watched_files.insert_or_assign(id, look_at(info->record));
 }
 
 void EditorShell::check_asset_files() {
     if (!m_project || !m_assets) return;
     for (const auto& record : m_assets->records()) {
-        if (record.kind != AssetKind::material && record.kind != AssetKind::environment) continue;
+        if (!watched(record.kind)) continue;
         // An asset not loaded yet reads its file when first used; there is nothing to refresh.
         const auto info = m_assets->info(record.id);
         if (!info || info->state == AssetState::unloaded) {
             m_watched_files.erase(record.id);
             continue;
         }
-        const auto now = look_at(record.path);
+        const auto now = look_at(record);
         const auto [found, added] = m_watched_files.try_emplace(record.id, now);
         if (added) continue; // first seen: the file is what was loaded
         auto& seen = found->second;
-        if (now.present == seen.present && now.stamp == seen.stamp && now.size == seen.size) continue;
+        if (now.file == seen.file && now.source == seen.source) continue;
         const auto previous = seen.error;
         seen = now;
         const auto path = record.path.generic_string();
@@ -48,6 +74,8 @@ void EditorShell::check_asset_files() {
         auto diagnostic = AssetDiagnostic{};
         if (record.kind == AssetKind::environment) {
             diagnostic = m_assets->reload(AssetRef<EnvironmentAsset>{record.id}).diagnostic;
+        } else if (record.kind == AssetKind::texture) {
+            diagnostic = m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic;
         } else if (const auto loaded = m_assets->reload(AssetRef<MaterialAsset>{record.id}); !loaded) {
             diagnostic = loaded.diagnostic;
         } else if (m_scene) { // an edit not yet saved stays, and is shown again
