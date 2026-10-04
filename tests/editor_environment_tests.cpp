@@ -73,7 +73,7 @@ TEST_CASE("Using an environment from the Assets panel lights the scene through o
     CHECK(harness.shell.layout().field("environment.rotation"));
 }
 
-TEST_CASE("The material scene is lit by its environment, and a changed environment file reloads by itself", "[editor][environments]") {
+TEST_CASE("The material scene is lit by its environment, and a changed environment file or source image reloads by itself", "[editor][environments]") {
     const auto copy = ProjectCopy();
     Harness harness(false);
     REQUIRE(harness.shell.open_project(copy.folder));
@@ -90,11 +90,21 @@ TEST_CASE("The material scene is lit by its environment, and a changed environme
     CHECK(harness.shell.assets()->info(sky)->generation == before + 1);
     CHECK(harness.shell.assets()->acquire(AssetRef<EnvironmentAsset>{sky}).lease.value().specular().desc().width == 32);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::asset, "Reloaded environments/sky.environment"));
+    // Its source image replaced by another program: cooked again from the new image.
+    fs::copy_file(copy.content / "environments/aerodynamics_workshop_1k.hdr",
+                  copy.content / "environments/kloofendal_48d_partly_cloudy_puresky_1k.hdr", fs::copy_options::overwrite_existing);
+    fs::last_write_time(copy.content / "environments/kloofendal_48d_partly_cloudy_puresky_1k.hdr",
+                        fs::file_time_type::clock::now() + std::chrono::seconds(7));
+    const auto sky_before = harness.shell.assets()->acquire(AssetRef<EnvironmentAsset>{sky}).lease.value().irradiance()[0];
+    harness.shell.check_asset_files();
+    CHECK(harness.shell.assets()->info(sky)->generation == before + 2);
+    const auto sky_after = harness.shell.assets()->acquire(AssetRef<EnvironmentAsset>{sky}).lease.value().irradiance()[0];
+    CHECK((sky_after - sky_before).length() > 0.01f); // the workshop's light, not the sky's
     // A broken file keeps the last good version.
     copy.write("environments/sky.environment", "maya-environment 1\n");
     fs::last_write_time(copy.content / "environments/sky.environment", fs::file_time_type::clock::now() + std::chrono::seconds(9));
     harness.shell.check_asset_files();
-    CHECK(harness.shell.assets()->info(sky)->generation == before + 1);
+    CHECK(harness.shell.assets()->info(sky)->generation == before + 2);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::asset, "names no source; the last version stays in use"));
     harness.frames(2);
     CHECK(harness.shell.extraction().skipped == 0);

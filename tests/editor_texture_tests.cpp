@@ -1,4 +1,5 @@
 #include "editor_harness.hpp"
+#include <chrono>
 
 using namespace maya;
 using namespace maya::editor;
@@ -118,4 +119,42 @@ TEST_CASE("Textures are used through materials, never assigned to objects", "[ed
     }
     harness.frames(1);
     CHECK_FALSE(scene.dirty()); // no edit was applied
+}
+
+TEST_CASE("A texture whose file or source image changes outside the editor reloads by itself", "[editor][textures]") {
+    const auto copy = ProjectCopy();
+    Harness harness(false);
+    REQUIRE(harness.shell.open_project(copy.folder));
+    harness.frames(3); // the thumbnails load the textures, a frame each
+    REQUIRE(state(harness, grid) == AssetState::ready);
+    harness.shell.check_asset_files(); // as loaded
+    const auto generation = [&] { return harness.shell.assets()->info(grid)->generation; };
+    const auto before = generation();
+    const auto touch = [&](const char* path, int seconds) {
+        fs::last_write_time(copy.content / path, fs::file_time_type::clock::now() + std::chrono::seconds(seconds));
+    };
+    // The source image replaced by another program: cooked again.
+    fs::copy_file(copy.content / "textures/grid_normal.png", copy.content / "textures/grid.png", fs::copy_options::overwrite_existing);
+    touch("textures/grid.png", 5);
+    harness.shell.check_asset_files();
+    CHECK(generation() == before + 1);
+    CHECK(reports(harness, "Reloaded textures/grid.texture") == 1);
+    harness.shell.check_asset_files(); // unchanged since
+    CHECK(generation() == before + 1);
+    // Its texture file changed: read again, with the new settings.
+    auto text = copy.read("textures/grid.texture");
+    text.replace(text.find("filter linear linear"), 20, "filter nearest nearest");
+    copy.write("textures/grid.texture", text);
+    touch("textures/grid.texture", 9);
+    harness.shell.check_asset_files();
+    CHECK(generation() == before + 2);
+    CHECK(harness.shell.assets()->acquire(AssetRef<TextureAsset>{grid}).lease.value().sampler().desc().mag_filter == Filter::nearest);
+    // Reload from the menu reads both now, so the watcher does not read them again.
+    press(harness, control(harness, "asset.textures/grid.texture"), MouseButton::right);
+    harness.frames(1);
+    press(harness, control(harness, "asset.reload"));
+    harness.frames(1);
+    const auto reloaded = generation();
+    harness.shell.check_asset_files();
+    CHECK(generation() == reloaded);
 }
