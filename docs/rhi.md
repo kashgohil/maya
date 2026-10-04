@@ -52,6 +52,8 @@ Formats are `rgba8_unorm`, `rgba8_srgb`, `bgra8_unorm`, `bgra8_srgb`, `rgba16_fl
 - `texture_bytes(desc)`: every level, the size initial data must have and what `RhiStats` tracks;
 - `is_compressed_format`, `is_srgb_format`, `block_extent`, `block_bytes`. `bytes_per_pixel` is 0 for compressed formats.
 
+**Cube textures** (#1035, for [environments](renderer.md#environments)): `TextureDesc::type` is `texture_2d` (the default) or `cube`. A cube has six square faces per level, in Metal's order (+X, −X, +Y, −Y, +Z, −Z); its data holds each level's six faces in that order, level 0 first, and `texture_bytes` counts all of them (`texture_faces(desc)` is 6). Cubes must be square and can only be sampled, not rendered to or read back. Shaders sample them by direction (`texturecube`).
+
 `create_texture(desc, std::span<const std::byte>)` refuses data whose size is not `texture_bytes(desc)`; the older pointer form trusts the caller. Sampling an sRGB format decodes to linear values. `limits().astc` is true on Apple GPUs (Metal's `MTLGPUFamilyApple2`); the null device reports it as `NullDeviceOptions::astc` says (true by default), so tests can check a device without it.
 
 A handle carries its device session token, slot, and slot generation. It is valid only for that device session and is never serialized. Destroying a resource bumps the generation at once. A new session invalidates every handle, even at a reused slot. Exhausted generations retire a slot permanently instead of wrapping.

@@ -35,6 +35,7 @@ mesh 6d617961 1 "models/tree.obj"
 material 6d617961 2 "materials/bark.mat"
 script 6d617961 20 "scripts/spin.luau"
 texture 6d617961 50 "textures/bark.texture"
+environment 6d617961 58 "environments/workshop.environment"
 ```
 
 `write_asset_catalog(stream, registry.records())` writes metadata only. `read_asset_catalog(stream)` checks syntax/version/ID words and returns records or a diagnostic; register each record in a fresh registry before publishing that project. Registration validates identity, kind, duplicate sources, and project boundaries. Parsing/registration does not load resources. Loading a malformed catalog must discard the unpublished registry, not expose a partially registered project. Filesystem I/O and allocation exceptions remain ordinary exceptions. This catalog is not the [scene format](scene.md) (#995); scenes store only AssetIds and validate them against the catalog.
@@ -145,6 +146,33 @@ A `TextureAsset` owns a sampled texture with every level and a sampler built fro
 
 **Missing or failed textures** fail with a diagnostic naming the texture file, its line or its source, and allocate nothing. `make_placeholder_texture(device)` makes the declared stand-in: an 8×8 magenta and black checkerboard of 2×2-texel squares (`placeholder_texture_pixels()`), sRGB RGBA8, nearest filtering, repeating. A consumer draws it in a failed texture's place and still reports the problem; the reference keeps its ID. Materials use it from #1033; the editor's thumbnails show it now.
 
+## Environments
+
+[#1035](https://work.rezee.app/kash/issues/1035) adds environments (`environment`, `EnvironmentAsset`) for [image-based lighting](renderer.md#environments): an HDR image of the surroundings, cooked on the CPU when it loads, as the [rendering and content record](architecture/rendering-content-decision.md#environment-lighting-cooked-on-the-cpu) chose. A scene uses one through its Environment component.
+
+An environment file (`.environment`) names its source and, optionally, how to cook it ([environment_cook.hpp](../include/maya/assets/environment_cook.hpp)):
+
+```text
+maya-environment 1
+source "aerodynamics_workshop_1k.hdr"
+specular_size 128
+samples 256
+```
+
+- `source` (required): a Radiance `.hdr` image, equirectangular (twice as wide as tall), at most 8,192 wide, at or below the file's folder, as a texture's source must be.
+- `specular_size`: texels per side of the prefiltered cube's first level, a power of two from 16 to 512 (default 128).
+- `samples`: importance samples per prefiltered texel, 16 to 4,096 (default 256).
+
+Each key appears at most once; anything else is refused with its line. **Loading** decodes the source with stb_image (negative or nonfinite values read as 0), then `cook_environment` builds, on every core and deterministically whatever the thread count:
+
+- **the background:** the source and its full mip chain (2 × 2 box filtered), RGBA16F, for the sky;
+- **irradiance:** nine spherical-harmonic coefficients, projected from every texel by its solid angle and convolved with the cosine lobe;
+- **the specular cube:** RGBA16F, up to six levels from `specular_size` (128 gives 128 to 4). Level 0 reads the source at the mip that matches a cube texel; each rougher level averages GGX importance samples around each texel's direction (N = V = R), each read from the source at the mip that matches its solid angle (filtered importance sampling, Karis 2013), so few samples stay smooth.
+
+Values above the half-float range (65,504) are clamped. An `EnvironmentAsset` owns the background, the cube, a sampler (linear, repeating around the horizon), and the coefficients, and reports its cooking time and GPU bytes. **Once per version:** an environment is cooked when it is first acquired and when it is reloaded, never per frame; `residency()` counts resident environments and their GPU bytes. A 1024 × 512 source cooks in about 60 ms at 128 per face in Release (200 ms at 256) and takes 6.3 MiB on the GPU ([cost](renderer.md#environments)); #1036's cook cache will keep cooked environments between runs.
+
+**Sample environments.** The sample project's [environments](../samples/basic_scene/assets/environments) are two [Poly Haven](https://polyhaven.com) HDRIs at 1024 × 512, CC0 (public domain): *Aerodynamics Workshop* (indoors, `workshop`) and *Kloofendal 48d Partly Cloudy (Pure Sky)* (outdoors, `sky`). Unlike #1030's sample content, which is fetched, they are committed (about 1.4 MiB each) because the reference images need them; their sources and hashes are in the folder's README. The 2k workshop for #1030's prototypes is still fetched.
+
 ## Loading and reload
 
 | State | Behavior |
@@ -164,7 +192,7 @@ Loading is **synchronous** and registry/device access, including final mesh-leas
 
 The registry retains one cache lease for each published version. `evict_unused()` removes versions whose only remaining owner is that cache, preserving catalog entries as unloaded. Call it at scene-unload/maintenance boundaries. There is no hidden timed/LRU eviction; explicit maintenance is required to bound the resident cache. Old versions after reload live only as long as their remaining leases. Registry destruction drops its cache ownership; outstanding leases remain valid while their device session remains available.
 
-`residency()` (since #1004) counts entries by state, resident mesh, material, script, and texture versions, versions also held by an outside lease, resident mesh GPU and CPU bytes, and (since #1031) resident texture GPU bytes, for [measurements](performance.md#what-is-measured).
+`residency()` (since #1004) counts entries by state, resident mesh, material, script, texture, and environment versions, versions also held by an outside lease, resident mesh GPU and CPU bytes, (since #1031) resident texture GPU bytes, and (since #1035) resident environment GPU bytes, for [measurements](performance.md#what-is-measured).
 
 Since #1001, `MeshAsset` also keeps a CPU `MeshGeometry` (local positions, triangle indices, and bounds) from the OBJ loader for [picking](inspector.md#picking), at 12 bytes per vertex and 4 per index; providers may omit it, and such meshes cannot be picked.
 

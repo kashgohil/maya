@@ -69,13 +69,14 @@ Undoing back to the saved state counts as no changes, so nothing is asked. A sav
 
 ## The Assets panel
 
-The Assets panel is the bottom panel shown first (Diagnostics is its neighbouring tab). It has a filter and a refresh button above five columns:
+The Assets panel is the bottom panel shown first (Diagnostics is its neighbouring tab). It has a filter and a refresh button above six columns:
 
 - **Scenes:** the `.scene` files in the content folder, with the open scene highlighted. Double-click one to open it.
 - **Meshes:** meshes from the catalog, by file name.
 - **Materials:** materials from the catalog, each with a swatch of its base color. Clicking one shows it in the Inspector to [edit](editor.md#materials). Since #1033 the editor watches their files, so a change made in another program shows by itself.
 - **Scripts:** [scripts](scripting.md) from the catalog (#1020). Their status is kept current, since the editor watches script files.
 - **Textures:** [textures](assets.md#textures) from the catalog (#1031), each with a thumbnail.
+- **Environments:** [environments](assets.md#environments) from the catalog (#1035). Double-clicking one lights the scene with it ([environments](editor.md#environments)).
 
 A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, **error** (red) for a script that does not compile, or **not loaded** for a mesh no frame has drawn yet or a texture waiting its turn. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Open** (scripts: in the application the system uses for the file, else the default text editor), **Assign to selection** (not textures), **Reload** (read the file again; a material with unsaved edits keeps them), and **Copy ID**.
 
@@ -85,6 +86,7 @@ A row may show a status: **missing** (amber) when its file is not in the content
 | --- | --- |
 | Drag a mesh into the viewport | A new entity named after the file, placed where it is dropped. It rests on the surface under the pointer, else on the ground plane (y = 0) within 500 m, else 5 m in front of the camera. It is lifted by how far the mesh reaches below its origin, so it sits on the surface. |
 | Drag a material or script onto an object in the viewport | Assigns it to that object. |
+| Drag an environment into the viewport or onto a Hierarchy row | Lights the scene with it: the scene's Environment component gets it, or a new Environment entity is made. |
 | Drag a mesh, material, or script onto a Hierarchy row | Assigns it to that entity. An entity with a transform but no mesh renderer gets one for a mesh or material. A script replaces the entity's script, keeping the values the new script declares. |
 | Drag a mesh onto the Hierarchy's empty space | Places it in view, as a double-click does. |
 | Drag onto an Inspector mesh, material, script, or texture field | Chooses it, when the kind matches. Texture fields are a material's maps (#1033). |

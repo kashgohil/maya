@@ -158,6 +158,8 @@ From the 2048 × 1024 HDRI (brightest texel: a relative luminance of 47):
 
 This is cheap enough to do when cooking, once per environment version, with no GPU compute. The cooked environment stores both, and the split-sum BRDF table is built once.
 
+**Implemented** by [#1035](https://work.rezee.app/kash/issues/1035) ([environments](../renderer.md#environments)): cooked when an environment loads, from a 1024 × 512 source in 58–60 ms at 128 per face and 202 ms at 256 (Release, M4 Pro), with filtered importance sampling, and RHI cube textures. #1036's cook cache will keep cooked environments.
+
 ## Animation: sample on the CPU, skin on the GPU
 
 Per character, mean of 1,000 evaluations through cgltf's generic accessor reads:

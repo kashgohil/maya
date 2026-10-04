@@ -10,7 +10,7 @@
 
 **Re-blessed for physically based shading (#1033).** The seven V1 references and four of the HDR references were re-blessed when surfaces began shading with glTF's metallic-roughness model and the sample lights were scaled by π. Large surfaces moved by at most 18 levels and new GGX highlights by more; the [table](renderer.md#version-1-content) records each image. The physics debug references and the luminance view still match. The project owner inspected the before-and-after images and the new material references and approved them on 3 October 2026.
 
-**The material test scene** (#1033, [renderer](renderer.md#sample-content)) has four references in [tests/references/materials](../tests/references/materials), at 512 × 288 with the same tolerance: its camera's view through AgX and through PBR Neutral, the textured row from close by, and the row from behind, where the cutout's back faces and the glass show. Rendering requires no diagnostics, so a map of the wrong role fails the test.
+**The material test scene** (#1033, [renderer](renderer.md#sample-content)) has six references in [tests/references/materials](../tests/references/materials), at 512 × 288 with the same tolerance. Under its sky environment (#1035): its camera's view through AgX and through PBR Neutral, the textured row from close by, and the row from behind, where the cutout's back faces and the glass show. Under the workshop environment: the camera's view and the textured row. The project owner inspected the four views re-rendered under the sky, against their #1033 versions, and the two workshop views, and approved them on 4 October 2026. The V1, HDR, and physics-debug references did not change: scenes without an environment differ only by the split-sum table replacing Karis's fit, within tolerance. Rendering requires no diagnostics, so a map of the wrong role fails the test.
 
 ## Automated checks
 
@@ -67,7 +67,7 @@ Repeated work must return to these states, with no stale handles and no unbounde
 | I1 repeated instances | [benchmarks/i1_*.benchmark](../benchmarks) (generated) | 1,000, 10,000, and 100,000 instances of one cube and one material; a subset view |
 | L1 load/unload and play reset | [benchmarks/l1_load.benchmark](../benchmarks/l1_load.benchmark), [l1_play.benchmark](../benchmarks/l1_play.benchmark) | 300 cycles of a 10,000-entity scene (100 before #1024); malformed and missing-asset scenes |
 | The sample scene | [basic.scene](../samples/basic_scene/assets/basic.scene) | The fast regression case; not evidence of scale |
-| Material test scene | [materials.scene](../samples/basic_scene/assets/materials.scene), [benchmarks/materials.benchmark](../benchmarks/materials.benchmark) | Spheres across metallic and roughness, and surfaces with each kind of map, a cutout, and glass (#1033); its reference images below |
+| Material test scene | [materials.scene](../samples/basic_scene/assets/materials.scene), [benchmarks/materials.benchmark](../benchmarks/materials.benchmark) | Spheres across metallic and roughness, and surfaces with each kind of map, a cutout, and glass (#1033), lit by an environment and drawn against its sky (#1035); its reference images below |
 
 **The V1 visual reference scene** contains:
 
