@@ -73,7 +73,7 @@ The Assets panel is the bottom panel shown first (Diagnostics is its neighbourin
 
 - **Scenes:** the `.scene` files in the content folder, with the open scene highlighted. Double-click one to open it.
 - **Meshes:** meshes from the catalog, by file name.
-- **Materials:** materials from the catalog, each with a swatch of its base color. Clicking one shows it in the Inspector to [edit](editor.md#materials).
+- **Materials:** materials from the catalog, each with a swatch of its base color. Clicking one shows it in the Inspector to [edit](editor.md#materials). Since #1033 the editor watches their files, so a change made in another program shows by itself.
 - **Scripts:** [scripts](scripting.md) from the catalog (#1020). Their status is kept current, since the editor watches script files.
 - **Textures:** [textures](assets.md#textures) from the catalog (#1031), each with a thumbnail.
 
