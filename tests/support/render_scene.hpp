@@ -1,5 +1,6 @@
 #pragma once
 
+#include "maya/assets/environment_cook.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/world/world.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -66,9 +67,9 @@ class InlineProvider final : public AssetProvider {
 public:
     InlineProvider(GraphicsDevice& device, std::map<std::string, Geometry> meshes,
                    std::map<std::string, MaterialAsset> materials, std::shared_ptr<size_t> loads,
-                   std::map<std::string, TestImage> textures = {})
+                   std::map<std::string, TestImage> textures = {}, std::map<std::string, HdrImage> environments = {})
         : m_device(device), m_meshes(std::move(meshes)), m_materials(std::move(materials)), m_textures(std::move(textures)),
-          m_loads(std::move(loads)) {}
+          m_environments(std::move(environments)), m_loads(std::move(loads)) {}
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override {
         ++*m_loads;
         const auto found = m_meshes.find(path.filename().string());
@@ -97,12 +98,29 @@ public:
         if (!texture->valid() || !sampler->valid()) return {{}, {AssetError::device_unavailable, "texture upload failed"}};
         return {std::make_shared<const TextureAsset>(std::move(texture), std::move(sampler), image.role), {}};
     }
+    /// Cooks the image as an environment file would, with a 32-texel cube.
+    AssetLoadResult<EnvironmentAsset> load_environment(const std::filesystem::path& path) override {
+        ++*m_loads;
+        const auto found = m_environments.find(path.filename().string());
+        if (found == m_environments.end()) return {{}, {AssetError::invalid_data, "no inline environment " + path.string()}};
+        const auto cooked = cook_environment(found->second, {{}, 32, 128});
+        auto background = std::make_unique<Texture>(m_device, TextureDesc{cooked.background_width, cooked.background_height,
+            Format::rgba16_float, TextureUsage::sampled, "background", cooked.background_levels}, cooked.background);
+        auto specular = std::make_unique<Texture>(m_device, TextureDesc{cooked.specular_size, cooked.specular_size,
+            Format::rgba16_float, TextureUsage::sampled, "specular", cooked.specular_levels, TextureType::cube}, cooked.specular);
+        auto sampler = std::make_unique<Sampler>(m_device, SamplerDesc{Filter::linear, Filter::linear, AddressMode::repeat,
+            AddressMode::clamp_to_edge, "environment", MipFilter::linear});
+        if (!background->valid() || !specular->valid() || !sampler->valid()) return {{}, {AssetError::device_unavailable, "upload failed"}};
+        return {std::make_shared<const EnvironmentAsset>(std::move(background), std::move(specular), std::move(sampler),
+                                                         cooked.irradiance, cooked.milliseconds), {}};
+    }
 
 private:
     GraphicsDevice& m_device;
     std::map<std::string, Geometry> m_meshes;
     std::map<std::string, MaterialAsset> m_materials;
     std::map<std::string, TestImage> m_textures;
+    std::map<std::string, HdrImage> m_environments;
     std::shared_ptr<size_t> m_loads;
 };
 
@@ -110,7 +128,8 @@ private:
 class TestProject {
 public:
     TestProject(GraphicsDevice& device, std::map<std::string, Geometry> meshes,
-                std::map<std::string, MaterialAsset> materials = {}, std::map<std::string, TestImage> textures = {}) {
+                std::map<std::string, MaterialAsset> materials = {}, std::map<std::string, TestImage> textures = {},
+                std::map<std::string, HdrImage> environments = {}) {
         static std::atomic<int> counter{0};
         m_root = std::filesystem::temp_directory_path() /
             ("maya-render-" + std::to_string(::getpid()) + "-" + std::to_string(counter++));
@@ -118,8 +137,9 @@ public:
         for (const auto& [name, geometry] : meshes) touch(name);
         for (const auto& [name, material] : materials) touch(name);
         for (const auto& [name, texture] : textures) touch(name);
-        registry = std::make_unique<AssetRegistry>(m_root,
-            std::make_unique<InlineProvider>(device, std::move(meshes), std::move(materials), loads, std::move(textures)));
+        for (const auto& [name, environment] : environments) touch(name);
+        registry = std::make_unique<AssetRegistry>(m_root, std::make_unique<InlineProvider>(device, std::move(meshes),
+            std::move(materials), loads, std::move(textures), std::move(environments)));
     }
     ~TestProject() {
         registry.reset();

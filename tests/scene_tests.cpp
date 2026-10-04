@@ -735,3 +735,22 @@ TEST_CASE("Version 1 cameras load with the documented exposure and tone mapping,
     for (const auto& property : component_schema("maya.camera")->properties)
         CHECK(property.since == (property.name == "exposure" || property.name == "tone_mapping" ? 2u : 1u));
 }
+
+TEST_CASE("Environment components round-trip as readable scene text", "[scene][environments]") {
+    const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    auto document = SceneDocument{};
+    document.entities = {SceneEntity{EntityId{1, 1}, {}, {EnvironmentComponent{AssetRef<EnvironmentAsset>{{0x6d617961, 0x59}}, 2.5f, -1.0f, false}}}};
+    const auto text = encode(document, any);
+    CHECK(text.find("  component maya.environment 1\n    environment 6d617961 59\n    intensity 2.5\n    rotation -1\n"
+                    "    background false\n") != std::string::npos);
+    auto loaded = read_scene(std::string_view(text), any);
+    REQUIRE(loaded);
+    const auto& environment = std::get<EnvironmentComponent>(loaded.document.entities[0].components[0]);
+    CHECK(environment.environment.id == AssetId{0x6d617961, 0x59});
+    CHECK(environment.intensity == 2.5f);
+    CHECK(encode(loaded.document, any) == text);
+    const auto none = read_scene(std::string_view(replace(text, "environment 6d617961 59", "environment none")), any);
+    REQUIRE(none);
+    CHECK_FALSE(std::get<EnvironmentComponent>(none.document.entities[0].components[0]).environment.valid());
+    CHECK_FALSE(read_scene(std::string_view(replace(text, "environment 6d617961 59", "environment sky")), any));
+}

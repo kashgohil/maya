@@ -52,7 +52,7 @@ public:
 }
 
 TEST_CASE("Property schemas have stable identities, discoverable defaults, and typed access", "[properties]") {
-    REQUIRE(component_schemas().size() == 11);
+    REQUIRE(component_schemas().size() == 12);
     auto ids = std::set<ComponentId>{};
     auto names = std::set<std::string_view>{};
     for (const auto& schema : component_schemas()) {
@@ -422,4 +422,33 @@ TEST_CASE("Script components hold a script and named values for its properties",
     CHECK(edit(value, 1, AssetRef<ScriptAsset>{{9, 1}}, kinds));
     CHECK(edit(value, 1, AssetRef<ScriptAsset>{{9, 2}}, kinds).error == PropertyError::wrong_reference_type);
     CHECK(edit(value, 1, AssetRef<MeshAsset>{{9, 1}}, kinds).error == PropertyError::type_mismatch);
+}
+
+TEST_CASE("Environment components name an environment asset, its intensity and rotation, and whether the sky shows", "[properties][environments]") {
+    REQUIRE(static_cast<uint32_t>(ComponentId::environment) == 12); // #1035
+    const auto* schema = component_schema("maya.environment");
+    REQUIRE(schema);
+    REQUIRE(schema->id == ComponentId::environment);
+    REQUIRE(schema->version == 1);
+    REQUIRE(property_schema(ComponentId::environment, "environment")->type == PropertyType::environment_ref);
+    REQUIRE(property_schema(ComponentId::environment, "environment")->encoding == PropertyEncoding::persistent_asset_id);
+    REQUIRE(property_schema(ComponentId::environment, "rotation")->units == "rad");
+    auto value = ComponentValue{EnvironmentComponent{}};
+    REQUIRE(edit(value, 2, 0.0f));
+    REQUIRE(edit(value, 2, -1.0f).error == PropertyError::invalid_value);
+    REQUIRE(edit(value, 3, math::PI));
+    REQUIRE(edit(value, 3, 4.0f).error == PropertyError::invalid_value); // within half a turn either way
+    REQUIRE(edit(value, 4, false));
+    REQUIRE_FALSE(std::get<EnvironmentComponent>(value).background);
+    // The reference is checked against the catalog as an environment.
+    const auto environment = AssetId{0x656e, 1}, texture = AssetId{0x656e, 2};
+    const auto context = PropertyValidationContext{[&](AssetId id, ReferenceKind kind) {
+        if (id == environment) return kind == ReferenceKind::environment ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+        if (id == texture) return kind == ReferenceKind::texture ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+        return ReferenceStatus::missing;
+    }};
+    REQUIRE(edit(value, 1, AssetRef<EnvironmentAsset>{environment}, context));
+    REQUIRE(edit(value, 1, AssetRef<EnvironmentAsset>{texture}, context).error == PropertyError::wrong_reference_type);
+    REQUIRE(edit(value, 1, AssetRef<EnvironmentAsset>{{9, 9}}, context).error == PropertyError::missing_reference);
+    REQUIRE(edit(value, 1, AssetRef<TextureAsset>{environment}, context).error == PropertyError::type_mismatch);
 }

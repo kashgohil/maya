@@ -2,6 +2,7 @@
 // A CPU reference of renderer.metal's glTF metallic-roughness shading (docs/renderer.md#materials), for
 // checking what the GPU writes to the HDR scene target. Keep it in step with the shader.
 
+#include "maya/assets/environment_cook.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -60,24 +61,27 @@ inline Rgb reflected(const Surface& s, const Direction& N, const Direction& V, c
     return out;
 }
 
-/// What a uniform environment of radiance 1 (the ambient light) sends toward V, before occlusion.
-inline Rgb environment(const Surface& s, double NdotV) {
+/// The specular's share of light from the surroundings: F0 x scale + bias from the split-sum table
+/// (environment_cook.hpp), per channel.
+inline Rgb specular_share(const Surface& s, double NdotV) {
     const auto roughness = std::clamp(s.roughness, min_roughness, 1.0);
     const auto metallic = std::clamp(s.metallic, 0.0, 1.0);
-    NdotV = std::max(NdotV, 1e-4);
-    const double c0[4] = {-1.0, -0.0275, -0.572, 0.022}, c1[4] = {1.0, 0.0425, 1.04, -0.04};
-    double r[4];
-    for (int i = 0; i < 4; ++i) r[i] = roughness * c0[i] + c1[i];
-    const auto a004 = std::min(r[0] * r[0], std::exp2(-9.28 * NdotV)) * r[0] + r[1];
-    const auto a = -1.04 * a004 + r[2], b = 1.04 * a004 + r[3];
+    const auto [scale, bias] = brdf_scale_bias(std::max(NdotV, 1e-4), roughness);
     auto out = Rgb{};
-    for (int c = 0; c < 3; ++c) {
-        const auto f0 = 0.04 + (s.base[c] - 0.04) * metallic;
-        const auto specular = f0 * a + b;
-        out[c] = s.base[c] * (1.0 - metallic) * (1.0 - specular) + specular;
-    }
+    for (int c = 0; c < 3; ++c) out[c] = (0.04 + (s.base[c] - 0.04) * metallic) * scale + bias;
     return out;
 }
+/// What light from the surroundings sends toward V, before occlusion: `diffuse` light (irradiance / pi)
+/// to the diffuse share, and `specular` light (the prefiltered radiance) to the specular's.
+inline Rgb surroundings(const Surface& s, double NdotV, const Rgb& diffuse, const Rgb& specular) {
+    const auto share = specular_share(s, NdotV);
+    const auto metallic = std::clamp(s.metallic, 0.0, 1.0);
+    auto out = Rgb{};
+    for (int c = 0; c < 3; ++c) out[c] = s.base[c] * (1.0 - metallic) * (1.0 - share[c]) * diffuse[c] + share[c] * specular[c];
+    return out;
+}
+/// What a uniform environment of radiance 1 (the ambient light) sends toward V, before occlusion.
+inline Rgb environment(const Surface& s, double NdotV) { return surroundings(s, NdotV, {1, 1, 1}, {1, 1, 1}); }
 
 /// The fraction of light arriving from all directions over the hemisphere that leaves toward V (the
 /// directional albedo), by midpoint integration in `steps` x 4 `steps` cells. A furnace that conserves

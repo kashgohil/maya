@@ -277,7 +277,7 @@ TEST_CASE("The V1 overview through exposure, both tone mappers, and the exposure
                             images);
 }
 
-TEST_CASE("The material test scene matches its references: spheres across metallic and roughness, and textured surfaces", "[visual][gpu]") {
+TEST_CASE("The material test scene matches its references under two environments: spheres across metallic and roughness, and textured surfaces", "[visual][gpu]") {
     const auto project = open_project(sample_project());
     REQUIRE(project);
     Gpu gpu;
@@ -307,6 +307,17 @@ TEST_CASE("The material test scene matches its references: spheres across metall
     };
     close("textured", {0.0f, 0.6f, 7.0f}, {0.0f, -0.5f, 0.0f});
     close("textured-behind", {-2.0f, 0.8f, -6.0f}, {0.6f, -0.5f, 0.0f});
+    // The same scene under the second environment, the workshop indoors (#1035).
+    const auto environment_entity = authored.world->find(EntityId{0x6d617961, 0x520});
+    REQUIRE(environment_entity);
+    auto workshop = EnvironmentComponent{};
+    workshop.environment = {AssetId{0x6d617961, 0x58}};
+    auto commands = authored.world->commands();
+    commands.replace(*environment_entity, workshop);
+    REQUIRE(authored.world->commit(commands));
+    view->tone_mapping = ToneMapping::agx;
+    images.emplace_back("workshop", gpu.render(*authored.world, *assets.registry, *view));
+    close("workshop-textured", {0.0f, 0.6f, 7.0f}, {0.0f, -0.5f, 0.0f});
     compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/materials",
                             fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs", images);
 }

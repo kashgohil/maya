@@ -1,6 +1,7 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/renderer/shader_constants.hpp"
 #include "maya/rhi/null_device.hpp"
+#include "support/hdr.hpp"
 #include "support/render_scene.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -52,6 +53,8 @@ public:
     std::vector<RenderPassDesc> passes;
     size_t pipelines_created = 0;
     size_t material_binds = 0; // material constants bound (buffer 3)
+    std::vector<std::string> sequence; // the pipeline of every draw, in order
+    std::unordered_map<uint32_t, uint32_t> bound_textures; // slot to native texture, as last bound
 
 protected:
     RhiDiagnostic backend_create_buffer(uint32_t slot, const BufferDesc& desc, const void* data) override {
@@ -74,6 +77,7 @@ protected:
     }
     void backend_set_texture(uint32_t index, uint32_t slot) override {
         m_texture = slot;
+        bound_textures[index] = slot;
         if (index < material_slots) m_textures[index] = slot;
     }
     RhiDiagnostic backend_create_pipeline(uint32_t slot, const PipelineDesc& desc) override {
@@ -86,6 +90,8 @@ protected:
         NullGraphicsDevice::backend_set_pipeline(slot);
     }
     void backend_draw(uint32_t vertices, uint32_t, uint32_t instances) override {
+        sequence.push_back(m_pipeline);
+        if (m_pipeline == "sky") return;
         if (m_pipeline == "tone map") {
             tone_maps.push_back({read<ToneMapConstants>(0), m_texture});
             return;
@@ -102,6 +108,7 @@ protected:
         debug.push_back({m_pipeline, constants, vertices, instances, std::move(data)});
     }
     void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t) override {
+        sequence.push_back(m_pipeline);
         draws.push_back({read<DrawConstants>(1), read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot,
                          m_pipeline, m_textures});
     }
@@ -338,7 +345,10 @@ TEST_CASE("Directional lights come from entity rotation, color, and intensity", 
     (void)created;
 
     // Light and ambient values reach the per-view constants.
-    const auto one = RenderSnapshot{snapshot.world, {}, {}, {}, {snapshot.lights[0]}, snapshot.ambient, {}, {}, {}};
+    auto one = RenderSnapshot{};
+    one.world = snapshot.world;
+    one.lights = {snapshot.lights[0]};
+    one.ambient = snapshot.ambient;
     auto renderer = Renderer(device, "test source");
     auto target = RenderTarget(device);
     REQUIRE_FALSE(target.resize(4, 4));
@@ -565,7 +575,7 @@ TEST_CASE("Renderer validates views and closes its pass when upload memory runs 
 
     const auto error = renderer.render(snapshot, view_of(8, 8), target);
     CHECK(error.code == RhiError::out_of_memory);
-    CHECK(device.draws.size() == 2); // 256-byte slices: view constants, the material's, then two draws
+    CHECK(device.draws.size() == 1); // view constants in two 256-byte slices, the material's in one, then one draw
     CHECK_FALSE(device.end_frame()); // the pass was closed, so the frame ends cleanly
     CHECK(device.stats().transient_failures == 1);
 }
@@ -620,7 +630,7 @@ TEST_CASE("Renderer recreates its pipelines in a new device session", "[renderer
     REQUIRE(device.initialize(nullptr));
     frame();
     CHECK(device.stats().pipelines == pipelines);
-    CHECK(device.stats().samplers == 2); // presenting's, and the texture placeholder's
+    CHECK(device.stats().samplers == 3); // presenting's, the texture placeholder's, and the split-sum table's
 }
 
 TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw each kind twice when there are", "[renderer][debug]") {
@@ -950,4 +960,116 @@ TEST_CASE("Material constants and maps are uploaded and bound only when they cha
     }
     CHECK(device.material_binds == 1); // a and b have the same factors: only their maps are rebound
     CHECK(device.draws[3].material.base_color.x == device.draws[0].material.base_color.x);
+}
+
+TEST_CASE("Extraction takes the scene's environment, reports a second one or a missing one, and keeps the ambient otherwise", "[renderer][environments]") {
+    CapturingDevice device;
+    TestProject project(device, {}, {}, {}, {{"sky.environment", uniform_environment(1.0f, 32)}});
+    const auto sky = project.add<EnvironmentAsset>(1, "sky.environment");
+    const auto gone = project.add<EnvironmentAsset>(2, "gone.environment"); // cataloged, no file
+    const auto extract = [&](std::vector<std::pair<EntityId, EnvironmentComponent>> environments) {
+        World world;
+        build_world(world, [&](WorldCommands& commands) {
+            for (const auto& [id, environment] : environments) commands.add(commands.create(id), environment);
+        });
+        return extract_render_snapshot(world, *project.registry, {math::Vec3{0.25f}});
+    };
+    // None, or one with no asset: the ambient light, and nothing to say.
+    CHECK_FALSE(extract({}).environment);
+    const auto unassigned = extract({{EntityId{1, 1}, EnvironmentComponent{}}});
+    CHECK_FALSE(unassigned.environment);
+    CHECK(unassigned.diagnostics.empty());
+    CHECK(unassigned.ambient.x == 0.25f);
+    // One: leased with its settings.
+    const auto one = extract({{EntityId{1, 1}, EnvironmentComponent{sky, 3.0f, 0.5f, false}}});
+    REQUIRE(one.environment);
+    CHECK(one.environment->entity == EntityId{1, 1});
+    CHECK(one.environment->asset.reference() == sky);
+    CHECK(one.environment->intensity == 3.0f);
+    CHECK(one.environment->rotation == 0.5f);
+    CHECK_FALSE(one.environment->background);
+    CHECK(one.diagnostics.empty());
+    // Two: the lowest EntityId's, and the other reported.
+    const auto two = extract({{EntityId{1, 9}, EnvironmentComponent{gone}}, {EntityId{1, 2}, EnvironmentComponent{sky}}});
+    REQUIRE(two.environment);
+    CHECK(two.environment->entity == EntityId{1, 2});
+    REQUIRE(two.diagnostics.size() == 1);
+    CHECK(two.diagnostics[0].code == RenderIssue::environment_limit);
+    CHECK(two.diagnostics[0].entity == EntityId{1, 9});
+    // Missing: the ambient light, reported with the asset.
+    const auto missing = extract({{EntityId{1, 1}, EnvironmentComponent{gone}}});
+    CHECK_FALSE(missing.environment);
+    REQUIRE(missing.diagnostics.size() == 1);
+    CHECK(missing.diagnostics[0].code == RenderIssue::missing_environment);
+    CHECK(missing.diagnostics[0].asset == gone.id);
+}
+
+TEST_CASE("The environment reaches the view constants and its slots, and the sky draws after opaque surfaces and before blended ones", "[renderer][environments]") {
+    CapturingDevice device;
+    auto glass = MaterialAsset{{1, 1, 1, 0.5f}};
+    glass.alpha_mode = AlphaMode::blend;
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {{"solid.material", red}, {"glass.material", glass}}, {},
+                        {{"sky.environment", environment_image(64, [](const math::Vec3& d) { return math::Vec3{1.0f + d.y}; })}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto solid = project.add<MaterialAsset>(2, "solid.material"), see_through = project.add<MaterialAsset>(3, "glass.material");
+    const auto sky = project.add<EnvironmentAsset>(4, "sky.environment");
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        for (const auto material : {see_through, solid}) {
+            auto entity = commands.create();
+            commands.add(entity, TransformComponent{});
+            commands.add(entity, MeshRendererComponent{cube, material, true});
+        }
+        commands.add(commands.create(), EnvironmentComponent{sky, 2.0f, math::PI / 2, true});
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry);
+    REQUIRE(snapshot.environment);
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(8, 8));
+    const auto render = [&](const RenderSnapshot& drawn) {
+        device.draws.clear();
+        device.sequence.clear();
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(renderer.render(drawn, view_of(8, 8), target));
+        REQUIRE_FALSE(device.end_frame());
+        device.finish_frames();
+    };
+    render(snapshot);
+    CHECK(device.sequence == std::vector<std::string>{"lit mesh", "sky", "blended mesh", "tone map"});
+    const auto& view = device.draws.front().view;
+    CHECK(view.environment.x == 2.0f);
+    CHECK(std::abs(view.environment.y) < 1e-6f); // cos of a quarter turn
+    CHECK(view.environment.z == 1.0f);
+    const auto& asset = snapshot.environment->asset.value();
+    CHECK(view.environment.w == float(asset.specular_levels() - 1));
+    CHECK(view.environment_flags[0] == 1);
+    CHECK(view.environment_flags[1] == 1);
+    for (size_t i = 0; i < 9; ++i) CHECK(view.irradiance[i].x == asset.irradiance()[i].x);
+    // The inverse view-projection undoes the view-projection.
+    const auto round_trip = view.inverse_view_projection * view.view_projection;
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) CHECK(std::abs(round_trip.at(r, c) - (r == c ? 1.0f : 0.0f)) < 1e-4f);
+    CHECK(device.bound_textures.at(5) == asset.specular().handle().slot);
+    CHECK(device.bound_textures.at(6) == asset.background().handle().slot);
+    const auto table = device.bound_textures.at(7);
+    // Without the sky the environment still lights the scene; without an environment, an empty cube
+    // stands in and the flag is off.
+    auto no_sky = snapshot;
+    no_sky.environment->background = false;
+    render(no_sky);
+    CHECK(device.sequence == std::vector<std::string>{"lit mesh", "blended mesh", "tone map"});
+    CHECK(device.draws.front().view.environment_flags[0] == 1);
+    CHECK(device.draws.front().view.environment_flags[1] == 0);
+    auto none = snapshot;
+    none.environment.reset();
+    render(none);
+    CHECK(device.draws.front().view.environment_flags[0] == 0);
+    CHECK(device.bound_textures.at(5) != asset.specular().handle().slot);
+    CHECK(device.bound_textures.at(7) == table); // one table for every frame
+    // A sky with nothing else to draw.
+    auto empty = snapshot;
+    empty.instances.clear();
+    render(empty);
+    CHECK(device.sequence == std::vector<std::string>{"sky", "tone map"});
 }

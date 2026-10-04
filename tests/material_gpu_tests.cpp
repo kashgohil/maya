@@ -6,6 +6,7 @@
 #include "maya/core/tangents.hpp"
 #include "maya/renderer/renderer.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
+#include "support/hdr.hpp"
 #include "support/render_scene.hpp"
 #include "support/shading.hpp"
 #include <cmath>
@@ -69,7 +70,7 @@ using Hdr = std::vector<std::array<float, 4>>;
 /// A headless Metal device and renderer, and a project with the quads, eight material slots whose values
 /// tests publish, and textures.
 struct MaterialFixture {
-    explicit MaterialFixture(std::map<std::string, TestImage> textures = {}) {
+    explicit MaterialFixture(std::map<std::string, TestImage> textures = {}, std::map<std::string, HdrImage> environments = {}) {
         REQUIRE(device.initialize(nullptr));
         auto source = FileSystem::read_text("resources/shaders/metal/renderer.metal");
         REQUIRE_FALSE(source.empty());
@@ -78,13 +79,21 @@ struct MaterialFixture {
         for (int i = 0; i < 8; ++i) materials.emplace("m" + std::to_string(i) + ".material", MaterialAsset{});
         auto names = std::vector<std::string>{};
         for (const auto& [name, image] : textures) names.push_back(name);
+        auto environment_names = std::vector<std::string>{};
+        for (const auto& [name, image] : environments) environment_names.push_back(name);
         project = std::make_unique<TestProject>(device, std::map<std::string, Geometry>{{"quad.mesh", textured_quad()},
                                                                                         {"mirrored.mesh", textured_quad(true)}},
-                                                std::move(materials), std::move(textures));
+                                                std::move(materials), std::move(textures), std::move(environments));
         quad = project->add<MeshAsset>(1, "quad.mesh");
         mirrored = project->add<MeshAsset>(2, "mirrored.mesh");
         for (uint64_t i = 0; i < 8; ++i) slots.push_back(project->add<MaterialAsset>(10 + i, "m" + std::to_string(i) + ".material"));
         for (uint64_t i = 0; i < names.size(); ++i) texture_refs.emplace(names[i], project->add<TextureAsset>(100 + i, names[i]));
+        for (uint64_t i = 0; i < environment_names.size(); ++i)
+            environment_refs.emplace(environment_names[i], project->add<EnvironmentAsset>(300 + i, environment_names[i]));
+    }
+    /// Lights later renders with the named environment.
+    void use(const std::string& name, float intensity = 1.0f, float rotation = 0.0f, bool background = false) {
+        environment = EnvironmentComponent{environment_refs.at(name), intensity, rotation, background};
     }
     ~MaterialFixture() {
         target.reset();
@@ -112,6 +121,7 @@ struct MaterialFixture {
                 commands.add(entity, item.transform);
                 commands.add(entity, MeshRendererComponent{item.mirrored ? mirrored : quad, slots[item.material], true});
             }
+            if (environment) commands.add(commands.create(), *environment);
         });
         const auto snapshot = extract_render_snapshot(world, *project->registry, {ambient});
         if (diagnostics) *diagnostics = snapshot.diagnostics;
@@ -149,6 +159,8 @@ struct MaterialFixture {
     AssetRef<MeshAsset> quad, mirrored;
     std::vector<AssetRef<MaterialAsset>> slots;
     std::map<std::string, AssetRef<TextureAsset>> texture_refs;
+    std::map<std::string, AssetRef<EnvironmentAsset>> environment_refs;
+    std::optional<EnvironmentComponent> environment;
 };
 
 std::array<float, 4> at(const Hdr& image, uint32_t x = size / 2, uint32_t y = size / 2) { return image[size_t(y) * size + x]; }
@@ -439,4 +451,141 @@ TEST_CASE("Metal draws the placeholder for missing maps and maps of the wrong ro
     INFO("magenta " << magenta << ", black " << black);
     CHECK(magenta > 3);
     CHECK(black > 3);
+}
+
+// Image-based lighting (#1035, docs/renderer.md#environments) ------------------------------------------
+
+TEST_CASE("Metal lights surfaces from a uniform environment as the furnace expects, rough and smooth, metal and not", "[rhi][environments]") {
+    MaterialFixture fixture({}, {{"uniform.environment", uniform_environment(0.5f)}});
+    fixture.use("uniform.environment");
+    for (const auto roughness : {0.0f, 0.3f, 0.7f, 1.0f})
+        for (const auto yaw : {0.0f, 1.0f}) {
+            INFO("roughness " << roughness << ", turned " << yaw);
+            fixture.set(0, {{1, 1, 1, 1}, 0.0f, roughness});
+            fixture.set(1, {{1, 1, 1, 1}, 1.0f, roughness});
+            fixture.set(2, {{0.8f, 0.2f, 0.1f, 1}, 0.0f, roughness});
+            const auto NdotV = std::cos(double(yaw));
+            // A white dielectric shows the light exactly: what the specular takes, the diffuse does not.
+            CHECK(near(at(fixture.render({{0, turned(yaw)}}, {})), {0.5, 0.5, 0.5}));
+            const auto metal = at(fixture.render({{1, turned(yaw)}}, {}));
+            const auto expected = times(environment({{1, 1, 1}, 1.0, roughness}, NdotV), 0.5);
+            SHOWN(metal, expected);
+            CHECK(near(metal, expected));
+            CHECK(metal[0] <= 0.5f * 1.001f);
+            const auto red = at(fixture.render({{2, turned(yaw)}}, {}));
+            const auto red_expected = times(environment({{0.8, 0.2, 0.1}, 0.0, roughness}, NdotV), 0.5);
+            SHOWN(red, red_expected);
+            CHECK(near(red, red_expected));
+        }
+    // The environment replaces the ambient light rather than adding to it, and its intensity scales it.
+    fixture.set(0, {{1, 1, 1, 1}, 0.0f, 0.5f});
+    CHECK(near(at(fixture.render({{0}}, {}, math::Vec3{3.0f})), {0.5, 0.5, 0.5}));
+    fixture.use("uniform.environment", 4.0f);
+    CHECK(near(at(fixture.render({{0}}, {})), {2.0, 2.0, 2.0}));
+}
+
+TEST_CASE("Metal takes diffuse light from the environment's irradiance and turns it with the rotation", "[rhi][environments]") {
+    // Light 1 + d.x: bright toward +X. On a surface facing n, irradiance / pi is 1 + 2/3 n.x.
+    MaterialFixture fixture({}, {{"side.environment", environment_image(256, [](const math::Vec3& d) { return math::Vec3{1.0f + d.x}; })}});
+    fixture.set(0, {{1, 1, 1, 1}, 0.0f, 1.0f});
+    const auto surface = Surface{{1, 1, 1}, 0, 1};
+    // Facing +Z, the quad sees the light's even part: 1 for diffuse and for the specular.
+    fixture.use("side.environment");
+    const auto facing = at(fixture.render({{0}}, {}));
+    const auto even = surroundings(surface, 1.0, {1, 1, 1}, {1, 1, 1});
+    SHOWN(facing, even);
+    CHECK(near(facing, even));
+    // A quarter turn counter-clockwise (seen from above) brings the environment's +X to -Z, so the quad
+    // facing +Z sees its dim side (1 - 2/3); a quarter turn back, its bright side (1 + 2/3). The specular,
+    // at roughness 1, moves with it by up to the same amount.
+    fixture.use("side.environment", 1.0f, math::PI / 2);
+    const auto dim = at(fixture.render({{0}}, {}));
+    fixture.use("side.environment", 1.0f, -math::PI / 2);
+    const auto bright = at(fixture.render({{0}}, {}));
+    const auto share = specular_share(surface, 1.0)[0];
+    const auto diffuse_swing = (1.0 - share) * 4.0 / 3.0;
+    INFO("dim " << dim[0] << ", bright " << bright[0] << ", diffuse swing " << diffuse_swing << ", specular share " << share);
+    CHECK(bright[0] - dim[0] >= diffuse_swing * 0.98);
+    CHECK(bright[0] - dim[0] <= diffuse_swing + share * 4.0 / 3.0 + 0.01);
+    CHECK(std::abs((bright[0] + dim[0]) / 2 - facing[0]) < 0.01f); // the even part is unchanged
+}
+
+TEST_CASE("Metal reflects the environment in smooth metal along the mirror direction", "[rhi][environments]") {
+    // Red grows toward +Z, green toward +Y; the mirror direction of a quad seen head-on is +Z.
+    const auto radiance = [](const math::Vec3& d) { return math::Vec3{1.0f + d.z, 1.0f + d.y, 0.5f}; };
+    MaterialFixture fixture({}, {{"axes.environment", environment_image(512, radiance)}});
+    fixture.use("axes.environment");
+    fixture.set(0, {{1, 1, 1, 1}, 1.0f, 0.0f});
+    const auto shown = at(fixture.render({{0}}, {}));
+    const auto share = specular_share({{1, 1, 1}, 1, 0}, 1.0)[0];
+    const auto expected = times(Rgb{2.0, 1.0, 0.5}, share);
+    SHOWN(shown, expected);
+    CHECK(near(shown, expected, 0.02));
+    // Tilted up by 0.3 rad, the normal rises 0.3 rad and the mirror direction twice that.
+    const auto tilted = at(fixture.render({{0, {{}, math::Quat::from_axis_angle({1, 0, 0}, -0.3f), {1.0f}}}}, {}));
+    const auto NdotV = std::cos(0.3);
+    const auto R = Direction{0.0, 2.0 * NdotV * std::sin(0.3), 2.0 * NdotV * NdotV - 1.0};
+    const auto tilted_expected = times(Rgb{1.0 + R[2], 1.0 + R[1], 0.5}, specular_share({{1, 1, 1}, 1, 0}, NdotV)[0]);
+    SHOWN(tilted, tilted_expected);
+    CHECK(near(tilted, tilted_expected, 0.02));
+    // Occlusion darkens light from the surroundings, the reflection included.
+    MaterialFixture occluded({{"ao.texture", solid_image({128, 255, 255, 255}, TextureRole::data)}},
+                             {{"axes.environment", environment_image(512, radiance)}});
+    occluded.use("axes.environment");
+    auto material = MaterialAsset{{1, 1, 1, 1}, 1.0f, 0.0f};
+    material.occlusion_texture = occluded.texture("ao.texture");
+    occluded.set(0, material);
+    const auto dark = at(occluded.render({{0}}, {}));
+    CHECK(near(dark, times(expected, 128 / 255.0), 0.02));
+}
+
+TEST_CASE("Metal draws the environment as the sky where no surface is, behind blended ones, and not when turned off", "[rhi][environments]") {
+    const auto radiance = [](const math::Vec3& d) { return math::Vec3{1.0f + d.x, 1.0f + d.y, 1.0f - d.z}; };
+    MaterialFixture fixture({}, {{"axes.environment", environment_image(512, radiance)}});
+    // The view looks along -Z: the sky there is (1, 1, 2), times the intensity.
+    fixture.use("axes.environment", 2.0f, 0.0f, true);
+    const auto sky = at(fixture.render({}, {}));
+    SHOWN(sky, (Rgb{2.0, 2.0, 4.0}));
+    CHECK(near(sky, {2.0, 2.0, 4.0}, 0.02));
+    // Turned a quarter counter-clockwise, the environment's +X lies ahead: (2, 1, 1).
+    fixture.use("axes.environment", 1.0f, math::PI / 2, true);
+    CHECK(near(at(fixture.render({}, {})), {2.0, 1.0, 1.0}, 0.02));
+    // A blended surface shows the sky through it.
+    auto glass = MaterialAsset{{1, 1, 1, 0.25f}, 0.0f, 1.0f};
+    glass.alpha_mode = AlphaMode::blend;
+    fixture.set(0, glass);
+    fixture.use("axes.environment", 1.0f, 0.0f, true);
+    const auto through = at(fixture.render({{0}}, {}));
+    CHECK(through[2] > 1.4f); // three quarters of the sky's blue 2, over a quarter of the surface's light
+    // Without the sky, the clear color shows.
+    fixture.use("axes.environment", 1.0f, 0.0f, false);
+    CHECK(near(at(fixture.render({}, {})), {clear[0], clear[1], clear[2]}));
+}
+
+TEST_CASE("Metal falls back to the ambient light when the environment is missing, and reports it", "[rhi][environments]") {
+    MaterialFixture fixture;
+    const auto gone = fixture.project->add<EnvironmentAsset>(400, "gone.environment"); // cataloged, no file
+    fixture.environment = EnvironmentComponent{gone, 1.0f, 0.0f, true};
+    fixture.set(0, {{1, 1, 1, 1}, 0.0f, 1.0f});
+    auto diagnostics = std::vector<RenderDiagnostic>{};
+    const auto image = fixture.render({{0}}, {}, math::Vec3{0.3f}, &diagnostics);
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].code == RenderIssue::missing_environment);
+    CHECK(diagnostics[0].asset == gone.id);
+    CHECK(near(at(image), {0.3, 0.3, 0.3})); // the uniform ambient light, as without an environment
+    CHECK(near(at(image, 1, 1), {clear[0], clear[1], clear[2]})); // and no sky
+}
+
+TEST_CASE("Metal reads the split-sum table at its texel centres, between them as well as at its ends", "[rhi][environments]") {
+    MaterialFixture fixture({}, {{"uniform.environment", uniform_environment(1.0f)}});
+    fixture.use("uniform.environment");
+    // A white metal in a uniform environment shows scale + bias exactly; where it changes fastest with
+    // roughness, half a texel's offset in the lookup would move it by about 1%.
+    for (const auto roughness : {0.55f, 0.6f, 0.65f, 0.7f, 1.0f}) {
+        fixture.set(0, {{1, 1, 1, 1}, 1.0f, roughness});
+        const auto shown = at(fixture.render({{0}}, {}));
+        const auto [scale, bias] = brdf_scale_bias(1.0, roughness, 4096);
+        INFO("roughness " << roughness << ": shown " << shown[0] << ", expected " << scale + bias);
+        CHECK(std::abs(shown[0] - (scale + bias)) < 0.004 * (scale + bias));
+    }
 }
