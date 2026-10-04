@@ -216,3 +216,80 @@ TEST_CASE("Textures dragged from the Assets panel fill a material's map slots, a
     CHECK_FALSE(harness.shell.layout().field("material.base_color_texture"));
     CHECK(harness.shell.layout().control("material.fold"));
 }
+
+namespace {
+/// Rewrites a copied project's file and moves its time on, so a rewrite within the same second is seen.
+void rewrite(const ProjectCopy& copy, const std::string& path, const std::string& text) {
+    static auto ahead = 0;
+    copy.write(path, text);
+    fs::last_write_time(copy.content / path, fs::file_time_type::clock::now() + std::chrono::seconds(++ahead));
+}
+/// How many times the asset log said `text`: repeated messages are merged into one entry with a count.
+size_t logged_count(Harness& harness, std::string_view text) {
+    auto total = size_t{0};
+    for (const auto& entry : harness.shell.diagnostics().entries())
+        if (entry.source == DiagnosticSource::asset && entry.message.find(text) != std::string::npos) total += entry.count;
+    return total;
+}
+} // namespace
+
+TEST_CASE("A material file changed outside the editor reloads by itself, keeping unsaved edits and the last good version", "[editor][materials]") {
+    const auto copy = ProjectCopy();
+    Harness harness(false);
+    auto& scene = red_cube_material(harness, copy);
+    harness.shell.check_material_files(); // the loaded material's file, as it was loaded
+
+    // Changed outside the editor: the registry serves the file's value, and the editor follows it.
+    rewrite(copy, "materials/red.material", "maya-material 2\nbase_color 0 1 0\nroughness 0.2\n");
+    harness.shell.check_material_files();
+    const auto green = on_disk(copy, "materials/red.material");
+    CHECK(served(harness, red) == green);
+    CHECK(*scene.material(red) == green);
+    CHECK_FALSE(scene.dirty());
+    CHECK(logged_count(harness, "Reloaded materials/red.material") == 1);
+    harness.shell.check_material_files(); // unchanged: nothing more
+    CHECK(logged_count(harness, "Reloaded materials/red.material") == 1);
+
+    // The editor checks by itself, a few times a second.
+    rewrite(copy, "materials/red.material", "maya-material 2\nbase_color 0 0 1\n");
+    harness.frames(20);
+    CHECK(served(harness, red).base_color.z == 1.0f);
+
+    // A file caught half-written fails once, keeps the last good version, and loads when it is whole.
+    const auto blue = served(harness, red);
+    rewrite(copy, "materials/red.material", "maya-material 2\nbase_col");
+    harness.shell.check_material_files();
+    CHECK(served(harness, red) == blue);
+    CHECK(logged_count(harness, "the last version stays in use") == 1);
+    rewrite(copy, "materials/red.material", "maya-material 2\nbase_col"); // touched, still broken
+    harness.shell.check_material_files();
+    CHECK(logged_count(harness, "the last version stays in use") == 1); // the same problem, reported once
+    rewrite(copy, "materials/red.material", "maya-material 2\nbase_color 1 1 0\n");
+    harness.shell.check_material_files();
+    CHECK(served(harness, red).base_color.y == 1.0f);
+    CHECK(logged_count(harness, "which loads again") == 1);
+
+    // An unsaved edit outlasts an outside change, and stays unsaved against the file's new value.
+    auto edited = *scene.material(red);
+    edited.metallic = 0.75f;
+    REQUIRE(scene.set_material(red, edited, "Edit red"));
+    rewrite(copy, "materials/red.material", "maya-material 2\nbase_color 1 0 1\n");
+    harness.shell.check_material_files();
+    CHECK(served(harness, red) == edited);
+    CHECK(scene.dirty_materials() == std::vector{red});
+
+    // The editor's own save is not an outside change: no reload follows it.
+    const auto reloads = logged_count(harness, "Reloaded materials/red.material");
+    chord(harness, {KeyCode::LeftSuper}, KeyCode::S);
+    CHECK_FALSE(scene.dirty());
+    harness.shell.check_material_files();
+    harness.frames(20);
+    CHECK(logged_count(harness, "Reloaded materials/red.material") == reloads);
+    CHECK(served(harness, red) == edited);
+
+    // A deleted file keeps the last version in use, and is reported.
+    fs::remove(copy.content / "materials/red.material");
+    harness.shell.check_material_files();
+    CHECK(served(harness, red) == edited);
+    CHECK(logged_count(harness, "the last version stays in use") == 2);
+}
