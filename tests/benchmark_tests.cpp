@@ -2,9 +2,12 @@
 #include "maya/core/file_system.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/rhi/null_device.hpp"
+#include "support/gltf.hpp"
 #include "support/timing_device.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <fstream>
 #include <sstream>
+#include <unistd.h>
 
 using namespace maya;
 using namespace maya::benchmark;
@@ -344,6 +347,53 @@ TEST_CASE("The physics workload runs headless, counts every part, and ends every
     }
     CHECK(has(to_text(result), "every run ended in the same state"));
     CHECK(device.stats().submitted_frames == 0); // headless: nothing rendered
+}
+
+TEST_CASE("The import workload imports each model, loads it cold and warm, and cooks the same bytes every run", "[benchmark]") {
+    // The R1 manifest names its content and models.
+    const auto r1 = load_manifest(fs::path(MAYA_SOURCE_DIR) / "benchmarks/r1_import.benchmark");
+    INFO(r1.error);
+    REQUIRE(r1);
+    CHECK(r1.manifest.workload == Workload::import);
+    CHECK(r1.manifest.models.size() == 3);
+    CHECK(r1.manifest.content == (fs::path(MAYA_SOURCE_DIR) / "build/render-samples").lexically_normal());
+    CHECK(parse("maya-benchmark 1\nname \"t\"\nworkload import\nmodels \"a.glb\"\n").error == "the import workload needs 'content'");
+
+    const auto content = fs::temp_directory_path() / ("maya-benchmark-content-" + std::to_string(::getpid()));
+    fs::create_directories(content / "textures");
+    std::ofstream(content / "props.gltf", std::ios::binary) << test::props_gltf();
+    std::ofstream(content / "textures/normal.png", std::ios::binary) << test::flat_normal_png();
+    auto manifest = Manifest{};
+    manifest.name = "import-test";
+    manifest.workload = Workload::import;
+    manifest.content = content;
+    manifest.models = {"props.gltf"};
+    manifest.runs = 2;
+    auto device = Device{};
+    const auto result = run(manifest, device, "renderer");
+    fs::remove_all(content);
+    INFO(result.failure);
+    REQUIRE(result.failure.empty());
+    REQUIRE(result.imports.size() == 2);
+    CHECK(result.deterministic == true);
+    for (const auto& sample : result.imports) {
+        CHECK(sample.model == "props.gltf");
+        CHECK(sample.meshes == 3);
+        CHECK(sample.textures == 2);
+        CHECK(sample.materials == 3);
+        CHECK(sample.triangles == 6);
+        CHECK(sample.warm_hits == 5); // every mesh and texture; materials are not cooked
+        CHECK(sample.warm_misses == 0);
+        CHECK(sample.cold_ms > 0.0);
+        CHECK(sample.cache_bytes > 0);
+    }
+    const auto json = to_json(result);
+    for (const auto* key : {"\"imports\":[", "\"cold_load_ms\":", "\"warm_load_ms\":", "\"cache_digest\":\"", "\"deterministic\":true"}) {
+        INFO(key);
+        CHECK(has(json, key));
+    }
+    CHECK(has(to_text(result), "props.gltf: import "));
+    CHECK(has(to_text(result), "every run cooked the same bytes"));
 }
 
 TEST_CASE("Per-pass GPU times are summed by label, checked against their frame, and left out of the matched run", "[benchmark]") {

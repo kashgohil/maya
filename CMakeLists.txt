@@ -479,14 +479,23 @@ if(BUILD_TESTING)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_library_headers.cmake)
     set_tests_properties(maya_library_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
 
-    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp tests/material_tests.cpp tests/environment_tests.cpp)
+    # Khronos sample content from tools/fetch_render_samples.sh: the #1030 prototypes need it, and the
+    # glTF tests read it when it is present.
+    set(MAYA_RENDER_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/render-samples" CACHE PATH
+        "Khronos sample content, from tools/fetch_render_samples.sh")
+    add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp tests/material_tests.cpp
+        tests/environment_tests.cpp tests/gltf_tests.cpp tests/import_tests.cpp tests/cook_cache_tests.cpp)
     # The system zlib writes test PNGs (tests/support/png.hpp).
-    target_link_libraries(maya_asset_tests PRIVATE MayaAssets Catch2::Catch2WithMain z)
+    target_link_libraries(maya_asset_tests PRIVATE MayaImport Catch2::Catch2WithMain z)
     target_include_directories(maya_asset_tests PRIVATE tests)
-    target_compile_definitions(maya_asset_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(maya_asset_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}")
     maya_target_options(maya_asset_tests)
-    add_test(NAME maya_assets COMMAND maya_asset_tests)
+    add_test(NAME maya_assets COMMAND maya_asset_tests "~[samples]")
     set_tests_properties(maya_assets PROPERTIES LABELS "cpu;assets" TIMEOUT 60)
+    # The glTF tests that read the Khronos samples (skipped when they are not fetched).
+    add_test(NAME maya_assets_samples COMMAND maya_asset_tests "[samples]")
+    set_tests_properties(maya_assets_samples PROPERTIES LABELS "cpu;assets" TIMEOUT 120)
 
     # KTX2 interoperability: Khronos's `ktx validate` (KTX-Software 4.3 or later) checks every format
     # and layout Maya writes, when the tool is installed or MAYA_KTX_TOOL names it.
@@ -535,8 +544,6 @@ if(BUILD_TESTING)
     # The #1030 library prototypes check what the rendering and content decision relies on. They need
     # the sample content from tools/fetch_render_samples.sh, and skip (77) without it.
     if(MAYA_BUILD_PROTOTYPES)
-        set(MAYA_RENDER_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/render-samples" CACHE PATH
-            "Sample content for the #1030 prototypes, from tools/fetch_render_samples.sh")
         add_test(NAME maya_prototype_import COMMAND maya_import_prototype "${MAYA_RENDER_SAMPLES}")
         set_tests_properties(maya_prototype_import PROPERTIES LABELS "cpu;prototype" TIMEOUT 120 SKIP_RETURN_CODE 77)
         add_test(NAME maya_prototype_texture COMMAND maya_texture_prototype "${MAYA_RENDER_SAMPLES}")
@@ -550,7 +557,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
@@ -678,7 +685,9 @@ if(BUILD_TESTING)
     # the small smoke manifests, which must complete and report results.
     if(TARGET MayaBenchmark)
         add_executable(maya_benchmark_tests tests/benchmark_tests.cpp)
-        target_link_libraries(maya_benchmark_tests PRIVATE MayaBenchmark Catch2::Catch2WithMain)
+        # The system zlib writes the import workload's test PNGs (tests/support/png.hpp).
+        target_link_libraries(maya_benchmark_tests PRIVATE MayaBenchmark Catch2::Catch2WithMain z)
+        target_compile_definitions(maya_benchmark_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_include_directories(maya_benchmark_tests PRIVATE tests)
         maya_target_options(maya_benchmark_tests)
         add_test(NAME maya_benchmark COMMAND maya_benchmark_tests "~[gpu]")

@@ -40,6 +40,9 @@ MaterialAsset full_material() {
     m.alpha_mode = AlphaMode::mask;
     m.alpha_cutoff = 0.35f;
     m.double_sided = true;
+    m.uv_offset = {0.5f, -0.25f};
+    m.uv_rotation = 1.5707964f;
+    m.uv_scale = {2.0f, 3.0f};
     return m;
 }
 
@@ -68,6 +71,7 @@ TEST_CASE("Material files at version 2 round-trip every property exactly, in a f
     CHECK(text.starts_with("maya-material 2\nbase_color 0.25 0.5 0.75\nalpha 0.6\nbase_color_texture 6d617961 50\n"));
     CHECK(has(text, "\nemissive_texture abcdef 1234567890\n"));
     CHECK(has(text, "\nalpha_mode mask\nalpha_cutoff 0.35\ndouble_sided true\n"));
+    CHECK(has(text, "\nuv_offset 0.5 -0.25\nuv_rotation 1.5707964\nuv_scale 2 3\n"));
     const auto back = read(text);
     INFO(back.error);
     REQUIRE(back);
@@ -166,7 +170,8 @@ TEST_CASE("The material schema has stable identities, the file's keys, and the p
     const auto properties = material_properties();
     const char* names[] = {"base_color", "alpha", "base_color_texture", "metallic", "roughness", "metallic_roughness_texture",
                            "normal_texture", "normal_scale", "occlusion_texture", "occlusion_strength", "emissive",
-                           "emissive_strength", "emissive_texture", "alpha_mode", "alpha_cutoff", "double_sided"};
+                           "emissive_strength", "emissive_texture", "alpha_mode", "alpha_cutoff", "double_sided", "uv_offset",
+                           "uv_rotation", "uv_scale"};
     REQUIRE(properties.size() == std::size(names));
     for (size_t i = 0; i < properties.size(); ++i) {
         INFO(names[i]);
@@ -183,6 +188,7 @@ TEST_CASE("The material schema has stable identities, the file's keys, and the p
     CHECK(material_property("normal_texture")->type == PropertyType::texture_ref);
     CHECK(material_property("normal_texture")->encoding == PropertyEncoding::persistent_asset_id);
     CHECK(material_property("base_color")->presentation == PropertyPresentation::color);
+    CHECK(material_property("uv_scale")->type == PropertyType::vector2);
 
     // Edits are atomic: one bad value leaves the material as it was.
     auto material = MaterialAsset{};
@@ -197,6 +203,13 @@ TEST_CASE("The material schema has stable identities, the file's keys, and the p
     CHECK(edit_properties(material, std::span<const PropertyEdit>(std::array{PropertyEdit{14, ChoiceValue{7}}})).error == PropertyError::invalid_value);
     CHECK(edit_properties(material, std::span<const PropertyEdit>(std::array{PropertyEdit{4, true}})).error == PropertyError::type_mismatch);
     CHECK(edit_properties(material, std::span<const PropertyEdit>(std::array{PropertyEdit{99, 1.0f}})).error == PropertyError::unknown_property);
+    // The texture transform: any finite values, a negative scale mirroring the maps.
+    CHECK(edit_properties(material, std::span<const PropertyEdit>(std::array{PropertyEdit{19, math::Vec2{-2.0f, 0.5f}}})));
+    CHECK(material.uv_scale.x == -2.0f);
+    CHECK(edit_properties(material, std::span<const PropertyEdit>(std::array{PropertyEdit{17, math::Vec2{std::nanf(""), 0.0f}}})).error ==
+          PropertyError::invalid_value);
+    CHECK(edit_properties(material, std::span<const PropertyEdit>(std::array{PropertyEdit{17, math::Vec3{1, 1, 1}}})).error ==
+          PropertyError::type_mismatch);
 
     // Texture slots take cataloged textures only.
     const auto texture = AssetId{0x6d617961, 0x50}, mesh = AssetId{0x6d617961, 2};
@@ -279,6 +292,16 @@ TEST_CASE("Generated tangents are perpendicular to their normals, and an OBJ loa
         CHECK(std::abs(v.tangent.x - 1.0f) < 1e-5f);
         CHECK(std::abs(v.tangent.y) < 1e-5f);
         CHECK(v.tangent.w == 1.0f);
+    }
+    // A triangle with no area (its corners on a line, as some sample models have) gives MikkTSpace no
+    // direction, and it leaves a zero tangent: each corner still gets a unit tangent in the surface.
+    auto flat = std::vector<Vertex>{{{0, 0, 0}, {0, 0, 1}, {1, 1, 1, 1}, {0, 0}}, {{1, 0, 0}, {0, 0, 1}, {1, 1, 1, 1}, {1, 0}},
+                                    {{2, 0, 0}, {0, 0, 1}, {1, 1, 1, 1}, {0, 1}}};
+    REQUIRE(generate_tangents(flat));
+    for (const auto& v : flat) {
+        const auto t = math::Vec3{v.tangent.x, v.tangent.y, v.tangent.z};
+        CHECK(std::abs(t.length() - 1.0f) < 1e-5f);
+        CHECK(std::abs(math::Vec3::dot(t, v.normal)) < 1e-5f);
     }
     auto partial = std::vector<Vertex>(corners.begin(), corners.begin() + 2);
     CHECK_FALSE(generate_tangents(partial)); // not whole triangles

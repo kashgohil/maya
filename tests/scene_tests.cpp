@@ -108,6 +108,8 @@ bool same(const PropertyValue& left, const PropertyValue& right) {
         const auto& other = std::get<T>(right);
         if constexpr (std::same_as<T, math::Vec3>)
             return value.x == other.x && value.y == other.y && value.z == other.z;
+        else if constexpr (std::same_as<T, math::Vec2>)
+            return value.x == other.x && value.y == other.y;
         else if constexpr (std::same_as<T, math::Quat>)
             return value.x == other.x && value.y == other.y && value.z == other.z && value.w == other.w;
         else return value == other;

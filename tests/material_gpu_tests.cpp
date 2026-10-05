@@ -359,6 +359,41 @@ TEST_CASE("Metal tilts normals toward +u and up the texture as glTF's normal map
     CHECK(at(fixture.render({{0}}, {{toward(0.8, 0.0), 2.0f}}))[0] > 1.5f * at(fixture.render({{0}}, {{toward(-0.8, 0.0), 2.0f}}))[0]);
 }
 
+TEST_CASE("Metal scales, turns, and moves every map's texture coordinates as KHR_texture_transform does", "[rhi][materials]") {
+    // Quadrants: red top left, green top right, blue bottom left, white bottom right (v grows down).
+    auto quadrants = TestImage{8, 8, {}, TextureRole::color};
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x) {
+            const auto right = x >= 4, bottom = y >= 4;
+            const auto texel = !bottom ? (right ? std::array<uint8_t, 4>{0, 255, 0, 255} : std::array<uint8_t, 4>{255, 0, 0, 255})
+                                       : (right ? std::array<uint8_t, 4>{255, 255, 255, 255} : std::array<uint8_t, 4>{0, 0, 255, 255});
+            quadrants.rgba.insert(quadrants.rgba.end(), texel.begin(), texel.end());
+        }
+    MaterialFixture fixture({{"quadrants.texture", quadrants}});
+    const auto color = [](const std::array<float, 4>& shown) {
+        const auto r = shown[0], g = shown[1], b = shown[2];
+        if (r > 0.1f && g > 0.1f && b > 0.1f) return 'w';
+        return r > g && r > b ? 'r' : g > b ? 'g' : 'b';
+    };
+    // The quarter points of the image are the quarter points of the quad's texture coordinates.
+    const auto corners = [&](math::Vec2 offset, float rotation, math::Vec2 scale) {
+        auto material = MaterialAsset{{1, 1, 1, 1}, 0.0f, 1.0f};
+        material.base_color_texture = fixture.texture("quadrants.texture");
+        material.uv_offset = offset;
+        material.uv_rotation = rotation;
+        material.uv_scale = scale;
+        fixture.set(0, material);
+        const auto image = fixture.render({{0}}, {}, math::Vec3{1.0f});
+        const auto q = size / 4, r = size - size / 4;
+        return std::string{color(at(image, q, q)), color(at(image, r, q)), color(at(image, q, r)), color(at(image, r, r))};
+    };
+    CHECK(corners({0, 0}, 0, {1, 1}) == "rgbw"); // untransformed: as the texture is drawn
+    CHECK(corners({0.5f, 0}, 0, {1, 1}) == "grwb"); // moved half a texture along u, repeating
+    CHECK(corners({0, 0}, 0, {-1, 1}) == "grwb"); // mirrored along u
+    // A quarter turn: u' = v, v' = -u, so (0.25, 0.75) reads (0.75, -0.25): the bottom right.
+    CHECK(corners({0, 0}, math::PI / 2, {1, 1}) == "brwg");
+}
+
 TEST_CASE("Metal cuts masked surfaces out below the alpha cutoff, and keeps the rest opaque", "[rhi][materials]") {
     // Left half transparent (alpha 64), right half nearly opaque (alpha 192).
     auto split = TestImage{4, 4, {}, TextureRole::color};
