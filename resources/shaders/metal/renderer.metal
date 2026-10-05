@@ -38,6 +38,8 @@ struct MaterialConstants { // per material, for the fragment stage
     float4 factors; // x metallic, y roughness, z normal scale, w occlusion strength
     float4 emissive; // rgb emitted light, w alpha cutoff
     uint4 flags; // x a bit per texture slot in use, y alpha mode (0 opaque, 1 mask, 2 blend)
+    float4 uv_transform; // rows of the texture-coordinate matrix: KHR_texture_transform's rotation and scale
+    float4 uv_offset; // xy
 };
 
 struct PresentConstants {
@@ -130,14 +132,15 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                             texture2d<float> emissive_map [[texture(4)]], sampler emissive_sampler [[sampler(4)]],
                             texturecube<float> specular_cube [[texture(5)]], sampler environment_sampler [[sampler(5)]],
                             texture2d<float> brdf_table [[texture(7)]], sampler table_sampler [[sampler(7)]]) {
+    const float2 uv = float2(dot(material.uv_transform.xy, in.uv), dot(material.uv_transform.zw, in.uv)) + material.uv_offset.xy;
     float4 base = in.color * material.base_color;
-    if (has_map(material, slot_base_color)) base *= base_color_map.sample(base_color_sampler, in.uv);
+    if (has_map(material, slot_base_color)) base *= base_color_map.sample(base_color_sampler, uv);
     const uint alpha_mode = material.flags.y;
     if (alpha_mode == 1 && base.a < material.emissive.w) discard_fragment();
 
     float metallic = material.factors.x, roughness = material.factors.y;
     if (has_map(material, slot_metallic_roughness)) {
-        const float4 sample = metallic_roughness_map.sample(metallic_roughness_sampler, in.uv);
+        const float4 sample = metallic_roughness_map.sample(metallic_roughness_sampler, uv);
         roughness *= sample.g;
         metallic *= sample.b;
     }
@@ -151,7 +154,7 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
         const float3 T = normalize(in.world_tangent.xyz - N * dot(N, in.world_tangent.xyz));
         const float3 B = cross(N, T) * (in.world_tangent.w < 0.0 ? -1.0 : 1.0);
         // x in red, green, and blue and y in alpha (docs/assets.md#textures); z rebuilt, then x and y scaled.
-        const float4 sample = normal_map.sample(normal_sampler, in.uv);
+        const float4 sample = normal_map.sample(normal_sampler, uv);
         const float2 xy = float2(sample.r, sample.a) * 2.0 - 1.0;
         const float3 tangent_normal = normalize(float3(xy * material.factors.z, sqrt(saturate(1.0 - dot(xy, xy)))));
         N = normalize(T * tangent_normal.x + B * tangent_normal.y + N * tangent_normal.z);
@@ -166,7 +169,7 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     // Light from the surroundings: the environment's, or the uniform ambient light. The split-sum table
     // gives the specular's share; diffuse takes what it leaves. Occlusion darkens both.
     float occlusion = 1.0;
-    if (has_map(material, slot_occlusion)) occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, in.uv).r - 1.0);
+    if (has_map(material, slot_occlusion)) occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, uv).r - 1.0);
     const float2 scale_bias = brdf_table.sample(table_sampler, table_uv(float2(NdotV, roughness))).rg;
     const float3 specular_share = f0 * scale_bias.x + scale_bias.y;
     float3 diffuse_light = view.ambient.rgb, specular_light = view.ambient.rgb;
@@ -192,7 +195,7 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     }
 
     float3 emitted = material.emissive.rgb;
-    if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, in.uv).rgb;
+    if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, uv).rgb;
     rgb += emitted;
     return float4(rgb, alpha_mode == 2 ? base.a : 1.0);
 }

@@ -33,11 +33,14 @@ const char* workload_name(Workload workload) {
     case Workload::load_cycles: return "load_cycles";
     case Workload::play_cycles: return "play_cycles";
     case Workload::physics: return "physics";
+    case Workload::import: return "import";
     }
     return "?";
 }
 /// Workloads that generate a scene of one mesh and material.
-bool generated(Workload workload) { return workload != Workload::scene && workload != Workload::physics; }
+bool generated(Workload workload) {
+    return workload != Workload::scene && workload != Workload::physics && workload != Workload::import;
+}
 
 // Manifests -------------------------------------------------------------------------------------------
 
@@ -637,7 +640,14 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             else if (text == "load_cycles") manifest.workload = Workload::load_cycles;
             else if (text == "play_cycles") manifest.workload = Workload::play_cycles;
             else if (text == "physics") manifest.workload = Workload::physics;
-            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, or physics");
+            else if (text == "import") manifest.workload = Workload::import;
+            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, physics, or import");
+        } else if (key == "content") {
+            ok = bool(in >> std::quoted(text)) && !text.empty();
+            manifest.content = (folder / text).lexically_normal();
+        } else if (key == "models") {
+            while (in >> std::quoted(text)) manifest.models.emplace_back(text);
+            ok = !manifest.models.empty();
         } else if (key == "project") {
             ok = bool(in >> std::quoted(text)) && !text.empty();
             manifest.project = (folder / text).lexically_normal();
@@ -694,7 +704,12 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
     if (!header) return fail(number_of_line, "expected a maya-benchmark header");
     for (const auto* required : {"name", "workload"})
         if (std::ranges::find(seen, required) == seen.end()) return {{}, std::string("missing '") + required + "'"};
-    if (manifest.workload != Workload::physics && std::ranges::find(seen, "project") == seen.end()) return {{}, "missing 'project'"};
+    if (manifest.workload == Workload::import) {
+        for (const auto* required : {"content", "models"})
+            if (std::ranges::find(seen, required) == seen.end()) return {{}, std::string("the import workload needs '") + required + "'"};
+    } else if (manifest.workload != Workload::physics && std::ranges::find(seen, "project") == seen.end()) {
+        return {{}, "missing 'project'"};
+    }
     if ((manifest.workload == Workload::load_cycles || manifest.workload == Workload::play_cycles) && manifest.slope_from > manifest.cycles)
         return {{}, "'slope_from' is past the last cycle"};
     if (generated(manifest.workload))
@@ -716,6 +731,18 @@ namespace {
 /// The workload itself; run() records what surrounds it.
 void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader,
                   const std::function<void()>& poll) {
+    if (manifest.workload == Workload::import) { // no views: imports, and loads into the device
+        result.unavailable = {
+            {"rendering", "the import workload renders nothing"},
+            {"cold_cache_load", "the OS file cache is not controlled; 'cold' means an empty cook cache"},
+        };
+        try {
+            detail::run_import(result, manifest, device);
+        } catch (const std::exception& error) {
+            result.failure = error.what();
+        }
+        return;
+    }
     if (manifest.workload == Workload::physics) { // headless: no project, views, or device work
         result.unavailable = {
             {"contact_constraints", "Jolt does not report its contact constraint count; pairs and solid contacts are counted"},
@@ -1062,6 +1089,31 @@ std::string to_json(const Result& r) {
     json.key("authored_unchanged");
     if (r.authored_unchanged) json.value(*r.authored_unchanged); else json.null();
     if (m.workload == Workload::physics) write_physics(json, r);
+    if (m.workload == Workload::import) {
+        json.key("imports");
+        json.open('[');
+        for (const auto& sample : r.imports) {
+            json.open('{');
+            json.field("model", sample.model);
+            json.field("import_ms", sample.import_ms);
+            json.field("cold_load_ms", sample.cold_ms);
+            json.field("warm_load_ms", sample.warm_ms);
+            json.field("meshes", sample.meshes);
+            json.field("textures", sample.textures);
+            json.field("materials", sample.materials);
+            json.field("entities", sample.entities);
+            json.field("triangles", sample.triangles);
+            json.field("texture_gpu_bytes", sample.texture_gpu_bytes);
+            json.field("cache_bytes", sample.cache_bytes);
+            json.field("warm_hits", sample.warm_hits);
+            json.field("warm_misses", sample.warm_misses);
+            json.field("cache_digest", sample.cache_digest);
+            json.close('}');
+        }
+        json.close(']');
+        json.key("deterministic");
+        if (r.deterministic) json.value(*r.deterministic); else json.null();
+    }
     json.key("unavailable");
     json.open('{');
     for (const auto& [metric, reason] : r.unavailable) json.field(metric, reason);
@@ -1150,6 +1202,29 @@ std::string to_text(const Result& r) {
     for (const auto& rejected : r.rejected)
         out << "  " << rejected.name << ": " << (rejected.rejected ? "refused" : "NOT REFUSED") << (rejected.nothing_left ? "" : ", LEFT RESOURCES") << "\n";
     if (r.authored_unchanged) out << "  authored scene " << (*r.authored_unchanged ? "unchanged" : "CHANGED") << "\n";
+    if (r.manifest.workload == Workload::import) {
+        // Per model: the median of the runs.
+        auto models = std::vector<std::string>{};
+        for (const auto& sample : r.imports)
+            if (std::ranges::find(models, sample.model) == models.end()) models.push_back(sample.model);
+        for (const auto& model : models) {
+            auto import = std::vector<double>{}, cold = std::vector<double>{}, warm = std::vector<double>{};
+            const ImportSample* last = nullptr;
+            for (const auto& sample : r.imports)
+                if (sample.model == model) {
+                    import.push_back(sample.import_ms);
+                    cold.push_back(sample.cold_ms);
+                    warm.push_back(sample.warm_ms);
+                    last = &sample;
+                }
+            out << "  " << model << ": import " << summarize(import).p50 << " ms, cold load " << summarize(cold).p50 << " ms, warm load "
+                << summarize(warm).p50 << " ms (median of " << import.size() << "); " << last->meshes << " meshes, " << last->textures
+                << " textures, " << last->materials << " materials, " << last->triangles << " triangles; cache "
+                << double(last->cache_bytes) / (1024.0 * 1024.0) << " MiB, warm hits " << last->warm_hits << " of "
+                << last->warm_hits + last->warm_misses << "\n";
+        }
+        if (r.deterministic) out << "  " << (*r.deterministic ? "every run cooked the same bytes" : "RUNS DIFFER: a determinism failure") << "\n";
+    }
     if (r.manifest.workload == Workload::physics) {
         const auto& s = r.physics_scene;
         out << "  " << s.bodies << " bodies (" << s.dynamic_bodies << " dynamic: " << s.active_set << " dropped, " << s.sleeping_set

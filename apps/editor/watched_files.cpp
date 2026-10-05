@@ -6,6 +6,7 @@
 #include "editor_shell.hpp"
 #include "shell_detail.hpp"
 #include "maya/assets/environment_cook.hpp"
+#include "maya/assets/import_file.hpp"
 #include "maya/assets/texture_data.hpp"
 #include <fstream>
 
@@ -30,6 +31,12 @@ EditorShell::WatchedFile EditorShell::look_at(const AssetRecord& record) const {
         return result;
     };
     auto watched = WatchedFile{};
+    // A part of an imported file: the file, and its import file, which holds the cooking settings.
+    if (const auto split = split_asset_path(record.path); !split.part.empty()) {
+        watched.file = stamp(m_project ? m_project->resolve(split.file) : std::nullopt);
+        watched.source = stamp(m_project ? m_project->resolve(import_file_path(split.file)) : std::nullopt);
+        return watched;
+    }
     const auto path = m_project ? m_project->resolve(record.path) : std::nullopt;
     watched.file = stamp(path);
     // A texture's or environment's file names its source image, beside or below it.

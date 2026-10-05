@@ -29,6 +29,7 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, bool>) return PropertyType::boolean;
     else if constexpr (std::same_as<T, float>) return PropertyType::scalar;
     else if constexpr (std::same_as<T, math::Vec3>) return PropertyType::vector3;
+    else if constexpr (std::same_as<T, math::Vec2>) return PropertyType::vector2;
     else if constexpr (std::same_as<T, math::Quat>) return PropertyType::quaternion;
     else if constexpr (std::is_enum_v<T>) return PropertyType::choice;
     else if constexpr (std::same_as<T, AssetRef<MeshAsset>>) return PropertyType::mesh_ref;
@@ -302,7 +303,13 @@ const auto& material_bindings() {
             "Mask cuts out below the cutoff; blend draws see-through, back to front.", alpha_mode_options),
         bind_material<&MaterialAsset::alpha_cutoff>(15, "alpha_cutoff", "Alpha cutoff", Hint::number, unit_interval, {}, "Mask only."),
         bind_material<&MaterialAsset::double_sided>(16, "double_sided", "Double sided", Hint::toggle, {}, {},
-            "Drawn from behind too; otherwise back faces are culled.")};
+            "Drawn from behind too; otherwise back faces are culled."),
+        bind_material<&MaterialAsset::uv_offset>(17, "uv_offset", "UV offset", Hint::vector, {}, {},
+            "Moves every map across the surface, after scaling and rotating."),
+        bind_material<&MaterialAsset::uv_rotation>(18, "uv_rotation", "UV rotation", Hint::number, {}, "rad",
+            "Turns every map's texture coordinates about their origin, after scaling."),
+        bind_material<&MaterialAsset::uv_scale>(19, "uv_scale", "UV scale", Hint::vector, {}, {},
+            "Scales every map's texture coordinates: 2 repeats a map twice.")};
     return values;
 }
 
@@ -398,6 +405,8 @@ std::optional<PropertyResult> check(const PropertyDescriptor& d, const PropertyV
         if (!in_range(*scalar, d.range)) return invalid();
     } else if (const auto vector = std::get_if<math::Vec3>(&input)) {
         if (!in_range(vector->x, d.range) || !in_range(vector->y, d.range) || !in_range(vector->z, d.range)) return invalid();
+    } else if (const auto pair = std::get_if<math::Vec2>(&input)) {
+        if (!in_range(pair->x, d.range) || !in_range(pair->y, d.range)) return invalid();
     } else if (const auto choice = std::get_if<ChoiceValue>(&input)) {
         auto found = false;
         for (const auto& option : d.choices) found |= option.value == choice->value;

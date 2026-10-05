@@ -63,6 +63,10 @@ void append_value(std::string& output, const PropertyValue& value, const Propert
                 output += ' ';
             }
             output.pop_back();
+        } else if constexpr (std::same_as<T, math::Vec2>) {
+            append_float(output, typed.x);
+            output += ' ';
+            append_float(output, typed.y);
         } else if constexpr (std::same_as<T, math::Quat>) {
             for (const auto component : {typed.x, typed.y, typed.z, typed.w}) {
                 append_float(output, component);
@@ -286,6 +290,7 @@ std::string expectation(const PropertyDescriptor& property) {
     case PropertyType::boolean: return "true or false";
     case PropertyType::scalar: return "one finite number";
     case PropertyType::vector3: return "three finite numbers";
+    case PropertyType::vector2: return "two finite numbers";
     case PropertyType::quaternion: return "four finite numbers (x y z w)";
     case PropertyType::choice: {
         auto names = std::string("one of");
@@ -324,6 +329,9 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::spa
         return std::nullopt;
     case PropertyType::vector3:
         if (math::Vec3 value; floats(value.x, value.y, value.z)) return value;
+        return std::nullopt;
+    case PropertyType::vector2:
+        if (math::Vec2 value; floats(value.x, value.y)) return value;
         return std::nullopt;
     case PropertyType::quaternion:
         if (math::Quat value; floats(value.x, value.y, value.z, value.w)) return value;

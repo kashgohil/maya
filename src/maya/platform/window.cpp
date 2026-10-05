@@ -70,6 +70,11 @@ Window::Window(int width, int height, const std::string& title) {
     glfwSetWindowFocusCallback(m_window, [](GLFWwindow*, int focused) {
         Input::instance().push_event(FocusEvent{focused == GLFW_TRUE});
     });
+    glfwSetDropCallback(m_window, [](GLFWwindow*, int count, const char** paths) {
+        auto dropped = FileDropEvent{};
+        for (int i = 0; i < count; ++i) dropped.paths.emplace_back(paths[i]);
+        Input::instance().push_event(std::move(dropped));
+    });
 
     glfwSetFramebufferSizeCallback(m_window, framebuffer_size_callback);
 }

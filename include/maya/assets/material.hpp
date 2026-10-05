@@ -29,16 +29,23 @@ struct MaterialAsset {
     AlphaMode alpha_mode = AlphaMode::opaque;
     float alpha_cutoff = 0.5f; // mask only
     bool double_sided = false; // drawn from behind too, with the normal flipped
+    // Every map's texture coordinates are scaled, turned, then moved, as KHR_texture_transform does:
+    // uv' = offset + rotate(rotation) x (scale * uv), where rotate turns +u toward -v.
+    math::Vec2 uv_offset{0.0f, 0.0f};
+    float uv_rotation = 0; // radians
+    math::Vec2 uv_scale{1.0f, 1.0f};
 };
 inline bool operator==(const MaterialAsset& a, const MaterialAsset& b) noexcept {
     const auto same4 = [](const math::Vec4& x, const math::Vec4& y) { return x.x == y.x && x.y == y.y && x.z == y.z && x.w == y.w; };
     const auto same3 = [](const math::Vec3& x, const math::Vec3& y) { return x.x == y.x && x.y == y.y && x.z == y.z; };
+    const auto same2 = [](const math::Vec2& x, const math::Vec2& y) { return x.x == y.x && x.y == y.y; };
     return same4(a.base_color, b.base_color) && a.metallic == b.metallic && a.roughness == b.roughness &&
            a.base_color_texture == b.base_color_texture && a.metallic_roughness_texture == b.metallic_roughness_texture &&
            a.normal_texture == b.normal_texture && a.normal_scale == b.normal_scale &&
            a.occlusion_texture == b.occlusion_texture && a.occlusion_strength == b.occlusion_strength &&
            same3(a.emissive, b.emissive) && a.emissive_strength == b.emissive_strength &&
            a.emissive_texture == b.emissive_texture && a.alpha_mode == b.alpha_mode &&
-           a.alpha_cutoff == b.alpha_cutoff && a.double_sided == b.double_sided;
+           a.alpha_cutoff == b.alpha_cutoff && a.double_sided == b.double_sided && same2(a.uv_offset, b.uv_offset) &&
+           a.uv_rotation == b.uv_rotation && same2(a.uv_scale, b.uv_scale);
 }
 } // namespace maya

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <iosfwd>
 #include <span>
 #include <string>
@@ -68,6 +69,10 @@ struct CookedEnvironment {
 /// Cooks an environment on `threads` threads (0: every core). Deterministic: the same image and
 /// settings give the same bytes, whatever the thread count.
 CookedEnvironment cook_environment(const HdrImage& image, const EnvironmentSettings& settings, unsigned threads = 0);
+/// A cooked environment as bytes, for the cook cache: read_cooked_environment gives it back exactly,
+/// or null for bytes that are not one.
+std::vector<std::byte> write_cooked_environment(const CookedEnvironment& cooked);
+std::optional<CookedEnvironment> read_cooked_environment(std::span<const std::byte> bytes);
 /// The irradiance the coefficients give for a direction (the shader's formula).
 math::Vec3 evaluate_irradiance(const std::array<math::Vec3, 9>& irradiance, const math::Vec3& normal) noexcept;
 

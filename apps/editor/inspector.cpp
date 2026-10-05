@@ -73,15 +73,16 @@ void limits(const NumericRange& range, float scale, float& minimum, float& maxim
 }
 
 /// Three axis-labelled drag fields on one row. Returns true when any changed.
-bool axis_fields(const char* id, float values[3], float speed, float minimum, float maximum, const char* format,
-                 EditorLayout& layout, const std::string& key, bool& activated, bool& deactivated) {
+/// Two or three number fields on one row, one per axis.
+bool axis_fields(const char* id, float values[], float speed, float minimum, float maximum, const char* format,
+                 EditorLayout& layout, const std::string& key, bool& activated, bool& deactivated, int axes = 3) {
     static constexpr ImU32 axis_colors[] = {theme::color::rgb(0xF2616B), theme::color::rgb(0x4ADE80), theme::color::rgb(0x7B8CFF)};
     static constexpr const char* axis_names[] = {"x", "y", "z"};
     auto changed = false;
     const auto spacing = 4.0f;
-    const auto width = (ImGui::GetContentRegionAvail().x - spacing * 2.0f) / 3.0f;
+    const auto width = (ImGui::GetContentRegionAvail().x - spacing * float(axes - 1)) / float(axes);
     ImGui::PushID(id);
-    for (int axis = 0; axis < 3; ++axis) {
+    for (int axis = 0; axis < axes; ++axis) {
         if (axis) ImGui::SameLine(0.0f, spacing);
         ImGui::PushID(axis);
         ImGui::SetNextItemWidth(width);
@@ -196,6 +197,19 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
         if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
         break;
     }
+    case PropertyType::vector2: {
+        const auto pair = std::get<math::Vec2>(value);
+        float values[2] = {pair.x, pair.y};
+        auto minimum = 0.0f, maximum = 0.0f;
+        limits(property.range, 1.0f, minimum, maximum);
+        auto activated = false, deactivated = false;
+        const auto changed = axis_fields("vector", values, 0.01f, minimum, maximum, "%.3f", m_layout, key,
+                                         activated, deactivated, 2);
+        if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
+        if (changed) edit(math::Vec2{values[0], values[1]});
+        if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
+        break;
+    }
     case PropertyType::quaternion: {
         // Euler degrees for editing; the cache keeps angles stable while a drag crosses +-180.
         const auto rotation = std::get<math::Quat>(value);
@@ -301,7 +315,7 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
         if (asset.valid()) {
             const auto info = m_assets ? m_assets->info(asset) : std::nullopt;
             missing = !info;
-            preview = info ? info->record.path.stem().string() : "Missing " + id_text(asset.high, asset.low);
+            preview = info ? asset_label(info->record) : "Missing " + id_text(asset.high, asset.low);
             if (info && info->diagnostic) problem = info->diagnostic.message;
         }
         if (missing || !problem.empty())
@@ -328,7 +342,7 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
                 for (const auto& record : m_assets->records()) {
                     if (record.kind != kind) continue;
                     ImGui::PushID(static_cast<int>(record.id.low));
-                    if (ImGui::Selectable(record.path.stem().string().c_str(), record.id == asset)) choose(record.id);
+                    if (ImGui::Selectable(asset_label(record).c_str(), record.id == asset)) choose(record.id);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", record.path.generic_string().c_str());
                     ImGui::PopID();
                 }
@@ -410,7 +424,7 @@ bool EditorShell::edit_material(AssetId id, PropertyId property, PropertyValue i
         return false;
     }
     const auto info = m_assets->info(id);
-    const auto name = info ? info->record.path.stem().string() : std::string("material");
+    const auto name = info ? asset_label(info->record) : std::string("material");
     const auto applied = m_scene->set_material(id, std::move(edited), "Edit " + name);
     if (!applied && applied.error != "Nothing to change") {
         m_material_error = applied.error;
@@ -424,7 +438,7 @@ bool EditorShell::edit_material(AssetId id, PropertyId property, PropertyValue i
 void EditorShell::draw_material(AssetId id, bool folded) {
     if (!m_scene || !m_assets) return;
     const auto info = m_assets->info(id);
-    const auto name = info ? info->record.path.stem().string() : "Missing " + id_text(id.high, id.low);
+    const auto name = info ? asset_label(info->record) : "Missing " + id_text(id.high, id.low);
     ImGui::PushID("material");
     ImGui::PushID(static_cast<int>(id.low ^ (id.high << 7)));
     ImGui::Separator();
@@ -499,7 +513,7 @@ void EditorShell::draw_material(AssetId id, bool folded) {
         icon_text(icon::warning, theme::color::warning, 6.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::warning);
         ImGui::TextWrapped("%s is a %s texture; this slot needs %s, so the placeholder is drawn.",
-                           texture_info ? texture_info->record.path.stem().string().c_str() : "A map",
+                           texture_info ? asset_label(texture_info->record).c_str() : "A map",
                            texture_role_name(texture.lease.value().role()), texture_role_name(role));
         m_layout.controls.push_back({"material.warning." + std::string(slot), ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
         ImGui::PopStyleColor();

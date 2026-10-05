@@ -44,6 +44,9 @@ struct RenderMaterial {
     AlphaMode alpha_mode = AlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     bool double_sided = false;
+    math::Vec2 uv_offset{0.0f, 0.0f}; // as MaterialAsset's
+    float uv_rotation = 0.0f;
+    math::Vec2 uv_scale{1.0f, 1.0f};
     /// Per MaterialSlot: an index into RenderSnapshot::textures, no_texture, or placeholder_texture.
     std::array<uint32_t, material_slots> textures{no_texture, no_texture, no_texture, no_texture, no_texture};
 };

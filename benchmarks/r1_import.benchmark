@@ -1,0 +1,10 @@
+maya-benchmark 1
+# R1 import (#1036): the R1 hero content, fetched by tools/fetch_render_samples.sh, imported into a new
+# project and then loaded twice in new sessions: cold through an empty cook cache (decoding, mips, and
+# ASTC compression of every texture, tangents for every mesh) and warm from the cache. Each run must
+# cook the same bytes, and the warm loads must find every part in the cache.
+name "r1-import"
+workload import
+content "../build/render-samples"
+models "Models/ABeautifulGame/glTF-Binary/ABeautifulGame.glb" "Models/FlightHelmet/glTF/FlightHelmet.gltf" "Models/CesiumMan/glTF-Binary/CesiumMan.glb"
+runs 3

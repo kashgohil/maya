@@ -1,3 +1,4 @@
+#include "maya/assets/cook_cache.hpp"
 #include "maya/simulation/project_recording.hpp"
 #include "maya/simulation/script_assets.hpp"
 #include "player_application.hpp"
@@ -28,7 +29,9 @@ public:
         auto opened = open_project(*m_options.project);
         if (!opened) return fail(opened.error);
         const auto& project = opened.project;
-        auto assets = open_project_assets(project, std::make_unique<FileAssetProvider>(device));
+        // The editor's cooked textures and meshes load from the project's cook cache (docs/assets.md#cook-cache).
+        auto cache = std::make_shared<CookCache>(cook_cache_folder(project));
+        auto assets = open_project_assets(project, std::make_unique<FileAssetProvider>(device, std::move(cache)));
         if (!assets) return fail(assets.error);
         m_assets = std::move(assets.registry);
 

@@ -1,4 +1,5 @@
 #include "maya/core/tangents.hpp"
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <mikktspace.h>
@@ -42,6 +43,17 @@ bool generate_tangents(std::span<Vertex> corners) {
     };
     auto context = SMikkTSpaceContext{&interface, &working};
     if (!genTangSpaceDefault(&context)) return false;
+    // Where the texture coordinates do not span the triangle, MikkTSpace leaves a zero tangent, which
+    // the shader cannot normalize: such a corner gets some tangent perpendicular to its normal.
+    for (auto& vertex : working) {
+        const auto& n = vertex.normal;
+        const auto t = math::Vec3{vertex.tangent.x, vertex.tangent.y, vertex.tangent.z};
+        if ((t - n * math::Vec3::dot(n, t)).length() > 1e-6f) continue;
+        const auto axis = std::abs(n.x) < 0.9f ? math::Vec3{1, 0, 0} : math::Vec3{0, 1, 0};
+        const auto perpendicular = axis - n * math::Vec3::dot(n, axis);
+        const auto length = perpendicular.length();
+        vertex.tangent = math::Vec4{length > 1e-6f ? perpendicular / length : axis, vertex.tangent.w};
+    }
     std::ranges::copy(working, corners.begin());
     return true;
 }

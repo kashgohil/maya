@@ -1,6 +1,7 @@
 // Projects, scene files, the unsaved-changes and save-as dialogs, and the asset browser.
 
 #include "editor_shell.hpp"
+#include "maya/assets/cook_cache.hpp"
 #include "shell_detail.hpp"
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/property_context.hpp"
@@ -142,7 +143,10 @@ void EditorShell::draw_collision_groups() {
 }
 
 std::string EditorShell::read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry) {
-    auto opened = open_project_assets(project, std::make_unique<FileAssetProvider>(m_device));
+    // One cook cache per project: it remembers source digests across refreshes (docs/assets.md#cook-cache).
+    if (!m_cook_cache || m_cook_cache->folder() != cook_cache_folder(project))
+        m_cook_cache = std::make_shared<CookCache>(cook_cache_folder(project));
+    auto opened = open_project_assets(project, std::make_unique<FileAssetProvider>(m_device, m_cook_cache));
     registry = std::move(opened.registry);
     return opened.error;
 }
@@ -288,6 +292,7 @@ std::string EditorShell::save_scene(const std::filesystem::path& path) {
 
 void EditorShell::scan_project() {
     m_scene_files.clear();
+    m_model_files.clear();
     m_missing_files.clear();
     if (!m_project) return;
     const auto& root = m_project->content_root;
@@ -309,15 +314,21 @@ void EditorShell::scan_project() {
         }
         if (entry.is_regular_file(entry_error) && entry.path().extension() == ".scene")
             m_scene_files.push_back(entry.path().lexically_relative(root));
+        if (const auto extension = lowercase(entry.path().extension().string());
+            entry.is_regular_file(entry_error) && (extension == ".gltf" || extension == ".glb"))
+            m_model_files.push_back(entry.path().lexically_relative(root));
     }
     std::ranges::sort(m_scene_files, {}, [](const std::filesystem::path& p) { return p.generic_string(); });
+    std::ranges::sort(m_model_files, {}, [](const std::filesystem::path& p) { return p.generic_string(); });
+    read_part_labels();
     m_asset_rows.clear();
     if (m_assets)
         for (auto& record : m_assets->records()) {
-            const auto full = m_project->resolve(record.path);
+            // A part of an imported file is there when its file is.
+            const auto full = m_project->resolve(split_asset_path(record.path).file);
             const auto missing = !full || !std::filesystem::is_regular_file(*full, error);
             if (missing) m_missing_files.push_back(record.id);
-            auto search = lowercase(record.path.generic_string());
+            auto search = lowercase(asset_label(record) + " " + record.path.generic_string());
             m_asset_rows.push_back({std::move(record), std::move(search), missing});
         }
     m_shown_stale = true;
@@ -570,6 +581,23 @@ void EditorShell::draw_scene_menu() {
     if (ImGui::MenuItem((std::string(icon::floppy_disk) + "  Save").c_str(), "\xE2\x8C\x98S")) save_or_ask();
     if (ImGui::MenuItem((std::string(icon::pencil) + "  Save as\xE2\x80\xA6").c_str(), "\xE2\x87\xA7\xE2\x8C\x98S")) ask_save_as();
     ImGui::Separator();
+    // glTF files in the project (docs/editor.md#importing-models); dropping a file on the window imports it too.
+    if (ImGui::BeginMenu((std::string(icon::download_simple) + "  Import model").c_str(), m_project.has_value())) {
+        if (m_model_files.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextUnformatted("No .gltf or .glb files in the project; drop one on the window");
+            ImGui::PopStyleColor();
+        }
+        for (const auto& relative : m_model_files) {
+            auto marker = relative;
+            marker += ".import";
+            const auto imported = std::filesystem::exists(m_project->content_root / marker);
+            const auto label = std::string(imported ? icon::arrows_clockwise : icon::cube) + "  " + relative.generic_string() +
+                               (imported ? "  (reimport)" : "");
+            if (ImGui::MenuItem(label.c_str())) import_model(relative, false);
+        }
+        ImGui::EndMenu();
+    }
     if (ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Refresh project").c_str())) refresh_project();
     ImGui::Separator();
     // Recorded Play (docs/play.md#recording-and-replay).
@@ -585,7 +613,7 @@ void EditorShell::draw_scene_menu() {
 
 std::string EditorShell::asset_name(AssetId asset) const {
     const auto info = m_assets ? m_assets->info(asset) : std::nullopt;
-    return info ? info->record.path.stem().string() : std::string("asset");
+    return info ? asset_label(info->record) : std::string("asset");
 }
 
 EditResult EditorShell::place_mesh(AssetId mesh, const math::Vec3& position) {
@@ -596,7 +624,7 @@ EditResult EditorShell::place_mesh(AssetId mesh, const math::Vec3& position) {
     transform.translation = position;
     auto renderer = MeshRendererComponent{};
     renderer.mesh = {mesh};
-    return m_scene->create(info->record.path.stem().string(), std::nullopt, {transform, renderer});
+    return m_scene->create(asset_label(info->record), std::nullopt, {transform, renderer});
 }
 
 EditResult EditorShell::assign_asset(EntityId entity, AssetId asset) {
@@ -719,6 +747,12 @@ void EditorShell::accept_asset_drop(EntityId target) {
 
 void EditorShell::accept_viewport_drop() {
     if (!ImGui::BeginDragDropTarget()) return;
+    if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_SCENE")) {
+        const auto relative = std::filesystem::path(static_cast<const char*>(dragged->Data));
+        if (ImGui::AcceptDragDropPayload("MAYA_SCENE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+            report(place_scene(relative, drop_point(ImGui::GetIO().MousePos).value_or(math::Vec3{0.0f})), "Place " + relative.stem().string());
+        ImGui::GetWindowDrawList()->AddRect(m_layout.viewport_min, m_layout.viewport_max, theme::color::accent, 0.0f, 0, 2.0f);
+    }
     if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
         auto asset = AssetPayload{};
         std::memcpy(&asset, dragged->Data, sizeof(asset));
@@ -804,14 +838,14 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         if (mesh) place_in_view(record.id);
         else if (script) open_script(record.id);
-        else if (environment) report(use_environment(record.id), "Use " + record.path.stem().string());
+        else if (environment) report(use_environment(record.id), "Use " + asset_label(record));
         else if (!texture) assign_to_selection(record.id);
     }
     if (ImGui::BeginDragDropSource()) {
         const auto payload = AssetPayload{record.id, record.kind};
         ImGui::SetDragDropPayload("MAYA_ASSET", &payload, sizeof(payload));
         icon_text(glyph, theme::color::muted);
-        ImGui::TextUnformatted(record.path.stem().string().c_str());
+        ImGui::TextUnformatted(asset_label(record).c_str());
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
         ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : script ? "Drop on an object to attach it"
                                : texture ? "Drop on a material's map in the Inspector"
@@ -828,7 +862,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         const auto assign = std::string(icon::arrows_move) + "  Assign to selection" +
                             (selection ? " (" + std::to_string(selection) + ")" : std::string{});
         if (environment && ImGui::MenuItem((std::string(icon::sun_horizon) + "  Use in scene").c_str(), nullptr, false, m_scene != nullptr))
-            report(use_environment(record.id), "Use " + record.path.stem().string());
+            report(use_environment(record.id), "Use " + asset_label(record));
         if (!texture && !environment && ImGui::MenuItem(assign.c_str(), nullptr, false, selection > 0)) assign_to_selection(record.id);
         if (!texture) ImGui::Separator();
         const auto reload = ImGui::MenuItem((std::string(icon::arrows_clockwise) + "  Reload").c_str());
@@ -917,7 +951,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto status = missing ? "missing" : failed ? (script ? "error" : "failed") : state == AssetState::ready ? "" : mesh || texture ? "not loaded" : "";
     const auto status_width = ImGui::CalcTextSize(status).x;
     draw->PushClipRect(min, {max.x - status_width - 12.0f, max.y}, true);
-    draw->AddText({min.x + 26.0f, text_y}, tone, record.path.stem().string().c_str());
+    draw->AddText({min.x + 26.0f, text_y}, tone, asset_label(record).c_str());
     draw->PopClipRect();
     draw->AddText({max.x - status_width - 6.0f, text_y}, failed ? theme::color::danger : missing ? theme::color::warning
                   : theme::color::faint, status);
@@ -993,9 +1027,21 @@ void EditorShell::draw_assets() {
                 m_layout.controls.push_back({"scene." + relative.generic_string(), min, max});
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !current)
                     request_open_scene(relative);
+                // Dragged into the viewport, a scene is placed in the open one: an imported model.
+                if (!current && m_scene && ImGui::BeginDragDropSource()) {
+                    const auto text = relative.generic_string();
+                    ImGui::SetDragDropPayload("MAYA_SCENE", text.c_str(), text.size() + 1);
+                    ImGui::Text("%s  %s", icon::file, text.c_str());
+                    ImGui::EndDragDropSource();
+                }
                 if (ImGui::BeginPopupContextItem("scene")) {
                     if (ImGui::MenuItem((std::string(icon::folder_open) + "  Open").c_str(), nullptr, false, !current))
                         request_open_scene(relative);
+                    if (ImGui::MenuItem((std::string(icon::plus) + "  Place in scene").c_str(), nullptr, false, !current && m_scene)) {
+                        const auto center = ImVec2{(m_layout.viewport_min.x + m_layout.viewport_max.x) * 0.5f,
+                                                   (m_layout.viewport_min.y + m_layout.viewport_max.y) * 0.5f};
+                        report(place_scene(relative, drop_point(center).value_or(math::Vec3{0.0f})), "Place " + relative.stem().string());
+                    }
                     ImGui::EndPopup();
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", current ? "Open now" : "Double-click to open");

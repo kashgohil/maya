@@ -1,4 +1,6 @@
 #include "maya/assets/registry.hpp"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <charconv>
 #include <iomanip>
@@ -56,6 +58,25 @@ AssetLoadResult<EnvironmentAsset> AssetProvider::load_environment(const std::fil
     return {nullptr, {AssetError::load_failed, "This asset provider does not load environments: " + path.string()}};
 }
 
+AssetLoadResult<MeshAsset> AssetProvider::load_imported_mesh(const std::filesystem::path& source, std::string_view part) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load imported meshes: " + source.string() + "#" + std::string(part)}};
+}
+
+AssetLoadResult<TextureAsset> AssetProvider::load_imported_texture(const std::filesystem::path& source, std::string_view part) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load imported textures: " + source.string() + "#" + std::string(part)}};
+}
+
+AssetSourcePath split_asset_path(const std::filesystem::path& path) {
+    const auto text = path.generic_string();
+    const auto mark = text.rfind('#');
+    if (mark == std::string::npos) return {path, {}};
+    auto file = text.substr(0, mark);
+    auto extension = std::filesystem::path(file).extension().string();
+    std::ranges::transform(extension, extension.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if (extension != ".gltf" && extension != ".glb") return {path, {}};
+    return {std::filesystem::path(file), text.substr(mark + 1)};
+}
+
 AssetLoadResult<ScriptAsset> AssetProvider::load_script(const std::filesystem::path& path) {
     auto file = std::ifstream(path, std::ios::binary);
     if (!file) return {nullptr, {AssetError::missing_file, "Cannot read script " + path.string()}};
@@ -72,9 +93,12 @@ AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
         record.kind != AssetKind::texture && record.kind != AssetKind::environment)
         return {AssetError::wrong_type,"Unsupported asset kind"};
     if (m_ids.contains(record.id)) return {AssetError::duplicate_id,"Duplicate asset ID " + id_text(record.id)};
-    const auto full = resolve_path(record.path);
+    const auto source = split_asset_path(record.path);
+    if (!source.part.empty() && record.kind != AssetKind::mesh && record.kind != AssetKind::texture)
+        return {AssetError::invalid_path,"Only meshes and textures can be parts of an imported file: " + record.path.string()};
+    const auto full = resolve_path(source.file);
     if (!full) return {AssetError::invalid_path,"Asset path must stay inside the project: " + record.path.string()};
-    const auto path_key = full->generic_string();
+    const auto path_key = full->generic_string() + (source.part.empty() ? "" : "#" + source.part);
     if (m_paths.contains(path_key)) return {AssetError::duplicate_path,"Source already registered: " + record.path.string()};
     if (m_entries.size() >= std::numeric_limits<uint32_t>::max()) throw std::length_error("Asset slots exhausted");
     record.path = record.path.lexically_normal();
@@ -161,7 +185,8 @@ AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind,
     if (!reload && entry.state == AssetState::failed) return {it->second,entry.diagnostic};
     if (entry.generation == std::numeric_limits<uint64_t>::max())
         return fail({AssetError::load_failed,"Asset version counter exhausted"});
-    const auto path = resolve_path(entry.record.path); // recheck symlinks on every load
+    const auto source = split_asset_path(entry.record.path);
+    const auto path = resolve_path(source.file); // recheck symlinks on every load
     if (!path) return fail({AssetError::invalid_path,"Asset path escaped the project or cannot be resolved: " + entry.record.path.string()});
     std::error_code error;
     if (!std::filesystem::is_regular_file(*path,error) || error)
@@ -179,7 +204,13 @@ AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind,
     auto candidate = Payload{};
     auto diagnostic = AssetDiagnostic{};
     try {
-        if (kind == AssetKind::mesh) {
+        if (!source.part.empty() && kind == AssetKind::mesh) {
+            auto result = m_provider->load_imported_mesh(*path, source.part);
+            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+        } else if (!source.part.empty()) {
+            auto result = m_provider->load_imported_texture(*path, source.part);
+            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+        } else if (kind == AssetKind::mesh) {
             auto result = m_provider->load_mesh(*path);
             candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
         } else if (kind == AssetKind::material) {

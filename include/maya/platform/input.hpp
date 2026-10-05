@@ -43,7 +43,9 @@ struct MouseMoveEvent { float x; float y; };
 struct MouseButtonEvent { MouseButton button; bool down; KeyModifiers modifiers; };
 struct ScrollEvent { float x; float y; };
 struct FocusEvent { bool focused; };
-using InputEvent = std::variant<KeyEvent, TextEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent, FocusEvent>;
+/// Files dropped on the window, as absolute paths. The pointer is where the last MouseMoveEvent left it.
+struct FileDropEvent { std::vector<std::string> paths; };
+using InputEvent = std::variant<KeyEvent, TextEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent, FocusEvent, FileDropEvent>;
 
 /// Window size in points and framebuffer pixels. They differ on high-density (Retina) displays.
 struct WindowMetrics {

@@ -228,6 +228,8 @@ void EditorShell::apply_input(const RoutedInput& routed) {
                 io.AddMouseWheelEvent(e.x, e.y);
             } else if constexpr (std::is_same_v<T, FocusEvent>) {
                 io.AddFocusEvent(e.focused);
+            } else if constexpr (std::is_same_v<T, FileDropEvent>) {
+                m_dropped_files.insert(m_dropped_files.end(), e.paths.begin(), e.paths.end());
             }
         }, event);
     }
@@ -261,6 +263,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     if ((m_file_check_timer += io.DeltaTime) >= 0.25f) {
         m_file_check_timer = 0.0f;
         check_script_files();
+        check_imported_sources(); // a reimport refreshes the catalog, so before the assets' own files
         check_asset_files();
     }
 
@@ -294,6 +297,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_inspector();
     draw_assets();
     draw_diagnostics();
+    accept_dropped_files();
     // New windows take focus as they are created, and a focused docked window brings its tab to the
     // front. Start with the viewport focused, so the bottom panels open on Assets, not on Diagnostics
     // (the panel created last).

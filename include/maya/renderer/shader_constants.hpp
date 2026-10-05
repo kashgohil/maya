@@ -2,6 +2,7 @@
 
 #include "maya/math/matrix.hpp"
 #include "maya/renderer/render_snapshot.hpp"
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -39,7 +40,16 @@ struct MaterialConstants {
     math::Vec4 factors; // x metallic, y roughness, z normal scale, w occlusion strength
     math::Vec4 emissive; // rgb emitted light, w alpha cutoff
     uint32_t flags[4]; // x a bit per MaterialSlot with a texture, y AlphaMode; the rest is padding
+    // Texture coordinates for every map: u' = dot(uv_transform.xy, uv), v' = dot(uv_transform.zw, uv),
+    // plus uv_offset.xy (material_uv_transform).
+    math::Vec4 uv_transform;
+    math::Vec4 uv_offset; // zw padding
 };
+/// The rows of a material's texture-coordinate matrix: rotate(rotation) x scale.
+inline math::Vec4 material_uv_transform(float rotation, const math::Vec2& scale) noexcept {
+    const auto c = std::cos(rotation), s = std::sin(rotation);
+    return {c * scale.x, s * scale.y, -s * scale.x, c * scale.y};
+}
 /// Presentation of a view texture into part of another target, in normalized device coordinates.
 struct PresentConstants {
     math::Vec4 area; // left, bottom, right, top
@@ -67,8 +77,9 @@ static_assert(sizeof(ViewConstants) == 480 && offsetof(ViewConstants, camera_pos
               offsetof(ViewConstants, irradiance) == 336, "ViewConstants must match renderer.metal");
 static_assert(sizeof(DrawConstants) == 112 && offsetof(DrawConstants, normal_matrix) == 64,
               "DrawConstants must match renderer.metal");
-static_assert(sizeof(MaterialConstants) == 64 && offsetof(MaterialConstants, factors) == 16 &&
-              offsetof(MaterialConstants, emissive) == 32 && offsetof(MaterialConstants, flags) == 48,
+static_assert(sizeof(MaterialConstants) == 96 && offsetof(MaterialConstants, factors) == 16 &&
+              offsetof(MaterialConstants, emissive) == 32 && offsetof(MaterialConstants, flags) == 48 &&
+              offsetof(MaterialConstants, uv_transform) == 64 && offsetof(MaterialConstants, uv_offset) == 80,
               "MaterialConstants must match renderer.metal");
 static_assert(sizeof(PresentConstants) == 16, "PresentConstants must match renderer.metal");
 static_assert(sizeof(ToneMapConstants) == 16, "ToneMapConstants must match renderer.metal");

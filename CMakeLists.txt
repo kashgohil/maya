@@ -39,6 +39,7 @@ find_library(COCOA_LIBRARY Cocoa REQUIRED)
 add_library(MayaWorld STATIC
     src/maya/core/identity.cpp
     src/maya/core/file_replace.cpp
+    src/maya/core/sha256.cpp
     src/maya/world/world.cpp
     src/maya/world/spatial.cpp
     src/maya/properties/schema.cpp)
@@ -99,6 +100,12 @@ FetchContent_MakeAvailable(mikktspace)
 add_library(MayaMikkTSpace STATIC ${mikktspace_SOURCE_DIR}/mikktspace.c)
 target_include_directories(MayaMikkTSpace SYSTEM PUBLIC ${mikktspace_SOURCE_DIR})
 
+# cgltf (MIT, one header), the glTF 2.0 parser #1030 chose, pinned at v1.15's commit. Only MayaAssets
+# includes it (gltf.cpp); its types never appear in Maya's headers.
+FetchContent_Declare(cgltf GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git GIT_TAG 360db1a95480fe102ae9c69b27c5d101167ff5ba
+    SOURCE_SUBDIR not-a-cmake-project)
+FetchContent_MakeAvailable(cgltf)
+
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/property_context.cpp
@@ -106,9 +113,13 @@ add_library(MayaAssets STATIC
     src/maya/assets/material_file.cpp
     src/maya/assets/project.cpp
     src/maya/core/model_loader.cpp
-    src/maya/core/tangents.cpp)
+    src/maya/core/tangents.cpp
+    src/maya/assets/gltf.cpp
+    src/maya/assets/import_file.cpp
+    src/maya/assets/cook_cache.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
 target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures PRIVATE MayaMikkTSpace)
+target_include_directories(MayaAssets SYSTEM PRIVATE ${cgltf_SOURCE_DIR})
 maya_target_options(MayaAssets)
 
 # Scene persistence depends only on World data and a caller-supplied asset-reference resolver.
@@ -118,6 +129,13 @@ add_library(MayaScene STATIC
 add_library(Maya::Scene ALIAS MayaScene)
 target_link_libraries(MayaScene PUBLIC MayaWorld)
 maya_target_options(MayaScene)
+
+# Importing content (#1036): reads glTF files with MayaAssets and writes material, scene, import, and
+# catalog files. It loads nothing on the GPU.
+add_library(MayaImport STATIC src/maya/import/gltf_import.cpp)
+add_library(Maya::Import ALIAS MayaImport)
+target_link_libraries(MayaImport PUBLIC MayaAssets MayaScene)
+maya_target_options(MayaImport)
 
 # Render extraction, views, offscreen targets, and passes. Reads Worlds; never owns or edits them.
 add_library(MayaRenderer STATIC
@@ -278,9 +296,9 @@ endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
-    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp)
+    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp apps/benchmark/import_workload.cpp)
     target_include_directories(MayaBenchmark PUBLIC apps/benchmark)
-    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaBuildInfo)
+    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaImport MayaBuildInfo)
     maya_target_options(MayaBenchmark)
     add_executable(maya_benchmark apps/benchmark/main.cpp)
     # A window, and a display kept awake, for presenting runs.
@@ -319,6 +337,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/editor_preferences.cpp
         apps/editor/editor_shell.cpp
         apps/editor/editor_theme.cpp
+        apps/editor/import_files.cpp
         apps/editor/input_router.cpp
         apps/editor/inspector.cpp
         apps/editor/picking.cpp
@@ -331,7 +350,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
-    target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImGui)
+    target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImport MayaImGui)
     maya_target_options(MayaEditor)
 
     add_executable(maya_editor apps/editor/main.cpp)
@@ -357,11 +376,11 @@ if(MAYA_BUILD_PROTOTYPES)
     endfunction()
 
     # glTF 2.0 parsers: cgltf (MIT, single header), fastgltf (MIT, with simdjson), tinygltf 3 (MIT, C11).
-    FetchContent_Declare(cgltf GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git GIT_TAG v1.15 GIT_SHALLOW TRUE)
+    # cgltf is the engine's own dependency (above).
     FetchContent_Declare(tinygltf GIT_REPOSITORY https://github.com/syoyo/tinygltf.git GIT_TAG v3.0.1 GIT_SHALLOW TRUE)
     FetchContent_Declare(fastgltf GIT_REPOSITORY https://github.com/spnda/fastgltf.git GIT_TAG v0.9.1 GIT_SHALLOW TRUE)
     # stb and astc-encoder are the engine's own dependencies (above).
-    FetchContent_MakeAvailable(cgltf tinygltf)
+    FetchContent_MakeAvailable(tinygltf)
     set(FASTGLTF_DOWNLOAD_SIMDJSON ON CACHE BOOL "" FORCE)
     set(FASTGLTF_COMPILE_AS_CPP20 OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(fastgltf)

@@ -34,6 +34,7 @@ std::string encode(const PropertyDescriptor& property, const PropertyValue& valu
         if constexpr (std::same_as<T, bool>) return typed ? "true" : "false";
         else if constexpr (std::same_as<T, float>) return number(typed);
         else if constexpr (std::same_as<T, math::Vec3>) return number(typed.x) + ' ' + number(typed.y) + ' ' + number(typed.z);
+        else if constexpr (std::same_as<T, math::Vec2>) return number(typed.x) + ' ' + number(typed.y);
         else if constexpr (std::same_as<T, ChoiceValue>)
             return std::string(std::ranges::find(property.choices, typed.value, &EnumOption::value)->name);
         else if constexpr (std::same_as<T, AssetRef<TextureAsset>>)
@@ -51,6 +52,9 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, const st
         return std::nullopt;
     case PropertyType::vector3:
         if (math::Vec3 v; words.size() == 3 && parse(words[0], v.x) && parse(words[1], v.y) && parse(words[2], v.z)) return v;
+        return std::nullopt;
+    case PropertyType::vector2:
+        if (math::Vec2 v; words.size() == 2 && parse(words[0], v.x) && parse(words[1], v.y)) return v;
         return std::nullopt;
     case PropertyType::choice:
         if (words.size() != 1) return std::nullopt;
@@ -70,6 +74,7 @@ const char* expectation(PropertyType type) {
     case PropertyType::boolean: return "true or false";
     case PropertyType::scalar: return "one finite number";
     case PropertyType::vector3: return "three finite numbers";
+    case PropertyType::vector2: return "two finite numbers";
     case PropertyType::choice: return "one of its choices";
     case PropertyType::texture_ref: return "'none' or two hexadecimal texture ID words";
     default: return "a value";

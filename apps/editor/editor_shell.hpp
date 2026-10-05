@@ -11,6 +11,8 @@
 #include "texture_thumbnails.hpp"
 #include "ui_renderer.hpp"
 #include "maya/assets/project.hpp"
+#include "maya/import/gltf_import.hpp"
+#include "maya/assets/cook_cache.hpp"
 #include "maya/core/system_info.hpp"
 #include "maya/metrics/metrics.hpp"
 #include "maya/platform/input.hpp"
@@ -22,6 +24,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -195,6 +198,21 @@ public:
     /// `mesh`, when given, rests on the surface: it is lifted by how far it reaches below its origin.
     std::optional<math::Vec3> drop_point(ImVec2 point, AssetId mesh = {}) const;
 
+    /// Imports a glTF file inside the content root (docs/editor.md#importing-models), logs what it made
+    /// and any warnings, and refreshes the project; a failure shows why and changes nothing. With
+    /// `place`, the imported scene is then placed in the open scene, in front of the camera.
+    GltfImportResult import_model(const std::filesystem::path& path, bool place, bool notify = true);
+    /// Places a copy of a scene file's entities (content-relative) in the open scene at a world
+    /// position, with new IDs, as one undo step: dragging an imported model into the viewport.
+    EditResult place_scene(const std::filesystem::path& relative, math::Vec3 at);
+    /// glTF files in the content root, content-relative and sorted, as of the last scan.
+    const std::vector<std::filesystem::path>& model_files() const noexcept { return m_model_files; }
+    /// The open project's cook cache, or null when no project is open.
+    const CookCache* cook_cache() const noexcept { return m_cook_cache.get(); }
+    /// An asset's name for display: its file's name, or for a part of an imported file, what the
+    /// import file calls it ("Panel", "Albedo").
+    std::string asset_label(const AssetRecord& record) const;
+
     /// Routes this frame's input and builds the UI. A zero-sized (minimized) window skips the frame.
     void update(float delta_time, const std::vector<InputEvent>& events, const WindowMetrics& metrics);
     /// Inside a device frame with no pass open: renders the viewport, then the UI into `destination`
@@ -250,6 +268,10 @@ public:
     /// and environments name, for changes made outside the editor, and reloads the changed ones
     /// (docs/editor.md#watched-files). The editor checks every quarter second; this checks now.
     void check_asset_files();
+    /// Checks imported glTF files, and the files they name, for changes made outside the editor, and
+    /// imports a changed one again (docs/editor.md#watched-files). The editor checks every quarter
+    /// second, before check_asset_files; this checks now.
+    void check_imported_sources();
     /// Opens a script's file in the application the system uses for it.
     void open_script(AssetId script);
     /// While playing, the script VM's memory in use; 0 otherwise.
@@ -374,6 +396,11 @@ private:
     void draw_script_notes(EntityId id, const ComponentValue& value, const ScriptComponent& script);
     std::string read_catalog(const Project& project, std::unique_ptr<AssetRegistry>& registry);
     void scan_project();
+    void read_part_labels();
+    void accept_dropped_files();
+    /// Copies a glTF file from outside the project into models/ (a .gltf with the files it names, in a
+    /// folder of its own); null, with a notice, when it cannot.
+    std::optional<std::filesystem::path> copy_into_project(const std::filesystem::path& source);
     void draw_diagnostics();
     void draw_top_bar();
     void draw_status_bar();
@@ -439,6 +466,14 @@ private:
     };
     WatchedFile look_at(const AssetRecord& record) const;
     std::unordered_map<AssetId, WatchedFile, PersistentIdHash> m_watched_files;
+    /// An imported glTF file (content-relative), and it and the files it names as last seen.
+    struct ImportedSource {
+        std::filesystem::path source;
+        std::vector<std::filesystem::path> files; // the source first
+        std::vector<FileStamp> stamps;
+    };
+    std::vector<ImportedSource> m_imported_sources; // read with the import files, at each scan
+    std::vector<FileStamp> stamp_files(const std::vector<std::filesystem::path>& files) const;
     std::array<char, 256> m_script_text{}; // the script string property being typed into
     std::string m_script_text_key;
     char m_name_buffer[256] = {};
@@ -484,6 +519,10 @@ private:
     std::optional<Project> m_project;
     std::filesystem::path m_scene_path;
     std::vector<std::filesystem::path> m_scene_files;
+    std::vector<std::filesystem::path> m_model_files; // glTF files in the content root
+    std::shared_ptr<CookCache> m_cook_cache; // the open project's .maya/cache
+    std::unordered_map<AssetId, std::string, PersistentIdHash> m_part_labels; // parts of imported files, by their import files
+    std::vector<std::string> m_dropped_files; // dropped on the window this frame
     std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
     std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
     std::array<std::vector<size_t>, 6> m_shown_rows; // scenes, meshes, materials, scripts, textures, and environments passing the filter

@@ -258,6 +258,8 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             constants.factors = {material.metallic, material.roughness, material.normal_scale, material.occlusion_strength};
             constants.emissive = {material.emissive, material.alpha_cutoff};
             constants.flags[1] = uint32_t(material.alpha_mode);
+            constants.uv_transform = material_uv_transform(material.uv_rotation, material.uv_scale);
+            constants.uv_offset = {material.uv_offset.x, material.uv_offset.y, 0.0f, 0.0f};
             for (uint32_t slot = 0; slot < material_slots; ++slot)
                 if (material.textures[slot] != no_texture) constants.flags[0] |= 1u << slot;
             if (bound_maps != material.textures) {

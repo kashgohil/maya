@@ -26,12 +26,12 @@ struct ChoiceValue {
 using PropertyValue = std::variant<std::string, bool, float, math::Vec3, math::Quat, ChoiceValue,
                                   AssetRef<MeshAsset>, AssetRef<MaterialAsset>, int32_t, uint32_t,
                                   AssetRef<ScriptAsset>, std::vector<ScriptValue>, AssetRef<TextureAsset>,
-                                  AssetRef<EnvironmentAsset>>;
+                                  AssetRef<EnvironmentAsset>, math::Vec2>;
 /// integer is a whole number within the range; flags is a bit set no greater than range.maximum;
 /// script_values is the named values of a script component's declared properties.
 enum class PropertyType {
     text, boolean, scalar, vector3, quaternion, choice, mesh_ref, material_ref, integer, flags, script_ref, script_values,
-    texture_ref, environment_ref
+    texture_ref, environment_ref, vector2
 };
 enum class PropertyPresentation {
     text, toggle, number, vector, rotation, color, choice, asset,

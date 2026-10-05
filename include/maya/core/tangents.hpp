@@ -9,8 +9,8 @@ namespace maya {
 /// Writes every corner's tangent in a triangle list (three vertices per triangle, unindexed) with
 /// MikkTSpace, from positions, normals, and texture coordinates, in glTF's convention (see
 /// Vertex::tangent). Returns false, leaving the tangents unchanged, if the list is not whole triangles
-/// or MikkTSpace fails (it allocates). Corners without texture coordinates get some tangent
-/// perpendicular to their normal.
+/// or MikkTSpace fails (it allocates). Corners whose triangle's texture coordinates do not span it
+/// (none, or all on a line) get some unit tangent perpendicular to their normal.
 bool generate_tangents(std::span<Vertex> corners);
 
 struct IndexedVertices {

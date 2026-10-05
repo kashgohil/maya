@@ -112,6 +112,8 @@ RoutedInput InputRouter::route(const std::vector<InputEvent>& events, const Rout
             } else if constexpr (std::is_same_v<T, FocusEvent>) {
                 if (!e.focused && navigating()) end_navigation(output);
                 output.ui.push_back(e);
+            } else if constexpr (std::is_same_v<T, FileDropEvent>) {
+                output.ui.push_back(e); // the editor imports what it can
             }
         }, event);
     }

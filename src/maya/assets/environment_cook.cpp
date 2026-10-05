@@ -364,4 +364,63 @@ std::vector<std::byte> brdf_table(uint32_t size, uint32_t samples) {
         }
     return table;
 }
+namespace {
+template<class T> void put(std::vector<std::byte>& out, const T& value) {
+    const auto* bytes = reinterpret_cast<const std::byte*>(&value);
+    out.insert(out.end(), bytes, bytes + sizeof(T));
+}
+template<class T> bool take(std::span<const std::byte>& in, T& value) {
+    if (in.size() < sizeof(T)) return false;
+    std::memcpy(&value, in.data(), sizeof(T));
+    in = in.subspan(sizeof(T));
+    return true;
+}
+bool take_bytes(std::span<const std::byte>& in, std::vector<std::byte>& out) {
+    uint64_t size = 0;
+    if (!take(in, size) || in.size() < size) return false;
+    out.assign(in.begin(), in.begin() + std::ptrdiff_t(size));
+    in = in.subspan(size);
+    return true;
+}
+} // namespace
+
+std::vector<std::byte> write_cooked_environment(const CookedEnvironment& cooked) {
+    auto out = std::vector<std::byte>{};
+    for (const auto& c : cooked.irradiance) put(out, std::array<float, 3>{c.x, c.y, c.z});
+    put(out, std::array<uint32_t, 5>{cooked.background_width, cooked.background_height, cooked.background_levels,
+                                     cooked.specular_size, cooked.specular_levels});
+    put(out, uint64_t(cooked.background.size()));
+    out.insert(out.end(), cooked.background.begin(), cooked.background.end());
+    put(out, uint64_t(cooked.specular.size()));
+    out.insert(out.end(), cooked.specular.begin(), cooked.specular.end());
+    return out;
+}
+
+std::optional<CookedEnvironment> read_cooked_environment(std::span<const std::byte> in) {
+    auto cooked = CookedEnvironment{};
+    for (auto& c : cooked.irradiance) {
+        auto value = std::array<float, 3>{};
+        if (!take(in, value)) return std::nullopt;
+        c = {value[0], value[1], value[2]};
+    }
+    auto sizes = std::array<uint32_t, 5>{};
+    if (!take(in, sizes) || !take_bytes(in, cooked.background) || !take_bytes(in, cooked.specular) || !in.empty()) return std::nullopt;
+    cooked.background_width = sizes[0];
+    cooked.background_height = sizes[1];
+    cooked.background_levels = sizes[2];
+    cooked.specular_size = sizes[3];
+    cooked.specular_levels = sizes[4];
+    // The textures' sizes must be what their dimensions say, as uploading needs.
+    const auto bytes = [](uint32_t width, uint32_t height, uint32_t levels, uint32_t faces) {
+        uint64_t total = 0;
+        for (uint32_t level = 0; level < levels; ++level)
+            total += uint64_t(std::max(width >> level, 1u)) * std::max(height >> level, 1u) * 8 * faces;
+        return total;
+    };
+    if (cooked.background_levels == 0 || cooked.specular_levels == 0 || cooked.background_levels > 32 || cooked.specular_levels > 32 ||
+        cooked.background.size() != bytes(cooked.background_width, cooked.background_height, cooked.background_levels, 1) ||
+        cooked.specular.size() != bytes(cooked.specular_size, cooked.specular_size, cooked.specular_levels, 6))
+        return std::nullopt;
+    return cooked;
+}
 } // namespace maya

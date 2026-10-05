@@ -3,6 +3,7 @@
 // Pieces the benchmark runner's files share; not part of its interface.
 
 #include "benchmark.hpp"
+#include "maya/rhi/graphics_device.hpp"
 #include <cstdint>
 
 namespace maya::benchmark::detail {
@@ -17,5 +18,7 @@ constexpr uint64_t mix(uint64_t value) noexcept {
 
 /// P1: runs every worker configuration and run of the manifest, and records them in `result`.
 void run_physics(Result& result, const Manifest& manifest);
+/// Import: imports and loads each model of the manifest in every run, and records them in `result`.
+void run_import(Result& result, const Manifest& manifest, GraphicsDevice& device);
 
 } // namespace maya::benchmark::detail

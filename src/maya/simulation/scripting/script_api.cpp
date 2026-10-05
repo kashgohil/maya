@@ -112,6 +112,7 @@ void push_property(lua_State* L, const PropertyDescriptor& property, const Prope
         else if constexpr (std::same_as<T, bool>) lua_pushboolean(L, typed);
         else if constexpr (std::same_as<T, float>) lua_pushnumber(L, typed);
         else if constexpr (std::same_as<T, math::Vec3>) push_vector(L, typed);
+        else if constexpr (std::same_as<T, math::Vec2>) push_vector(L, math::Vec3{typed.x, typed.y, 0.0f});
         else if constexpr (std::same_as<T, math::Quat>) push_quaternion(L, typed);
         else if constexpr (std::same_as<T, ChoiceValue>) {
             for (const auto& option : property.choices)
@@ -152,6 +153,11 @@ PropertyValue to_property(lua_State* L, int index, const PropertyDescriptor& pro
     case PropertyType::vector3:
         if (!lua_isvector(L, index)) throw wrong("a vector");
         return check_vector(L, index);
+    case PropertyType::vector2: { // a Luau vector whose z is ignored
+        if (!lua_isvector(L, index)) throw wrong("a vector");
+        const auto v = check_vector(L, index);
+        return math::Vec2{v.x, v.y};
+    }
     case PropertyType::quaternion: {
         const auto* q = to_quaternion(L, index);
         if (!q) throw wrong("a quaternion");

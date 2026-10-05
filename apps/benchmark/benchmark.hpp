@@ -22,6 +22,7 @@ enum class Workload {
     load_cycles, // L1: load the generated scene from its file, play and render, unload; repeatedly
     play_cycles, // L1: start and stop play sessions from one authored scene; repeatedly
     physics, // P1: the physics stress scene, ticked back to back with no views
+    import, // glTF files imported into a new project, then loaded cold (cooking) and warm (cook cache)
 };
 
 /// A versioned benchmark description (docs/performance.md#manifests). Paths are relative to the
@@ -55,6 +56,9 @@ struct Manifest {
     uint32_t sensors = 50;
     uint32_t rays = 1000, overlaps = 100, casts = 20; // queries per tick
     std::vector<int> workers{-1, 0}; // physics worker threads per configuration; -1 is the default
+    // Import: glTF files (with the files they name) under `content`, e.g. the R1 content.
+    std::filesystem::path content; // resolved
+    std::vector<std::filesystem::path> models; // relative to `content`
 };
 struct ManifestResult {
     Manifest manifest;
@@ -135,6 +139,19 @@ struct PhysicsScene {
     size_t boxes = 0, spheres = 0, capsules = 0, obstacles = 0, sensors = 0, scripted = 0;
 };
 
+/// Import: one model in one run, in milliseconds.
+struct ImportSample {
+    std::string model; // its file name
+    double import_ms = 0.0; // import_gltf: parse, convert, and write the material, scene, import, and catalog files
+    double cold_ms = 0.0; // load every part through an empty cook cache: decode, cook, upload, and write the cache
+    double warm_ms = 0.0; // load every part again in a new session, from the cook cache
+    size_t meshes = 0, textures = 0, materials = 0, entities = 0;
+    size_t triangles = 0;
+    size_t texture_gpu_bytes = 0, cache_bytes = 0;
+    size_t warm_hits = 0, warm_misses = 0;
+    std::string cache_digest; // of every cache entry, in path order: equal across runs when cooking is deterministic
+};
+
 struct Result {
     Manifest manifest;
     SystemInfo system;
@@ -150,7 +167,9 @@ struct Result {
     std::optional<bool> authored_unchanged; // play cycles
     PhysicsScene physics_scene;
     std::vector<PhysicsRun> physics_runs;
-    std::optional<bool> deterministic; // physics: every run and worker configuration ended in the same state
+    std::optional<bool> deterministic; // physics: every run and worker configuration ended in the same state; import: every
+                                       // run cooked the same bytes
+    std::vector<ImportSample> imports; // import: per run, per model
     std::vector<std::pair<std::string, std::string>> unavailable; // metric, reason
     std::optional<double> refresh_hz; // presenting runs: the display's refresh rate
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended

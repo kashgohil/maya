@@ -4,12 +4,14 @@
 #include "maya/assets/texture_data.hpp"
 #include "maya/core/mesh.hpp"
 #include "maya/core/texture.hpp"
+#include "maya/core/sha256.hpp"
 #include <array>
 #include <concepts>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace maya {
 enum class AssetKind { mesh, material, script, texture, environment };
@@ -134,6 +136,14 @@ struct AssetRecord {
     AssetKind kind;
     std::filesystem::path path; // normalized, project-relative, never a serialized runtime handle
 };
+/// A catalog path names a file, or a part of an imported glTF file after '#' (docs/import.md#catalog-entries):
+/// "models/helmet.glb#mesh/0/1" is primitive 1 of mesh 0, and "models/helmet.glb#texture/2/color" is
+/// texture 2 cooked as color. Only a path whose file ends in .gltf or .glb has a part.
+struct AssetSourcePath {
+    std::filesystem::path file;
+    std::string part; // empty for a whole file
+};
+AssetSourcePath split_asset_path(const std::filesystem::path& path);
 struct AssetInfo {
     AssetRecord record;
     AssetState state = AssetState::unloaded;
@@ -151,20 +161,42 @@ public:
     virtual AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& absolute_path);
     /// `absolute_path` is an environment file (.environment). The default refuses.
     virtual AssetLoadResult<EnvironmentAsset> load_environment(const std::filesystem::path& absolute_path);
+    /// A mesh or texture inside an imported file: `source` is the glTF file and `part` what follows '#'
+    /// in its catalog path. The defaults refuse.
+    virtual AssetLoadResult<MeshAsset> load_imported_mesh(const std::filesystem::path& source, std::string_view part);
+    virtual AssetLoadResult<TextureAsset> load_imported_texture(const std::filesystem::path& source, std::string_view part);
 };
+class GltfFile;
+class CookCache;
 /// Initial adapter: the OBJ loader, material files, texture descriptors whose source is cooked at load
-/// (PNG or JPEG) or read as cooked KTX2, and environments cooked at load from Radiance HDR images.
+/// (PNG or JPEG) or read as cooked KTX2, environments cooked at load from Radiance HDR images, and the
+/// meshes and textures of imported glTF files.
 class FileAssetProvider final : public AssetProvider {
 public:
-    explicit FileAssetProvider(GraphicsDevice& device) : m_device(device), m_lifetime(device.resource_lifetime()) {}
+    /// With a cache, what loading cooks is read from it when it is there and written to it when not
+    /// (docs/assets.md#cook-cache).
+    explicit FileAssetProvider(GraphicsDevice& device, std::shared_ptr<CookCache> cache = nullptr);
+    ~FileAssetProvider() override;
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override;
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override;
     AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override;
     /// Decodes the source .hdr and cooks it (cook_environment) on every core.
     AssetLoadResult<EnvironmentAsset> load_environment(const std::filesystem::path& path) override;
+    /// Parts of a glTF file. The last file opened stays open while it is unchanged on disk, so loading
+    /// its meshes and textures one after another parses it once.
+    AssetLoadResult<MeshAsset> load_imported_mesh(const std::filesystem::path& source, std::string_view part) override;
+    AssetLoadResult<TextureAsset> load_imported_texture(const std::filesystem::path& source, std::string_view part) override;
 private:
+    struct OpenGltf;
+    /// The open file, or why it cannot be opened.
+    std::shared_ptr<const GltfFile> open_gltf(const std::filesystem::path& source, std::string& error);
+    /// The digest of an imported file and every file its import file says it names (buffers, images),
+    /// for cache keys; null without an import file, or when one of them cannot be read.
+    std::optional<Sha256Digest> imported_digest(const std::filesystem::path& source);
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;
+    std::shared_ptr<CookCache> m_cache;
+    std::unique_ptr<OpenGltf> m_gltf;
 };
 /// Explicit fallback: missing meshes skip their draw; failed materials may use this value.
 const MaterialAsset& fallback_material() noexcept;

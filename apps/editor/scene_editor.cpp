@@ -15,6 +15,7 @@ bool same_value(const PropertyValue& a, const PropertyValue& b) {
         using T = std::decay_t<decltype(left)>;
         const auto& right = std::get<T>(b);
         if constexpr (std::is_same_v<T, math::Vec3>) return left.x == right.x && left.y == right.y && left.z == right.z;
+        else if constexpr (std::is_same_v<T, math::Vec2>) return left.x == right.x && left.y == right.y;
         else if constexpr (std::is_same_v<T, math::Quat>)
             return left.x == right.x && left.y == right.y && left.z == right.z && left.w == right.w;
         else return left == right;
@@ -540,6 +541,49 @@ EditResult SceneEditor::duplicate_selection() {
         copies.push_back(remap.at(original));
     }
     return commit(copies.size() == 1 ? "Duplicate " + display_name(originals.front()) : "Duplicate", change.take(), copies);
+}
+
+EditResult SceneEditor::insert(const SceneDocument& document, std::string label, math::Vec3 offset) {
+    if (document.entities.empty()) return {false, "The scene has no entities"};
+    auto remap = std::unordered_map<EntityId, EntityId, PersistentIdHash>{};
+    for (const auto& entity : document.entities) remap.emplace(entity.id, m_new_id());
+    auto names = std::unordered_set<std::string>{};
+    for (const auto& [id, record] : m_state.entities)
+        if (const auto* value = find_component(record, ComponentId::name)) names.insert(std::get<NameComponent>(*value).value);
+    auto change = ChangeBuilder(m_state);
+    auto roots = std::vector<EntityId>{};
+    auto children = std::vector<std::pair<EntityId, std::vector<EntityId>>>{}; // in document order
+    for (const auto& source : document.entities) {
+        const auto id = remap.at(source.id);
+        auto entity = EntityRecord{};
+        if (source.parent) {
+            const auto parent = remap.find(*source.parent);
+            if (parent == remap.end()) return {false, "An entity's parent is not in the scene"};
+            entity.parent = parent->second;
+            auto found = std::ranges::find(children, parent->second, &std::pair<EntityId, std::vector<EntityId>>::first);
+            if (found == children.end()) found = children.insert(children.end(), {parent->second, {}});
+            found->second.push_back(id);
+        } else {
+            roots.push_back(id);
+        }
+        for (auto value : source.components) {
+            if (!source.parent) {
+                if (auto* transform = std::get_if<TransformComponent>(&value)) transform->translation = transform->translation + offset;
+                if (auto* name = std::get_if<NameComponent>(&value); name && names.contains(name->value)) {
+                    name->value = copy_name(name->value, names);
+                    names.insert(name->value);
+                }
+            }
+            if (auto error = validate_component(value, m_context); !error) return {false, std::string(error.message)};
+            put_component(entity, std::move(value));
+        }
+        change.set(id, std::move(entity));
+    }
+    for (auto& [parent, kids] : children) change.order(parent, std::move(kids));
+    auto top = change.children({});
+    top.insert(top.end(), roots.begin(), roots.end());
+    change.order({}, std::move(top));
+    return commit(std::move(label), change.take(), roots);
 }
 
 EditResult SceneEditor::delete_selection() {

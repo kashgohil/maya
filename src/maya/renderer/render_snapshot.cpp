@@ -117,6 +117,9 @@ public:
         material.alpha_mode = value.alpha_mode;
         material.alpha_cutoff = value.alpha_cutoff;
         material.double_sided = value.double_sided;
+        material.uv_offset = value.uv_offset;
+        material.uv_rotation = value.uv_rotation;
+        material.uv_scale = value.uv_scale;
         const auto slot = [&](MaterialSlot which, AssetRef<TextureAsset> ref) {
             material.textures[size_t(which)] = texture(ref, which, id, entity);
         };
