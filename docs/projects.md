@@ -25,6 +25,8 @@ group 1 "Player"
 
 Every path must be relative and may not contain `..`, so a copied or moved project keeps working. [project.hpp](../include/maya/assets/project.hpp) in `MayaAssets` reads and writes the file (`read_project`, `write_project`) and opens it (`open_project`). The result holds canonical absolute paths derived from the project file. `Project::resolve` maps a content-relative path into the content root and refuses any path that would leave it, including through a symlink. Nothing about a project comes from the working directory or from the application's resource search roots. Only the editor's own shaders and fonts are found that way.
 
+Beside `project.maya`, the editor and the player keep a **`.maya/cache`** folder: the [cook cache](assets.md#cook-cache) (#1036) of what loading cooked. It is not part of the project: it holds its own `.gitignore`, the editor never lists it, and deleting it is always safe.
+
 The sample project is [samples/basic_scene/project.maya](../samples/basic_scene/project.maya).
 
 ### Collision groups

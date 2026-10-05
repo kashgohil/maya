@@ -150,13 +150,25 @@ To support this, the RHI gained three general features (see [the graphics device
 - **Both views** show it: the Scene view under the editor camera's exposure, and the Game view and Play under the scene camera's.
 - **Reloading.** A changed environment file or source image reloads by itself ([watched files](#watched-files)) and cooks again; Reload in its menu does so at once.
 
+## Importing models
+
+[Issue #1036](https://work.rezee.app/kash/issues/1036) imports glTF files ([import](import.md)) in the editor ([import_files.cpp](../apps/editor/import_files.cpp)):
+
+- **Dropping** a `.gltf` or `.glb` file anywhere on the window imports it and places its scene in the open scene, in front of the camera, as one undo step ("Place helmet"). GLFW does not say where a file was dropped, so it is not placed under the pointer. A file from outside the content root is first copied into `models/` (a `.gltf`, with the buffers and images it names, into `models/<name>/`); a copy that would replace a file is refused, with a notice. Other files are not imported, and Diagnostics says so.
+- **The Scene menu's Import model** lists the project's glTF files; one already imported says *reimport*. Importing from the menu places nothing.
+- **What happens** is logged: what was made ("Imported models/helmet.glb: 1 meshes, 5 textures, 1 materials, scene models/helmet.scene"), each warning with its JSON path, each kept file, and what was added, renamed, or removed since the last import. The project is then refreshed, so every view loads the new catalog. A failure shows its problems in a notice and changes nothing.
+- **The Assets panel** names an imported part by what its import file calls it ("Panel", "Panel 1" for a mesh's second primitive, "Albedo"), with its catalog path in the filter and the tooltip, and never reports a part missing while its file is there.
+- **Placing.** An imported scene (any scene file, in fact) dragged from the Assets panel's Scenes column into the viewport, or placed from its menu (**Place in scene**), is copied into the open scene where it lands (`place_scene`, `SceneEditor::insert`): every entity gets a new ID, the copy's root is moved there and renamed when its name is taken (*helmet (1)*), and it is one undo step. Copies are not linked to their source: a reimport changes the import's own scene, and the copies keep their entities, edits, and overrides while their meshes and materials load the new versions.
+- **The import's own scene**, open when it is imported again: shown again when it has no unsaved edits; otherwise a notice says that saving keeps the edits, after which imports keep the file as edited.
+
 ## Watched files
 
 The editor watches the files of loaded materials (#1033), textures, and environments (#1035), and the source images textures and environments name, as it watches scripts ([reload](scripting.md#reload)). Four times a second, `check_asset_files` ([watched_files.cpp](../apps/editor/watched_files.cpp)) compares each one's presence, modification time, and size with what it last read; for a texture or an environment, it reads the file's `source` and compares that image too. An asset whose file or source changed outside the editor is reloaded into the registry, cooked again if it is a texture or an environment, so every view shows it at the next frame, and Diagnostics logs "Reloaded".
 
 - **Not an outside change:** the editor's own saves, discards, and Reloads note the file as they leave it (`note_watched_file`), so the watcher does not read it again.
 - **A file that cannot be read**, such as one caught half-written by another program or deleted, keeps the last good version in use. Diagnostics reports it once per problem, and the asset reloads when the file is whole again.
-- **Not watched:** an asset no frame or row has loaded yet, since it reads its file when first used; meshes (Reload in their menu). The player never watches files.
+- **Imported sources** (#1036): `check_imported_sources` runs first, four times a second, over every glTF file with an [import file](import.md#import-files): the file, its import file, and the files it names. When one changes, the file is imported again ("models/helmet.glb changed; importing it again"), quietly: a failure, such as a file caught half-written, is logged, the last import stays in use, and the next change tries again. An empty file waits. The reimport refreshes the project, so meshes, textures, materials, and the scenes that use them show the new versions at the next frame, in the Scene view and in a running Play alike. A part of an imported file is otherwise watched through its file and import file, as a texture is through its source.
+- **Not watched:** an asset no frame or row has loaded yet, since it reads its file when first used; OBJ meshes (Reload in their menu). The player never watches files.
 
 ## Diagnostics
 
@@ -192,7 +204,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 ## Limitations
 
 - Layout, window placement, and editor camera state (including its exposure and tone mapping) are not saved between runs; the preferences file holds only the debug views so far.
-- Dialogs are drawn in the editor window; there are no native open or save panels.
+- Dialogs are drawn in the editor window; there are no native open or save panels, so models are imported by dropping them or from the Scene menu's list.
 - No IME composition, gamepad or keyboard navigation of the UI, or multiple OS windows (ImGui multi-viewports).
 - The cursor-shape service covers arrow, text, hand, and horizontal/vertical resize. GLFW 3.3 has no diagonal or "not allowed" cursors.
 
@@ -218,6 +230,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
   - **Play:** contacts captured only while their check is on, outlines from the physics world, and the Physics section's counts, cleared at Stop.
   - **Handles:** a box face resized with the opposite face held, one undo step that undoes and redoes; the centre moving the offset; a sphere's radius; a capsule lengthened from one end; the gizmo back when editing stops; no handles in Play; and drags past the centre stopping at the smallest size, which validation accepts.
 - [editor_material_tests.cpp](../tests/editor_material_tests.cpp) (#1033) and [editor_environment_tests.cpp](../tests/editor_environment_tests.cpp) (#1035) cover [material editing](#materials) and [environments](#environments): using an environment by double-click and by dropping it in the viewport, as one undo step that sets the scene's one Environment component; the Inspector's environment fields; the material scene lit by its environment; and [watched files](#watched-files), with a changed environment file or source image cooked again and a broken file keeping the last version. [editor_texture_tests.cpp](../tests/editor_texture_tests.cpp) checks the same for a texture's source image and file, and that Reload from its menu is not read again by the watcher.
+- [editor_import_tests.cpp](../tests/editor_import_tests.cpp) (#1036) covers [importing models](#importing-models): from the Scene menu, by dropping a file from inside and outside the project, refusing other files and broken ones, dragging an imported scene into the viewport, part labels, reimports when a source or a file it names changes (and waiting for a half-written one), a scene that keeps its moves and overrides through a reimport that changes geometry, and a reload into a running Play.
 
 #999 validation on 24 September 2026:
 

@@ -55,7 +55,7 @@ The format is line-based UTF-8 text, so it diffs and merges well and is consiste
 | --- | --- |
 | Entity/asset IDs | Two nonzero-together hexadecimal 64-bit words, the same as the asset catalog. |
 | Numbers | Shortest decimal text that round-trips the float exactly. `nan`, `inf`, and out-of-range values are rejected. |
-| Vector / quaternion | 3 or 4 numbers; quaternions are `x y z w`. |
+| Vector / quaternion | 2 or 3 numbers for a vector, 4 for a quaternion (`x y z w`). |
 | Boolean | `true` or `false`. |
 | Text | Double-quoted UTF-8. `\"`, `\\`, `\n`, `\r`, `\t` escapes; other control characters use `\xHH`. `\x` is only for control characters. |
 | Choice | Stable choice name, such as a light kind (`directional`, `point`, `spot`), a collider shape (`box`, `sphere`, `capsule`), or a body motion (`dynamic`, `kinematic`). |

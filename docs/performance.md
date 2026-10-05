@@ -109,7 +109,7 @@ A manifest is a small versioned text file. Its keys may appear in any order, eac
 ```text
 maya-benchmark 1
 name "i1-10k"
-workload instances           # instances, scene, load_cycles, play_cycles, or physics
+workload instances           # instances, scene, load_cycles, play_cycles, physics, or import
 project "../samples/basic_scene"
 mesh 6d617961 2              # catalog IDs of the shared mesh and material
 material 6d617961 11
@@ -134,6 +134,7 @@ present off                  # on: present every frame to a window and measure d
 | `load_cycles` | L1 load/unload. The generated scene is saved to a file. First, a malformed copy and a copy with a missing asset must be refused, leaving nothing behind. Then, for each cycle: load the file, start a play session, render `ticks` frames, stop, wait for the GPU, evict unused asset versions, and sample memory. |
 | `play_cycles` | L1 play reset. Starts and stops play sessions from the same authored scene. The authored World must be unchanged afterwards. |
 | `physics` | P1 physics stress ([recipe](architecture/performance-baseline.md#p1-physics-stress), #1024). Generates the P1 scene and ticks it back to back, headless: no project, views, or device work. Each worker configuration runs `runs` times. |
+| `import` | glTF import and cooking ([below](#import), #1036). No project or views: each model is imported into a new project and loaded into the device, cold and warm. |
 
 Cycle workloads take `cycles`, `ticks` (frames per cycle), and `slope_from`, the first cycle of the footprint slope's fit (default 11). The L1 manifests run 300 cycles and fit from cycle 101, once allocator warm-up has finished (#1024).
 
@@ -151,6 +152,19 @@ warmup 300                   # ticks
 samples 3000
 runs 3
 ```
+
+### Import
+
+The import workload ([import_workload.cpp](../apps/benchmark/import_workload.cpp)) takes the folder of the content and its models instead of a project, the mesh, material, camera, and resolution:
+
+```text
+workload import
+content "../build/render-samples"   # from tools/fetch_render_samples.sh
+models "Models/ABeautifulGame/glTF-Binary/ABeautifulGame.glb" "Models/FlightHelmet/glTF/FlightHelmet.gltf"
+runs 3
+```
+
+For each run and model, it copies the model (and the files a `.gltf` names) into a new project in the temporary folder, then measures, each in a new session: **import** ([import_gltf](import.md)); **cold load**, every mesh, texture, and material the import cataloged loaded through an empty [cook cache](assets.md#cook-cache), so cooked and written; and **warm load**, the same from the cache. It records the counts, triangles, texture GPU bytes, the cache's size and hits, and a digest of every cache entry. The run **fails** when runs cooked different bytes, or when a warm load missed the cache. The text summary gives each model's median. [r1_import](../benchmarks/r1_import.benchmark) runs R1's hero content; its results are in the [import doc](import.md#cost). The OS file cache is not controlled, so "cold" means an empty cook cache, not unread files.
 
 The seed selection uses SplitMix64, so it is the same on every machine. Generated scenes are built with the same World, scene, and asset APIs as authored content. Before a run, the generated scene is validated against the project's catalog, just as a scene file is.
 

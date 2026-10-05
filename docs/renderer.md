@@ -158,6 +158,7 @@ The views ignore the tone mapper. They help set exposure: a well-exposed subject
 | Normal | The normal map in tangent space: x in red, green, and blue and y in alpha, as [textures](assets.md#textures) store normals; z is rebuilt, then x and y scaled by `normal_scale`. +Y points up the texture. |
 | Occlusion | 1 + `occlusion_strength` × (the occlusion map's red − 1), on ambient light only. |
 | Emissive | `emissive` × `emissive_strength` × the emissive map, added after lighting. |
+| Texture coordinates | Every map is read at the vertex's texture coordinates transformed by the material's `uv_scale`, `uv_rotation`, and `uv_offset` (#1036, `KHR_texture_transform`; [properties](properties.md#materials)): the CPU passes the rotation and scale as a 2×2 matrix (`material_uv_transform`) and the offset, in `MaterialConstants` (96 bytes). |
 | Alpha | Base color alpha. `opaque` ignores it; `mask` discards fragments below `alpha_cutoff`; `blend` blends over what is behind. |
 | Double-sided | Drawn without culling; seen from behind, the normal, tangent, and bitangent all turn around. |
 

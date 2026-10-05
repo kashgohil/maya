@@ -36,11 +36,14 @@ material 6d617961 2 "materials/bark.mat"
 script 6d617961 20 "scripts/spin.luau"
 texture 6d617961 50 "textures/bark.texture"
 environment 6d617961 58 "environments/workshop.environment"
+mesh 6d617961 1a2b "models/helmet.glb#mesh/0/0"
 ```
+
+A path whose file ends in `.gltf` or `.glb` can name a **part** of that file after `#`: a glTF mesh's primitive (`#mesh/<mesh>/<primitive>`) or a texture in a role (`#texture/<texture>/<role>`). Imports write these entries ([import](import.md#catalog-entries)); only meshes and textures can be parts, and the registry checks the file's presence and boundary, not the part's.
 
 `write_asset_catalog(stream, registry.records())` writes metadata only. `read_asset_catalog(stream)` checks syntax/version/ID words and returns records or a diagnostic; register each record in a fresh registry before publishing that project. Registration validates identity, kind, duplicate sources, and project boundaries. Parsing/registration does not load resources. Loading a malformed catalog must discard the unpublished registry, not expose a partially registered project. Filesystem I/O and allocation exceptions remain ordinary exceptions. This catalog is not the [scene format](scene.md) (#995); scenes store only AssetIds and validate them against the catalog.
 
-Relative paths resolve strictly against the supplied existing project directory. Missing files can be registered so their identity/diagnostics survive. Absolute paths, traversal outside the root, and symlink escapes are rejected; symlinks are rechecked on every actual load. The registry does not consult the working directory or application search roots. Moving the project directory preserves references when its relative layout and catalog move with it. Changing paths/IDs, dependency remapping, file watching, and atomic catalog saves are later editor/import work.
+Relative paths resolve strictly against the supplied existing project directory. Missing files can be registered so their identity/diagnostics survive. Absolute paths, traversal outside the root, and symlink escapes are rejected; symlinks are rechecked on every actual load. The registry does not consult the working directory or application search roots. Moving the project directory preserves references when its relative layout and catalog move with it. Imports ([#1036](import.md)) rewrite the catalog atomically, last, after every file it names is written; the editor watches loaded assets' files ([watched files](editor.md#watched-files)).
 
 ### Materials
 
@@ -119,7 +122,7 @@ Each setting appears exactly once, in any order; blank lines are allowed. `read_
 
 ### Cooking at load
 
-Until [#1036](https://work.rezee.app/kash/issues/1036) caches cooked results, a PNG or JPEG source is cooked whenever its texture loads ([texture_cook.hpp](../include/maya/assets/texture_cook.hpp)):
+A PNG or JPEG source is cooked when its texture loads and the [cook cache](#cook-cache) does not have it ([texture_cook.hpp](../include/maya/assets/texture_cook.hpp)):
 
 1. **Decode** with stb_image (PNG and JPEG only, from memory) to straight-alpha RGBA8, exactly the stored values: no color management or premultiplication. Images above the device's largest texture are refused before their pixels are decoded. stb_image is not hardened against hostile files; it cooks the project's own content, and packaged games will read cooked KTX2 only ([#1039](https://work.rezee.app/kash/issues/1039)).
 2. **Mips** with stb_image_resize2, each level halved from the one before: sRGB-correct with alpha-weighted color for color, every channel independent for data, and renormalized for normals (a straight-up normal where a texel holds no direction).
@@ -169,9 +172,28 @@ Each key appears at most once; anything else is refused with its line. **Loading
 - **irradiance:** nine spherical-harmonic coefficients, projected from every texel by its solid angle and convolved with the cosine lobe;
 - **the specular cube:** RGBA16F, up to six levels from `specular_size` (128 gives 128 to 4). Level 0 reads the source at the mip that matches a cube texel; each rougher level averages GGX importance samples around each texel's direction (N = V = R), each read from the source at the mip that matches its solid angle (filtered importance sampling, Karis 2013), so few samples stay smooth.
 
-Values above the half-float range (65,504) are clamped. An `EnvironmentAsset` owns the background, the cube, a sampler (linear, repeating around the horizon), and the coefficients, and reports its cooking time and GPU bytes. **Once per version:** an environment is cooked when it is first acquired and when it is reloaded, never per frame; `residency()` counts resident environments and their GPU bytes. A 1024 × 512 source cooks in about 60 ms at 128 per face in Release (200 ms at 256) and takes 6.3 MiB on the GPU ([cost](renderer.md#environments)); #1036's cook cache will keep cooked environments between runs.
+Values above the half-float range (65,504) are clamped. An `EnvironmentAsset` owns the background, the cube, a sampler (linear, repeating around the horizon), and the coefficients, and reports its cooking time and GPU bytes. **Once per version:** an environment is cooked when it is first acquired and when it is reloaded, never per frame; `residency()` counts resident environments and their GPU bytes. A 1024 × 512 source cooks in about 60 ms at 128 per face in Release (200 ms at 256) and takes 6.3 MiB on the GPU ([cost](renderer.md#environments)); the [cook cache](#cook-cache) keeps cooked environments between runs.
 
 **Sample environments.** The sample project's [environments](../samples/basic_scene/assets/environments) are two [Poly Haven](https://polyhaven.com) HDRIs at 1024 × 512, CC0 (public domain): *Aerodynamics Workshop* (indoors, `workshop`) and *Kloofendal 48d Partly Cloudy (Pure Sky)* (outdoors, `sky`). Unlike #1030's sample content, which is fetched, they are committed (about 1.4 MiB each) because the reference images need them; their sources and hashes are in the folder's README. The 2k workshop for #1030's prototypes is still fetched.
+
+## Cook cache
+
+[#1036](https://work.rezee.app/kash/issues/1036) keeps what loading cooks, so a later load reads it instead of cooking again ([cook_cache.hpp](../include/maya/assets/cook_cache.hpp)). `FileAssetProvider` takes an optional `CookCache`; the editor and the player give it the project's, `<project folder>/.maya/cache` (`cook_cache_folder`), and tests and the benchmark's frame workloads give it none.
+
+| Entry (`.<kind>`) | Payload | Key: besides the kind, its version, and the source's SHA-256 |
+| --- | --- | --- |
+| `texture` | the cooked image as [KTX2](#ktx2) | role, compression, mips, and whether the device samples ASTC |
+| `environment` | the background, the specular cube, and the irradiance | `specular_size`, `samples`, and the largest dimension decoded |
+| `mesh` (imported) | the welded vertices and indices | the part |
+| `imported-texture` | the sampler's description, then KTX2 | the part, role, compression, mips, and ASTC |
+
+- **Keys** are SHA-256 digests of the kind, a **cook version** per kind (`texture_cook_version`, ...), the source's digest, and the settings as text. A change to how something is cooked that changes its bytes raises its version, so older entries are never read. An imported part's source digest covers the glTF file and [every file its import file names](import.md#import-files); without an import file, parts are not cached. A source's digest is remembered while its size and modification time stay the same, so a file's parts hash it once per session.
+- **Entries** are `<first two hex digits>/<digest>.<kind>`: a header with the payload's size and SHA-256, then the payload. An entry that does not match its digest (damaged, or caught half-written by another program) is a miss, cooked again, and replaced. Entries are written atomically ([replace_file](../include/maya/core/file_replace.hpp)).
+- **Never shared:** the folder holds a `.gitignore` of `*`, written with its first entry. Deleting the folder is always safe; it is filled again as assets load. Nothing removes old entries yet: a changed source leaves the entries cooked from what it was.
+- **Never fatal:** an entry that cannot be written (a read-only project, a full disk) is counted in `stats().failures`, and the asset loads anyway.
+- **Deterministic:** cooking is, so the same source and settings give byte-identical entries; the [import workload](performance.md#import) checks this on every run.
+
+A cached environment reports a cooking time of 0. With R1's content, loading from the cache is 8 times faster than cooking ([cost](import.md#cost)).
 
 ## Loading and reload
 
@@ -186,7 +208,7 @@ Values above the half-float range (65,504) are clamped. An `EnvironmentAsset` ow
 
 `AssetProvider` is replaceable and returns owned candidates plus diagnostics. The initial `FileAssetProvider` calls the existing OBJ loader through a checked entry point, validates material files, and uploads one vertex/index buffer pair per loaded mesh version. OBJ support is deliberately limited to positive indices and triangular faces with optional UVs/normals. Malformed numbers, missing coordinates, invalid indices, unsupported polygons, and empty geometry report file/line diagnostics before upload. Absent UVs/normals retain the legacy zero defaults; authored normals are needed for useful lighting. Since #1033 the loader generates [MikkTSpace tangents](renderer.md#materials) per triangle corner and then shares the corners that agree (`generate_tangents`, `weld_vertices`), so a vertex on a UV seam may be split where it was not before. The legacy `ModelLoader::load_obj` adapter retains application search-root resolution.
 
-Loading is **synchronous** and registry/device access, including final mesh-lease release and cache eviction, belongs to one owner thread. Call it at a controlled scene/asset boundary, not accidentally in a per-draw path. The separation between persistent identity, immutable candidate publication, provider, and residency leaves room for asynchronous CPU import and dependency bundles. Worker scheduling, cancellation/request tokens, dependency graphs, retries, load budgets, glTF, and cooking are not implemented. An async extension must tag completions by registry/request generation, reject stale results, and keep GPU upload/publication on the owning thread. Future composite assets must retain dependency leases for the complete lifetime of their loaded version; a plain dependency AssetRef does not pin it.
+Loading is **synchronous** and registry/device access, including final mesh-lease release and cache eviction, belongs to one owner thread. Call it at a controlled scene/asset boundary, not accidentally in a per-draw path. The separation between persistent identity, immutable candidate publication, provider, and residency leaves room for asynchronous CPU import and dependency bundles. Worker scheduling, cancellation/request tokens, retries, and load budgets are not implemented; glTF files are [imported](import.md) and their parts load through the same provider, and cooked results are [cached](#cook-cache). An async extension must tag completions by registry/request generation, reject stale results, and keep GPU upload/publication on the owning thread. Future composite assets must retain dependency leases for the complete lifetime of their loaded version; a plain dependency AssetRef does not pin it.
 
 ## Release and GPU retirement
 

@@ -17,6 +17,7 @@ Each property's control comes from its schema descriptor:
 | --- | --- |
 | scalar | Drag field, clamped to the schema range (an exclusive bound stays just inside it), with its unit (`m`). Radian properties (`rad`) show and edit degrees. |
 | vector3 | Three drag fields with red, green, and blue axis marks. |
+| vector2 | Two drag fields with red and green axis marks (a material's UV offset and scale, #1036). |
 | vector3, color | Color editor (RGB with a swatch), allowing values above 1 (HDR). |
 | quaternion | Euler angles in degrees, rotation = Rz·Ry·Rx. They are kept stable during a drag so they do not jump at ±180°, and gimbal lock is handled. |
 | boolean | Checkbox. |

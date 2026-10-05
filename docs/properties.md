@@ -21,7 +21,7 @@
 | 11 / `maya.script` | 1 `script`, 2 `values` — [scripting](scripting.md) (#1018) |
 | 12 / `maya.environment` | 1 `environment` (an environment reference), 2 `intensity` (0 to 100,000), 3 `rotation` (rad, −π to π), 4 `background` — [environments](renderer.md#environments) (#1035) |
 
-Property values are one of: text, boolean, scalar (float), vector3, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh, material, (since #1033, for [materials](#materials)) texture, or (since #1035) environment reference, integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
+Property values are one of: text, boolean, scalar (float), vector3, (since #1036, for [materials](#materials)) vector2, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh, material, (since #1033, for [materials](#materials)) texture, or (since #1035) environment reference, integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
 
 A persistent property identity is the pair `(ComponentId, PropertyId)`. Property IDs are scoped to their component; zero is reserved. Display labels, table order, RTTI, C++ layout, variant indices, and pointer addresses never identify saved data. Lookup returns null for unknown identities. The initial built-in schema set is deliberately closed; adding another component requires a typed variant alternative, schema bindings, default/snapshot dispatch, and validation tests. There is no dynamic plugin registration. A script's declared properties are not schema properties: they live inside the one `values` property, named rather than numbered, and the Inspector draws them from the script's [description](scripting.md#properties).
 
@@ -96,6 +96,11 @@ Pass `asset_property_context(registry)` when editing components with nonempty re
 | 14 `alpha_mode` | choice: `opaque`, `mask`, `blend` | |
 | 15 `alpha_cutoff` | scalar | 0 to 1 |
 | 16 `double_sided` | boolean | |
+| 17 `uv_offset` | vector2 | any finite |
+| 18 `uv_rotation` | scalar (radians) | any finite |
+| 19 `uv_scale` | vector2 | any finite (negative mirrors) |
+
+Properties 17 to 19 (#1036) transform every map's texture coordinates as `KHR_texture_transform` does: uv′ = offset + R(rotation) × (scale ⊙ uv), where R turns +u toward −v: u′ = cos·u + sin·v and v′ = −sin·u + cos·v, before the offset. Imports set them from a glTF material's texture transform ([import](import.md#gltf)). Tangent frames are not turned with them, as in glTF.
 
 Texture references take a texture from the catalog; which role a slot needs is the renderer's to check ([materials](renderer.md#materials)), since a texture's role is known only once it loads.
 
