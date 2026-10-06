@@ -532,9 +532,17 @@ void EditorShell::draw_create_menu(std::optional<EntityId> parent) {
         report(result, std::string("Create ") + name);
         if (result) start_rename(*m_scene->primary());
     };
-    if (ImGui::MenuItem((std::string(icon::circle_dashed) + "  Empty").c_str())) create("Entity", {});
-    if (ImGui::MenuItem((std::string(icon::video_camera) + "  Camera").c_str())) create("Camera", {CameraComponent{}});
-    if (ImGui::MenuItem((std::string(icon::sun) + "  Directional light").c_str())) create("Light", {LightComponent{}});
+    const auto item = [&](const char* glyph, const char* label, const char* key) {
+        const auto chosen = ImGui::MenuItem((std::string(glyph) + "  " + label).c_str());
+        if (!parent) m_layout.controls.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        return chosen;
+    };
+    if (item(icon::circle_dashed, "Empty", "create.empty")) create("Entity", {});
+    if (item(icon::video_camera, "Camera", "create.camera")) create("Camera", {CameraComponent{}});
+    if (item(icon::sun, "Directional light", "create.directional-light")) create("Light", {LightComponent{}});
+    // Local lights as bright as the default sun on a surface 3 m away (docs/renderer.md#lights).
+    if (item(icon::lightbulb, "Point light", "create.point-light")) create("Point light", {LightComponent{LightKind::point, {1.0f}, 30.0f, 10.0f}});
+    if (item(icon::flashlight, "Spot light", "create.spot-light")) create("Spot light", {LightComponent{LightKind::spot, {1.0f}, 30.0f, 15.0f}});
 }
 
 void EditorShell::draw_hierarchy_row(EntityId id) {
@@ -662,6 +670,7 @@ void EditorShell::draw_hierarchy() {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {5.0f, 3.0f});
         ImGui::BeginDisabled(scene.locked());
         if (ImGui::Button(icon::plus)) ImGui::OpenPopup("create");
+        m_layout.controls.push_back({"hierarchy.create", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
         ImGui::EndDisabled();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
@@ -837,6 +846,8 @@ void EditorShell::draw_diagnostics() {
                                  static_cast<unsigned long long>(stats.transient_failures)));
             row("Resources", format("%zu buffers   %zu textures   %zu pending", stats.buffers, stats.textures,
                                     stats.pending_retirements));
+            row("Lights", format("%zu local   %zu not drawn   %zu unshadowed   sun shadows %s", m_lights.local, m_lights.dropped,
+                                 m_lights.unshadowed, m_lights.sun ? "on" : "off"));
             // Slowdown is never hidden: wall time the clock refused and ticks it dropped are shown.
             if (m_play) {
                 const auto& clock = m_play->clock();
@@ -998,6 +1009,12 @@ void EditorShell::set_exposure_view(ExposureView view) {
     save_preferences();
 }
 
+void EditorShell::set_shadow_view(ShadowView view) {
+    if (view == m_preferences.shadow_view) return;
+    m_preferences.shadow_view = view;
+    save_preferences();
+}
+
 void EditorShell::set_collider_editing(bool on) {
     if (!on && m_collider_drag) {
         m_scene->end_group(); // a drag in progress keeps what it did
@@ -1071,10 +1088,20 @@ void EditorShell::render_viewport() {
     auto snapshot = extract_render_snapshot(world, *m_assets, options);
     m_performance.extract.add(clock.milliseconds());
     m_extraction = snapshot.stats;
+    view->shadow_view = m_preferences.shadow_view;
     m_frame_problems = snapshot.diagnostics;
     clock.restart();
     const auto rendered = m_renderer.render(snapshot, *view, m_viewport);
     m_performance.view.add(clock.milliseconds());
+    // The view's own light limits, reported with the scene's problems (docs/renderer.md#lights).
+    const auto& lights = m_renderer.last_lights();
+    for (const auto id : lights.dropped)
+        m_frame_problems.push_back({RenderIssue::light_limit, id, {}, "'" + m_scene->display_name(id) + "' is not drawn in this view: at most " +
+                                    std::to_string(max_local_lights) + " point and spot lights are, the brightest at the camera first"});
+    for (const auto id : lights.unshadowed)
+        m_frame_problems.push_back({RenderIssue::shadow_limit, id, {}, "'" + m_scene->display_name(id) + "' is drawn without shadows in this view: at most " +
+                                    std::to_string(max_shadowed_spot_lights) + " spot lights cast them"});
+    m_lights = {lights.local, lights.dropped.size(), lights.unshadowed.size(), lights.sun.has_value()};
     if (auto error = rendered) {
         m_viewport_error = true;
         m_log.add(DiagnosticSource::renderer, error.message, m_frame);

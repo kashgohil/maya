@@ -39,13 +39,20 @@ enum class LightKind { directional, point, spot };
 struct LightComponent {
     LightKind kind = LightKind::directional;
     math::Vec3 color{1.0f}; // linear RGB
-    // Lux for directional; lumens for point/spot. A white diffuse surface facing a directional light
-    // reflects intensity / pi, so the default shows it at scene light 1 (docs/renderer.md#materials).
+    // Lux for directional lights; candela for point and spot lights, as glTF's KHR_lights_punctual (since
+    // version 2, #1034; version 1 stored lumens, 4 pi x candela). A white diffuse surface facing a
+    // directional light reflects intensity / pi, so the default shows it at scene light 1
+    // (docs/renderer.md#lights).
     float intensity = math::PI;
-    float range = 10.0f; // metres, local lights only
+    float range = 10.0f; // metres, local lights only: their light fades to nothing there
     float inner_cone = math::PI / 6.0f; // full angle in radians, spot only
     float outer_cone = math::PI / 4.0f;
     bool enabled = true;
+    // Shadows (since version 2, #1034; docs/renderer.md#shadows). Point lights cast none yet.
+    bool cast_shadows = true;
+    float shadow_bias = 1.0f; // shadow-map texels: the receiver's depth moves toward the light
+    float shadow_normal_bias = 1.0f; // shadow-map texels: the receiver moves along its normal
+    float shadow_distance = 60.0f; // metres from the camera that a directional light's cascades cover
 };
 
 // Built-in behaviors, until scripting exists. They are authored like any other component and run

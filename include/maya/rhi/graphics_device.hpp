@@ -116,6 +116,13 @@ public:
     /// Restricts later draws in this pass to a nonempty rectangle inside the pass attachments.
     /// Every pass starts with the scissor covering its attachments.
     RhiDiagnostic set_scissor(const ScissorRect& rect);
+    /// Maps later draws in this pass into a nonempty rectangle inside the pass attachments (#1034).
+    /// Every pass starts with the viewport covering its attachments.
+    RhiDiagnostic set_viewport(const Viewport& viewport);
+    /// Offsets the depth later draws in this pass write and test (#1034): by `constant` units of the depth
+    /// format's resolution plus `slope` times the polygon's depth slope, at most `clamp` in magnitude
+    /// (0: no clamp). Every pass starts with none. Shadow maps use it against self-shadowing.
+    RhiDiagnostic set_depth_bias(float constant, float slope, float clamp = 0.0f);
     RhiDiagnostic draw(uint32_t vertex_count, uint32_t first_vertex = 0, uint32_t instance_count = 1);
     RhiDiagnostic draw_indexed(BufferHandle indices, IndexType type, uint32_t index_count,
                                size_t offset = 0, uint32_t instance_count = 1);
@@ -192,6 +199,8 @@ protected:
     virtual void backend_set_sampler(uint32_t index, uint32_t slot) = 0;
     /// The rectangle is validated against the pass attachments.
     virtual void backend_set_scissor(const ScissorRect& rect) = 0;
+    virtual void backend_set_viewport(const Viewport& viewport) = 0;
+    virtual void backend_set_depth_bias(float constant, float slope, float clamp) = 0;
     virtual void backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) = 0;
     virtual void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
                                       uint32_t instance_count) = 0;

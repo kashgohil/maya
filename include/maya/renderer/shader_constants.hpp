@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/math/matrix.hpp"
+#include "maya/renderer/light_plan.hpp"
 #include "maya/renderer/render_snapshot.hpp"
 #include <cmath>
 #include <cstddef>
@@ -8,13 +9,31 @@
 
 namespace maya {
 // GPU layouts shared with resources/shaders/metal/renderer.metal. Buffer indices: 0 vertices,
-// 1 per-draw constants, 2 per-view constants, 3 material constants. Texture slots: 0-4 a material's
-// maps, 5 the environment's specular cube, 6 its background, 7 the split-sum table; sampler slots 0-4
-// the maps', 5 the environment's, 7 the table's.
+// 1 per-draw constants, 2 per-view constants (or a shadow map's ShadowConstants), 3 material constants.
+// Texture slots: 0-4 a material's maps, 5 the environment's specular cube, 6 its background, 7 the
+// split-sum table, 8 the sun's shadow atlas, 9 the spot lights'; sampler slots 0-4 the maps', 5 the
+// environment's, 7 the table's, 8 the shadow maps' comparison sampler.
 
 struct GpuDirectionalLight {
     math::Vec4 direction_to_light; // xyz unit vector
     math::Vec4 radiance; // rgb
+};
+/// A point or spot light (RenderLocalLight).
+struct GpuLocalLight {
+    math::Vec4 position_range; // xyz, w range
+    math::Vec4 direction_spot; // xyz a spot's direction, w 1 for a spot and 0 for a point
+    math::Vec4 intensity; // rgb candela, w its spot shadow map + 1 (0: none)
+    math::Vec4 cone; // x cos of the outer half angle, y 1 / (cos inner - cos outer), z bias and w normal bias in texels
+};
+/// The view's shadow maps (LightPlan): offsets are applied in world space, in texels of the map used.
+struct GpuShadows {
+    math::Mat4 cascades[sun_cascades]; // world to each cascade's clip space
+    math::Vec4 cascade_far; // the view depth where each cascade ends
+    math::Vec4 cascade_texel; // metres per texel
+    math::Vec4 sun; // x bias and y normal bias in texels, z the view's near plane, w the sun's index in lights + 1 (0: none)
+    math::Mat4 spots[max_shadowed_spot_lights]; // world to each spot light's clip space
+    math::Vec4 spot_texel; // metres per texel at one metre from each spot light
+    math::Vec4 view_forward; // xyz the view's forward axis, w the ShadowView
 };
 /// Uploaded once per view.
 struct ViewConstants {
@@ -27,6 +46,13 @@ struct ViewConstants {
     math::Vec4 environment; // x intensity, y cos and z sin of the rotation, w the specular cube's last level
     uint32_t environment_flags[4]; // x an environment lights the scene, y the sky is drawn
     math::Vec4 irradiance[9]; // spherical-harmonic coefficients (rgb) of the environment's irradiance
+    uint32_t local_count[4]; // x the point and spot lights drawn; the rest is padding
+    GpuLocalLight local_lights[max_local_lights];
+    GpuShadows shadows;
+};
+/// Uploaded once per shadow map.
+struct ShadowConstants {
+    math::Mat4 view_projection;
 };
 /// Uploaded once per drawn instance; read by the vertex stage only.
 struct DrawConstants {
@@ -70,11 +96,14 @@ struct ToneMapConstants {
 inline constexpr size_t debug_line_floats = 12;
 inline constexpr size_t debug_shape_floats = 24;
 
-static_assert(sizeof(ViewConstants) == 480 && offsetof(ViewConstants, camera_position) == 64 &&
+static_assert(offsetof(ViewConstants, camera_position) == 64 &&
               offsetof(ViewConstants, ambient) == 80 && offsetof(ViewConstants, light_count) == 96 &&
               offsetof(ViewConstants, lights) == 112 && offsetof(ViewConstants, inverse_view_projection) == 240 &&
               offsetof(ViewConstants, environment) == 304 && offsetof(ViewConstants, environment_flags) == 320 &&
               offsetof(ViewConstants, irradiance) == 336, "ViewConstants must match renderer.metal");
+static_assert(offsetof(ViewConstants, local_count) == 480 && offsetof(ViewConstants, local_lights) == 496 &&
+              offsetof(ViewConstants, shadows) == 496 + 64 * max_local_lights && sizeof(GpuShadows) == 592 &&
+              sizeof(ViewConstants) == 496 + 64 * max_local_lights + 592, "ViewConstants' lights and shadows must match renderer.metal");
 static_assert(sizeof(DrawConstants) == 112 && offsetof(DrawConstants, normal_matrix) == 64,
               "DrawConstants must match renderer.metal");
 static_assert(sizeof(MaterialConstants) == 96 && offsetof(MaterialConstants, factors) == 16 &&

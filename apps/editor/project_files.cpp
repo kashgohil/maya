@@ -978,6 +978,7 @@ void EditorShell::draw_assets() {
         ImGui::SetNextItemWidth(std::min(240.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 6.0f));
         ImGui::InputTextWithHint("##filter", (std::string(icon::magnifying_glass) + "  Filter").c_str(),
                                  m_asset_filter, sizeof(m_asset_filter));
+        m_layout.controls.push_back({"assets.filter", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
         ImGui::SameLine(0.0f, 6.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, 0u);
         if (ImGui::Button(icon::arrows_clockwise)) refresh_project();

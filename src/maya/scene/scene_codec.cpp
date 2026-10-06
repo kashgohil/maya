@@ -521,8 +521,8 @@ private:
             return stop(SceneError::unsupported_version, std::string(schema->name) + " version " +
                 std::to_string(version) + " is newer than this build supports (" +
                 std::to_string(schema->version) + "); open it with a newer Maya build");
-        // Older versions migrate: every change so far only added properties, which take their defaults
-        // (PropertyDescriptor::since). A change that is not additive needs its own migration here.
+        // Older versions migrate: added properties take their defaults (PropertyDescriptor::since), and
+        // changes that are not additive are made by migrate() when the component ends.
         m_lines.fields[{index, schema->id, 0}] = m_line;
         m_component = schema;
         m_component_version = version;
@@ -563,6 +563,7 @@ private:
                     " scene files store every property");
             }
         }
+        migrate(*schema, edits);
         auto value = *default_component(schema->id);
         if (const auto result = edit_properties(value, edits, m_context); !result) {
             // Semantic problems are collected so one load reports every bad value or missing asset.
@@ -575,6 +576,18 @@ private:
         }
         entity.components.push_back(std::move(value));
         return true;
+    }
+
+    /// Changes between component versions that are not additive (docs/scene.md#versions-and-migration).
+    void migrate(const ComponentDescriptor& schema, std::vector<PropertyEdit>& edits) const {
+        // maya.light 1 -> 2 (#1034): point and spot intensities were lumens, 4 pi x candela; now candela.
+        if (schema.id == ComponentId::light && m_component_version < 2) {
+            const auto kind = std::ranges::find(edits, PropertyId(1), &PropertyEdit::property);
+            const auto intensity = std::ranges::find(edits, PropertyId(3), &PropertyEdit::property);
+            const auto* choice = kind != edits.end() ? std::get_if<ChoiceValue>(&kind->value) : nullptr;
+            auto* lumens = intensity != edits.end() ? std::get_if<float>(&intensity->value) : nullptr;
+            if (choice && lumens && choice->value != uint32_t(LightKind::directional)) *lumens /= 4.0f * math::PI;
+        }
     }
 
     std::string_view m_text;

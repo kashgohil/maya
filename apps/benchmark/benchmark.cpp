@@ -99,7 +99,10 @@ SceneDocument generate(const Manifest& manifest) {
     document.entities.push_back({camera_id, std::nullopt, {NameComponent{"Benchmark camera"}, camera, CameraComponent{}}});
     auto sun = TransformComponent{};
     sun.rotation = math::Quat(-0.5161719f, 0.2429044f, 0.0f, 0.82131857f);
-    document.entities.push_back({light_id, std::nullopt, {NameComponent{"Sun"}, sun, LightComponent{}}});
+    // Unshadowed, so generated workloads (I1, L1) compare with results from before shadows (#1034).
+    auto light = LightComponent{};
+    light.cast_shadows = false;
+    document.entities.push_back({light_id, std::nullopt, {NameComponent{"Sun"}, sun, light}});
 
     auto order = std::vector<uint32_t>(manifest.count);
     std::iota(order.begin(), order.end(), 0u);
@@ -262,6 +265,15 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         result.resident = memory(stage.device, stage.registry, world.size());
         counters.unique_meshes = result.resident.assets.meshes;
         counters.unique_materials = result.resident.assets.materials;
+        const auto& lights = stage.renderer.last_lights();
+        counters.local_lights = lights.local;
+        counters.dropped_lights = lights.dropped.size();
+        counters.unshadowed_lights = lights.unshadowed.size();
+        const auto& rendered = stage.renderer.stats();
+        if (rendered.views > 0) {
+            counters.shadow_maps = double(rendered.shadow_maps) / double(rendered.views);
+            counters.shadow_draws = double(rendered.shadow_draws) / double(rendered.views);
+        }
     }
     return samples;
 }
@@ -969,8 +981,10 @@ std::string to_json(const Result& r) {
     json.field("depth_format", "depth32_float");
     json.field("antialiasing", "none");
     json.field("textures", "none (materials are factors)");
-    json.field("lighting", "directional lights, factor materials");
-    json.field("shadows", "unavailable");
+    json.field("lighting", "the scene's: up to 4 directional lights and 16 point and spot lights per view");
+    json.field("shadows", m.workload == Workload::scene
+        ? "the scene's: 4 cascades of 2048 texels for the first shadowed directional light, 1024 texels for each of up to 4 spot lights"
+        : "none (the generated sun casts none)");
     json.field("presentation", m.present ? "presented to a window every frame, synchronized with the display" : "offscreen, never presented");
     json.field("simulation", "fixed 60 Hz, one tick per frame");
     json.field("upload_mib_per_frame", m.upload_mib);
@@ -988,6 +1002,11 @@ std::string to_json(const Result& r) {
     json.field("passes_per_frame", c.passes);
     json.field("unique_meshes", c.unique_meshes);
     json.field("unique_materials", c.unique_materials);
+    json.field("local_lights", c.local_lights);
+    json.field("dropped_lights", c.dropped_lights);
+    json.field("unshadowed_lights", c.unshadowed_lights);
+    json.field("shadow_maps_per_view", c.shadow_maps);
+    json.field("shadow_draws_per_view", c.shadow_draws);
     json.close('}');
     write_memory(json, "baseline_memory", r.baseline);
     write_memory(json, "resident_memory", r.resident);
@@ -1192,6 +1211,10 @@ std::string to_text(const Result& r) {
     if (!r.runs.empty())
         out << "  " << r.counters.draws << " draws, " << r.counters.triangles << " triangles, " << r.counters.unique_meshes
             << " unique meshes, " << r.counters.centers_in_view << " of " << r.counters.mesh_renderers << " in view\n";
+    if (!r.runs.empty() && (r.counters.local_lights > 0 || r.counters.shadow_maps > 0))
+        out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
+            << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "
+            << r.counters.shadow_draws << " shadow draws per view\n";
     if (!r.cycles.empty()) {
         auto load = std::vector<double>{};
         for (const auto& cycle : r.cycles) load.push_back(cycle.load);

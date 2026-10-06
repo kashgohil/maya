@@ -38,6 +38,8 @@ protected:
     void backend_set_texture(uint32_t index, uint32_t slot) override;
     void backend_set_sampler(uint32_t index, uint32_t slot) override;
     void backend_set_scissor(const ScissorRect& rect) override;
+    void backend_set_viewport(const Viewport& viewport) override;
+    void backend_set_depth_bias(float constant, float slope, float clamp) override;
     void backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) override;
     void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
                               uint32_t instance_count) override;

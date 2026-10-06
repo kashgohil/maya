@@ -13,6 +13,7 @@ namespace maya::editor {
 struct EditorPreferences {
     PhysicsDebugOptions physics_debug{}; // the viewport's physics debug views
     ExposureView exposure_view = ExposureView::none; // the viewport's exposure view (docs/renderer.md#exposure-views)
+    ShadowView shadow_view = ShadowView::none; // the viewport's shadow view (docs/renderer.md#shadow-views)
     bool operator==(const EditorPreferences&) const = default;
 };
 

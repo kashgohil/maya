@@ -33,12 +33,15 @@ const char* component_icon(ComponentId id) {
 }
 
 /// Whether a component's property applies to its current settings; others stay hidden (see their
-/// descriptions): a light's range and cones, a collider's size for other shapes, a kinematic body's
-/// initial velocities.
+/// descriptions): a light's range, cones, and shadow settings, a collider's size for other shapes, a
+/// kinematic body's initial velocities.
 bool property_applies(const ComponentValue& value, std::string_view property) {
     if (const auto* light = std::get_if<LightComponent>(&value)) {
         if (property == "range") return light->kind != LightKind::directional;
         if (property == "inner_cone" || property == "outer_cone") return light->kind == LightKind::spot;
+        if (property == "cast_shadows") return light->kind != LightKind::point; // point lights cast none yet
+        if (property == "shadow_bias" || property == "shadow_normal_bias") return light->kind != LightKind::point && light->cast_shadows;
+        if (property == "shadow_distance") return light->kind == LightKind::directional && light->cast_shadows;
     } else if (const auto* collider = std::get_if<ColliderComponent>(&value)) {
         if (property == "half_extents") return collider->shape == ColliderShape::box;
         if (property == "radius") return collider->shape != ColliderShape::box;

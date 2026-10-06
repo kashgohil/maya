@@ -76,6 +76,8 @@ constexpr auto positive = NumericRange{0.0f, {}, false, true};
 constexpr auto nonnegative = NumericRange{0.0f, {}, true, true};
 constexpr auto angle = NumericRange{0.0f, math::PI, false, false};
 constexpr auto cone = NumericRange{0.0f, math::PI, true, false};
+constexpr auto shadow_bias_range = NumericRange{0.0f, 20.0f, true, true};
+constexpr auto shadow_distance_range = NumericRange{1.0f, 10000.0f, true, true};
 constexpr auto exposure_range = NumericRange{-10.0f, 24.0f, true, true};
 /// Marks a property added in a later component version.
 Binding since(Binding binding, uint32_t version) {
@@ -136,11 +138,20 @@ const auto& light_bindings() {
     static const auto values = std::array{
         bind<&LightComponent::kind>(1, "kind", "Kind", Hint::choice, {}, {}, {}, light_options),
         bind<&LightComponent::color>(2, "color", "Color", Hint::color, nonnegative, "linear RGB", "HDR values above one are allowed."),
-        bind<&LightComponent::intensity>(3, "intensity", "Intensity", Hint::number, nonnegative, "lux / lm", "Lux for directional lights; lumens for point and spot lights."),
-        bind<&LightComponent::range>(4, "range", "Range", Hint::number, positive, "m", "Used by point and spot lights."),
+        bind<&LightComponent::intensity>(3, "intensity", "Intensity", Hint::number, nonnegative, "lx / cd",
+            "Lux for directional lights; candela for point and spot lights (version 1 stored lumens)."),
+        bind<&LightComponent::range>(4, "range", "Range", Hint::number, positive, "m", "Point and spot lights fade to nothing there."),
         bind<&LightComponent::inner_cone>(5, "inner_cone", "Inner cone", Hint::number, cone, "rad", "Full angle; must not exceed outer cone."),
         bind<&LightComponent::outer_cone>(6, "outer_cone", "Outer cone", Hint::number, angle, "rad", "Full angle; used by spot lights."),
-        bind<&LightComponent::enabled>(7, "enabled", "Enabled", Hint::toggle)};
+        bind<&LightComponent::enabled>(7, "enabled", "Enabled", Hint::toggle),
+        since(bind<&LightComponent::cast_shadows>(8, "cast_shadows", "Cast shadows", Hint::toggle, {}, {},
+            "Directional and spot lights; point lights cast none yet."), 2),
+        since(bind<&LightComponent::shadow_bias>(9, "shadow_bias", "Shadow bias", Hint::number, shadow_bias_range, "texels",
+            "Moves shadow tests toward the light: more removes acne, too much detaches shadows."), 2),
+        since(bind<&LightComponent::shadow_normal_bias>(10, "shadow_normal_bias", "Normal bias", Hint::number, shadow_bias_range, "texels",
+            "Moves shadow tests along the surface's normal, against acne on surfaces at grazing angles."), 2),
+        since(bind<&LightComponent::shadow_distance>(11, "shadow_distance", "Shadow distance", Hint::number, shadow_distance_range, "m",
+            "How far from the camera a directional light's shadows reach."), 2)};
     return values;
 }
 const auto& spin_bindings() {
@@ -483,7 +494,7 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
         ComponentDescriptor{ComponentId::mesh_renderer, "maya.mesh_renderer", "Mesh renderer", 1, meshes},
         ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 2, cameras}, // 2: exposure, tone mapping (#1032)
-        ComponentDescriptor{ComponentId::light, "maya.light", "Light", 1, lights},
+        ComponentDescriptor{ComponentId::light, "maya.light", "Light", 2, lights}, // 2: candela, shadows (#1034)
         ComponentDescriptor{ComponentId::spin, "maya.spin", "Spin", 1, spins},
         ComponentDescriptor{ComponentId::fly_control, "maya.fly_control", "Fly control", 1, flights},
         ComponentDescriptor{ComponentId::collider, "maya.collider", "Collider", 1, colliders},

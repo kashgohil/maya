@@ -5,20 +5,28 @@
 #include "maya/world/presentation.hpp"
 #include "maya/world/world.hpp"
 #include <array>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace maya {
 inline constexpr size_t max_directional_lights = 4;
+/// Point and spot lights drawn per view, chosen by their importance to it (docs/renderer.md#lights).
+inline constexpr size_t max_local_lights = 16;
+/// Spot lights with shadow maps per view, each 1024 texels in a 2048 atlas (docs/renderer.md#shadows).
+inline constexpr size_t max_shadowed_spot_lights = 4;
+/// Every enabled point and spot light is extracted up to this many; the renderer chooses per view.
+inline constexpr size_t max_extracted_local_lights = 1024;
 inline constexpr size_t max_render_diagnostics = 64;
 
 enum class RenderIssue {
-    none, missing_mesh, missing_material, missing_transform, invalid_transform, unsupported_light, light_limit,
+    none, missing_mesh, missing_material, missing_transform, invalid_transform, light_limit,
     missing_texture, // a material's texture is missing or failed to load: the placeholder is drawn
     texture_role, // a material's texture has the wrong role for its slot (e.g. a color texture as a normal map)
     missing_environment, // the environment is missing or failed to load: the uniform ambient light is used
     environment_limit, // more than one environment component: the one with the lowest EntityId is used
+    shadow_limit, // a directional light casts shadows after another one already does: it is drawn unshadowed
 };
 struct RenderDiagnostic {
     RenderIssue code = RenderIssue::none;
@@ -58,11 +66,35 @@ struct RenderInstance {
     /// perpendicular to surfaces. The shader renormalizes, so only its direction matters.
     std::array<math::Vec3, 3> normal_matrix{math::Vec3{1, 0, 0}, math::Vec3{0, 1, 0}, math::Vec3{0, 0, 1}};
     RenderMaterial material{};
+    /// A world-space sphere around the mesh, for culling shadow casters; infinite when the mesh has no
+    /// CPU geometry.
+    math::Vec3 bounds_center{0.0f};
+    float bounds_radius = std::numeric_limits<float>::infinity();
+};
+/// A light's shadow settings (LightComponent's), in shadow-map texels.
+struct RenderShadow {
+    bool cast = false;
+    float bias = 1.0f;
+    float normal_bias = 1.0f;
 };
 struct RenderDirectionalLight {
     EntityId entity{};
     math::Vec3 direction_to_light{0.0f, 0.0f, 1.0f}; // unit world vector: the light shines along its local -Z
-    math::Vec3 radiance{1.0f}; // linear color × intensity; no exposure is applied yet
+    math::Vec3 radiance{1.0f}; // linear color × intensity (lux); no exposure is applied yet
+    RenderShadow shadow{}; // only the first directional light casting shadows has them; see shadow_limit
+    float shadow_distance = 60.0f; // metres from the camera the cascades cover
+};
+/// A point or spot light (docs/renderer.md#lights): its light at distance d is intensity / d^2, faded to
+/// nothing at its range, and a spot's between its inner and outer cone.
+struct RenderLocalLight {
+    EntityId entity{};
+    LightKind kind = LightKind::point;
+    math::Vec3 position{0.0f};
+    math::Vec3 direction{0.0f, 0.0f, -1.0f}; // a spot's: unit world vector it shines along (local -Z)
+    math::Vec3 intensity{1.0f}; // linear color × candela
+    float range = 10.0f;
+    float cos_inner = 1.0f, cos_outer = 0.0f; // cosines of the cone's half angles, spot only
+    RenderShadow shadow{}; // spot lights only
 };
 /// The scene's environment, from its Environment component (docs/renderer.md#environments).
 struct RenderEnvironment {
@@ -97,6 +129,7 @@ struct RenderSnapshot {
     std::vector<AssetLease<TextureAsset>> textures; // one per distinct texture the materials use
     std::vector<RenderInstance> instances;
     std::vector<RenderDirectionalLight> lights; // enabled directional lights in EntityId order
+    std::vector<RenderLocalLight> local_lights; // enabled point and spot lights in EntityId order
     math::Vec3 ambient{0.0f};
     /// The environment that lights the scene in place of the ambient light, when there is one.
     std::optional<RenderEnvironment> environment;
@@ -120,6 +153,12 @@ enum class ExposureView : uint8_t {
     luminance, // grey by stops from middle grey (0.18): black at -8, white at +8
     false_color, // a color per band of stops from middle grey
 };
+/// What the view pass shows instead of the lit image: shadow diagnostics (docs/renderer.md#shadow-views).
+enum class ShadowView : uint8_t {
+    none,
+    cascades, // surfaces tinted by the sun's cascade that shadows them: red, green, blue, yellow
+    texels, // a checker of the shadow-map texels that cover each surface: their size on screen
+};
 /// The scale an exposure in EV100 applies to scene values: 1 / (1.2 x 2^EV100), the photometric
 /// saturation-based exposure (ISO 100, K = 12.5, q = 0.65).
 float exposure_scale(float ev100) noexcept;
@@ -136,6 +175,7 @@ struct RenderView {
     float exposure = exposure_scale(0.0f); // the camera's, as a scale
     ToneMapping tone_mapping = ToneMapping::agx;
     ExposureView exposure_view = ExposureView::none;
+    ShadowView shadow_view = ShadowView::none;
 };
 /// A view from camera data and a rigid world pose, e.g. an editor camera that is tool state.
 /// Returns nullopt for a zero size or an invalid camera/pose.

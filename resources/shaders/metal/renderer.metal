@@ -16,6 +16,23 @@ struct DirectionalLight {
     float4 radiance;
 };
 
+struct LocalLight { // a point or spot light
+    float4 position_range; // xyz, w range
+    float4 direction_spot; // xyz a spot's direction, w 1 for a spot
+    float4 intensity; // rgb candela, w its spot shadow map + 1 (0: none)
+    float4 cone; // x cos outer, y 1 / (cos inner - cos outer), z bias and w normal bias in texels
+};
+
+struct Shadows {
+    float4x4 cascades[4]; // world to each cascade's clip space
+    float4 cascade_far; // the view depth where each cascade ends
+    float4 cascade_texel; // metres per texel
+    float4 sun; // x bias and y normal bias in texels, z the view's near plane, w the sun's index + 1 (0: none)
+    float4x4 spots[4]; // world to each spot light's clip space
+    float4 spot_texel; // metres per texel at one metre from each spot light
+    float4 view_forward; // xyz the view's forward axis, w the shadow view (0 none, 1 cascades, 2 texels)
+};
+
 struct ViewConstants {
     float4x4 view_projection;
     float4 camera_position;
@@ -26,6 +43,9 @@ struct ViewConstants {
     float4 environment; // x intensity, y cos and z sin of the rotation, w the specular cube's last level
     uint4 environment_flags; // x an environment lights the scene, y the sky is drawn
     float4 irradiance[9]; // spherical-harmonic coefficients, rgb
+    uint4 local_count; // x the point and spot lights drawn
+    LocalLight local_lights[16];
+    Shadows shadows;
 };
 
 struct DrawConstants { // per draw, for the vertex stage
@@ -132,6 +152,96 @@ float2 equirect_uv(float3 d) {
 constant uint slot_base_color = 0, slot_metallic_roughness = 1, slot_normal = 2, slot_occlusion = 3, slot_emissive = 4;
 bool has_map(constant MaterialConstants& material, uint slot) { return (material.flags.x >> slot & 1u) != 0; }
 
+// Shadow maps (docs/renderer.md#shadows): depth from the light, written by a depth-only pipeline; masked
+// materials cut themselves out as they do when lit.
+struct ShadowConstants {
+    float4x4 view_projection;
+};
+struct ShadowOut {
+    float4 position [[position]];
+    float2 uv;
+    float alpha;
+};
+vertex ShadowOut shadowVertex(uint id [[vertex_id]], constant Vertex* vertices [[buffer(0)]],
+                              constant DrawConstants& draw [[buffer(1)]], constant ShadowConstants& shadow [[buffer(2)]]) {
+    const Vertex v = vertices[id];
+    ShadowOut out;
+    out.position = shadow.view_projection * (draw.model * float4(v.position, 1.0));
+    out.uv = v.uv;
+    out.alpha = v.color.a;
+    return out;
+}
+fragment void shadowMaskFragment(ShadowOut in [[stage_in]], constant MaterialConstants& material [[buffer(3)]],
+                                 texture2d<float> base_color_map [[texture(0)]], sampler base_color_sampler [[sampler(0)]]) {
+    const float2 uv = float2(dot(material.uv_transform.xy, in.uv), dot(material.uv_transform.zw, in.uv)) + material.uv_offset.xy;
+    float alpha = in.alpha * material.base_color.a;
+    if (has_map(material, slot_base_color)) alpha *= base_color_map.sample(base_color_sampler, uv).a;
+    if (alpha < material.emissive.w) discard_fragment();
+}
+
+// 3 x 3 comparison taps about a point in one map of an atlas, each filtered by the sampler: kept inside
+// the map's square [lo, hi] so taps never read a neighbour.
+float shadow_taps(depth2d<float> atlas, sampler s, float2 uv, float depth, float texel, float2 lo, float2 hi) {
+    float lit = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) lit += atlas.sample_compare(s, clamp(uv + float2(x, y) * texel, lo, hi), depth);
+    return lit / 9.0;
+}
+// A map's quarter of a 2 x 2 atlas, from clip space.
+float2 atlas_uv(float4 clip, uint map) { return float2(map & 1, map >> 1) * 0.5 + float2(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5) * 0.5; }
+
+// The sun's light reaching P through cascade c: P is moved toward the light and along the surface's
+// normal by the biases, in that cascade's texels.
+float cascade_lit(constant ViewConstants& view, depth2d<float> atlas, sampler s, uint c, float3 P, float3 Ng, float3 L) {
+    const float texel = view.shadows.cascade_texel[c];
+    const float3 offset = P + (Ng * view.shadows.sun.y + L * view.shadows.sun.x) * texel;
+    const float4 clip = view.shadows.cascades[c] * float4(offset, 1.0);
+    const float atlas_texel = 1.0 / 4096.0;
+    const float2 lo = float2(c & 1, c >> 1) * 0.5 + 1.5 * atlas_texel;
+    return shadow_taps(atlas, s, atlas_uv(clip, c), clip.z, atlas_texel, lo, lo + 0.5 - 3.0 * atlas_texel);
+}
+// The cascade covering a view depth, and how far into its blend band toward the next one (0 to 1).
+uint cascade_at(constant ViewConstants& view, float depth, thread float& blend) {
+    uint c = 0;
+    while (c < 3 && depth > view.shadows.cascade_far[c]) ++c;
+    const float start = c == 0 ? view.shadows.sun.z : view.shadows.cascade_far[c - 1];
+    const float band = view.shadows.cascade_far[c] - 0.1 * (view.shadows.cascade_far[c] - start);
+    blend = saturate((depth - band) / (view.shadows.cascade_far[c] - band));
+    return c;
+}
+float sun_lit(constant ViewConstants& view, depth2d<float> atlas, sampler s, float3 P, float3 Ng, float3 L) {
+    const float depth = dot(P - view.camera_position.xyz, view.shadows.view_forward.xyz);
+    if (depth >= view.shadows.cascade_far[3]) return 1.0;
+    float blend;
+    const uint c = cascade_at(view, depth, blend);
+    float lit = cascade_lit(view, atlas, s, c, P, Ng, L);
+    // Into the next cascade across the band, so no seam shows; past the last, the shadow fades out.
+    if (blend > 0.0) lit = mix(lit, c < 3 ? cascade_lit(view, atlas, s, c + 1, P, Ng, L) : 1.0, blend);
+    return lit;
+}
+float spot_lit(constant ViewConstants& view, depth2d<float> atlas, sampler s, uint map, float3 P, float3 Ng, float3 L,
+               float distance, float bias, float normal_bias) {
+    const float texel = distance * view.shadows.spot_texel[map];
+    const float4 clip = view.shadows.spots[map] * float4(P + (Ng * normal_bias + L * bias) * texel, 1.0);
+    if (clip.w <= 0.0) return 1.0;
+    const float4 ndc = float4(clip.xyz / clip.w, 1.0);
+    const float atlas_texel = 1.0 / 2048.0;
+    const float2 lo = float2(map & 1, map >> 1) * 0.5 + 1.5 * atlas_texel;
+    return shadow_taps(atlas, s, atlas_uv(ndc, map), ndc.z, atlas_texel, lo, lo + 0.5 - 3.0 * atlas_texel);
+}
+
+// What a surface sends toward V per unit of illuminance from L (glTF's BRDF), times N.L.
+float3 direct_light(float3 N, float3 V, float3 L, float3 f0, float3 c_diff, float alpha, float NdotV) {
+    const float NdotL = dot(N, L);
+    if (NdotL <= 0.0) return float3(0.0);
+    const float3 H = normalize(L + V);
+    const float NdotH = saturate(dot(N, H)), VdotH = saturate(dot(V, H));
+    const float3 F = fresnel_schlick(f0, VdotH);
+    const float3 diffuse = (1.0 - F) * c_diff / M_PI_F;
+    const float3 specular = F * ggx(NdotH, alpha) * smith_visibility(NdotL, NdotV, alpha);
+    return (diffuse + specular) * NdotL;
+}
+
 fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                             constant ViewConstants& view [[buffer(2)]],
                             constant MaterialConstants& material [[buffer(3)]],
@@ -141,7 +251,9 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                             texture2d<float> occlusion_map [[texture(3)]], sampler occlusion_sampler [[sampler(3)]],
                             texture2d<float> emissive_map [[texture(4)]], sampler emissive_sampler [[sampler(4)]],
                             texturecube<float> specular_cube [[texture(5)]], sampler environment_sampler [[sampler(5)]],
-                            texture2d<float> brdf_table [[texture(7)]], sampler table_sampler [[sampler(7)]]) {
+                            texture2d<float> brdf_table [[texture(7)]], sampler table_sampler [[sampler(7)]],
+                            depth2d<float> sun_shadows [[texture(8)]], depth2d<float> spot_shadows [[texture(9)]],
+                            sampler shadow_sampler [[sampler(8)]]) {
     const float2 uv = float2(dot(material.uv_transform.xy, in.uv), dot(material.uv_transform.zw, in.uv)) + material.uv_offset.xy;
     float4 base = in.color * material.base_color;
     if (has_map(material, slot_base_color)) base *= base_color_map.sample(base_color_sampler, uv);
@@ -170,6 +282,7 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
         N = normalize(T * tangent_normal.x + B * tangent_normal.y + N * tangent_normal.z);
     }
     if (!front) N = -N;
+    const float3 Ng = normalize(in.world_normal) * (front ? 1.0 : -1.0); // for shadow offsets
 
     const float3 c_diff = base.rgb * (1.0 - metallic);
     const float3 f0 = mix(float3(0.04), base.rgb, metallic);
@@ -194,22 +307,57 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     const float3 dielectric = (1.0 - dielectric_share) * base.rgb * diffuse_light + dielectric_share * specular_light;
     float3 rgb = mix(dielectric, metal_share * specular_light, metallic) * occlusion;
 
+    // Directional lights: illuminance in lux; the sun is shadowed by its cascades.
     const uint lights = min(view.light_count.x, 4u);
+    const uint sun = uint(view.shadows.sun.w);
     for (uint i = 0; i < lights; ++i) {
         const float3 L = view.lights[i].direction_to_light.xyz;
-        const float NdotL = dot(N, L);
-        if (NdotL <= 0.0) continue;
-        const float3 H = normalize(L + V);
-        const float NdotH = saturate(dot(N, H)), VdotH = saturate(dot(V, H));
-        const float3 F = fresnel_schlick(f0, VdotH);
-        const float3 diffuse = (1.0 - F) * c_diff / M_PI_F;
-        const float3 specular = F * ggx(NdotH, alpha) * smith_visibility(NdotL, NdotV, alpha);
-        rgb += view.lights[i].radiance.rgb * (diffuse + specular) * NdotL;
+        float lit = 1.0;
+        if (i + 1 == sun && dot(N, L) > 0.0) lit = sun_lit(view, sun_shadows, shadow_sampler, in.world_position, Ng, L);
+        rgb += view.lights[i].radiance.rgb * lit * direct_light(N, V, L, f0, c_diff, alpha, NdotV);
+    }
+    // Point and spot lights (docs/renderer.md#lights): candela / d^2, faded to nothing at the range as glTF
+    // recommends, and a spot's between its cones.
+    const uint locals = min(view.local_count.x, 16u);
+    for (uint i = 0; i < locals; ++i) {
+        const LocalLight light = view.local_lights[i];
+        float3 L = light.position_range.xyz - in.world_position;
+        const float distance = length(L);
+        L /= max(distance, 1e-6);
+        const float window = saturate(1.0 - pow(distance / light.position_range.w, 4.0));
+        float falloff = window / max(distance * distance, 1e-8);
+        if (light.direction_spot.w > 0.0) {
+            const float t = saturate((dot(-L, light.direction_spot.xyz) - light.cone.x) * light.cone.y);
+            falloff *= t * t;
+        }
+        if (falloff <= 0.0 || dot(N, L) <= 0.0) continue;
+        if (light.intensity.w > 0.0)
+            falloff *= spot_lit(view, spot_shadows, shadow_sampler, uint(light.intensity.w) - 1, in.world_position, Ng, L,
+                                distance, light.cone.z, light.cone.w);
+        rgb += light.intensity.rgb * falloff * direct_light(N, V, L, f0, c_diff, alpha, NdotV);
     }
 
     float3 emitted = material.emissive.rgb;
     if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, uv).rgb;
     rgb += emitted;
+
+    // Shadow views (docs/renderer.md#shadow-views): the sun's cascade tints each surface, and a checker
+    // shows its shadow-map texels.
+    const uint shadow_view = uint(view.shadows.view_forward.w);
+    if (shadow_view != 0 && sun != 0) {
+        const float depth = dot(in.world_position - view.camera_position.xyz, view.shadows.view_forward.xyz);
+        if (depth < view.shadows.cascade_far[3]) {
+            float blend;
+            const uint c = cascade_at(view, depth, blend);
+            const float3 tints[4] = {float3(1.0, 0.35, 0.35), float3(0.35, 1.0, 0.35), float3(0.35, 0.5, 1.0), float3(1.0, 1.0, 0.35)};
+            rgb *= tints[c] * 1.5;
+            if (shadow_view == 2) {
+                const float4 clip = view.shadows.cascades[c] * float4(in.world_position, 1.0);
+                const float2 texel = floor(atlas_uv(clip, c) * 4096.0);
+                if ((int(texel.x) + int(texel.y)) & 1) rgb *= 0.55;
+            }
+        }
+    }
     return float4(rgb, alpha_mode == 2 ? base.a : 1.0);
 }
 

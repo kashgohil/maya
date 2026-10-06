@@ -193,29 +193,68 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
             ++snapshot.stats.skipped;
             return;
         }
-        snapshot.instances.push_back({id, *mesh, *matrix, *normals, extraction.material(renderer.material, id)});
+        auto instance = RenderInstance{id, *mesh, *matrix, *normals, extraction.material(renderer.material, id)};
+        // A sphere around the mesh's local bounds, carried into the world (radius times the largest scale).
+        if (const auto& geometry = snapshot.meshes[*mesh].value().geometry(); !geometry.empty()) {
+            const auto local = (geometry.min + geometry.max) * 0.5f;
+            const auto& m = *matrix;
+            instance.bounds_center = {m.at(0, 0) * local.x + m.at(0, 1) * local.y + m.at(0, 2) * local.z + m.at(0, 3),
+                                      m.at(1, 0) * local.x + m.at(1, 1) * local.y + m.at(1, 2) * local.z + m.at(1, 3),
+                                      m.at(2, 0) * local.x + m.at(2, 1) * local.y + m.at(2, 2) * local.z + m.at(2, 3)};
+            const auto column = [&](int c) { return math::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}.length(); };
+            instance.bounds_radius = (geometry.max - geometry.min).length() * 0.5f * std::max({column(0), column(1), column(2)});
+        }
+        snapshot.instances.push_back(std::move(instance));
     });
 
     world.for_each<LightComponent>([&](EntityHandle entity, const LightComponent& light) {
         if (!light.enabled) return;
         const auto id = *world.persistent_id(entity);
-        if (light.kind != LightKind::directional)
-            return extraction.report(RenderIssue::unsupported_light, id, {},
-                "Light " + id_text(id) + " ignored: only directional lights are rendered so far");
         const auto matrix = world_matrix(entity);
         if (!matrix)
             return extraction.report(RenderIssue::missing_transform, id, {},
-                "Light " + id_text(id) + " ignored: a directional light needs a valid transform");
-        const auto z = math::Vec3{matrix->at(0, 2), matrix->at(1, 2), matrix->at(2, 2)};
-        snapshot.lights.push_back({id, z.normalized(), light.color * light.intensity});
+                "Light " + id_text(id) + " ignored: a light needs a valid transform");
+        const auto z = math::Vec3{matrix->at(0, 2), matrix->at(1, 2), matrix->at(2, 2)}.normalized();
+        const auto shadow = RenderShadow{light.cast_shadows, light.shadow_bias, light.shadow_normal_bias};
+        if (light.kind == LightKind::directional) {
+            snapshot.lights.push_back({id, z, light.color * light.intensity, shadow, light.shadow_distance});
+            return;
+        }
+        auto local = RenderLocalLight{id, light.kind, {matrix->at(0, 3), matrix->at(1, 3), matrix->at(2, 3)}, -z,
+                                      light.color * light.intensity, light.range};
+        if (light.kind == LightKind::spot) {
+            local.cos_inner = std::cos(light.inner_cone * 0.5f);
+            local.cos_outer = std::cos(light.outer_cone * 0.5f);
+            local.shadow = shadow;
+        }
+        snapshot.local_lights.push_back(local);
     });
     // Deterministic selection when there are more lights than the shader supports.
     std::ranges::sort(snapshot.lights, {}, &RenderDirectionalLight::entity);
+    std::ranges::sort(snapshot.local_lights, {}, &RenderLocalLight::entity);
+    if (snapshot.local_lights.size() > max_extracted_local_lights) {
+        for (auto it = snapshot.local_lights.begin() + max_extracted_local_lights; it != snapshot.local_lights.end(); ++it)
+            extraction.report(RenderIssue::light_limit, it->entity, {}, "Light " + id_text(it->entity) + " ignored: at most " +
+                std::to_string(max_extracted_local_lights) + " point and spot lights are extracted");
+        snapshot.local_lights.resize(max_extracted_local_lights);
+    }
     if (snapshot.lights.size() > max_directional_lights) {
         for (auto it = snapshot.lights.begin() + max_directional_lights; it != snapshot.lights.end(); ++it)
             extraction.report(RenderIssue::light_limit, it->entity, {}, "Light " + id_text(it->entity) +
                 " ignored: at most " + std::to_string(max_directional_lights) + " directional lights are rendered");
         snapshot.lights.resize(max_directional_lights);
+    }
+    // The sun: the first directional light that casts shadows gets the cascades; the rest are drawn
+    // without shadows.
+    auto shadowed = false;
+    for (auto& light : snapshot.lights) {
+        if (!light.shadow.cast) continue;
+        if (shadowed) {
+            light.shadow.cast = false;
+            extraction.report(RenderIssue::shadow_limit, light.entity, {}, "Light " + id_text(light.entity) +
+                " is drawn without shadows: only one directional light casts them");
+        }
+        shadowed = true;
     }
     // At most one environment: the lowest EntityId's. An unassigned one lights nothing and says nothing.
     auto environments = std::vector<std::pair<EntityId, EnvironmentComponent>>{};

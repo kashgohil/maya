@@ -237,6 +237,14 @@ public:
     const TextureThumbnails& thumbnails() const noexcept { return m_thumbnails; }
     const UiRenderer& ui_renderer() const noexcept { return m_ui; }
     const RenderSnapshotStats& extraction() const noexcept { return m_extraction; }
+    /// The last viewport frame's lights (Diagnostics' Lights row), and its scene problems, including the
+    /// lights that view left out or drew without shadows.
+    struct LightCounts {
+        size_t local = 0, dropped = 0, unshadowed = 0;
+        bool sun = false;
+    };
+    const LightCounts& lights() const noexcept { return m_lights; }
+    const std::vector<RenderDiagnostic>& frame_problems() const noexcept { return m_frame_problems; }
     /// The open scene's editing session, or null when no scene is open.
     SceneEditor* scene() noexcept { return m_scene.get(); }
     std::optional<EntityId> renaming() const noexcept { return m_renaming; }
@@ -314,6 +322,8 @@ public:
     /// The viewport's exposure view: the image, or its luminance or false-color exposure. Saved as a preference.
     ExposureView exposure_view() const noexcept { return m_preferences.exposure_view; }
     void set_exposure_view(ExposureView view);
+    ShadowView shadow_view() const noexcept { return m_preferences.shadow_view; }
+    void set_shadow_view(ShadowView view);
     /// While on, the primary selection's collider shows size and offset handles in place of the
     /// transform gizmo. Each drag is one undoable edit, validated as the Inspector's are.
     bool collider_editing() const noexcept { return m_collider_editing; }
@@ -549,6 +559,7 @@ private:
     DiagnosticLog m_log;
     std::vector<RenderDiagnostic> m_frame_problems;
     RenderSnapshotStats m_extraction{};
+    LightCounts m_lights{};
     PixelSize m_viewport_request{};
     float m_font_scale = 0.0f;
     RhiStats m_shown_stats{}; // refreshed a few times a second so the numbers stay readable

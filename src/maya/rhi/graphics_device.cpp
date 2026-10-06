@@ -404,6 +404,8 @@ RhiResult<SamplerHandle> GraphicsDevice::create_sampler(const SamplerDesc& desc)
     if (desc.min_filter > Filter::linear || desc.mag_filter > Filter::linear || desc.mip_filter > MipFilter::linear ||
         desc.address_u > AddressMode::mirror_repeat || desc.address_v > AddressMode::mirror_repeat)
         return {{}, fail(RhiError::invalid_descriptor, "Sampler" + quoted(desc.label) + " has an unknown filter or address mode")};
+    if (desc.compare && *desc.compare > CompareFunction::always)
+        return {{}, fail(RhiError::invalid_descriptor, "Sampler" + quoted(desc.label) + " has an unknown compare function")};
     if (desc.max_anisotropy == 0 || desc.max_anisotropy > m_limits.max_anisotropy)
         return {{}, fail(RhiError::invalid_descriptor, "Sampler" + quoted(desc.label) + " anisotropy " +
             std::to_string(desc.max_anisotropy) + " is outside 1.." + std::to_string(m_limits.max_anisotropy))};
@@ -432,8 +434,10 @@ RhiResult<PipelineHandle> GraphicsDevice::create_pipeline(const PipelineDesc& de
     const auto invalid = [&](const std::string& why) {
         return RhiResult<PipelineHandle>{{}, fail(RhiError::invalid_descriptor, name + ": " + why)};
     };
-    if (desc.shader_source.empty() || desc.vertex_entry.empty() || desc.fragment_entry.empty())
-        return invalid("shader source and both entry points are required");
+    if (desc.shader_source.empty() || desc.vertex_entry.empty())
+        return invalid("shader source and a vertex entry point are required");
+    if (desc.fragment_entry.empty() && !desc.color_formats.empty())
+        return invalid("a fragment entry point is required to write color attachments");
     if (desc.color_formats.empty() && desc.depth_format == Format::undefined)
         return invalid("at least one color or depth attachment format is required");
     if (desc.color_formats.size() > m_limits.max_color_attachments)
@@ -765,6 +769,28 @@ RhiDiagnostic GraphicsDevice::set_scissor(const ScissorRect& rect) {
             " " + std::to_string(rect.width) + "x" + std::to_string(rect.height) + " exceeds the " +
             std::to_string(m_pass_width) + "x" + std::to_string(m_pass_height) + " pass attachments");
     backend_set_scissor(rect);
+    return {};
+}
+
+RhiDiagnostic GraphicsDevice::set_viewport(const Viewport& viewport) {
+    if (auto state = require_state(State::pass, "set_viewport")) return state;
+    if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) || !(viewport.width > 0.0f) || !(viewport.height > 0.0f) ||
+        !std::isfinite(viewport.width) || !std::isfinite(viewport.height))
+        return fail(RhiError::invalid_usage, "Viewport must be finite with a positive size");
+    if (viewport.x < 0.0f || viewport.y < 0.0f || viewport.x + viewport.width > float(m_pass_width) ||
+        viewport.y + viewport.height > float(m_pass_height))
+        return fail(RhiError::out_of_range, "Viewport " + std::to_string(viewport.x) + "," + std::to_string(viewport.y) + " " +
+            std::to_string(viewport.width) + "x" + std::to_string(viewport.height) + " exceeds the " + std::to_string(m_pass_width) +
+            "x" + std::to_string(m_pass_height) + " pass attachments");
+    backend_set_viewport(viewport);
+    return {};
+}
+
+RhiDiagnostic GraphicsDevice::set_depth_bias(float constant, float slope, float clamp) {
+    if (auto state = require_state(State::pass, "set_depth_bias")) return state;
+    if (!std::isfinite(constant) || !std::isfinite(slope) || !std::isfinite(clamp))
+        return fail(RhiError::invalid_usage, "Depth bias values must be finite");
+    backend_set_depth_bias(constant, slope, clamp);
     return {};
 }
 

@@ -116,6 +116,8 @@ struct Counters {
     uint64_t draws = 0, instances = 0, triangles = 0; // per frame, as submitted
     uint32_t passes = 0;
     size_t unique_meshes = 0, unique_materials = 0; // resident asset versions
+    size_t local_lights = 0, dropped_lights = 0, unshadowed_lights = 0; // the last view's (docs/renderer.md#lights)
+    double shadow_maps = 0.0, shadow_draws = 0.0; // per view, over the whole run
 };
 
 /// P1: one run's per-tick samples (milliseconds and counts) and what it ended with.

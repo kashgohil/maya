@@ -140,6 +140,7 @@ maya_target_options(MayaImport)
 # Render extraction, views, offscreen targets, and passes. Reads Worlds; never owns or edits them.
 add_library(MayaRenderer STATIC
     src/maya/renderer/render_snapshot.cpp
+    src/maya/renderer/light_plan.cpp
     src/maya/renderer/render_target.cpp
     src/maya/renderer/renderer.cpp)
 add_library(Maya::Renderer ALIAS MayaRenderer)

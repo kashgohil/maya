@@ -251,7 +251,8 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     ImGui::SameLine(0.0f, 8.0f);
     if (tool(icon::cube_transparent, m_collider_editing, "Edit collider   C")) set_collider_editing(!m_collider_editing);
     m_layout.controls.push_back({"tool.collider", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
-    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.exposure_view != ExposureView::none, "Debug views"))
+    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.exposure_view != ExposureView::none ||
+                            m_preferences.shadow_view != ShadowView::none, "Debug views"))
         ImGui::OpenPopup("physics-debug");
     m_layout.controls.push_back({"tool.physics-debug", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
     ImGui::PopStyleVar(3);
@@ -353,6 +354,21 @@ void EditorShell::draw_physics_debug_menu() {
     exposure(ExposureView::false_color, "False color", "debug.exposure.false-color",
              "A color per band of stops from middle grey: blues under, grey within half a stop, yellow to red over, "
              "pink past +6.");
+    ImGui::Dummy({0.0f, 4.0f});
+    // Shadow views tint the sun's cascades or checker their texels (docs/renderer.md#shadow-views).
+    theme::caption(m_fonts, "SHADOWS");
+    const auto shadows = [&](ShadowView view, const char* label, const char* key, const char* tip) {
+        if (ImGui::RadioButton(label, m_preferences.shadow_view == view)) set_shadow_view(view);
+        remember(key);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    };
+    shadows(ShadowView::none, "Lit", "debug.shadows.none", "The lit image.");
+    ImGui::SameLine();
+    shadows(ShadowView::cascades, "Cascades", "debug.shadows.cascades",
+            "Tints each of the sun's four shadow cascades: red, green, blue, yellow, nearest first.");
+    ImGui::SameLine();
+    shadows(ShadowView::texels, "Texels", "debug.shadows.texels",
+            "Checkers the shadow maps' texels where they land: big squares mean blocky shadows there.");
     ImGui::Dummy({0.0f, 4.0f});
     theme::caption(m_fonts, "PHYSICS DEBUG");
     const auto category = [&](PhysicsDebugCategory value, const char* label, const char* key, const char* tip) {

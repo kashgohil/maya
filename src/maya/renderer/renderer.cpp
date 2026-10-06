@@ -36,6 +36,20 @@ std::span<const std::byte> split_sum_table() {
     static const auto table = brdf_table();
     return table;
 }
+MaterialConstants material_constants(const RenderMaterial& material) {
+    auto constants = MaterialConstants{};
+    constants.base_color = material.base_color;
+    constants.factors = {material.metallic, material.roughness, material.normal_scale, material.occlusion_strength};
+    constants.emissive = {material.emissive, material.alpha_cutoff};
+    constants.flags[1] = uint32_t(material.alpha_mode);
+    constants.uv_transform = material_uv_transform(material.uv_rotation, material.uv_scale);
+    constants.uv_offset = {material.uv_offset.x, material.uv_offset.y, 0.0f, 0.0f};
+    for (uint32_t slot = 0; slot < material_slots; ++slot)
+        if (material.textures[slot] != no_texture) constants.flags[0] |= 1u << slot;
+    return constants;
+}
+/// Slope-scaled depth bias in shadow maps, against acne where surfaces face the light at grazing angles.
+constexpr float shadow_slope_bias = 2.0f;
 } // namespace
 
 Renderer::Renderer(GraphicsDevice& device, std::string shader_source)
@@ -54,6 +68,11 @@ void Renderer::release() noexcept {
     m_brdf_table.reset();
     m_empty_cube.reset();
     m_table_sampler.reset();
+    m_sun_atlas.reset();
+    m_spot_atlas.reset();
+    m_no_shadows.reset();
+    m_no_shadows_cleared = false;
+    m_shadow_sampler.reset();
 }
 
 bool Renderer::session_changed() noexcept {
@@ -76,7 +95,16 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
     auto desc = PipelineDesc{};
     desc.shader_source = m_shader_source;
     desc.color_formats = {format};
-    if (kind == PipelineKind::present) {
+    if (kind == PipelineKind::shadow || kind == PipelineKind::shadow_masked) {
+        // Depth alone; masked materials cut themselves out. Both faces cast, so thin and open surfaces do.
+        desc.color_formats.clear();
+        desc.vertex_entry = "shadowVertex";
+        desc.fragment_entry = kind == PipelineKind::shadow_masked ? "shadowMaskFragment" : "";
+        desc.depth_format = Format::depth32_float;
+        desc.depth = {true, true, CompareFunction::less};
+        desc.cull = CullMode::none;
+        desc.label = kind == PipelineKind::shadow_masked ? "masked shadow caster" : "shadow caster";
+    } else if (kind == PipelineKind::present) {
         desc.vertex_entry = "presentVertex";
         desc.fragment_entry = "presentFragment";
         desc.cull = CullMode::none;
@@ -122,6 +150,88 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
     m_pipelines.push_back({format, kind, created.handle, created.diagnostic});
     out = created.handle;
     return std::move(created.diagnostic);
+}
+
+RhiDiagnostic Renderer::prepare_shadows(const LightPlan& plan) {
+    const auto depth = [&](uint32_t size, const char* label) {
+        return std::make_unique<Texture>(m_device, TextureDesc{size, size, Format::depth32_float,
+                                                               TextureUsage::sampled | TextureUsage::render_target, label},
+                                         std::span<const std::byte>{});
+    };
+    if (!m_shadow_sampler) {
+        m_shadow_sampler = std::make_unique<Sampler>(m_device, SamplerDesc{Filter::linear, Filter::linear, AddressMode::clamp_to_edge,
+            AddressMode::clamp_to_edge, "shadow comparison", MipFilter::none, 1, CompareFunction::less_equal});
+        m_no_shadows = depth(1, "no shadows");
+        m_no_shadows_cleared = false;
+    }
+    if (plan.sun && !m_sun_atlas) m_sun_atlas = depth(2 * sun_cascade_size, "sun shadow atlas");
+    if (!plan.spot_shadows.empty() && !m_spot_atlas) m_spot_atlas = depth(2 * spot_shadow_size, "spot shadow atlas");
+    for (const auto* texture : {m_no_shadows.get(), plan.sun ? m_sun_atlas.get() : nullptr, plan.spot_shadows.empty() ? nullptr : m_spot_atlas.get()})
+        if (texture && !texture->valid()) return texture->error() ? texture->error() : RhiDiagnostic{RhiError::device_unavailable, "A shadow map could not be created"};
+    if (!m_shadow_sampler->valid()) return m_shadow_sampler->error();
+    if (!m_no_shadows_cleared) { // depth 1: everything lit
+        auto pass = RenderPassDesc{};
+        pass.depth = DepthAttachment{m_no_shadows->handle(), LoadAction::clear, StoreAction::store, 1.0};
+        pass.label = "no shadows";
+        if (auto error = m_device.begin_render_pass(pass)) return error;
+        if (auto error = m_device.end_render_pass()) return error;
+        m_no_shadows_cleared = true;
+    }
+    return {};
+}
+
+RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
+                                            const std::vector<math::Mat4>& maps,
+                                            const std::function<bool(uint32_t map, const RenderInstance&)>& casts) {
+    auto opaque = PipelineHandle{}, masked = PipelineHandle{};
+    if (auto error = pipeline(Format::depth32_float, PipelineKind::shadow, opaque)) return error;
+    if (auto error = pipeline(Format::depth32_float, PipelineKind::shadow_masked, masked)) return error;
+    auto pass = RenderPassDesc{};
+    pass.depth = DepthAttachment{atlas.handle(), LoadAction::clear, StoreAction::store, 1.0};
+    pass.label = label;
+    if (auto error = m_device.begin_render_pass(pass)) return error;
+    const auto encode = [&]() -> RhiDiagnostic {
+        const auto size = atlas.desc().width / 2;
+        if (auto error = m_device.set_depth_bias(0.0f, shadow_slope_bias)) return error;
+        for (uint32_t map = 0; map < maps.size(); ++map) {
+            const auto x = (map & 1) * size, y = (map >> 1) * size;
+            if (auto error = m_device.set_viewport({float(x), float(y), float(size), float(size)})) return error;
+            if (auto error = m_device.set_scissor({x, y, size, size})) return error;
+            const auto constants = ShadowConstants{maps[map]};
+            const auto uploaded = m_device.upload_transient(&constants, sizeof(constants));
+            if (!uploaded) return uploaded.diagnostic;
+            auto bound = PipelineHandle{};
+            for (uint32_t i = 0; i < snapshot.instances.size(); ++i) {
+                const auto& instance = snapshot.instances[i];
+                const auto& material = instance.material;
+                if (material.alpha_mode == AlphaMode::blend || !casts(map, instance)) continue; // see-through surfaces cast none
+                const auto mask = material.alpha_mode == AlphaMode::mask;
+                if (const auto wanted = mask ? masked : opaque; wanted != bound) {
+                    if (auto error = m_device.set_pipeline(wanted)) return error;
+                    if (auto error = m_device.set_uniform_buffer(2, uploaded.slice)) return error;
+                    bound = wanted;
+                }
+                if (mask) {
+                    const auto constants = material_constants(material);
+                    const auto material_uploaded = m_device.upload_transient(&constants, sizeof(constants));
+                    if (!material_uploaded) return material_uploaded.diagnostic;
+                    if (auto error = m_device.set_uniform_buffer(3, material_uploaded.slice)) return error;
+                    const auto texture = material.textures[size_t(MaterialSlot::base_color)];
+                    const auto* asset = texture < snapshot.textures.size() ? &snapshot.textures[texture].value() : m_placeholder.get();
+                    if (auto error = m_device.set_texture(0, asset->texture().handle())) return error;
+                    if (auto error = m_device.set_sampler(0, asset->sampler().handle())) return error;
+                }
+                if (auto error = m_device.set_uniform_buffer(1, m_draw_constants[i])) return error;
+                if (auto error = snapshot.meshes[instance.mesh].value().mesh().draw()) return error;
+                ++m_stats.shadow_draws;
+            }
+            ++m_stats.shadow_maps;
+        }
+        return {};
+    };
+    auto result = encode();
+    if (auto closed = m_device.end_render_pass(); !result) result = std::move(closed);
+    return result;
 }
 
 RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView& view, const RenderTarget& target) {
@@ -193,6 +303,37 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         if (auto error = pipeline(target.color_format(), PipelineKind::debug_behind, debug_behind)) return error;
     }
 
+    // Lights and shadows for this view (docs/renderer.md#shadows): the shadow maps are rendered first, from
+    // every instance's constants, uploaded once for every pass.
+    const auto plan = plan_lights(snapshot, view);
+    m_lights = {plan.local.size(), {}, {}, plan.sun ? std::optional(snapshot.lights[*plan.sun].entity) : std::nullopt};
+    for (const auto index : plan.dropped) m_lights.dropped.push_back(snapshot.local_lights[index].entity);
+    for (const auto index : plan.unshadowed) m_lights.unshadowed.push_back(snapshot.local_lights[index].entity);
+    if (auto error = prepare_shadows(plan)) return error;
+    m_draw_constants.clear();
+    for (const auto& instance : snapshot.instances) {
+        auto draw = DrawConstants{};
+        draw.model = instance.world;
+        for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
+        const auto uploaded = m_device.upload_transient(&draw, sizeof(draw));
+        if (!uploaded) return uploaded.diagnostic;
+        m_draw_constants.push_back(uploaded.slice);
+    }
+    if (plan.sun) {
+        auto maps = std::vector<math::Mat4>{};
+        for (const auto& cascade : plan.cascades) maps.push_back(cascade.view_projection);
+        if (auto error = encode_shadow_atlas(*m_sun_atlas, snapshot, "sun shadows", maps, [&](uint32_t map, const RenderInstance& instance) {
+                return casts_into(plan.cascades[map], instance);
+            })) return error;
+    }
+    if (!plan.spot_shadows.empty()) {
+        auto maps = std::vector<math::Mat4>{};
+        for (const auto& spot : plan.spot_shadows) maps.push_back(spot.view_projection);
+        if (auto error = encode_shadow_atlas(*m_spot_atlas, snapshot, "spot shadows", maps, [&](uint32_t map, const RenderInstance& instance) {
+                return casts_into(snapshot.local_lights[plan.spot_shadows[map].light], instance);
+            })) return error;
+    }
+
     auto constants = ViewConstants{};
     constants.view_projection = view.matrices.view_projection;
     constants.camera_position = {view.position, 1.0f};
@@ -210,6 +351,31 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         constants.environment_flags[1] = sky ? 1 : 0;
         for (size_t i = 0; i < 9; ++i) constants.irradiance[i] = {asset.irradiance()[i], 0.0f};
     }
+    constants.local_count[0] = uint32_t(plan.local.size());
+    for (size_t k = 0; k < plan.local.size(); ++k) {
+        const auto& light = snapshot.local_lights[plan.local[k]];
+        const auto spot = light.kind == LightKind::spot;
+        const auto map = std::ranges::find(plan.spot_shadows, plan.local[k], &SpotShadow::light);
+        const auto shadow_map = map == plan.spot_shadows.end() ? 0.0f : float(map - plan.spot_shadows.begin() + 1);
+        constants.local_lights[k] = {{light.position, light.range}, {light.direction, spot ? 1.0f : 0.0f}, {light.intensity, shadow_map},
+                                     {light.cos_outer, 1.0f / std::max(light.cos_inner - light.cos_outer, 1e-4f), light.shadow.bias,
+                                      light.shadow.normal_bias}};
+    }
+    auto& shadows = constants.shadows;
+    if (plan.sun) {
+        const auto& sun = snapshot.lights[*plan.sun];
+        for (uint32_t c = 0; c < sun_cascades; ++c) {
+            shadows.cascades[c] = plan.cascades[c].view_projection;
+            (&shadows.cascade_far.x)[c] = plan.cascades[c].far;
+            (&shadows.cascade_texel.x)[c] = plan.cascades[c].texel;
+        }
+        shadows.sun = {sun.shadow.bias, sun.shadow.normal_bias, plan.cascades[0].near, float(*plan.sun + 1)};
+    }
+    for (size_t m = 0; m < plan.spot_shadows.size(); ++m) {
+        shadows.spots[m] = plan.spot_shadows[m].view_projection;
+        (&shadows.spot_texel.x)[m] = plan.spot_shadows[m].texel_per_metre;
+    }
+    shadows.view_forward = {plan.view_forward, float(view.shadow_view)};
     const auto uploaded_view = m_device.upload_transient(&constants, sizeof(constants));
     if (!uploaded_view) return uploaded_view.diagnostic;
 
@@ -233,6 +399,9 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         if (auto error = m_device.set_sampler(5, environment_sampler->handle())) return error;
         if (auto error = m_device.set_texture(7, m_brdf_table->handle())) return error;
         if (auto error = m_device.set_sampler(7, m_table_sampler->handle())) return error;
+        if (auto error = m_device.set_texture(8, (plan.sun ? *m_sun_atlas : *m_no_shadows).handle())) return error;
+        if (auto error = m_device.set_texture(9, (plan.spot_shadows.empty() ? *m_no_shadows : *m_spot_atlas).handle())) return error;
+        if (auto error = m_device.set_sampler(8, m_shadow_sampler->handle())) return error;
         auto sky_drawn = !sky;
         const auto draw_sky = [&]() -> RhiDiagnostic { // after opaque surfaces, before blended ones
             sky_drawn = true;
@@ -253,15 +422,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
                     if (auto error = m_device.set_uniform_buffer(2, uploaded_view.slice)) return error;
                 bound_pipeline = pipeline;
             }
-            auto constants = MaterialConstants{};
-            constants.base_color = material.base_color;
-            constants.factors = {material.metallic, material.roughness, material.normal_scale, material.occlusion_strength};
-            constants.emissive = {material.emissive, material.alpha_cutoff};
-            constants.flags[1] = uint32_t(material.alpha_mode);
-            constants.uv_transform = material_uv_transform(material.uv_rotation, material.uv_scale);
-            constants.uv_offset = {material.uv_offset.x, material.uv_offset.y, 0.0f, 0.0f};
-            for (uint32_t slot = 0; slot < material_slots; ++slot)
-                if (material.textures[slot] != no_texture) constants.flags[0] |= 1u << slot;
+            const auto constants = material_constants(material);
             if (bound_maps != material.textures) {
                 for (uint32_t slot = 0; slot < material_slots; ++slot) {
                     // Empty slots are not sampled, but every slot is bound.
@@ -280,12 +441,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
                 if (auto error = m_device.set_uniform_buffer(3, uploaded.slice)) return error;
                 bound_material = constants;
             }
-            auto draw = DrawConstants{};
-            draw.model = instance.world;
-            for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
-            const auto uploaded = m_device.upload_transient(&draw, sizeof(draw));
-            if (!uploaded) return uploaded.diagnostic;
-            if (auto error = m_device.set_uniform_buffer(1, uploaded.slice)) return error;
+            if (auto error = m_device.set_uniform_buffer(1, m_draw_constants[index])) return error;
             if (auto error = snapshot.meshes[instance.mesh].value().mesh().draw()) return error;
             ++m_stats.draws;
         }

@@ -335,6 +335,7 @@ RhiDiagnostic MetalDevice::backend_create_sampler(uint32_t slot, const SamplerDe
         descriptor.maxAnisotropy = desc.max_anisotropy;
         descriptor.sAddressMode = address_mode(desc.address_u);
         descriptor.tAddressMode = address_mode(desc.address_v);
+        if (desc.compare) descriptor.compareFunction = compare_function(*desc.compare);
         if (!desc.label.empty()) descriptor.label = ns_string(desc.label);
         id<MTLSamplerState> sampler = [m_impl->device newSamplerStateWithDescriptor:descriptor];
         if (!sampler) return {RhiError::out_of_memory, "Metal could not create a sampler"};
@@ -350,9 +351,11 @@ RhiDiagnostic MetalDevice::backend_create_pipeline(uint32_t slot, const Pipeline
         id<MTLLibrary> library = [m_impl->device newLibraryWithSource:ns_string(desc.shader_source) options:nil error:&error];
         if (!library) return {RhiError::shader_compilation, name + ": shader compilation failed: " + error_text(error)};
         id<MTLFunction> vertex = [library newFunctionWithName:ns_string(desc.vertex_entry)];
-        id<MTLFunction> fragment = [library newFunctionWithName:ns_string(desc.fragment_entry)];
+        // A depth-only pipeline (no fragment entry) rasterizes depth alone, as shadow maps need.
+        id<MTLFunction> fragment = desc.fragment_entry.empty() ? nil : [library newFunctionWithName:ns_string(desc.fragment_entry)];
         if (!vertex) return {RhiError::invalid_descriptor, name + ": vertex entry point '" + desc.vertex_entry + "' was not found"};
-        if (!fragment) return {RhiError::invalid_descriptor, name + ": fragment entry point '" + desc.fragment_entry + "' was not found"};
+        if (!fragment && !desc.fragment_entry.empty())
+            return {RhiError::invalid_descriptor, name + ": fragment entry point '" + desc.fragment_entry + "' was not found"};
         auto* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
         descriptor.vertexFunction = vertex;
         descriptor.fragmentFunction = fragment;
@@ -512,6 +515,14 @@ void MetalDevice::backend_set_texture(uint32_t index, uint32_t slot) {
 
 void MetalDevice::backend_set_sampler(uint32_t index, uint32_t slot) {
     [m_impl->encoder setFragmentSamplerState:m_impl->samplers[slot] atIndex:index];
+}
+
+void MetalDevice::backend_set_viewport(const Viewport& viewport) {
+    [m_impl->encoder setViewport:MTLViewport{viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0}];
+}
+
+void MetalDevice::backend_set_depth_bias(float constant, float slope, float clamp) {
+    [m_impl->encoder setDepthBias:constant slopeScale:slope clamp:clamp];
 }
 
 void MetalDevice::backend_set_scissor(const ScissorRect& rect) {

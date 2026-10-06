@@ -328,9 +328,9 @@ struct Converter {
                 out.kind = LightKind::directional;
                 out.intensity = light.intensity; // lux, as glTF's
             } else {
-                // Candela to lumens over the whole sphere, as Maya's point and spot lights are measured.
+                // Candela, as glTF and Maya measure point and spot lights.
                 out.kind = light.type == cgltf_light_type_spot ? LightKind::spot : LightKind::point;
-                out.intensity = 4 * math::PI * light.intensity;
+                out.intensity = light.intensity;
                 // An unbounded light reaches as far as it gives 0.01 lux (docs/import.md#lights).
                 out.range = light.range > 0 ? light.range : std::clamp(std::sqrt(light.intensity / 0.01f), 0.1f, 10000.0f);
                 if (out.kind == LightKind::spot) { // glTF's cone angles are measured from the axis: half Maya's

@@ -1,9 +1,12 @@
 #pragma once
 
+#include "maya/renderer/light_plan.hpp"
 #include "maya/renderer/render_snapshot.hpp"
 #include "maya/renderer/render_target.hpp"
 #include "maya/core/texture.hpp"
 #include <array>
+#include <functional>
+#include <optional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,6 +27,16 @@ struct RendererStats {
     uint64_t debug_draws = 0; // instanced draws of debug lines and outlines, both depth passes
     uint64_t debug_shapes = 0; // outlines drawn, counted once per view
     uint64_t debug_lines = 0; // lines drawn, counted once per view
+    uint64_t shadow_maps = 0; // cascades and spot light maps rendered
+    uint64_t shadow_draws = 0; // instances drawn into them
+};
+/// What lit the last view (docs/renderer.md#lights): lights beyond the limits are reported here, never
+/// silently dropped. The editor shows it in Diagnostics.
+struct RenderLightReport {
+    size_t local = 0; // point and spot lights drawn
+    std::vector<EntityId> dropped; // reaching the view beyond max_local_lights: not drawn
+    std::vector<EntityId> unshadowed; // spot lights casting shadows beyond max_shadowed_spot_lights: drawn without
+    std::optional<EntityId> sun; // the directional light with cascades
 };
 
 /// Turns render snapshots into images. It owns pipelines and a sampler, created on first use for
@@ -52,11 +65,13 @@ public:
     RhiDiagnostic present(const RenderTarget& source, TextureHandle destination, PixelRect area,
                           const std::array<double, 4>& background = {0.0, 0.0, 0.0, 1.0});
     const RendererStats& stats() const noexcept { return m_stats; }
+    /// The last view's lights.
+    const RenderLightReport& last_lights() const noexcept { return m_lights; }
 
 private:
     // Lit surfaces by alpha mode (blend or not) and sidedness; masks discard in the opaque pipelines.
     enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind, tone_map, lit_double_sided, lit_blend,
-                                        lit_blend_double_sided, sky };
+                                        lit_blend_double_sided, sky, shadow, shadow_masked };
     struct CachedPipeline {
         Format format = Format::undefined;
         PipelineKind kind = PipelineKind::lit;
@@ -66,6 +81,11 @@ private:
     RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out);
     RhiDiagnostic encode_debug(const DebugDraw& debug, const RenderView& view, const TransientSlice& view_constants,
                                PipelineHandle front, PipelineHandle behind);
+    /// Renders one atlas of 2 x 2 shadow maps: each from its view-projection, with the instances `casts` lets through.
+    RhiDiagnostic encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
+                                      const std::vector<math::Mat4>& maps,
+                                      const std::function<bool(uint32_t map, const RenderInstance&)>& casts);
+    RhiDiagnostic prepare_shadows(const LightPlan& plan);
     bool session_changed() noexcept;
     void release() noexcept;
 
@@ -78,6 +98,13 @@ private:
     /// The split-sum table (brdf_table), and a black cube bound in the environment's slots when there is none.
     std::unique_ptr<Texture> m_brdf_table, m_empty_cube;
     std::unique_ptr<Sampler> m_table_sampler;
+    /// Shadow maps (docs/renderer.md#shadows): the sun's four cascades and the spot lights' four maps, each in
+    /// a 2 x 2 atlas made on first use; a cleared 1 x 1 depth texture bound in their place when there are none.
+    std::unique_ptr<Texture> m_sun_atlas, m_spot_atlas, m_no_shadows;
+    bool m_no_shadows_cleared = false;
+    std::unique_ptr<Sampler> m_shadow_sampler; // linear comparison: filtered 0/1 results
+    std::vector<TransientSlice> m_draw_constants; // each instance's, uploaded once per view for every pass
+    RenderLightReport m_lights;
     std::vector<uint32_t> m_order; // instances in drawing order, reused
     RendererStats m_stats{};
     std::vector<float> m_debug_data; // packed debug lines or outlines of one kind, reused

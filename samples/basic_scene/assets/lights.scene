@@ -1,0 +1,968 @@
+maya-scene 1
+
+entity 6d617961 400
+  component maya.name 1
+    value "Camera"
+  component maya.transform 1
+    translation 0 4 15
+    rotation -0.104528 0 0 0.994522
+    scale 1 1 1
+  component maya.camera 1
+    vertical_fov 1.0471976
+    near_clip 0.1
+    far_clip 1000
+  component maya.fly_control 1
+    speed 3
+    look_sensitivity 0.0025
+end
+
+entity 6d617961 401
+  component maya.name 1
+    value "Ground"
+  component maya.transform 1
+    translation 0 -0.05 0
+    rotation 0 0 0 1
+    scale 40 0.1 40
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 13
+    visible true
+end
+
+entity 6d617961 402
+  component maya.name 1
+    value "Sun"
+  component maya.transform 1
+    translation 0 8 0
+    rotation -0.516172 0.242904 0 0.821319
+    scale 1 1 1
+  component maya.light 2
+    kind directional
+    color 1 0.85 0.7
+    intensity 0.8
+    range 10
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 403
+  component maya.name 1
+    value "Prop 1"
+  component maya.transform 1
+    translation -7.542 0.3 -7.094
+    rotation 0 0.148929 0 0.988848
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 404
+  component maya.name 1
+    value "Prop 2"
+  component maya.transform 1
+    translation -5.54 0.3 -6.993
+    rotation 0 0.287254 0 0.957855
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 405
+  component maya.name 1
+    value "Prop 3"
+  component maya.transform 1
+    translation -2.739 0.45 -7.474
+    rotation 0 0.777589 0 0.628772
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 406
+  component maya.name 1
+    value "Prop 4"
+  component maya.transform 1
+    translation 0.176 0.3 -7.215
+    rotation 0 0.885727 0 0.464207
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 407
+  component maya.name 1
+    value "Prop 5"
+  component maya.transform 1
+    translation 2.376 0.7 -7.08
+    rotation 0 0.986247 0 0.165279
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 408
+  component maya.name 1
+    value "Prop 6"
+  component maya.transform 1
+    translation 5.167 0.3 -7.077
+    rotation 0 0.011364 0 0.999935
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 409
+  component maya.name 1
+    value "Prop 7"
+  component maya.transform 1
+    translation 7.946 0.3 -6.818
+    rotation 0 0.495279 0 0.868734
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 40a
+  component maya.name 1
+    value "Prop 8"
+  component maya.transform 1
+    translation -8.193 0.7 -4.339
+    rotation 0 0.280458 0 0.959866
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 40b
+  component maya.name 1
+    value "Prop 9"
+  component maya.transform 1
+    translation -4.973 0.7 -4.329
+    rotation 0 0.91758 0 0.397552
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 40c
+  component maya.name 1
+    value "Prop 10"
+  component maya.transform 1
+    translation -2.924 0.7 -4.506
+    rotation 0 0.669254 0 0.743034
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 40d
+  component maya.name 1
+    value "Prop 11"
+  component maya.transform 1
+    translation -0.188 0.7 -4.365
+    rotation 0 0.581734 0 0.813379
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 40e
+  component maya.name 1
+    value "Prop 12"
+  component maya.transform 1
+    translation 2.514 0.3 -4.46
+    rotation 0 0.897803 0 0.440397
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 40f
+  component maya.name 1
+    value "Prop 13"
+  component maya.transform 1
+    translation 4.802 0.7 -4.23
+    rotation 0 0.306416 0 0.951898
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 410
+  component maya.name 1
+    value "Prop 14"
+  component maya.transform 1
+    translation 7.83 0.7 -4.692
+    rotation 0 0.236293 0 0.971682
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 411
+  component maya.name 1
+    value "Prop 15"
+  component maya.transform 1
+    translation -8.167 0.45 -2.053
+    rotation 0 0.936908 0 0.349577
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 412
+  component maya.name 1
+    value "Prop 16"
+  component maya.transform 1
+    translation -5.554 0.45 -1.94
+    rotation 0 0.092514 0 0.995711
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 413
+  component maya.name 1
+    value "Prop 17"
+  component maya.transform 1
+    translation -2.937 0.45 -2.242
+    rotation 0 0.973635 0 0.228113
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 414
+  component maya.name 1
+    value "Prop 18"
+  component maya.transform 1
+    translation 0.239 0.45 -1.917
+    rotation 0 0.493636 0 0.869669
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 415
+  component maya.name 1
+    value "Prop 19"
+  component maya.transform 1
+    translation 2.998 0.3 -1.994
+    rotation 0 0.433098 0 0.901347
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 416
+  component maya.name 1
+    value "Prop 20"
+  component maya.transform 1
+    translation 5.365 0.45 -2.209
+    rotation 0 0.309317 0 0.950959
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 417
+  component maya.name 1
+    value "Prop 21"
+  component maya.transform 1
+    translation 7.853 0.7 -1.665
+    rotation 0 0.379436 0 0.925218
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 418
+  component maya.name 1
+    value "Prop 22"
+  component maya.transform 1
+    translation -7.525 0.45 0.447
+    rotation 0 0.99633 0 0.085593
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 419
+  component maya.name 1
+    value "Prop 23"
+  component maya.transform 1
+    translation -5.045 0.3 0.346
+    rotation 0 0.638817 0 0.769359
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 41a
+  component maya.name 1
+    value "Prop 24"
+  component maya.transform 1
+    translation -2.776 0.7 0.615
+    rotation 0 0.999786 0 0.020693
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 41b
+  component maya.name 1
+    value "Prop 25"
+  component maya.transform 1
+    translation -0.235 0.45 0.592
+    rotation 0 0.298476 0 0.954417
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 41c
+  component maya.name 1
+    value "Prop 26"
+  component maya.transform 1
+    translation 2.339 0.7 0.501
+    rotation 0 0.727771 0 0.68582
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 41d
+  component maya.name 1
+    value "Prop 27"
+  component maya.transform 1
+    translation 5.265 0.3 0.348
+    rotation 0 0.99951 0 0.031303
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 41e
+  component maya.name 1
+    value "Prop 28"
+  component maya.transform 1
+    translation 7.665 0.45 0.208
+    rotation 0 0.705088 0 0.70912
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 41f
+  component maya.name 1
+    value "Prop 29"
+  component maya.transform 1
+    translation -7.558 0.3 2.924
+    rotation 0 0.511814 0 0.859096
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 420
+  component maya.name 1
+    value "Prop 30"
+  component maya.transform 1
+    translation -5.139 0.7 3.556
+    rotation 0 0.812932 0 0.582359
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 421
+  component maya.name 1
+    value "Prop 31"
+  component maya.transform 1
+    translation -2.813 0.7 3.418
+    rotation 0 0.988002 0 0.154438
+    scale 0.8 1.4 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 422
+  component maya.name 1
+    value "Prop 32"
+  component maya.transform 1
+    translation 0.082 0.3 3.522
+    rotation 0 0.242904 0 0.97005
+    scale 0.8 0.6 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 10
+    visible true
+end
+
+entity 6d617961 423
+  component maya.name 1
+    value "Prop 33"
+  component maya.transform 1
+    translation 2.743 0.45 3.411
+    rotation 0 0.803322 0 0.595545
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 5
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 424
+  component maya.name 1
+    value "Prop 34"
+  component maya.transform 1
+    translation 5.498 0.45 3.337
+    rotation 0 0.931482 0 0.363787
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 2
+    material 6d617961 12
+    visible true
+end
+
+entity 6d617961 425
+  component maya.name 1
+    value "Prop 35"
+  component maya.transform 1
+    translation 8.188 0.45 2.854
+    rotation 0 0.685368 0 0.728197
+    scale 0.8 0.9 0.8
+  component maya.mesh_renderer 1
+    mesh 6d617961 1
+    material 6d617961 11
+    visible true
+end
+
+entity 6d617961 426
+  component maya.name 1
+    value "Lamp 1"
+  component maya.transform 1
+    translation -6.75 1.6 -8.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.6 0.3
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 427
+  component maya.name 1
+    value "Lamp 2"
+  component maya.transform 1
+    translation -2.25 1.6 -8.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.4 0.6 1
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 428
+  component maya.name 1
+    value "Lamp 3"
+  component maya.transform 1
+    translation 2.25 1.6 -8.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.9 0.7
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 429
+  component maya.name 1
+    value "Lamp 4"
+  component maya.transform 1
+    translation 6.75 1.6 -8.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.6 1 0.6
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 42a
+  component maya.name 1
+    value "Lamp 5"
+  component maya.transform 1
+    translation -6.75 1.6 -4.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.6 0.3
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 42b
+  component maya.name 1
+    value "Lamp 6"
+  component maya.transform 1
+    translation -2.25 1.6 -4.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.4 0.6 1
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 42c
+  component maya.name 1
+    value "Lamp 7"
+  component maya.transform 1
+    translation 2.25 1.6 -4.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.9 0.7
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 42d
+  component maya.name 1
+    value "Lamp 8"
+  component maya.transform 1
+    translation 6.75 1.6 -4.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.6 1 0.6
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 42e
+  component maya.name 1
+    value "Lamp 9"
+  component maya.transform 1
+    translation -6.75 1.6 0.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.6 0.3
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 42f
+  component maya.name 1
+    value "Lamp 10"
+  component maya.transform 1
+    translation -2.25 1.6 0.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.4 0.6 1
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 430
+  component maya.name 1
+    value "Lamp 11"
+  component maya.transform 1
+    translation 2.25 1.6 0.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.9 0.7
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 431
+  component maya.name 1
+    value "Lamp 12"
+  component maya.transform 1
+    translation 6.75 1.6 0.25
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.6 1 0.6
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 432
+  component maya.name 1
+    value "Lamp 13"
+  component maya.transform 1
+    translation -6.75 1.6 4.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.6 0.3
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 433
+  component maya.name 1
+    value "Lamp 14"
+  component maya.transform 1
+    translation -2.25 1.6 4.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.4 0.6 1
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 434
+  component maya.name 1
+    value "Lamp 15"
+  component maya.transform 1
+    translation 2.25 1.6 4.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 1 0.9 0.7
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 435
+  component maya.name 1
+    value "Lamp 16"
+  component maya.transform 1
+    translation 6.75 1.6 4.75
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.light 2
+    kind point
+    color 0.6 1 0.6
+    intensity 12
+    range 6
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows false
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 436
+  component maya.name 1
+    value "Spot 1"
+  component maya.transform 1
+    translation -8 6 -1
+    rotation -0.7071068 0 0 0.7071068
+    scale 1 1 1
+  component maya.light 2
+    kind spot
+    color 1 0.95 0.85
+    intensity 150
+    range 14
+    inner_cone 0.6
+    outer_cone 1
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 437
+  component maya.name 1
+    value "Spot 2"
+  component maya.transform 1
+    translation -4.8 6 -1
+    rotation -0.7071068 0 0 0.7071068
+    scale 1 1 1
+  component maya.light 2
+    kind spot
+    color 1 0.95 0.85
+    intensity 150
+    range 14
+    inner_cone 0.6
+    outer_cone 1
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 438
+  component maya.name 1
+    value "Spot 3"
+  component maya.transform 1
+    translation -1.6 6 -1
+    rotation -0.7071068 0 0 0.7071068
+    scale 1 1 1
+  component maya.light 2
+    kind spot
+    color 1 0.95 0.85
+    intensity 150
+    range 14
+    inner_cone 0.6
+    outer_cone 1
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 439
+  component maya.name 1
+    value "Spot 4"
+  component maya.transform 1
+    translation 1.6 6 -1
+    rotation -0.7071068 0 0 0.7071068
+    scale 1 1 1
+  component maya.light 2
+    kind spot
+    color 1 0.95 0.85
+    intensity 150
+    range 14
+    inner_cone 0.6
+    outer_cone 1
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 43a
+  component maya.name 1
+    value "Spot 5"
+  component maya.transform 1
+    translation 4.8 6 -1
+    rotation -0.7071068 0 0 0.7071068
+    scale 1 1 1
+  component maya.light 2
+    kind spot
+    color 1 0.95 0.85
+    intensity 150
+    range 14
+    inner_cone 0.6
+    outer_cone 1
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end
+
+entity 6d617961 43b
+  component maya.name 1
+    value "Spot 6"
+  component maya.transform 1
+    translation 8 6 -1
+    rotation -0.7071068 0 0 0.7071068
+    scale 1 1 1
+  component maya.light 2
+    kind spot
+    color 1 0.95 0.85
+    intensity 150
+    range 14
+    inner_cone 0.6
+    outer_cone 1
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 60
+end

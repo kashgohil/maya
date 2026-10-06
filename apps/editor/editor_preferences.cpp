@@ -15,6 +15,8 @@ constexpr std::pair<PhysicsDebugCategory, const char*> categories[] = {
     {PhysicsDebugCategory::queries, "queries"}};
 constexpr std::pair<ExposureView, const char*> exposure_views[] = {
     {ExposureView::none, "none"}, {ExposureView::luminance, "luminance"}, {ExposureView::false_color, "false-color"}};
+constexpr std::pair<ShadowView, const char*> shadow_views[] = {
+    {ShadowView::none, "none"}, {ShadowView::cascades, "cascades"}, {ShadowView::texels, "texels"}};
 
 } // namespace
 
@@ -27,6 +29,8 @@ void write_preferences(std::ostream& output, const EditorPreferences& preference
     out << "\nphysics-debug-groups " << std::hex << preferences.physics_debug.groups << std::dec << '\n';
     for (const auto& [view, name] : exposure_views)
         if (view == preferences.exposure_view) out << "exposure-view " << name << '\n';
+    for (const auto& [view, name] : shadow_views)
+        if (view == preferences.shadow_view) out << "shadow-view " << name << '\n';
     output << out.str();
 }
 
@@ -60,6 +64,12 @@ PreferencesReadResult read_preferences(std::istream& input) {
             const auto known = std::ranges::find(exposure_views, name, [](const auto& entry) { return std::string(entry.second); });
             if (known != std::end(exposure_views)) result.preferences.exposure_view = known->first;
             else result.error = "exposure-view needs none, luminance, or false-color";
+        } else if (key == "shadow-view") {
+            auto name = std::string{};
+            words >> name;
+            const auto known = std::ranges::find(shadow_views, name, [](const auto& entry) { return std::string(entry.second); });
+            if (known != std::end(shadow_views)) result.preferences.shadow_view = known->first;
+            else result.error = "shadow-view needs none, cascades, or texels";
         }
     }
     return result;

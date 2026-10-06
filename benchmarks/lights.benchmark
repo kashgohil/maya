@@ -1,0 +1,13 @@
+maya-benchmark 1
+# The lights test scene (#1034): a low sun with four shadow cascades over 35 props, 16 point lights,
+# and 6 spot lights casting shadows. The spot lights rank first, so the view draws the 16-light limit
+# (6 spot, 10 point; 6 point lights are left out) and renders four spot shadow maps. Per-pass GPU times
+# give the sun and spot shadow passes and the lit view's cost.
+name "lights-scene"
+workload scene
+project "../samples/basic_scene"
+scene "lights.scene"
+resolution 1920 1080
+warmup 300
+samples 3000
+runs 3

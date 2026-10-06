@@ -29,6 +29,7 @@ using PipelineHandle = RhiHandle<struct PipelineTag>;
 
 /// ASTC formats are block-compressed (16 bytes per block of 4x4 or 6x6 texels) and can only be
 /// sampled; they need RhiLimits::astc.
+enum class CompareFunction : uint8_t { never, less, less_equal, equal, greater, greater_equal, always };
 enum class Format : uint8_t {
     undefined, rgba8_unorm, rgba8_srgb, bgra8_unorm, bgra8_srgb, rgba16_float, depth32_float,
     astc_4x4_unorm, astc_4x4_srgb, astc_6x6_unorm, astc_6x6_srgb
@@ -142,9 +143,10 @@ struct SamplerDesc {
     std::string label;
     MipFilter mip_filter = MipFilter::none;
     uint32_t max_anisotropy = 1; // 1..16; 1 is off
+    /// A comparison sampler (#1034), for sampling depth textures: each texel read is compared with a
+    /// reference depth by this function, and filtering blends the 0/1 results (shadow maps).
+    std::optional<CompareFunction> compare = std::nullopt;
 };
-
-enum class CompareFunction : uint8_t { never, less, less_equal, equal, greater, greater_equal, always };
 /// Color blending for every attachment. `alpha` is source-over with straight (non-premultiplied)
 /// alpha: rgb = src.rgb * src.a + dst.rgb * (1 - src.a), a = src.a + dst.a * (1 - src.a).
 enum class BlendMode : uint8_t { opaque, alpha };
@@ -159,7 +161,7 @@ struct DepthState {
 struct PipelineDesc {
     std::string shader_source; // Metal Shading Language for the Metal backend
     std::string vertex_entry = "vertexMain";
-    std::string fragment_entry = "fragmentMain";
+    std::string fragment_entry = "fragmentMain"; // empty for a depth-only pipeline (no color attachments)
     std::vector<Format> color_formats; // must match the pass attachments in order
     Format depth_format = Format::undefined;
     DepthState depth{};
@@ -187,6 +189,14 @@ struct RenderPassDesc {
     std::vector<ColorAttachment> colors;
     std::optional<DepthAttachment> depth;
     std::string label;
+};
+/// Where clip space maps in the pass attachments (#1034), framebuffer pixels from the top left, depth
+/// 0 to 1: drawing into one part of an atlas.
+struct Viewport {
+    float x = 0;
+    float y = 0;
+    float width = 0;
+    float height = 0;
 };
 /// Pixels outside the rectangle are not drawn. Framebuffer pixels, origin at the top left.
 struct ScissorRect {
