@@ -45,9 +45,9 @@ protected:
     // Scissors in color passes only: the renderer's shadow passes scissor each map in its atlas.
     void backend_set_scissor(const ScissorRect& rect) override { if (color_pass) scissors.push_back(rect); }
     void backend_set_texture(uint32_t, uint32_t slot) override { sampled.push_back(slot); }
-    void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t count, size_t offset, uint32_t instances) override {
+    void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t count, size_t offset, uint32_t instances, uint32_t first) override {
         ++indexed_draws;
-        NullGraphicsDevice::backend_draw_indexed(slot, type, count, offset, instances);
+        NullGraphicsDevice::backend_draw_indexed(slot, type, count, offset, instances, first);
     }
 };
 

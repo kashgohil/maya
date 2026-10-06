@@ -115,6 +115,7 @@ TEST_CASE("Spot shadow maps go to the most important shadowed spot lights; the r
 TEST_CASE("The sun's four cascades cover the view to its shadow distance, each holding its slice of the frustum", "[renderer][shadows]") {
     auto snapshot = RenderSnapshot{};
     snapshot.lights = {sun()};
+    snapshot.materials = {RenderMaterial{}};
     snapshot.instances = {instance({0, 0, -10}, 1.0f), instance({0, 40, -10}, 1.0f)}; // one high above everything
     const auto view = view_at({0, 2, 0}, {0, 1, -10});
     const auto plan = plan_lights(snapshot, view);
@@ -160,6 +161,7 @@ TEST_CASE("The sun's four cascades cover the view to its shadow distance, each h
 TEST_CASE("Cascades keep their size as the view turns and move in whole texels as it moves, so shadows do not shimmer", "[renderer][shadows]") {
     auto snapshot = RenderSnapshot{};
     snapshot.lights = {sun()};
+    snapshot.materials = {RenderMaterial{}};
     snapshot.instances = {instance({0, 0, 0}, 1.0f)};
     const auto at = [&](const math::Vec3& from, float yaw) {
         return plan_lights(snapshot, view_at(from, from + math::Vec3{std::sin(yaw), -0.3f, -std::cos(yaw)}));

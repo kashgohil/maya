@@ -181,8 +181,10 @@ TEST_CASE("The authored scene runs through the player's path and draws each obje
     const auto residency = assets.registry->residency();
     CHECK(residency.meshes == 2);
     CHECK(gpu.device.stats().buffers == 4);
-    // Each instance in the view and in each of the sun's four shadow cascades (#1034), and the tone-mapping triangle.
-    CHECK(gpu.device.stats().frame_draws == 4 + 4 * 4 + 1);
+    // Each instance in the view and in each of the sun's four shadow cascades (#1034), and the tone-mapping triangle,
+    // in fewer draws: instances of one mesh and material share one (#1025).
+    CHECK(gpu.device.stats().frame_instances == 4 + 4 * 4 + 1);
+    CHECK(gpu.device.stats().frame_draws < gpu.device.stats().frame_instances);
 }
 
 TEST_CASE("The V1 reference scene matches its reference images, and authoring and play views agree", "[visual][gpu]") {

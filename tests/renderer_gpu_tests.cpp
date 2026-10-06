@@ -125,6 +125,38 @@ TEST_CASE("Metal renderer draws shared geometry with per-instance transforms and
     CHECK(fixture.renderer->stats().draws == 2);
 }
 
+TEST_CASE("Metal renderer draws many instances of each mesh and material with one instanced draw each, at their own places", "[rhi][renderer][batches]") {
+    GpuFixture fixture;
+    World world;
+    // A checkerboard of 7 x 5 small cubes in two materials, interleaved, and one far out of view.
+    build_world(world, [&](WorldCommands& commands) {
+        fixture.add_light(commands);
+        for (int row = 0; row < 5; ++row)
+            for (int column = 0; column < 7; ++column)
+                fixture.add_mesh(commands, fixture.cube, (row + column) % 2 ? fixture.green : fixture.red,
+                                 {{float(column - 3) * 0.6f, float(row - 2) * 0.6f, 0}, {}, {0.3f}});
+        fixture.add_mesh(commands, fixture.cube, fixture.red, {{500, 0, 0}, {}, {1.0f}});
+    });
+    const auto snapshot = extract_render_snapshot(world, *fixture.project->registry, no_ambient);
+    REQUIRE(snapshot.instances.size() == 36);
+    auto target = RenderTarget(fixture.device, {Format::rgba8_unorm, true, "checkerboard"});
+    const auto view = fixture.front_view(256, 256);
+    const auto pixels = fixture.render(snapshot, view, target);
+    CHECK(fixture.renderer->stats().draws == 2); // one per material, for 35 cubes in view
+    CHECK(fixture.renderer->last_view().drawn == 35);
+    CHECK(fixture.renderer->last_view().culled == 1);
+    for (int row = 0; row < 5; ++row)
+        for (int column = 0; column < 7; ++column) {
+            const auto clip = view.matrices.view_projection * math::Vec4{float(column - 3) * 0.6f, float(row - 2) * 0.6f, 0.15f, 1.0f};
+            const auto x = uint32_t((clip.x / clip.w * 0.5f + 0.5f) * 256.0f), y = uint32_t((0.5f - clip.y / clip.w * 0.5f) * 256.0f);
+            const auto shown = pixel(pixels, 256, x, y);
+            INFO("cube " << column << ", " << row);
+            CHECK(((row + column) % 2 ? is_green(shown) : is_red(shown)));
+            // Between cubes, nothing.
+            CHECK(is_black(pixel(pixels, 256, std::min(x + 14, 255u), y)));
+        }
+}
+
 TEST_CASE("Metal renderer lights nonuniformly scaled surfaces by their true normals", "[rhi][renderer]") {
     GpuFixture fixture;
     World world;

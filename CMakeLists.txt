@@ -444,7 +444,7 @@ if(BUILD_TESTING)
     add_test(NAME maya_scene COMMAND maya_scene_tests)
     set_tests_properties(maya_scene PROPERTIES LABELS "cpu;scene" TIMEOUT 60)
 
-    add_executable(maya_renderer_tests tests/renderer_tests.cpp tests/light_plan_tests.cpp)
+    add_executable(maya_renderer_tests tests/renderer_tests.cpp tests/light_plan_tests.cpp tests/draw_batches_tests.cpp)
     target_link_libraries(maya_renderer_tests PRIVATE MayaRenderer Catch2::Catch2WithMain)
     target_include_directories(maya_renderer_tests PRIVATE tests)
     maya_target_options(maya_renderer_tests)

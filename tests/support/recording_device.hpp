@@ -61,10 +61,10 @@ protected:
         last_bind_slot = index;
         NullGraphicsDevice::backend_set_texture(index, slot);
     }
-    void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t count, size_t offset, uint32_t instances) override {
+    void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t count, size_t offset, uint32_t instances, uint32_t first) override {
         last_draw_count = count;
         ++draws;
-        NullGraphicsDevice::backend_draw_indexed(slot, type, count, offset, instances);
+        NullGraphicsDevice::backend_draw_indexed(slot, type, count, offset, instances, first);
     }
 
 private:

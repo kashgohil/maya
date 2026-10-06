@@ -50,9 +50,9 @@ protected:
         if (kind==ResourceKind::buffer && counts->application.erase(slot)) ++counts->releases;
         NullGraphicsDevice::backend_release(kind,slot);
     }
-    void backend_draw_indexed(uint32_t slot,IndexType type,uint32_t count,size_t offset,uint32_t instances) override {
+    void backend_draw_indexed(uint32_t slot,IndexType type,uint32_t count,size_t offset,uint32_t instances,uint32_t first) override {
         ++counts->draws;
-        NullGraphicsDevice::backend_draw_indexed(slot,type,count,offset,instances);
+        NullGraphicsDevice::backend_draw_indexed(slot,type,count,offset,instances,first);
     }
 private:
     TextureHandle m_target;

@@ -142,8 +142,8 @@ TEST_CASE("Repeated instances share one mesh and material, and every instance is
     CHECK(counters.entities == 52); // the instances, a camera, and a light
     CHECK(counters.mesh_renderers == 50);
     CHECK(counters.spinning == 5); // exactly 10%, chosen by the seed
-    // One draw per instance, and the tone-mapping triangle in its own pass.
-    CHECK(counters.draws == 50 + 1);
+    // One instanced draw for the shared mesh and material (#1025), and the tone-mapping triangle in its own pass.
+    CHECK(counters.draws == 1 + 1);
     CHECK(counters.instances == 50 + 1);
     CHECK(counters.triangles == 50 * 12 + 1); // the cube has 12 triangles
     CHECK(counters.passes == 2);
@@ -185,7 +185,7 @@ TEST_CASE("Repeated instances share one mesh and material, and every instance is
     CHECK(run(manifest, device, "renderer").counters.spinning == 100);
 
     // More instances than the upload memory can hold fail with the reason, not silently.
-    manifest.count = 40000; // 256 bytes each is more than 8 MiB
+    manifest.count = 80000; // 112 bytes each and 4 for their order is more than 8 MiB
     const auto overflow = run(manifest, device, "renderer");
     CHECK(has(overflow.failure, "upload"));
     CHECK(has(to_json(overflow), "\"succeeded\":false"));

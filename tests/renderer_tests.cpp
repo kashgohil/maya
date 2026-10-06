@@ -6,6 +6,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cstring>
+#include <set>
 #include <unordered_map>
 
 using namespace maya;
@@ -51,7 +52,12 @@ public:
         DrawConstants constants;
         std::string pipeline;
     };
-    std::vector<Draw> draws;
+    struct Call {
+        std::string pipeline;
+        uint32_t instances;
+    };
+    std::vector<Draw> draws; // one per instance drawn in a view
+    std::vector<Call> draw_calls, shadow_calls; // the instanced draws themselves
     std::vector<ShadowDraw> shadow_draws; // into shadow maps, apart from the view's draws
     std::vector<RenderPassDesc> shadow_passes; // shadow maps, and the one-time clear of the empty one
     std::vector<Present> presents;
@@ -118,21 +124,28 @@ protected:
         std::memcpy(data.data(), m_buffers.at(slot).data() + offset, floats * sizeof(float));
         debug.push_back({m_pipeline, constants, vertices, instances, std::move(data)});
     }
-    void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t) override {
-        if (m_pipeline.ends_with("shadow caster")) {
-            shadow_draws.push_back({read<ShadowConstants>(2), read<DrawConstants>(1), m_pipeline});
-            return;
+    // Instanced draws (#1025) are recorded as one draw per instance, each with the transform its instance
+    // number picks through the pass's order (buffer 4) from the view's instances (buffer 1).
+    void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t instances, uint32_t first) override {
+        const auto shadow = m_pipeline.ends_with("shadow caster");
+        (shadow ? shadow_calls : draw_calls).push_back({m_pipeline, instances});
+        for (uint32_t k = first; k < first + instances; ++k) {
+            const auto index = read<uint32_t>(4, k * sizeof(uint32_t));
+            const auto constants = read<DrawConstants>(1, index * sizeof(DrawConstants));
+            if (shadow) {
+                shadow_draws.push_back({read<ShadowConstants>(2), constants, m_pipeline});
+                continue;
+            }
+            sequence.push_back(m_pipeline);
+            draws.push_back({constants, read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot, m_pipeline, m_textures});
         }
-        sequence.push_back(m_pipeline);
-        draws.push_back({read<DrawConstants>(1), read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot,
-                         m_pipeline, m_textures});
     }
 
 private:
-    template<class T> T read(uint32_t index) const {
+    template<class T> T read(uint32_t index, size_t at = 0) const {
         const auto& [slot, offset] = m_bound.at(index);
         auto value = T{};
-        std::memcpy(&value, m_buffers.at(slot).data() + offset, sizeof(T));
+        std::memcpy(&value, m_buffers.at(slot).data() + offset + at, sizeof(T));
         return value;
     }
     std::unordered_map<uint32_t, std::vector<std::byte>> m_buffers;
@@ -163,6 +176,12 @@ bool same(const math::Mat4& a, const math::Mat4& b) {
 }
 RenderView view_of(uint32_t width, uint32_t height) {
     const auto view = make_render_view(camera_component, look_pose({0, 0, 5}, {0, 0, 0}), width, height);
+    REQUIRE(view);
+    return *view;
+}
+/// A view of `target` from 10 m along +Z, so instances there are not culled.
+RenderView view_toward(const math::Vec3& target, uint32_t width = 8, uint32_t height = 8) {
+    const auto view = make_render_view(camera_component, look_pose(target + math::Vec3{0, 0, 10}, target), width, height);
     REQUIRE(view);
     return *view;
 }
@@ -199,13 +218,13 @@ TEST_CASE("Extraction shares one mesh lease across instances and copies transfor
     };
     CHECK(same(instance_of(created[0]).world, math::Mat4::translate({-2, 0, 0})));
     CHECK(same(instance_of(created[2]).world, math::Mat4::translate({2, 0, 0})));
-    CHECK(instance_of(created[0]).material.base_color.x == 1.0f);
-    CHECK(instance_of(created[0]).material.metallic == 0.25f);
-    CHECK(instance_of(created[1]).material.base_color.z == 1.0f);
-    CHECK(instance_of(created[1]).material.roughness == 0.2f);
+    CHECK(snapshot.materials[instance_of(created[0]).material].base_color.x == 1.0f);
+    CHECK(snapshot.materials[instance_of(created[0]).material].metallic == 0.25f);
+    CHECK(snapshot.materials[instance_of(created[1]).material].base_color.z == 1.0f);
+    CHECK(snapshot.materials[instance_of(created[1]).material].roughness == 0.2f);
     const auto unassigned = MaterialAsset{};
-    CHECK(instance_of(created[2]).material.base_color.y == unassigned.base_color.y);
-    CHECK(instance_of(created[2]).material.roughness == unassigned.roughness);
+    CHECK(snapshot.materials[instance_of(created[2]).material].base_color.y == unassigned.base_color.y);
+    CHECK(snapshot.materials[instance_of(created[2]).material].roughness == unassigned.roughness);
 
     // Every instance draws the one shared mesh with its own constants.
     auto renderer = Renderer(device, "test source");
@@ -220,9 +239,9 @@ TEST_CASE("Extraction shares one mesh lease across instances and copies transfor
         CHECK(device.draws[i].vertex_buffer == mesh.vertex_buffer().slot);
         CHECK(device.draws[i].index_buffer == mesh.index_buffer().slot);
         CHECK(same(device.draws[i].constants.model, snapshot.instances[i].world));
-        CHECK(device.draws[i].material.base_color.x == snapshot.instances[i].material.base_color.x);
-        CHECK(device.draws[i].material.factors.x == snapshot.instances[i].material.metallic);
-        CHECK(device.draws[i].material.factors.y == snapshot.instances[i].material.roughness);
+        CHECK(device.draws[i].material.base_color.x == snapshot.materials[snapshot.instances[i].material].base_color.x);
+        CHECK(device.draws[i].material.factors.x == snapshot.materials[snapshot.instances[i].material].metallic);
+        CHECK(device.draws[i].material.factors.y == snapshot.materials[snapshot.instances[i].material].roughness);
     }
     CHECK(renderer.stats().draws == 3);
 }
@@ -270,8 +289,8 @@ TEST_CASE("Extraction skips missing meshes, substitutes failed materials, and re
     }
     const auto fallback = std::ranges::find(snapshot.instances, *world.persistent_id(created[1]), &RenderInstance::entity);
     REQUIRE(fallback != snapshot.instances.end());
-    CHECK(fallback->material.base_color.x == fallback_material().base_color.x);
-    CHECK(fallback->material.base_color.y == fallback_material().base_color.y);
+    CHECK(snapshot.materials[fallback->material].base_color.x == fallback_material().base_color.x);
+    CHECK(snapshot.materials[fallback->material].base_color.y == fallback_material().base_color.y);
     const auto missing = std::ranges::find(snapshot.diagnostics, gone.id, &RenderDiagnostic::asset);
     REQUIRE(missing != snapshot.diagnostics.end());
     CHECK(missing->message.find("gone.mesh") != std::string::npos);
@@ -316,7 +335,7 @@ TEST_CASE("Normal matrices keep lighting normals perpendicular under nonuniform 
     auto target = RenderTarget(device);
     REQUIRE_FALSE(target.resize(8, 8));
     REQUIRE_FALSE(device.begin_frame());
-    REQUIRE_FALSE(renderer.render(snapshot, view_of(8, 8), target));
+    REQUIRE_FALSE(renderer.render(snapshot, view_toward(transform_point(instance.world, {0, 0, 0})), target));
     REQUIRE_FALSE(device.end_frame());
     REQUIRE(device.draws.size() == 1);
     for (size_t c = 0; c < 3; ++c) {
@@ -371,6 +390,7 @@ TEST_CASE("Directional lights come from entity rotation, color, and intensity", 
     TestProject cubes(device, {{"cube.mesh", unit_cube()}});
     auto with_mesh = one;
     with_mesh.meshes.push_back(cubes.registry->acquire(cubes.add<MeshAsset>(1, "cube.mesh")).lease);
+    with_mesh.materials.push_back({});
     with_mesh.instances.push_back({});
     REQUIRE_FALSE(device.begin_frame());
     REQUIRE_FALSE(renderer.render(with_mesh, view_of(4, 4), target));
@@ -565,16 +585,16 @@ TEST_CASE("Render targets reallocate only on resize and retire replaced textures
 }
 
 TEST_CASE("Renderer validates views and closes its pass when upload memory runs out", "[renderer]") {
-    // Room for the eight draws' constants, the view's (nine 256-byte slices), and the material's: then the
-    // tone map's constants run out, inside its pass.
-    CapturingDevice device({3, 8 * 256 + 9 * 256 + 256});
+    // Room for the eight instances' transforms (896 bytes: four 256-byte slices), their order (one), the
+    // view's constants (nine), and the material's (one): then the tone map's constants run out, inside its pass.
+    CapturingDevice device({3, 4 * 256 + 256 + 9 * 256 + 256});
     TestProject project(device, {{"cube.mesh", unit_cube()}});
     const auto cube = project.add<MeshAsset>(1, "cube.mesh");
     World world;
     build_world(world, [&](WorldCommands& commands) {
         for (int i = 0; i < 8; ++i) {
             auto entity = commands.create();
-            commands.add(entity, TransformComponent{{float(i), 0, 0}, {}, {1.0f}});
+            commands.add(entity, TransformComponent{{float(i) * 0.25f - 1.0f, 0, 0}, {}, {0.2f}}); // all in view
             commands.add(entity, MeshRendererComponent{cube, {}, true});
         }
     });
@@ -589,7 +609,9 @@ TEST_CASE("Renderer validates views and closes its pass when upload memory runs 
     CHECK(device.passes.empty());
     auto corrupt = RenderSnapshot{};
     corrupt.instances.push_back({});
-    CHECK(renderer.render(corrupt, view_of(8, 8), target).code == RhiError::invalid_usage);
+    CHECK(renderer.render(corrupt, view_of(8, 8), target).code == RhiError::invalid_usage); // no mesh or material
+    corrupt.materials.push_back({});
+    CHECK(renderer.render(corrupt, view_of(8, 8), target).code == RhiError::invalid_usage); // still no mesh
 
     const auto error = renderer.render(snapshot, view_of(8, 8), target);
     CHECK(error.code == RhiError::out_of_memory);
@@ -921,16 +943,16 @@ TEST_CASE("Extraction leases each texture once, and draws the placeholder for mi
     CHECK(snapshot.diagnostics[0].entity == EntityId{1, 1});
     CHECK(snapshot.diagnostics[1].code == RenderIssue::missing_texture);
     CHECK(snapshot.diagnostics[1].asset == missing.id);
-    const auto& material = snapshot.instances[0].material;
+    const auto& material = snapshot.materials[snapshot.instances[0].material];
     CHECK(material.textures[size_t(MaterialSlot::base_color)] == 0);
     CHECK(material.textures[size_t(MaterialSlot::normal)] == placeholder_texture);
     CHECK(material.textures[size_t(MaterialSlot::metallic_roughness)] == 1);
     CHECK(material.textures[size_t(MaterialSlot::occlusion)] == 1);
     CHECK(material.textures[size_t(MaterialSlot::emissive)] == placeholder_texture);
-    CHECK(snapshot.instances[2].material.textures[size_t(MaterialSlot::normal)] == no_texture);
+    CHECK(snapshot.materials[snapshot.instances[2].material].textures[size_t(MaterialSlot::normal)] == no_texture);
     // A snapshot that names a texture it does not hold is refused.
     auto broken = snapshot;
-    broken.instances[0].material.textures[0] = 7;
+    broken.materials[broken.instances[0].material].textures[0] = 7;
     auto renderer = Renderer(device, "test source");
     auto target = RenderTarget(device);
     REQUIRE_FALSE(target.resize(8, 8));
@@ -971,15 +993,18 @@ TEST_CASE("Material constants and maps are uploaded and bound only when they cha
     REQUIRE_FALSE(device.end_frame());
     REQUIRE(device.draws.size() == 6);
     const auto slot_of = [&](size_t texture) { return snapshot.textures[texture].value().texture().handle().slot; };
-    const auto expected = std::array{0, 0, 0, 1, 1, 0};
+    // Grouped by material (#1025): the four instances of a in one instanced draw, then the two of b.
+    REQUIRE(device.draw_calls.size() == 2);
+    CHECK(device.draw_calls[0].instances == 4);
+    CHECK(device.draw_calls[1].instances == 2);
+    const auto expected = std::array{0, 0, 0, 0, 1, 1};
     for (size_t i = 0; i < 6; ++i) {
-        INFO("draw " << i);
-        CHECK(device.draws[i].textures[0] == slot_of(snapshot.instances[i].material.textures[0]));
-        CHECK(snapshot.instances[i].material.textures[0] == uint32_t(expected[i]));
+        INFO("instance " << i);
+        CHECK(device.draws[i].textures[0] == slot_of(size_t(expected[i])));
         CHECK(device.draws[i].material.flags[0] == 1u);
     }
     CHECK(device.material_binds == 1); // a and b have the same factors: only their maps are rebound
-    CHECK(device.draws[3].material.base_color.x == device.draws[0].material.base_color.x);
+    CHECK(device.draws[4].material.base_color.x == device.draws[0].material.base_color.x);
 }
 
 TEST_CASE("Extraction takes the scene's environment, reports a second one or a missing one, and keeps the ambient otherwise", "[renderer][environments]") {
@@ -1230,4 +1255,49 @@ TEST_CASE("Debug views cost nothing until chosen, and then draw the same surface
     render(DebugView::none);
     CHECK(device.sequence == lit_sequence);
     CHECK(device.pipelines_created == before);
+}
+
+TEST_CASE("Views and shadow maps draw one instanced draw per mesh and material in them, not one per instance", "[renderer][batches]") {
+    CapturingDevice device({3, size_t{4} << 20});
+    TestProject project(device, {{"cube.mesh", unit_cube()}, {"slab.mesh", unit_cube()}}, {{"red.material", red}, {"blue.material", blue}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh"), slab = project.add<MeshAsset>(2, "slab.mesh");
+    const auto r = project.add<MaterialAsset>(3, "red.material"), b = project.add<MaterialAsset>(4, "blue.material");
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        // 400 small instances in view: every mix of two meshes and two materials, interleaved; and 100 far away.
+        for (int i = 0; i < 500; ++i) {
+            auto entity = commands.create();
+            const auto inside = i < 400;
+            const auto x = inside ? float(i % 20) * 0.1f - 1.0f : 1000.0f + float(i);
+            commands.add(entity, TransformComponent{{x, float(i / 20 % 20) * 0.1f - 1.0f, 0}, {}, {0.05f}});
+            commands.add(entity, MeshRendererComponent{i % 2 ? cube : slab, i % 3 ? r : b, true});
+        }
+        auto sun = commands.create();
+        commands.add(sun, TransformComponent{{}, math::Quat::from_axis_angle({1, 0, 0}, -1.0f), {1.0f}});
+        commands.add(sun, LightComponent{});
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry);
+    REQUIRE(snapshot.instances.size() == 500);
+    CHECK(snapshot.materials.size() == 2); // shared, not copied per instance
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(64, 64));
+    REQUIRE_FALSE(device.begin_frame());
+    REQUIRE_FALSE(renderer.render(snapshot, view_of(64, 64), target));
+    REQUIRE_FALSE(device.end_frame());
+    // The view: four draws for four mesh-material pairs, 400 instances, the far ones culled.
+    CHECK(device.draw_calls.size() == 4);
+    CHECK(device.draws.size() == 400);
+    CHECK(renderer.last_view().drawn == 400);
+    CHECK(renderer.last_view().culled == 100);
+    CHECK(renderer.last_view().batches == 4);
+    CHECK(renderer.stats().draws == 4);
+    CHECK(renderer.stats().instances == 400);
+    // Each drawn instance gets its own transform through the order.
+    auto seen = std::set<float>{};
+    for (const auto& draw : device.draws) seen.insert(draw.constants.model.at(0, 3) * 1000.0f + draw.constants.model.at(1, 3));
+    CHECK(seen.size() == 400);
+    // Shadow maps: opaque casters by mesh alone, so at most two draws in each of the four cascades.
+    CHECK(device.shadow_calls.size() <= 4 * 2);
+    CHECK(device.shadow_draws.size() == renderer.stats().shadow_instances);
 }
