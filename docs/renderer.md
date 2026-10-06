@@ -69,7 +69,7 @@ The sample logs diagnostics only when their number changes, not every frame.
 
 ## Views and targets
 
-A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatrices`, camera position, clear color, and (since #1032) the camera's exposure as a scale, its tone mapping, and an [exposure view](#exposure-views). `extract_render_view(world, camera, width, height)` builds one from a camera entity through `World::camera`. `make_render_view(camera, pose, width, height)` builds one from camera data and a rigid pose, for cameras that are not entities. Both take the aspect ratio from the view's own size, and the exposure and tone mapping from the camera's component, and return `nullopt` for a zero size or an invalid camera ([camera rules](spatial.md)). Several views can render the same snapshot in one frame, each into its own target. They do not need separate Worlds or separate extraction.
+A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatrices`, camera position, clear color, and (since #1032) the camera's exposure as a scale, its tone mapping, and a [debug view](#debug-views) (since #1037; an exposure view before). `extract_render_view(world, camera, width, height)` builds one from a camera entity through `World::camera`. `make_render_view(camera, pose, width, height)` builds one from camera data and a rigid pose, for cameras that are not entities. Both take the aspect ratio from the view's own size, and the exposure and tone mapping from the camera's component, and return `nullopt` for a zero size or an invalid camera ([camera rules](spatial.md)). Several views can render the same snapshot in one frame, each into its own target. They do not need separate Worlds or separate extraction.
 
 **Poses between ticks** (#1016). `RenderExtractOptions::poses` and the last argument of `extract_render_view` take a `PresentationPoses`: world matrices shown in place of the World's for some entities, such as a play session's between ticks ([play](play.md#between-ticks)). Entities not in it draw at the World's pose; without it, extraction is as before. The player and the editor's Play pass `PlaySession::presentation()`.
 
@@ -134,17 +134,6 @@ The GPU times are the device's own timestamps for the frame, with and without th
 - **GPU time** cannot be compared directly across sessions: it depends on clocks the machine chooses. In `i1_10k`, the frame's GPU time fell, and no pass is slower than before.
 - **Memory.** Each view adds an `rgba16_float` scene color: 15.8 MiB at 1920 × 1080.
 - **Overhead.** The matched runs without CPU scopes and pass timing differ by +4.4% (CPU) and +1.4% (GPU) in `sample` and −0.4% and −0.1% in `i1_10k`, within the variation between runs.
-
-### Exposure views
-
-`RenderView::exposure_view` replaces the tone-mapped image with a diagnostic view of the exposed scene light, without sRGB encoding. The editor offers them in the viewport's eye menu ([editor](editor.md#physics-debug-views)).
-
-| View | What a pixel shows |
-| --- | --- |
-| `luminance` | Exposed luminance (Rec. 709) in grey by stops from middle grey (0.18): black at −8 stops, 50% grey at middle grey, white at +8. |
-| `false_color` | A band per range of stops from middle grey: dark violet below −6, blue −6 to −4, cyan −4 to −2, green −2 to −0.5, grey within half a stop of middle grey, yellow +0.5 to +2, orange +2 to +4, red +4 to +6, and pink beyond +6, where AgX has reached white. |
-
-The views ignore the tone mapper. They help set exposure: a well-exposed subject is mostly grey to yellow in false color.
 
 ## Materials
 
@@ -281,17 +270,6 @@ Directional and spot lights cast shadows; `cast_shadows` is on by default. Point
 - **Filtering.** Nine bilinear comparison taps (3 × 3) give edges about two texels soft.
 - **Bias.** Each light has `shadow_bias` and `shadow_normal_bias`, both in texels of its map, so they scale with each cascade (default 1 and 1, 0 to 20). A surface tests its shadow from a point moved `shadow_normal_bias` texels along its geometric normal and `shadow_bias` texels toward the light. The shadow passes also add a fixed slope-scaled depth bias. Too little bias shows acne: dark speckles on lit surfaces, worst where the light grazes them. Too much moves shadows away from their casters: light leaks under thin objects standing on the ground (peter-panning). At the defaults the tests find neither ([tests](#tests)): a floor lit at grazing angles is lit everywhere through all four cascades, and the shadow of a wall with no thickness starts within 5 cm of its foot at 1.3 cm texels. Three times the defaults leaks light there; none at all shows acne.
 
-### Shadow views
-
-`RenderView::shadow_view` shows how the sun's shadow maps fall on the scene, over the lit image. The editor offers them in the viewport's eye menu ([editor](editor.md#physics-debug-views)).
-
-| View | What a surface shows |
-| --- | --- |
-| `cascades` | Tinted by the cascade that shadows it: red, green, blue, and yellow, nearest first. |
-| `texels` | The cascade's tint and a checker of its shadow-map texels: large squares mean blocky shadows there. |
-
-Surfaces past the shadow distance, and every surface when no directional light casts shadows, show as lit.
-
 ### Cost
 
 Release on the M4 Pro reference machine, thermal state nominal throughout; 1920 × 1080 offscreen, 300 warmup and 3,000 sampled frames, three runs per invocation and two invocations of each, alternating with a Release build of the commit before #1034 (`65f6b5f`). GPU time per pass is #1026's timestamps; no pass fell outside its frame or went untimed. Observations, not budgets.
@@ -311,6 +289,58 @@ The last row is a scratch scene laid out as `i1_10k` (10,000 cubes seen from 200
 - **The CPU** encodes a caster once for each map it reaches, at the same cost per draw as the view's draws: about 0.11 ms per thousand. At 10,000 cubes that adds 1.6–1.9 ms per frame, doubling encoding. Drawing instances of one mesh together would remove most of it, for the view as well; it is not done yet. In the small scenes the CPU frame's growth is waiting for the GPU.
 - **Memory.** The sun's atlas is 64 MiB and the spot lights' 16 MiB, each allocated the first time a light needs it.
 
+## Debug views
+
+[Issue #1037](https://work.rezee.app/kash/issues/1037) gathers the views that show what shading uses. `RenderView::debug_view` (a `DebugView`, default `none`) picks one at a time; each has a stable name (`debug_view_name`, `debug_view_named`) used by preferences, the player's `--debug-view`, and benchmark manifests. The editor offers them in the viewport's eye menu ([editor](editor.md#physics-debug-views)), and the player shows one only when asked ([play](play.md#the-player)).
+
+| Group | Views (names) | What a surface shows |
+| --- | --- | --- |
+| Material | `base-color`, `normals`, `shading-normals`, `metallic`, `roughness`, `occlusion`, `emissive` | The shading's inputs as they are, with no exposure or tone mapping: base color (factor × map × vertex color) and emissive (clipped at 1) as authored, sRGB-encoded; the surface's own world normal and the normal shading uses (with the normal map) as 0.5 + 0.5 n; metallic, perceptual roughness, and occlusion in grey. |
+| Lighting | `direct-light`, `environment-light`, `lighting` | Light, exposed and tone-mapped like the image: from directional, point, and spot lights alone (with their shadows); from the surroundings alone (the environment or the ambient light, with occlusion); or all of it falling on a white, fully rough, nonmetallic surface, lighting without albedo. None of them adds emitted light. |
+| Shadows | `cascades`, `texels` | [Below](#shadow-views). |
+| Exposure | `luminance`, `false-color` | [Below](#exposure-views). |
+
+- **Nothing when off.** Material, lighting, and shadow views are compiled only into debug pipelines: the same shader with `MAYA_DEBUG_VIEWS` defined, created the first time a view needs them and labelled "(debug view)". With no view chosen, the renderer uses exactly the lit pipelines, passes, and draws it uses without debug views; the exposure views change only the tone-mapping pass's constants.
+- **Drawing.** A debug view draws the same surfaces in the same passes, through the debug variants of their lit pipelines. Material views leave out the sky (the clear color shows behind the surfaces, as it is), and the tone-mapping pass shows them unchanged; lighting and shadow views keep the sky and are tone-mapped.
+
+**Cost** of the material test scene at 1920 × 1080 offscreen (Release on the M4 Pro reference machine, thermal state nominal throughout; 3,000 frames × 3 runs per view). Off, against a Release build of the commit before #1037 (`c837860`), alternating. Observations, not budgets:
+
+| View | `view` | `tone map` | GPU per frame |
+| --- | --- | --- | --- |
+| none (before #1037) | 0.144–0.146 ms | 0.060–0.061 ms | 0.70–0.71 ms |
+| none | 0.143–0.145 ms | 0.062–0.063 ms | 0.71–0.72 ms |
+| `luminance`, `false-color` | 0.142–0.143 ms | 0.030–0.041 ms | 0.61–0.65 ms |
+| material views (each) | 0.127–0.130 ms | 0.027 ms | 0.56–0.57 ms |
+| `direct-light` | 0.148 ms | 0.061–0.062 ms | 0.72–0.74 ms |
+| `environment-light` | 0.110–0.114 ms | 0.061 ms | 0.62 ms |
+| `lighting` | 0.151 ms | 0.062 ms | 0.75 ms |
+| `cascades`, `texels` | 0.156–0.161 ms | 0.061–0.063 ms | 0.75–0.78 ms |
+
+- **Off, the lit pass costs what it did.** Only the tone-mapping pass's added branch for material views shows, at 0.002 ms. CPU encoding is unchanged (0.03 ms).
+- **On, each view costs about what the lit pass does**, within 0.02 ms: material views skip the lighting and the sky, and their tone-mapping pass only copies. The shadow views add their tint and checker. A view's first frame also compiles its debug pipelines.
+
+### Shadow views
+
+They show how the sun's shadow maps fall on the scene, over the lit image.
+
+| View | What a surface shows |
+| --- | --- |
+| `cascades` | Tinted by the cascade that shadows it: red, green, blue, and yellow, nearest first. |
+| `texels` | The cascade's tint and a checker of its shadow-map texels: large squares mean blocky shadows there. |
+
+Surfaces past the shadow distance, and every surface when no directional light casts shadows, show as lit.
+
+### Exposure views
+
+The tone-mapping pass alone draws them: it shows the exposed scene light by stops, without sRGB encoding.
+
+| View | What a pixel shows |
+| --- | --- |
+| `luminance` | Exposed luminance (Rec. 709) in grey by stops from middle grey (0.18): black at −8 stops, 50% grey at middle grey, white at +8. |
+| `false_color` | A band per range of stops from middle grey: dark violet below −6, blue −6 to −4, cyan −4 to −2, green −2 to −0.5, grey within half a stop of middle grey, yellow +0.5 to +2, orange +2 to +4, red +4 to +6, and pink beyond +6, where AgX has reached white. |
+
+The exposure views ignore the tone mapper. They help set exposure: a well-exposed subject is mostly grey to yellow in false color.
+
 ## Sample content
 
 The [basic scene](../samples/basic_scene/assets/basic.scene) is an ordinary [scene file](scene.md): a camera, a directional sun, the pyramid, and one [cube mesh](../samples/basic_scene/assets/cube.obj) drawn three times (a red cube, a blue metal cube, and a ground slab scaled 6 × 0.1 × 6). Four [material files](../samples/basic_scene/assets/materials) supply their factors; they are still version 1, which loads unchanged. The sample's fly controller writes the camera entity's transform and animates the pyramid through World commands. The renderer only reads the result. The pyramid's side normals were also corrected; three of its four side faces had been using another face's normal.
@@ -326,6 +356,7 @@ The [lights test scene](../samples/basic_scene/assets/lights.scene) (#1034) is d
 - **Materials** (#1033). [material_gpu_tests.cpp](../tests/material_gpu_tests.cpp) (in `maya_tests`, tag `[materials]`) reads the HDR scene color (`rgba16_float`, before exposure) of quads seen head-on and compares it with the CPU reference in [shading.hpp](../tests/support/shading.hpp): every metallic and roughness under several lights and angles (within 1%); the white furnace, where a white dielectric in a uniform environment shows exactly its light; the reference's directional albedo; each map (base color with sRGB decoding, metallic-roughness channels, occlusion by strength on ambient only, emissive by strength); normal-map orientation (+X toward +u, +Y up the texture, on plain and mirrored UVs, and by scale); alpha cutoffs; blending back to front; double-sided back faces; and the placeholder for missing maps and maps of the wrong role. [renderer_tests.cpp](../tests/renderer_tests.cpp) checks pipeline choice, draw order, constants, and the textures bound in each slot; [material_tests.cpp](../tests/material_tests.cpp) the material files, the schema, publishing, and tangents. The [material test scene](#sample-content) has reference images ([acceptance](acceptance.md#regression-scenes)).
 - **Environments** (#1035). In material_gpu_tests.cpp (tag `[environments]`): the furnace under a uniform environment for white, red, and metal surfaces at every roughness, head-on and turned, against the CPU reference with the split-sum table (`brdf_scale_bias`) in the Sample Viewer's form (#1036): a white metal shows all of the light; the environment replacing the ambient light and its intensity scaling it; irradiance by direction and the rotation's sense; the mirror reflection of a smooth metal and occlusion darkening it; the sky ahead, turned a quarter, through a blended surface, and off; and the fallback to the ambient light for a missing environment. renderer_tests.cpp checks extraction (one environment, the lowest EntityId's, the limit and missing diagnostics), the view constants and their inverse view-projection, the bound slots, and that the sky draws after opaque surfaces and before blended ones. [environment_tests.cpp](../tests/environment_tests.cpp) checks environment files, HDR decoding, the mappings, irradiance (exact for light linear in direction), the prefiltered cube, determinism across thread counts, the split-sum table against the BRDF's integrated albedo, and loading.
 - **Lights and shadows** (#1034). [lighting_gpu_tests.cpp](../tests/lighting_gpu_tests.cpp) (in `maya_tests`, tags `[lights]` and `[shadows]`, Metal API validation) reads the HDR scene color and compares it with the CPU reference: a point light at 0.5–7.5 m and past its range, and a spot light inside, between, and beyond its cones (within 1%). A floor at grazing sun is lit everywhere through every cascade (no acne), a cube on the floor shadows it from 8 cm of its base and leaves its own lit top lit, a floating quad with no thickness casts with its back to the sun, and a standing one's shadow starts within 5 cm of its foot. A wall's shadow running 50 m away from the camera keeps its edge where geometry puts it in every cascade and blend band, spot light shadows fall under a floating cube while the floor around matches the reference, the limits report 10 left out and 2 unshadowed of 26 lights, and a camera sliding one pixel a frame over shadows of casters out of view sees no pixel change by more than 0.01 (no shimmer). [light_plan_tests.cpp](../tests/light_plan_tests.cpp) (in `maya_renderer_tests`) checks ranking, the limits and ties, spot maps, cascades covering their slices and reaching casters above them, sizes that hold as the view turns, and centres on whole texels as it moves. renderer_tests.cpp checks extraction of candela, cones, and shadow settings, the one shadowed directional light, and the extraction limit; [scene_tests.cpp](../tests/scene_tests.cpp) the migration from lumens. Mutations checked: removing the texel snapping fails the shimmer case (13,922 pixels changed); zero biases fail the acne and lit-surface cases; three times the default biases fail the contact case.
+- **Debug views** (#1037). In material_gpu_tests.cpp (tag `[debug-views]`): each material view shows its input exactly (sRGB-encoded colors, grey data, 0.5 + 0.5 n), with and without maps, and the displayed RGBA8 pixel is that value; direct and environment light are the two parts of the lit image, without emitted light, and lighting without albedo matches a white, fully rough dielectric under the same light for a red dielectric and a gold metal alike; material views leave out the sky, which lighting views keep. renderer_tests.cpp checks that with no view chosen no debug pipeline is built and the passes and draws are the lit frame's, that exposure views change only the tone-mapping constants, and that other views draw the same surfaces through debug pipelines built once. The [references](acceptance.md#regression-scenes) cover all 14 views; CTest runs the player with `--debug-view` and refuses an unknown one. Mutations checked: debug pipelines compiled without the define fail 19 GPU and 2 CPU assertions, and lighting without albedo that keeps the base color fails its case.
 - [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) drives the real player and editor applications through window resizes, including a zero-sized one.
 - **Debug lines** (#1022), in renderer_tests.cpp: an empty `DebugDraw` creates no pipelines and draws nothing; lines, boxes, and capsules are uploaded once per kind, with their matrices, sizes, and colors, and drawn in front and then behind at their opacities; outlines take 8, 16, or 32 segments by their size on screen; and the helpers make the lines they promise. Reference images of every physics debug category are compared on Metal ([physics](physics.md#debug-views)).
 

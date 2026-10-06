@@ -16,6 +16,8 @@
 
 **Re-blessed for shadows (#1034).** Lights cast [shadows](renderer.md#shadows) by default, so nine references were re-blessed: the six V1 views (`overlap` and the five camera-path frames, where the cubes, pyramids, and slab now shadow the floor and wall; 0.5–5.3% of pixels changed), the two textured material views (the cutout cube shadows itself through its leaves, and each tiled cube shades a strip of its neighbour's side), and the physics debug `triggers` view (the pillar and cube cast shadows). Elsewhere the lit floor moved by at most one level. Only those nine files were rewritten, from the renders the test wrote; the HDR, Sample Viewer, and other physics-debug references still match. The project owner inspected the before, after, and difference images and approved them on 6 October 2026.
 
+**Debug views** (#1037, [renderer](renderer.md#debug-views)). [tests/references/debug-views](../tests/references/debug-views) holds the material test scene's overview in each of its 14 debug views (every one but `none`, which the materials overview is), at 512 × 288 with the same tolerance, named as the views are. The project owner inspected each beside the lit overview and approved them on 6 October 2026.
+
 ## Automated checks
 
 ```bash
@@ -199,7 +201,7 @@ A ball rolls down a ramp into a stack of crates; a trigger zone's script opens a
 - Scripts and reload: [scripting_tests.cpp](../tests/scripting_tests.cpp) and [editor_scripting_tests.cpp](../tests/editor_scripting_tests.cpp).
 - Recording, replay, and editor/player parity: [replay_tests.cpp](../tests/replay_tests.cpp) and [editor_replay_tests.cpp](../tests/editor_replay_tests.cpp).
 - Debug views, with their reference images: [physics_debug_gpu_tests.cpp](../tests/physics_debug_gpu_tests.cpp) and [tests/references/physics-debug](../tests/references/physics-debug).
-- CTest runs the player with `--record`, `--replay`, and `--debug-physics`, and `p1_small`.
+- CTest runs the player with `--record`, `--replay`, and `--debug-physics` (and, since #1037, `--debug-view`), and `p1_small`.
 
 ### Steady states, physics and behavior
 

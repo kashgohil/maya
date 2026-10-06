@@ -125,6 +125,7 @@ samples 3000
 runs 3
 overhead on                  # also a matched run without CPU scopes or GPU pass timing
 present off                  # on: present every frame to a window and measure display pacing
+debug_view none              # a debug view's name, to measure its cost (#1037; scene and instance workloads)
 ```
 
 | Workload | What it does |

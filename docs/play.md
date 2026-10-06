@@ -100,7 +100,7 @@ History is the difference from the same ticks without it (about 20–28 ns per m
 ## The player
 
 ```bash
-maya_player [project [scene]] [--record file | --replay file] [--debug-physics] [--smoke N]
+maya_player [project [scene]] [--record file | --replay file] [--debug-physics] [--debug-view name] [--smoke N]
 ```
 
 - **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project.
@@ -109,6 +109,7 @@ maya_player [project [scene]] [--record file | --replay file] [--debug-physics] 
 - **Input.** Every window event goes to the game, and the cursor is captured. Escape closes the window.
 - **`--record file`** records the session and writes it to `file` when the window closes ([recording and replay](#recording-and-replay)).
 - **`--debug-physics`** draws every [physics debug view](physics.md#debug-views) over the game, for debugging. Without it the player draws none.
+- **`--debug-view name`** (#1037) shows a [debug view](renderer.md#debug-views) instead of the lit image, such as `base-color`, `shading-normals`, or `direct-light`, and says so: `[Player] showing the base-color debug view`. An unknown name exits with code 2 and lists the views. Without it the player shows the lit image and builds no debug pipelines.
 - **`--replay file`** plays a recording's scene with its input instead of the window's. The scene comes from the recording, so no scene argument is needed. At the end the player reports `[Player] the replay matches the recording: 120 ticks, 2 checkpoints, and the final state` and stays on the last frame. A replay that differs fails with exit code 1, and so does a recording that cannot be replayed.
 
 It reports what it runs, `[Player] My Game / basic.scene: 6 entities`, and exits with:
