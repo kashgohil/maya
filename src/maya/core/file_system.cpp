@@ -14,6 +14,7 @@
 namespace maya {
 
 std::vector<std::filesystem::path> FileSystem::s_roots;
+std::optional<std::filesystem::path> FileSystem::s_package;
 
 namespace {
 
@@ -81,6 +82,19 @@ void log_read_text_failure(const std::string& path_str, const std::vector<std::f
 
 void FileSystem::initialize(int argc, char** argv) {
     s_roots.clear();
+    s_package.reset();
+
+    // A package finds only itself: no environment variable, parent folder, or working directory.
+    const std::filesystem::path executable = get_executable_path(argc, argv);
+    if (const auto macos = executable.parent_path(); macos.filename() == "MacOS" && macos.parent_path().filename() == "Contents") {
+        const auto resources = macos.parent_path() / "Resources";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(resources / "package.maya", ec)) {
+            s_package = resources;
+            s_roots.push_back(resources);
+            return;
+        }
+    }
 
     if (const char* env = std::getenv("MAYA_RESOURCES")) {
         if (env[0] != '\0') {
@@ -88,7 +102,7 @@ void FileSystem::initialize(int argc, char** argv) {
         }
     }
 
-    std::filesystem::path exe = get_executable_path(argc, argv);
+    const std::filesystem::path& exe = executable;
     if (!exe.empty()) {
         std::filesystem::path dir = exe.parent_path();
         for (int i = 0; i < 8 && !dir.empty(); ++i) {

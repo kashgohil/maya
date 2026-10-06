@@ -168,6 +168,7 @@ public:
 };
 class GltfFile;
 class CookCache;
+class AssetCooker;
 /// Initial adapter: the OBJ loader, material files, texture descriptors whose source is cooked at load
 /// (PNG or JPEG) or read as cooked KTX2, environments cooked at load from Radiance HDR images, and the
 /// meshes and textures of imported glTF files.
@@ -187,16 +188,9 @@ public:
     AssetLoadResult<MeshAsset> load_imported_mesh(const std::filesystem::path& source, std::string_view part) override;
     AssetLoadResult<TextureAsset> load_imported_texture(const std::filesystem::path& source, std::string_view part) override;
 private:
-    struct OpenGltf;
-    /// The open file, or why it cannot be opened.
-    std::shared_ptr<const GltfFile> open_gltf(const std::filesystem::path& source, std::string& error);
-    /// The digest of an imported file and every file its import file says it names (buffers, images),
-    /// for cache keys; null without an import file, or when one of them cannot be read.
-    std::optional<Sha256Digest> imported_digest(const std::filesystem::path& source);
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;
-    std::shared_ptr<CookCache> m_cache;
-    std::unique_ptr<OpenGltf> m_gltf;
+    std::unique_ptr<AssetCooker> m_cooker; // cooking as the device's limits say, then upload (asset_cooker.hpp)
 };
 /// Explicit fallback: missing meshes skip their draw; failed materials may use this value.
 const MaterialAsset& fallback_material() noexcept;

@@ -110,6 +110,8 @@ add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/property_context.cpp
     src/maya/assets/file_provider.cpp
+    src/maya/assets/asset_cooker.cpp
+    src/maya/assets/package.cpp
     src/maya/assets/material_file.cpp
     src/maya/assets/project.cpp
     src/maya/core/model_loader.cpp
@@ -294,6 +296,17 @@ if(MAYA_BUILD_PLAYER)
     add_executable(maya_player apps/player/main.cpp)
     target_link_libraries(maya_player PRIVATE MayaDesktop MayaPlayer)
     maya_target_options(maya_player)
+endif()
+
+if(MAYA_BUILD_PLAYER)
+    # Packages a project as a standalone application with its cooked content (docs/projects.md#packages).
+    add_library(MayaPackage STATIC src/maya/package/packager.cpp)
+    target_link_libraries(MayaPackage PUBLIC MayaAssets MayaScene MayaBuildInfo MayaMetrics)
+    maya_target_options(MayaPackage)
+    add_executable(maya_package apps/package/main.cpp)
+    target_link_libraries(maya_package PRIVATE MayaPackage MayaRuntime)
+    add_dependencies(maya_package maya_player) # bundled from beside it
+    maya_target_options(maya_package)
 endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)

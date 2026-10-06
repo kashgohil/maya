@@ -1,4 +1,5 @@
 #include "maya/assets/cook_cache.hpp"
+#include "maya/assets/package.hpp"
 #include "maya/simulation/project_recording.hpp"
 #include "maya/simulation/script_assets.hpp"
 #include "player_application.hpp"
@@ -9,6 +10,7 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/simulation/physics_debug.hpp"
 #include "maya/simulation/play_session.hpp"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -24,14 +26,30 @@ public:
         if (device.surface_format() == Format::undefined) return fail("a presentable window surface is required");
         auto shader = FileSystem::read_text("resources/shaders/metal/renderer.metal");
         if (shader.empty()) return fail("the renderer shader was not found (resources/shaders/metal/renderer.metal)");
+        // A package (docs/projects.md#packages) runs its own project, from its bundle, with cooked content only.
+        const auto& package = FileSystem::package_resources();
+        auto manifest = PackageManifest{};
+        if (package) {
+            if (m_options.project) return fail("a package runs only its own project; it takes no project argument");
+            auto input = std::ifstream(*package / package_manifest_name);
+            auto read = read_package_manifest(input);
+            if (!read) return fail(std::string(package_manifest_name) + ": " + read.error);
+            manifest = std::move(read.manifest);
+            m_options.project = *package / manifest.project;
+            if (m_options.scene && std::ranges::find(manifest.scenes, *m_options.scene) == manifest.scenes.end())
+                return fail(m_options.scene->generic_string() + " is not in this package");
+        }
         if (!m_options.project) m_options.project = FileSystem::resolve("samples/basic_scene/project.maya");
         if (!m_options.project) return fail("no project given, and the sample project was not found");
         auto opened = open_project(*m_options.project);
         if (!opened) return fail(opened.error);
         const auto& project = opened.project;
-        // The editor's cooked textures and meshes load from the project's cook cache (docs/assets.md#cook-cache).
-        auto cache = std::make_shared<CookCache>(cook_cache_folder(project));
-        auto assets = open_project_assets(project, std::make_unique<FileAssetProvider>(device, std::move(cache)));
+        // From sources, the editor's cooked textures and meshes load from the project's cook cache
+        // (docs/assets.md#cook-cache); a package holds them cooked.
+        auto provider = std::unique_ptr<AssetProvider>{};
+        if (package) provider = std::make_unique<PackageAssetProvider>(device);
+        else provider = std::make_unique<FileAssetProvider>(device, std::make_shared<CookCache>(cook_cache_folder(project)));
+        auto assets = open_project_assets(project, std::move(provider));
         if (!assets) return fail(assets.error);
         m_assets = std::move(assets.registry);
 
@@ -85,7 +103,10 @@ public:
 
         m_renderer = std::make_unique<Renderer>(device, std::move(shader));
         m_view = std::make_unique<RenderTarget>(device, RenderTargetDesc{Format::rgba8_unorm, false, "player view"});
-        std::cerr << "[Player] " << project.name() << " / " << scene_name << ": "
+        if (package)
+            std::cerr << "[Player] package " << manifest.name << ", content " << sha256_text(manifest.content).substr(0, 12) << ", built by "
+                      << manifest.build << '\n';
+        std::cerr << "[Player] " << (package ? manifest.name : project.name()) << " / " << scene_name << ": "
                   << m_session->world().size() << " entities\n";
         return true;
     }

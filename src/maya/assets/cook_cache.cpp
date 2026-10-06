@@ -39,29 +39,46 @@ std::filesystem::path CookCache::entry_path(const CookKey& key) const {
     return m_folder / name.substr(0, 2) / (name + "." + key.kind);
 }
 
+std::vector<std::byte> wrap_cooked(std::span<const std::byte> payload) {
+    auto out = std::vector<std::byte>(header_size + payload.size());
+    const auto size = uint64_t(payload.size());
+    const auto digest = sha256(payload);
+    auto* at = out.data();
+    std::memcpy(at, magic, sizeof(magic));
+    std::memcpy(at += sizeof(magic), &entry_format, sizeof(entry_format));
+    std::memcpy(at += sizeof(entry_format), &size, sizeof(size));
+    std::memcpy(at += sizeof(size), digest.data(), digest.size());
+    if (!payload.empty()) std::memcpy(at + digest.size(), payload.data(), payload.size());
+    return out;
+}
+
+std::optional<std::vector<std::byte>> unwrap_cooked(std::span<const std::byte> bytes) {
+    if (bytes.size() < header_size || std::memcmp(bytes.data(), magic, sizeof(magic)) != 0) return std::nullopt;
+    uint32_t format = 0;
+    uint64_t size = 0;
+    auto stored = Sha256Digest{};
+    std::memcpy(&format, bytes.data() + sizeof(magic), sizeof(format));
+    std::memcpy(&size, bytes.data() + sizeof(magic) + sizeof(format), sizeof(size));
+    std::memcpy(stored.data(), bytes.data() + sizeof(magic) + sizeof(format) + sizeof(size), stored.size());
+    const auto payload = bytes.subspan(header_size);
+    if (format != entry_format || size != payload.size() || sha256(payload) != stored) return std::nullopt;
+    return std::vector<std::byte>(payload.begin(), payload.end());
+}
+
 std::optional<std::vector<std::byte>> CookCache::read(const CookKey& key) {
     auto bytes = read_file(entry_path(key));
     if (!bytes) {
         ++m_stats.misses;
         return std::nullopt;
     }
-    uint32_t format = 0;
-    uint64_t size = 0;
-    auto stored = Sha256Digest{};
-    if (bytes->size() >= header_size) {
-        std::memcpy(&format, bytes->data() + sizeof(magic), sizeof(format));
-        std::memcpy(&size, bytes->data() + sizeof(magic) + sizeof(format), sizeof(size));
-        std::memcpy(stored.data(), bytes->data() + sizeof(magic) + sizeof(format) + sizeof(size), stored.size());
-    }
-    const auto payload = bytes->size() >= header_size ? std::span(*bytes).subspan(header_size) : std::span<const std::byte>{};
-    if (bytes->size() < header_size || std::memcmp(bytes->data(), magic, sizeof(magic)) != 0 || format != entry_format ||
-        size != payload.size() || sha256(payload) != stored) {
+    auto payload = unwrap_cooked(*bytes);
+    if (!payload) {
         ++m_stats.damaged;
         ++m_stats.misses;
         return std::nullopt;
     }
     ++m_stats.hits;
-    return std::vector<std::byte>(payload.begin(), payload.end());
+    return payload;
 }
 
 void CookCache::write(const CookKey& key, std::span<const std::byte> payload) {
@@ -70,14 +87,8 @@ void CookCache::write(const CookKey& key, std::span<const std::byte> payload) {
     std::filesystem::create_directories(path.parent_path(), error);
     if (!error && !std::filesystem::exists(m_folder / ".gitignore", error))
         replace_file(m_folder / ".gitignore", "# Maya's cook cache: cooked from the project's sources, never committed.\n*\n", "cache");
-    auto text = std::string(magic, sizeof(magic));
-    const auto size = uint64_t(payload.size());
-    const auto digest = sha256(payload);
-    text.append(reinterpret_cast<const char*>(&entry_format), sizeof(entry_format));
-    text.append(reinterpret_cast<const char*>(&size), sizeof(size));
-    text.append(reinterpret_cast<const char*>(digest.data()), digest.size());
-    text.append(reinterpret_cast<const char*>(payload.data()), payload.size());
-    if (error || !replace_file(path, text, "cache entry").empty()) {
+    const auto entry = wrap_cooked(payload);
+    if (error || !replace_file(path, std::string(reinterpret_cast<const char*>(entry.data()), entry.size()), "cache entry").empty()) {
         ++m_stats.failures;
         return;
     }

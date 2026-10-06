@@ -67,6 +67,12 @@ private:
     std::vector<std::pair<std::filesystem::path, Remembered>> m_sources;
 };
 
+/// A cooked payload in the checked envelope the cache's entries and a package's cooked files share:
+/// "MAYACOOK", the format, the payload's size and digest, then the payload. Unwrapping gives the payload
+/// back, or nothing when the bytes are damaged.
+std::vector<std::byte> wrap_cooked(std::span<const std::byte> payload);
+std::optional<std::vector<std::byte>> unwrap_cooked(std::span<const std::byte> bytes);
+
 /// `<project folder>/.maya/cache`: the folder holding the project file.
 std::filesystem::path cook_cache_folder(const Project& project);
 } // namespace maya
