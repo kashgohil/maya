@@ -1,0 +1,11 @@
+{
+  "name": "maya-sample-viewer-capture",
+  "private": true,
+  "description": "Renders Maya's Sample Viewer comparison views with the Khronos glTF Sample Renderer (#1036).",
+  "type": "module",
+  "dependencies": {
+    "@khronosgroup/gltf-viewer": "1.1.0",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.63.0"
+  }
+}

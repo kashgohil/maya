@@ -1,0 +1,70 @@
+{
+  "comment": "The views tests/sample_viewer_tests.cpp renders; keep them the same. Rotation 270 puts the environment's centre along -Z, as Maya does.",
+  "width": 640,
+  "height": 480,
+  "exposure": 1.0,
+  "rotation": 270,
+  "hdr": "workshop.hdr",
+  "views": [
+    {
+      "name": "metal-rough-spheres-front",
+      "model": "Models/MetalRoughSpheres/glTF/MetalRoughSpheres.gltf",
+      "from": [
+        0,
+        0,
+        15
+      ],
+      "to": [
+        0,
+        -0.25,
+        -1.5
+      ],
+      "yfov": 0.7
+    },
+    {
+      "name": "metal-rough-spheres-angled",
+      "model": "Models/MetalRoughSpheres/glTF/MetalRoughSpheres.gltf",
+      "from": [
+        9,
+        5,
+        11
+      ],
+      "to": [
+        0,
+        -0.25,
+        -1.5
+      ],
+      "yfov": 0.7
+    },
+    {
+      "name": "normal-tangent-mirror-front",
+      "model": "Models/NormalTangentMirrorTest/glTF/NormalTangentMirrorTest.gltf",
+      "from": [
+        0,
+        0,
+        3.6
+      ],
+      "to": [
+        0,
+        -0.08,
+        0
+      ],
+      "yfov": 0.8
+    },
+    {
+      "name": "normal-tangent-mirror-angled",
+      "model": "Models/NormalTangentMirrorTest/glTF/NormalTangentMirrorTest.gltf",
+      "from": [
+        2.2,
+        1.2,
+        2.8
+      ],
+      "to": [
+        0,
+        -0.08,
+        0
+      ],
+      "yfov": 0.8
+    }
+  ]
+}

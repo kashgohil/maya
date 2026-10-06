@@ -113,6 +113,16 @@ float3 environment_irradiance(constant ViewConstants& view, float3 n) {
 // The split-sum table holds 0 and 1 at its first and last texels' centres (brdf_table_size texels a side).
 constant float brdf_table_size = 64.0;
 float2 table_uv(float2 value) { return (value * (brdf_table_size - 1.0) + 0.5) / brdf_table_size; }
+// The specular's share of light from the surroundings (#1036), as glTF's Sample Renderer computes it: the
+// split-sum table's scale and bias with a roughness-dependent Fresnel, plus Fdez-Aguera's multiple
+// scattering, so rough metals keep the energy single scattering loses. tests/support/shading.hpp matches.
+float3 surroundings_share(float3 f0, float2 scale_bias, float NdotV, float roughness) {
+    const float3 k = f0 + (max(float3(1.0 - roughness), f0) - f0) * pow(1.0 - NdotV, 5.0);
+    const float3 single = k * scale_bias.x + scale_bias.y;
+    const float missing = 1.0 - (scale_bias.x + scale_bias.y);
+    const float3 average = f0 + (1.0 - f0) / 21.0;
+    return single + missing * single * average / (1.0 - average * missing);
+}
 // The equirectangular background's coordinates: u 0.5 along -Z, growing toward +X; v 0 straight up.
 float2 equirect_uv(float3 d) {
     return float2(0.5 + atan2(d.x, -d.z) / (2.0 * M_PI_F), acos(clamp(d.y, -1.0, 1.0)) / M_PI_F);
@@ -166,12 +176,12 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     const float3 V = normalize(view.camera_position.xyz - in.world_position);
     const float NdotV = max(dot(N, V), 1e-4);
 
-    // Light from the surroundings: the environment's, or the uniform ambient light. The split-sum table
-    // gives the specular's share; diffuse takes what it leaves. Occlusion darkens both.
+    // Light from the surroundings: the environment's, or the uniform ambient light. As glTF defines a
+    // material, a dielectric's result (diffuse, less the specular's share, plus that share of the specular)
+    // and a metal's are mixed by metallic. Occlusion darkens both.
     float occlusion = 1.0;
     if (has_map(material, slot_occlusion)) occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, uv).r - 1.0);
     const float2 scale_bias = brdf_table.sample(table_sampler, table_uv(float2(NdotV, roughness))).rg;
-    const float3 specular_share = f0 * scale_bias.x + scale_bias.y;
     float3 diffuse_light = view.ambient.rgb, specular_light = view.ambient.rgb;
     if (view.environment_flags.x != 0) {
         const float intensity = view.environment.x;
@@ -179,7 +189,10 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
         const float3 R = to_environment(view, reflect(-V, N));
         specular_light = specular_cube.sample(environment_sampler, R, level(roughness * view.environment.w)).rgb * intensity;
     }
-    float3 rgb = (c_diff * (1.0 - specular_share) * diffuse_light + specular_share * specular_light) * occlusion;
+    const float3 dielectric_share = surroundings_share(float3(0.04), scale_bias, NdotV, roughness);
+    const float3 metal_share = surroundings_share(base.rgb, scale_bias, NdotV, roughness);
+    const float3 dielectric = (1.0 - dielectric_share) * base.rgb * diffuse_light + dielectric_share * specular_light;
+    float3 rgb = mix(dielectric, metal_share * specular_light, metallic) * occlusion;
 
     const uint lights = min(view.light_count.x, 4u);
     for (uint i = 0; i < lights; ++i) {
