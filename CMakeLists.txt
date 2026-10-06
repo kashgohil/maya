@@ -706,6 +706,23 @@ if(BUILD_TESTING)
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
     endif()
 
+    # Packages (#1039): packaging on the CPU, and packaged players on Metal, run from outside the checkout.
+    if(TARGET maya_package)
+        add_executable(maya_package_tests tests/package_tests.cpp)
+        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaImport MayaRuntime Catch2::Catch2WithMain z)
+        target_include_directories(maya_package_tests PRIVATE tests)
+        target_compile_definitions(maya_package_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+            MAYA_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}"
+            MAYA_PLAYER="$<TARGET_FILE:maya_player>")
+        add_dependencies(maya_package_tests maya_player)
+        maya_target_options(maya_package_tests)
+        add_test(NAME maya_package COMMAND maya_package_tests "~[gpu]")
+        set_tests_properties(maya_package PROPERTIES LABELS "cpu;package" TIMEOUT 120)
+        add_test(NAME maya_package_gpu COMMAND maya_package_tests "[gpu]")
+        set_tests_properties(maya_package_gpu PROPERTIES LABELS "gpu;package" TIMEOUT 600 RUN_SERIAL TRUE
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+    endif()
+
     # The benchmark runner: its logic on the null device (CPU), and its command line on Metal with
     # the small smoke manifests, which must complete and report results.
     if(TARGET MayaBenchmark)
