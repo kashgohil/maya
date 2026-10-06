@@ -80,7 +80,7 @@ This small sparse-set implementation keeps storage independent of an external EC
 | `TransformComponent` | Local translation in metres, quaternion x/y/z/w, positive scale defaulting to one. World owns hierarchy links and derived matrices; see [spatial operations](spatial.md). |
 | `MeshRendererComponent` | Typed mesh/material AssetId references and visibility. References do not load or pin assets; [#993 leases](assets.md) supply residency/ownership. |
 | `CameraComponent` | Vertical FOV in radians, near/far clip in metres. Aspect belongs to a rendered view; no window/input ownership. |
-| `LightComponent` | Kind, linear RGB, intensity (directional lux, point/spot lumens), local-light range, spot cone full angles in radians, enabled flag. Renderer interpretation follows later. |
+| `LightComponent` | Kind, linear RGB, intensity (directional lux, point/spot candela since #1034), local-light range, spot cone full angles in radians, enabled flag, and shadow settings: whether it casts them, bias and normal bias in shadow-map texels, and a directional light's shadow distance ([lights](renderer.md#lights), [shadows](renderer.md#shadows)). |
 
 Entities start with no implicit components. The component schemas have usable defaults and are ordinary component values, not GPU bindings. This layer validates identity and structural lifecycle; #992 adds transform validation and validated camera calculations. Shared property validation is #994, and the [renderer](renderer.md) reads mesh renderers, cameras, and directional lights since #998. Mutable fields are not yet a validated inspector or scripting API.
 

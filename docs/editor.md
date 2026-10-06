@@ -118,7 +118,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
 [Issue #1022](https://work.rezee.app/kash/issues/1022) adds two tools to the viewport's tool bar (and the eye to the Game/Scene toggle while playing):
 
-- **Debug views** (the eye) opens a menu. At the top (since #1032) are the [exposure views](renderer.md#exposure-views): Image, Luminance, and False color, one at a time, for the Scene and Game views alike. Below them is a check for each physics debug [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries. Below them is a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
+- **Debug views** (the eye) opens a menu. At the top (since #1032) are the [exposure views](renderer.md#exposure-views): Image, Luminance, and False color, one at a time, for the Scene and Game views alike. Below them (since #1034) are the [shadow views](renderer.md#shadow-views): Lit, Cascades, and Texels. Below them is a check for each physics debug [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries. Below them is a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
 - **Edit collider** (the transparent cube, or C) puts handles on the primary selection's collider in place of the transform gizmo, and outlines that collider in the selection's color:
   - a box has a dot on each face; a drag moves that face, holding the opposite one still, which changes the half extents and the offset together;
   - a sphere has a dot on each axis, which changes its radius about a fixed centre;
@@ -127,7 +127,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
   Each drag is one undo step, named "Resize the collider of …" or "Move the collider of …", and goes through `SceneEditor::set_component`, so it is validated as the Inspector's edits are. Sizes never go below 5 mm. Handles are hidden while playing, and an entity without a collider keeps its gizmo.
 
-**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories, a `physics-debug-groups` mask, and an `exposure-view` line (`none`, `luminance`, or `false-color`). They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
+**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories, a `physics-debug-groups` mask, an `exposure-view` line (`none`, `luminance`, or `false-color`), and a `shadow-view` line (`none`, `cascades`, or `texels`). They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
 
 ## Materials
 
@@ -170,6 +170,15 @@ The editor watches the files of loaded materials (#1033), textures, and environm
 - **Imported sources** (#1036): `check_imported_sources` runs first, four times a second, over every glTF file with an [import file](import.md#import-files): the file, its import file, and the files it names. When one changes, the file is imported again ("models/helmet.glb changed; importing it again"), quietly: a failure, such as a file caught half-written, is logged, the last import stays in use, and the next change tries again. An empty file waits. The reimport refreshes the project, so meshes, textures, materials, and the scenes that use them show the new versions at the next frame, in the Scene view and in a running Play alike. A part of an imported file is otherwise watched through its file and import file, as a texture is through its source.
 - **Not watched:** an asset no frame or row has loaded yet, since it reads its file when first used; OBJ meshes (Reload in their menu). The player never watches files.
 
+## Lights
+
+[Issue #1034](https://work.rezee.app/kash/issues/1034) draws point and spot lights and shadows ([lights](renderer.md#lights), [shadows](renderer.md#shadows)):
+
+- **Creating them.** The Hierarchy's **+** menu offers Point light (a light bulb) and Spot light (a flashlight) beside Directional light. Each is 30 cd, about as bright 3 m away as the default sun, with a range of 10 m for a point light and 15 m for a spot light. A spot light shines along its entity's −Z.
+- **Settings.** The Inspector shows the ones each kind uses ([inspector](inspector.md#inspector)).
+- **Limits.** The viewport draws at most 16 point and spot lights, and shadows at most four spot lights. Diagnostics lists the lights the view leaves out and the ones it draws without shadows with the scene's problems, by name, and its **Lights** row counts them.
+- **Shadow views** in the eye menu show the sun's cascades and their texels ([physics debug views](#physics-debug-views)).
+
 ## Diagnostics
 
 The Diagnostics panel shows the current state:
@@ -178,12 +187,13 @@ The Diagnostics panel shows the current state:
 - drawn, hidden, and skipped mesh renderers;
 - frames, waits, and upload-memory high water against capacity;
 - live resources and pending retirements;
+- the view's point and spot lights: drawn, left out, and drawn without shadows, and whether the sun's shadows are on ([lights](#lights));
 - while playing, the tick, the wall time the clock refused, and the ticks it dropped, and the script VM's memory and reload count;
 - while playing, a **Physics** section (#1022), refreshed four times a second: bodies by motion type, active and sleeping, contacts and overlaps touching now, queries and events this session, the last step's time and its other phases, and error counters (steps where Jolt ran out of room, by kind, contact changes dropped, and event recipients skipped), shown in the warning color when any is nonzero;
 - the number of debug outlines and lines drawn, when there are any;
 - **Performance** over the last 240 frames: the frame interval with P95 and P99, CPU time per part of the frame, GPU time (or why it is unavailable), draws, instances, and triangles, tracked bytes, platform-reported GPU and process memory, and resident assets ([performance](performance.md#in-the-editor)).
 
-It also lists this frame's extraction problems, such as missing meshes and materials, and a log. The log records:
+It also lists this frame's extraction problems, such as missing meshes and materials, and the lights the view left out or drew without shadows, and a log. The log records:
 
 - projects, catalogs, and scenes opened, saved, or refused, with the reasons;
 - asset reloads;
@@ -230,6 +240,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
   - **Play:** contacts captured only while their check is on, outlines from the physics world, and the Physics section's counts, cleared at Stop.
   - **Handles:** a box face resized with the opposite face held, one undo step that undoes and redoes; the centre moving the offset; a sphere's radius; a capsule lengthened from one end; the gizmo back when editing stops; no handles in Play; and drags past the centre stopping at the smallest size, which validation accepts.
 - [editor_material_tests.cpp](../tests/editor_material_tests.cpp) (#1033) and [editor_environment_tests.cpp](../tests/editor_environment_tests.cpp) (#1035) cover [material editing](#materials) and [environments](#environments): using an environment by double-click and by dropping it in the viewport, as one undo step that sets the scene's one Environment component; the Inspector's environment fields; the material scene lit by its environment; and [watched files](#watched-files), with a changed environment file or source image cooked again and a broken file keeping the last version. [editor_texture_tests.cpp](../tests/editor_texture_tests.cpp) checks the same for a texture's source image and file, and that Reload from its menu is not read again by the watcher.
+- [editor_lighting_tests.cpp](../tests/editor_lighting_tests.cpp) (#1034) covers [lights](#lights): point and spot lights from the **+** menu, the Inspector's settings for each kind and for shadows on and off, the shadow views from the eye menu, saved and read by a new editor, and Diagnostics' counts and problems for 26 lights, cleared when there are fewer.
 - [editor_import_tests.cpp](../tests/editor_import_tests.cpp) (#1036) covers [importing models](#importing-models): from the Scene menu, by dropping a file from inside and outside the project, refusing other files and broken ones, dragging an imported scene into the viewport, part labels, reimports when a source or a file it names changes (and waiting for a half-written one), a scene that keeps its moves and overrides through a reimport that changes geometry, and a reload into a running Play.
 
 #999 validation on 24 September 2026:

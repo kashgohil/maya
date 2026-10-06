@@ -129,8 +129,8 @@ present off                  # on: present every frame to a window and measure d
 
 | Workload | What it does |
 | --- | --- |
-| `instances` | I1. Generates `count` entities on a square grid sharing one mesh and one material, a seeded exact fraction spinning, and a camera and light. Each run is a fresh play session from the same scene, so every run replays the same ticks: warmup frames, then sampled frames. |
-| `scene` | A project's saved scene (`scene`, or the startup scene) through its first camera, as the player runs it. |
+| `instances` | I1. Generates `count` entities on a square grid sharing one mesh and one material, a seeded exact fraction spinning, and a camera and light. The light casts no shadows (since #1034), so generated workloads compare with earlier results. Each run is a fresh play session from the same scene, so every run replays the same ticks: warmup frames, then sampled frames. |
+| `scene` | A project's saved scene (`scene`, or the startup scene) through its first camera, as the player runs it, with the scene's own lights and shadows. [lights](../benchmarks/lights.benchmark) runs the [lights test scene](renderer.md#sample-content) (#1034). |
 | `load_cycles` | L1 load/unload. The generated scene is saved to a file. First, a malformed copy and a copy with a missing asset must be refused, leaving nothing behind. Then, for each cycle: load the file, start a play session, render `ticks` frames, stop, wait for the GPU, evict unused asset versions, and sample memory. |
 | `play_cycles` | L1 play reset. Starts and stops play sessions from the same authored scene. The authored World must be unchanged afterwards. |
 | `physics` | P1 physics stress ([recipe](architecture/performance-baseline.md#p1-physics-stress), #1024). Generates the P1 scene and ticks it back to back, headless: no project, views, or device work. Each worker configuration runs `runs` times. |
@@ -173,8 +173,8 @@ The seed selection uses SplitMix64, so it is the same on every machine. Generate
 The JSON holds:
 
 - the manifest;
-- the environment, build, and quality settings (resolution, formats, antialiasing, lighting, presentation, simulation), including the thermal state at the start and at the end and the measuring thread's quality of service. The text summary warns when either thermal state is not nominal;
-- counters, including `centers_in_view`: instances whose origin projects into the view;
+- the environment, build, and quality settings (resolution, formats, antialiasing, lighting, shadows, presentation, simulation), including the thermal state at the start and at the end and the measuring thread's quality of service. The text summary warns when either thermal state is not nominal;
+- counters, including `centers_in_view`: instances whose origin projects into the view; and (#1034) the last view's point and spot lights drawn, left out, and drawn without shadows, and shadow maps and shadow draws per view;
 - baseline and resident memory, tracked and reported;
 - for each run: throughput, summaries of the frame, of each CPU scope, and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
 - for each run, per pass name: a summary of the GPU time of that frame's passes with the name (`gpu_pass_ms`), with the raw values; `gpu_pass_mismatches`, timed passes outside their frame's GPU time, which must be 0; and `untimed_passes`;

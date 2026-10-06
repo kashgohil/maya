@@ -41,8 +41,9 @@ The [player](../apps/player/player_application.cpp) uses exactly this path: it r
 | `meshes` | One `AssetLease<MeshAsset>` per distinct mesh asset. Every instance of a mesh shares its lease and GPU buffers. |
 | `textures` | One `AssetLease<TextureAsset>` per distinct texture the instances' materials use (since #1033). |
 | `environment` | The scene's [environment](#environments), leased, with its intensity, rotation, and whether the sky is drawn (since #1035); empty when the ambient light is used. |
-| `instances` | Entity ID, mesh index, world matrix, normal matrix, and a copied material, with its maps as texture indices, for each drawable entity. |
-| `lights` | Enabled directional lights in EntityId order, at most `max_directional_lights` (4). |
+| `instances` | Entity ID, mesh index, world matrix, normal matrix, a bounding sphere from the mesh's bounds (for [shadow culling](#shadows)), and a copied material, with its maps as texture indices, for each drawable entity. |
+| `lights` | Enabled directional lights in EntityId order, at most `max_directional_lights` (4): direction, radiance (color × lux), and shadow settings. Only the first that casts shadows keeps them. |
+| `local_lights` | Enabled point and spot lights in EntityId order, at most `max_extracted_local_lights` (1,024): position, direction, color × candela, range, the cosines of the cones' half angles, and shadow settings (spot lights only). Each view draws at most 16 of them ([lights](#lights)). |
 | `ambient` | Linear ambient color, from `RenderExtractOptions`. |
 | `diagnostics`, `stats` | Why entities were skipped or substituted (capped at 64), with counts that are never capped. |
 
@@ -58,10 +59,11 @@ Extraction acquires assets through the registry. Assets that are not resident lo
 | No material assigned | Drawn with default `MaterialAsset` factors (white, not metallic, fully rough). |
 | A material's map missing, failed, or of the wrong role | Drawn with the placeholder in that slot; `missing_texture` or `texture_role`, once per material ([materials](#materials)). |
 | No transform, or a degenerate world matrix | Draw skipped; `missing_transform` or `invalid_transform`. |
-| Point or spot light | Ignored with `unsupported_light`; only directional lights are rendered so far. |
 | Environment missing or failed | The ambient light lights the scene, with no sky; `missing_environment`. |
 | More than one environment component | The one with the lowest EntityId is used; the others report `environment_limit`. |
 | More than four directional lights | The four with the lowest EntityIds are used; the rest report `light_limit`. |
+| More than one of them casting shadows | The lowest EntityId's gets [cascades](#shadows); the others are drawn without shadows and report `shadow_limit`. |
+| More than 1,024 point and spot lights | The 1,024 with the lowest EntityIds are extracted; the rest report `light_limit`. Each view then draws at most 16 ([lights](#lights)). |
 
 The sample logs diagnostics only when their number changes, not every frame.
 
@@ -75,17 +77,19 @@ A `RenderView` is a camera description in framebuffer pixels: size, `CameraMatri
 
 ## Passes
 
-`Renderer::render(snapshot, view, target)` runs inside a frame with no pass open, in up to three named passes (each timed on the GPU, [measuring](performance.md#what-is-measured)):
+`Renderer::render(snapshot, view, target)` runs inside a frame with no pass open, in up to five named passes (each timed on the GPU, [measuring](performance.md#what-is-measured)):
 
-1. **`view`.** It uploads one `ViewConstants` block and opens a pass that clears the target's HDR scene color to the view's clear color and its depth to 1. Then, for each instance (opaque and masked ones first, then the [environment's sky](#environments) where nothing was drawn, then blended ones back to front), it binds the lit pipeline its [material](#materials) needs and the material's maps, uploads that instance's `DrawConstants` to its own slice of frame upload memory, and draws the shared mesh. Depth is stored only when debug lines will test against it.
-2. **`tone map`.** One triangle over the target's color reads each pixel's scene light, scales it by the view's exposure, and writes it [tone-mapped and sRGB-encoded](#exposure-and-tone-mapping).
-3. **`debug lines`**, only when the snapshot has any: [debug lines](#debug-lines) over the tone-mapped color, against the scene's depth.
+1. **`sun shadows`**, when a directional light casts [shadows](#shadows): its four cascades, depth only, into the sun's shadow atlas.
+2. **`spot shadows`**, when spot lights in the view cast them: up to four maps in the spot lights' atlas.
+3. **`view`.** It uploads one `ViewConstants` block and opens a pass that clears the target's HDR scene color to the view's clear color and its depth to 1. Then, for each instance (opaque and masked ones first, then the [environment's sky](#environments) where nothing was drawn, then blended ones back to front), it binds the lit pipeline its [material](#materials) needs and the material's maps, uploads that instance's `DrawConstants` (uploaded once per view and shared with the shadow passes), and draws the shared mesh. Depth is stored only when debug lines will test against it.
+4. **`tone map`.** One triangle over the target's color reads each pixel's scene light, scales it by the view's exposure, and writes it [tone-mapped and sRGB-encoded](#exposure-and-tone-mapping).
+5. **`debug lines`**, only when the snapshot has any: [debug lines](#debug-lines) over the tone-mapped color, against the scene's depth.
 
 It checks that the view size matches the target, that the target is live, and that every instance refers to meshes and textures the snapshot holds. It returns the first device error, such as exhausted upload memory. The remaining work is skipped, each open pass is still closed, and the frame can still end. The clear color is scene light like any other, before exposure: the views' default 0.1 grey shows as about 35% grey through AgX at EV100 0.
 
 `Renderer::present(target, destination, area, background)` opens a pass on `destination`, clears it to `background`, and draws the target's color texture scaled into `area`. The area is a `PixelRect` in the destination's pixels, with its origin at the top left. The destination is usually the acquired window surface, but any render-target texture works. The player presents to the whole surface; the same call can present into any rectangle, such as a panel. When the area and the view have the same size, presentation copies the view's pixels exactly (bilinear sampling at texel centers).
 
-Pipelines are created on first use for each target format (the four lit pipelines, for the scene format, with `depth32_float` and counter-clockwise front faces, each once a material needs it; the sky, once a snapshot draws one; tone map, for the color format; and the two debug pipelines, only once a snapshot has debug lines) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles, and its texture placeholder, and recreates what it needs. `stats()` counts views, draws, presents, and debug draws, outlines, and lines.
+Pipelines are created on first use for each target format (the four lit pipelines, for the scene format, with `depth32_float` and counter-clockwise front faces, each once a material needs it; the sky, once a snapshot draws one; tone map, for the color format; the two debug pipelines, only once a snapshot has debug lines; and the two depth-only shadow caster pipelines, opaque and masked, once a light casts shadows) and each destination format (present). A shader compile failure is cached and returned without recompiling every frame. When the device starts a new session, the renderer drops its old handles, and its texture placeholder, and recreates what it needs. `stats()` counts views, draws, presents, debug draws, outlines, and lines, and shadow maps and the instances drawn into them. `last_lights()` reports the last view's [lights](#lights).
 
 ## Debug lines
 
@@ -241,7 +245,71 @@ The `view` pass of the material test scene, with the environment and the sky, wi
 
 Normals are transformed by the inverse transpose of the world matrix's linear part. Extraction computes it in double precision from the cofactor matrix and scales it to stay representable; the shader renormalizes. Normals therefore stay perpendicular to surfaces under nonuniform scale, including scale inherited through the hierarchy. Transforms have strictly positive scale, so no world matrix is a reflection and triangle winding never flips. Extraction rejects a nonpositive or degenerate determinant as `invalid_transform`.
 
-The shader's `Vertex` uses `float3`, which occupies 16 bytes in Metal and matches the padded C++ [Vertex](../include/maya/rhi/vertex.hpp). The legacy shader used `packed_float3`, which put the normal at byte offset 12 instead of 16. As a result, every earlier lit draw read its normals from the wrong bytes. The layouts of `ViewConstants`, `DrawConstants`, and `PresentConstants` are defined in [shader_constants.hpp](../include/maya/renderer/shader_constants.hpp), with static assertions. Buffer index 0 holds vertices, 1 holds per-draw constants, 2 holds per-view constants, and 3 holds material constants; texture and sampler slots 0 to 4 hold the material's maps, in `MaterialSlot` order.
+The shader's `Vertex` uses `float3`, which occupies 16 bytes in Metal and matches the padded C++ [Vertex](../include/maya/rhi/vertex.hpp). The legacy shader used `packed_float3`, which put the normal at byte offset 12 instead of 16. As a result, every earlier lit draw read its normals from the wrong bytes. The layouts of `ViewConstants`, `DrawConstants`, and `PresentConstants` are defined in [shader_constants.hpp](../include/maya/renderer/shader_constants.hpp), with static assertions. Buffer index 0 holds vertices, 1 holds per-draw constants, 2 holds per-view constants, and 3 holds material constants; texture and sampler slots 0 to 4 hold the material's maps, in `MaterialSlot` order. Since #1034 texture slots 8 and 9 hold the sun's and the spot lights' shadow atlases, and sampler slot 8 their comparison sampler; a shadow caster's `ShadowConstants` (the map's view-projection) is buffer 2 in the shadow passes.
+
+## Lights
+
+[Issue #1034](https://work.rezee.app/kash/issues/1034) lights scenes in physical units, as glTF's `KHR_lights_punctual` does:
+
+| Kind | `intensity` | Light on a surface at distance d |
+| --- | --- | --- |
+| Directional | Lux: the illuminance on a surface facing it. | intensity × N·L, the same everywhere. |
+| Point | Candela: luminous intensity in every direction. | intensity / d² × window(d) × N·L. |
+| Spot | Candela along its axis. | As a point light, × the cone's falloff. |
+
+- **Range.** window(d) = clamp(1 − (d / range)⁴, 0, 1), glTF's recommended window: the light falls off as 1 / d² near the light and reaches exactly nothing at its `range` (metres), so lights can be culled there.
+- **Cones.** `inner_cone` and `outer_cone` are full angles. With θ the angle off the spot's axis, t = clamp((cos θ − cos(outer / 2)) / (cos(inner / 2) − cos(outer / 2)), 0, 1), and the falloff is t²: full inside the inner cone, nothing outside the outer.
+- **What a surface shows.** A white diffuse surface reflects illuminance / π, so the default sun (π lux) shows it at scene light 1, and exposure EV100 0 shows that as about middle grey. A point light gives that much at 3 m from about 28 cd; the editor's new point and spot lights have 30 cd ([editor](editor.md#lights)).
+- **Lumens.** An isotropic point light of I candela emits 4π × I lumens: a 800 lm household bulb is about 64 cd. Scenes from before #1034 stored lumens for point and spot lights; they load converted ([migration](scene.md#versions-and-migration)).
+- **Light from the surroundings** (the [environment](#environments) or the ambient color) is separate and unchanged.
+
+**How many.** A snapshot holds every enabled light ([render snapshots](#render-snapshots)); each view chooses what it draws (`plan_lights` in [light_plan.hpp](../include/maya/renderer/light_plan.hpp)):
+
+- All directional lights, up to four.
+- Up to `max_local_lights` (16) point and spot lights. A light counts when its range sphere reaches the view's frustum. Those are ranked by how much light they bring to the camera, the brightest channel of color × intensity / d² from the camera (d at least 0.5 m), ties going to the lower EntityId. The rest are not drawn.
+- `Renderer::last_lights()` reports the last view's choice: how many local lights it drew, the EntityIds it left out (`dropped`), the spot lights it drew without shadows (`unshadowed`, [shadows](#shadows)), and the directional light with cascades. The editor lists the left-out and unshadowed lights with the scene's problems in Diagnostics. Nothing is dropped silently.
+
+## Shadows
+
+Directional and spot lights cast shadows; `cast_shadows` is on by default. Point lights cast none yet: they would need cube maps, which the [rendering record](architecture/rendering-content-decision.md#shadows-cascades-for-the-sun) leaves for later.
+
+- **Which lights.** The first directional light, by EntityId, that casts shadows gets four cascades; others are drawn unshadowed and report `shadow_limit` at extraction. Of the spot lights a view draws, the four most important that cast shadows (`max_shadowed_spot_lights`) get a map each; the rest are drawn unshadowed and listed in `last_lights().unshadowed`.
+- **Casters.** Every drawn instance except blended ones, depth only, without face culling, so open and single-sided meshes cast from both sides. Masked materials cast through their cutout. Instances are culled per map by their bounding sphere.
+- **Cascades.** Four 2048 × 2048 maps in one 4096 × 4096 `depth32_float` atlas (64 MiB), created when a light first needs it. They cover the view from its near plane to `shadow_distance` (metres, per light, default 60) or its far plane if nearer, split between even and logarithmic steps (λ = 0.75). Each cascade also covers the last 10% of the one before, where that one blends into it, so no seam shows; past the last cascade the shadow fades out over the same band.
+- **No shimmer.** Each cascade is a sphere around its slice of the view, its radius rounded up to 1/16 m, so it keeps its size as the camera turns. Its centre moves in whole texels of the light's view, so the texels stay put on the ground as the camera moves. Each cascade's depth reaches up to the highest caster along the light, so casters out of view still cast into it.
+- **Spot lights.** 1024 × 1024 maps in a 2048 × 2048 atlas (16 MiB), a perspective from the light covering its outer cone, from max(2 cm, range / 1000) to its range.
+- **Filtering.** Nine bilinear comparison taps (3 × 3) give edges about two texels soft.
+- **Bias.** Each light has `shadow_bias` and `shadow_normal_bias`, both in texels of its map, so they scale with each cascade (default 1 and 1, 0 to 20). A surface tests its shadow from a point moved `shadow_normal_bias` texels along its geometric normal and `shadow_bias` texels toward the light. The shadow passes also add a fixed slope-scaled depth bias. Too little bias shows acne: dark speckles on lit surfaces, worst where the light grazes them. Too much moves shadows away from their casters: light leaks under thin objects standing on the ground (peter-panning). At the defaults the tests find neither ([tests](#tests)): a floor lit at grazing angles is lit everywhere through all four cascades, and the shadow of a wall with no thickness starts within 5 cm of its foot at 1.3 cm texels. Three times the defaults leaks light there; none at all shows acne.
+
+### Shadow views
+
+`RenderView::shadow_view` shows how the sun's shadow maps fall on the scene, over the lit image. The editor offers them in the viewport's eye menu ([editor](editor.md#physics-debug-views)).
+
+| View | What a surface shows |
+| --- | --- |
+| `cascades` | Tinted by the cascade that shadows it: red, green, blue, and yellow, nearest first. |
+| `texels` | The cascade's tint and a checker of its shadow-map texels: large squares mean blocky shadows there. |
+
+Surfaces past the shadow distance, and every surface when no directional light casts shadows, show as lit.
+
+### Cost
+
+Release on the M4 Pro reference machine, thermal state nominal throughout; 1920 × 1080 offscreen, 300 warmup and 3,000 sampled frames, three runs per invocation and two invocations of each, alternating with a Release build of the commit before #1034 (`65f6b5f`). GPU time per pass is #1026's timestamps; no pass fell outside its frame or went untimed. Observations, not budgets.
+
+| Scene | `sun shadows` | `spot shadows` | `view` (before) | GPU per frame (before) | CPU encoding per frame (before) |
+| --- | --- | --- | --- | --- | --- |
+| `sample` (5 instances) | 0.10–0.12 ms | | 0.12–0.13 ms (0.08–0.09) | 0.67–0.71 ms (0.29–0.32) | 0.022–0.024 ms (0.013–0.014) |
+| `materials` (16 instances, 24k triangles) | 0.15–0.17 ms | | 0.15 ms (0.14–0.16) | 0.77–0.78 ms (0.37–0.42) | 0.031–0.032 ms (0.017–0.019) |
+| `lights` (16 local lights, 4 spot maps) | 0.17–0.19 ms | 0.08–0.09 ms | 0.47–0.48 ms | 1.82–1.93 ms | 0.06–0.08 ms |
+| 10,000 cubes, sun shadows to 300 m | 0.42–0.72 ms | | 0.61–0.82 ms (0.58–0.77) | 1.22–1.69 ms (0.69–1.00) | 2.90–3.20 ms (1.30–1.34) |
+
+The last row is a scratch scene laid out as `i1_10k` (10,000 cubes seen from 200 m), saved with and without the sun's shadows, so "before" is the same build with shadows off.
+
+- **The shadow passes** cost 0.1–0.2 ms in the small scenes and 0.4–0.7 ms for 10,000 casters drawn 15,245 times into four cascades, in line with the [prototype](architecture/rendering-content-decision.md#shadows-cascades-for-the-sun)'s 0.45 ms. Four spot maps cost under 0.1 ms.
+- **Lighting.** Sampling shadows and the extra light loop add little to `view` in the existing scenes (0.04 ms in `sample`, within the runs' variation in `materials` and at 10,000 cubes). At the limit, 16 local lights over the whole 1080p view, `view` takes 0.47–0.48 ms.
+- **GPU per frame** rises more than the passes in the small scenes: there the GPU is nearly idle, runs at low clocks, and waits between passes (the same effect as the tone-map pass in [exposure](#exposure-and-tone-mapping)). Under load the frame is the sum of its passes: 1.22 ms against 1.22 ms at 10,000 cubes.
+- **The CPU** encodes a caster once for each map it reaches, at the same cost per draw as the view's draws: about 0.11 ms per thousand. At 10,000 cubes that adds 1.6–1.9 ms per frame, doubling encoding. Drawing instances of one mesh together would remove most of it, for the view as well; it is not done yet. In the small scenes the CPU frame's growth is waiting for the GPU.
+- **Memory.** The sun's atlas is 64 MiB and the spot lights' 16 MiB, each allocated the first time a light needs it.
 
 ## Sample content
 
@@ -249,12 +317,15 @@ The [basic scene](../samples/basic_scene/assets/basic.scene) is an ordinary [sce
 
 The [material test scene](../samples/basic_scene/assets/materials.scene) (#1033) shows the model: a [UV sphere](../samples/basic_scene/assets/sphere.obj) in two rows, a red dielectric and a gold metal, each at roughness 0, 0.25, 0.5, 0.75, and 1, and below them six surfaces: a base color map, a normal map, a packed occlusion-roughness-metallic map in tiles, an emissive map, a masked double-sided cutout, and blended glass. Its version-2 materials are in `materials/spheres` and `materials/surfaces`, and its two maps (`orm`, `cutout`, RGBA8 so their texels stay exact) in `textures`. Since #1035 an Environment entity lights it with the [sky environment](assets.md#environments) and draws it as the sky; its references also show it under the workshop.
 
+The [lights test scene](../samples/basic_scene/assets/lights.scene) (#1034) is dusk over 35 props: a low, dim sun with cascades, 16 point lights in a grid, and 6 bright spot lights pointing down, all casting shadows. The spot lights rank first, so a view draws all 6 and 10 of the point lights, and renders four spot shadow maps: the limits in action, reported in the editor's Diagnostics. `benchmarks/lights.benchmark` measures it ([cost](#cost)).
+
 ## Tests
 
 - [renderer_tests.cpp](../tests/renderer_tests.cpp) (`maya_renderer_tests`, labels `cpu;renderer`) uses a null device that mirrors buffer contents and records the constants bound at every draw. It covers mesh sharing, copied transforms and materials, and each missing-asset rule. It checks normal matrices under nonuniform scale in a hierarchy and light selection and limits. It checks that snapshot ownership survives entity deletion, eviction, and registry/World destruction, with deferred retirement. It also covers two views of one snapshot, target reallocation and retirement, upload exhaustion, presentation rectangles, and pipeline recreation across sessions.
 - [renderer_gpu_tests.cpp](../tests/renderer_gpu_tests.cpp) (in `maya_tests`, tag `[rhi]`, run under Metal API validation) reads pixels back. It checks per-instance colors from one shared mesh and a skipped missing mesh. It checks diffuse lighting of a slanted quad scaled 1 × 1 × 4, which only the inverse-transpose normal passes. It checks identical output presented into a player-sized window and an editor viewport rectangle, rendering at six sizes with target reuse and retirement, and ten rounds of deleting the drawn entity and evicting its mesh while its frame is still in flight.
 - **Materials** (#1033). [material_gpu_tests.cpp](../tests/material_gpu_tests.cpp) (in `maya_tests`, tag `[materials]`) reads the HDR scene color (`rgba16_float`, before exposure) of quads seen head-on and compares it with the CPU reference in [shading.hpp](../tests/support/shading.hpp): every metallic and roughness under several lights and angles (within 1%); the white furnace, where a white dielectric in a uniform environment shows exactly its light; the reference's directional albedo; each map (base color with sRGB decoding, metallic-roughness channels, occlusion by strength on ambient only, emissive by strength); normal-map orientation (+X toward +u, +Y up the texture, on plain and mirrored UVs, and by scale); alpha cutoffs; blending back to front; double-sided back faces; and the placeholder for missing maps and maps of the wrong role. [renderer_tests.cpp](../tests/renderer_tests.cpp) checks pipeline choice, draw order, constants, and the textures bound in each slot; [material_tests.cpp](../tests/material_tests.cpp) the material files, the schema, publishing, and tangents. The [material test scene](#sample-content) has reference images ([acceptance](acceptance.md#regression-scenes)).
 - **Environments** (#1035). In material_gpu_tests.cpp (tag `[environments]`): the furnace under a uniform environment for white, red, and metal surfaces at every roughness, head-on and turned, against the CPU reference with the split-sum table (`brdf_scale_bias`) in the Sample Viewer's form (#1036): a white metal shows all of the light; the environment replacing the ambient light and its intensity scaling it; irradiance by direction and the rotation's sense; the mirror reflection of a smooth metal and occlusion darkening it; the sky ahead, turned a quarter, through a blended surface, and off; and the fallback to the ambient light for a missing environment. renderer_tests.cpp checks extraction (one environment, the lowest EntityId's, the limit and missing diagnostics), the view constants and their inverse view-projection, the bound slots, and that the sky draws after opaque surfaces and before blended ones. [environment_tests.cpp](../tests/environment_tests.cpp) checks environment files, HDR decoding, the mappings, irradiance (exact for light linear in direction), the prefiltered cube, determinism across thread counts, the split-sum table against the BRDF's integrated albedo, and loading.
+- **Lights and shadows** (#1034). [lighting_gpu_tests.cpp](../tests/lighting_gpu_tests.cpp) (in `maya_tests`, tags `[lights]` and `[shadows]`, Metal API validation) reads the HDR scene color and compares it with the CPU reference: a point light at 0.5–7.5 m and past its range, and a spot light inside, between, and beyond its cones (within 1%). A floor at grazing sun is lit everywhere through every cascade (no acne), a cube on the floor shadows it from 8 cm of its base and leaves its own lit top lit, a floating quad with no thickness casts with its back to the sun, and a standing one's shadow starts within 5 cm of its foot. A wall's shadow running 50 m away from the camera keeps its edge where geometry puts it in every cascade and blend band, spot light shadows fall under a floating cube while the floor around matches the reference, the limits report 10 left out and 2 unshadowed of 26 lights, and a camera sliding one pixel a frame over shadows of casters out of view sees no pixel change by more than 0.01 (no shimmer). [light_plan_tests.cpp](../tests/light_plan_tests.cpp) (in `maya_renderer_tests`) checks ranking, the limits and ties, spot maps, cascades covering their slices and reaching casters above them, sizes that hold as the view turns, and centres on whole texels as it moves. renderer_tests.cpp checks extraction of candela, cones, and shadow settings, the one shadowed directional light, and the extraction limit; [scene_tests.cpp](../tests/scene_tests.cpp) the migration from lumens. Mutations checked: removing the texel snapping fails the shimmer case (13,922 pixels changed); zero biases fail the acne and lit-surface cases; three times the default biases fail the contact case.
 - [desktop_lifecycle_tests.cpp](../tests/desktop_lifecycle_tests.cpp) drives the real player and editor applications through window resizes, including a zero-sized one.
 - **Debug lines** (#1022), in renderer_tests.cpp: an empty `DebugDraw` creates no pipelines and draws nothing; lines, boxes, and capsules are uploaded once per kind, with their matrices, sizes, and colors, and drawn in front and then behind at their opacities; outlines take 8, 16, or 32 segments by their size on screen; and the helpers make the lines they promise. Reference images of every physics debug category are compared on Metal ([physics](physics.md#debug-views)).
 

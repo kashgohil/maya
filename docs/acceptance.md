@@ -14,6 +14,8 @@
 
 **Re-blessed for the Sample Viewer's environment lighting (#1036).** When light from the surroundings began mixing dielectric and metal results and adding multiple scattering, as the Khronos glTF Sample Viewer does ([renderer](renderer.md#materials)), the six material-scene references and three V1 camera-path frames (`path-0000`, `path-0300`, `path-0600`, where the blue metal beam lightens by at most 21 levels) were re-blessed: rough and partly metallic spheres are brighter, and smooth metals and dielectrics unchanged. The other V1 images, the HDR and the physics-debug references stayed within tolerance and were not rewritten. **The [Sample Viewer references](import.md#the-sample-viewer-comparison)** in [tests/references/sample-viewer](../tests/references/sample-viewer) are the Khronos Sample Renderer's own renders, compared with their own declared tolerance. The project owner inspected the before-and-after images and the Sample Viewer captures and approved them on 6 October 2026.
 
+**Re-blessed for shadows (#1034).** Lights cast [shadows](renderer.md#shadows) by default, so nine references were re-blessed: the six V1 views (`overlap` and the five camera-path frames, where the cubes, pyramids, and slab now shadow the floor and wall; 0.5–5.3% of pixels changed), the two textured material views (the cutout cube shadows itself through its leaves, and each tiled cube shades a strip of its neighbour's side), and the physics debug `triggers` view (the pillar and cube cast shadows). Elsewhere the lit floor moved by at most one level. Only those nine files were rewritten, from the renders the test wrote; the HDR, Sample Viewer, and other physics-debug references still match. The project owner inspected the before, after, and difference images and approved them on 6 October 2026.
+
 ## Automated checks
 
 ```bash
@@ -70,6 +72,7 @@ Repeated work must return to these states, with no stale handles and no unbounde
 | L1 load/unload and play reset | [benchmarks/l1_load.benchmark](../benchmarks/l1_load.benchmark), [l1_play.benchmark](../benchmarks/l1_play.benchmark) | 300 cycles of a 10,000-entity scene (100 before #1024); malformed and missing-asset scenes |
 | The sample scene | [basic.scene](../samples/basic_scene/assets/basic.scene) | The fast regression case; not evidence of scale |
 | Material test scene | [materials.scene](../samples/basic_scene/assets/materials.scene), [benchmarks/materials.benchmark](../benchmarks/materials.benchmark) | Spheres across metallic and roughness, and surfaces with each kind of map, a cutout, and glass (#1033), lit by an environment and drawn against its sky (#1035); its reference images below |
+| Lights test scene | [lights.scene](../samples/basic_scene/assets/lights.scene), [benchmarks/lights.benchmark](../benchmarks/lights.benchmark) | A shadowed sun, 16 point lights, and 6 shadowed spot lights over 35 props: the light limits and the shadow passes' cost (#1034) |
 
 **The V1 visual reference scene** contains:
 

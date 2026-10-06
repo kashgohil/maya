@@ -128,6 +128,7 @@ Tone mapping 1920 × 1080 from an RGBA16F target to RGBA8 with sRGB encoding (GP
 - **Implemented** by #1033 ([materials](../renderer.md#materials)). Its measured energy behavior, and the version-1 content's change, are recorded there. `KHR_texture_transform` and `KHR_materials_emissive_strength` are read by the importer ([#1036](https://work.rezee.app/kash/issues/1036)): materials hold an emissive strength, and texture transforms are added to materials with the importer that needs them.
 - **Units** follow glTF's `KHR_lights_punctual`: lux for directional lights and candela for point and spot lights, so imported lights keep their values. The Inspector may show lumens beside candela.
 - **Light count.** A fixed number of local lights per view, measured in [#1034](https://work.rezee.app/kash/issues/1034), with lights beyond it reported. Clustered shading is the next step if R1 needs more.
+- **Implemented** by #1034 ([lights](../renderer.md#lights)): lux and candela, glTF's range window and cone falloff, and 16 point and spot lights per view, the ones bringing the most light to the camera, with the rest reported. Scenes that stored lumens load converted. The Inspector shows candela only.
 
 ## Shadows: cascades for the sun
 
@@ -143,6 +144,7 @@ Tone mapping 1920 × 1080 from an RGBA16F target to RGBA8 with sRGB encoding (GP
 - **Four cascades of 2048 texels** in one 4096 atlas, fitted by bounding spheres (their size never changes) with texel snapping against shimmer, and **3×3 comparison filtering**: 0.66 ms in all here.
 - **Spot lights** get one shadow map each from the same atlas. **Point-light shadows** (six faces each) are left out of this milestone; R1 does not need them.
 - The prototype's image is a cost proxy, not a quality reference; [#1034](https://work.rezee.app/kash/issues/1034) owns quality.
+- **Implemented** by #1034 ([shadows](../renderer.md#shadows)) as chosen here, with one change: spot lights have their own 2048 × 2048 atlas of four 1024-texel maps, so the sun keeps all of its atlas and a fifth shadowed spot light is drawn unshadowed and reported.
 
 ## Environment lighting: cooked on the CPU
 

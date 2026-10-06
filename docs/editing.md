@@ -6,7 +6,7 @@
 
 | Edit | Behavior |
 | --- | --- |
-| `create(name, parent, extra)` | A new entity with a name, an identity transform, and optional extra components (the Hierarchy offers Empty, Camera, and Directional light), added as the last child or root. The new entity is selected. |
+| `create(name, parent, extra)` | A new entity with a name, an identity transform, and optional extra components (the Hierarchy offers Empty, Camera, Directional light, and, since #1034, Point light and Spot light), added as the last child or root. The new entity is selected. |
 | `rename(id, name)` | Sets the name component, adding it if missing. |
 | `duplicate_selection()` | Copies each selected subtree with new EntityIds. Selected entities inside another selected subtree are copied once, with their ancestor. Parent references inside the copy are remapped, and children keep their order. Each copy goes right after its original; the root copy is named `Name (1)`, `Name (2)`, and so on, using the first free number. The copies become the selection. |
 | `delete_selection()` | Deletes each selected subtree and clears the selection. |

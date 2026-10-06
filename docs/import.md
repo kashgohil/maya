@@ -43,11 +43,11 @@ glTF's conventions are Maya's: +Y up, −Z forward, metres, counter-clockwise fr
 | `KHR_lights_punctual` | Maya |
 | --- | --- |
 | `directional`, `intensity` in lux | Directional, the same intensity |
-| `point` and `spot`, `intensity` in candela | Point or spot, 4π × the intensity in lumens, Maya's measure |
+| `point` and `spot`, `intensity` in candela | Point or spot, the same intensity: Maya's measure too since #1034 |
 | `range` | The same range; an unbounded light (no `range`) reaches as far as it gives 0.01 lux, √(intensity / 0.01) m, clamped to 0.1–10,000 m |
 | `innerConeAngle`, `outerConeAngle` (from the axis) | Twice each: Maya's cone angles are full angles |
 
-Lights shine along their node's −Z in both. Point and spot lights import, but the renderer draws only directional lights so far, and reports the others as unsupported ([renderer](renderer.md#render-snapshots)).
+Lights shine along their node's −Z in both, and cast shadows by default (point lights cast none yet). The renderer draws them in the same units and with glTF's range window and cone falloff ([lights](renderer.md#lights)). Before #1034 point and spot lights imported as lumens and were not drawn; a reimport rewrites them in candela.
 
 ## What an import writes
 
