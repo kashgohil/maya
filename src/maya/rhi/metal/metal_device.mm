@@ -535,10 +535,11 @@ void MetalDevice::backend_draw(uint32_t vertex_count, uint32_t first_vertex, uin
 }
 
 void MetalDevice::backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
-                                       uint32_t instance_count) {
+                                       uint32_t instance_count, uint32_t first_instance) {
     [m_impl->encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:index_count
                                  indexType:type == IndexType::uint16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
-                               indexBuffer:m_impl->buffers[slot] indexBufferOffset:offset instanceCount:instance_count];
+                               indexBuffer:m_impl->buffers[slot] indexBufferOffset:offset instanceCount:instance_count
+                                baseVertex:0 baseInstance:first_instance];
 }
 
 void MetalDevice::backend_end_pass() {

@@ -114,7 +114,7 @@ struct RejectedCase {
 
 struct Counters {
     size_t entities = 0, mesh_renderers = 0, spinning = 0;
-    size_t centers_in_view = 0; // instances whose origin projects inside the view
+    size_t centers_in_view = 0; // instances the last view drew: inside its frustum by their bounds (#1025)
     uint64_t draws = 0, instances = 0, triangles = 0; // per frame, as submitted
     uint32_t passes = 0;
     size_t unique_meshes = 0, unique_materials = 0; // resident asset versions

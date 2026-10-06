@@ -1,4 +1,5 @@
 #include "maya/renderer/light_plan.hpp"
+#include "maya/renderer/draw_batches.hpp"
 #include "maya/world/spatial.hpp"
 #include <algorithm>
 #include <cmath>
@@ -12,22 +13,6 @@ math::Vec3 transform_point(const math::Mat4& m, const math::Vec3& p) {
             m.at(2, 0) * p.x + m.at(2, 1) * p.y + m.at(2, 2) * p.z + m.at(2, 3)};
 }
 math::Vec4 transform(const math::Mat4& m, const math::Vec3& p) { return m * math::Vec4{p, 1.0f}; }
-/// The view's frustum planes (a, b, c, d with a x + b y + c z + d >= 0 inside), from its view-projection.
-std::array<math::Vec4, 6> frustum_planes(const math::Mat4& m) {
-    const auto row = [&](int r) { return math::Vec4{m.at(r, 0), m.at(r, 1), m.at(r, 2), m.at(r, 3)}; };
-    const auto r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
-    auto planes = std::array<math::Vec4, 6>{r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2}; // Metal's depth is [0, 1]
-    for (auto& p : planes) {
-        const auto length = math::Vec3{p.x, p.y, p.z}.length();
-        if (length > 0) p = p * (1.0f / length);
-    }
-    return planes;
-}
-bool sphere_in(const std::array<math::Vec4, 6>& planes, const math::Vec3& center, float radius) {
-    for (const auto& p : planes)
-        if (p.x * center.x + p.y * center.y + p.z * center.z + p.w < -radius) return false;
-    return true;
-}
 /// An orthographic projection of light-view space: x and y in [-radius, radius] about `center` to
 /// [-1, 1], and view-space z from `top` (nearest the light) to `bottom` to depth 0 to 1.
 math::Mat4 orthographic(const math::Vec3& center, float radius, float top, float bottom) {
@@ -65,12 +50,12 @@ LightPlan plan_lights(const RenderSnapshot& snapshot, const RenderView& view) {
     plan.view_forward = math::Vec3{-matrices.view.at(2, 0), -matrices.view.at(2, 1), -matrices.view.at(2, 2)}.normalized();
 
     // Point and spot lights: those reaching the frustum, most light at the view's position first.
-    const auto planes = frustum_planes(matrices.view_projection);
+    const auto frustum = Frustum::from(matrices.view_projection);
     struct Candidate { uint32_t index; float score; };
     auto candidates = std::vector<Candidate>{};
     for (uint32_t i = 0; i < snapshot.local_lights.size(); ++i) {
         const auto& light = snapshot.local_lights[i];
-        if (!sphere_in(planes, light.position, light.range)) continue;
+        if (!frustum.reaches(light.position, light.range)) continue;
         const auto brightest = std::max({light.intensity.x, light.intensity.y, light.intensity.z});
         const auto distance2 = std::max((light.position - view.position).length_squared(), 0.25f);
         candidates.push_back({i, brightest / distance2});
@@ -120,7 +105,7 @@ LightPlan plan_lights(const RenderSnapshot& snapshot, const RenderView& view) {
     auto casters_top = -std::numeric_limits<float>::infinity();
     auto unbounded = false;
     for (const auto& instance : snapshot.instances) {
-        if (instance.material.alpha_mode == AlphaMode::blend) continue;
+        if (snapshot.materials[instance.material].alpha_mode == AlphaMode::blend) continue;
         if (!std::isfinite(instance.bounds_radius)) {
             unbounded = true;
             continue;

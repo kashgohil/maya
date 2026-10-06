@@ -3,6 +3,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 namespace maya {
 namespace {
@@ -805,17 +806,17 @@ RhiDiagnostic GraphicsDevice::draw(uint32_t vertex_count, uint32_t first_vertex,
 }
 
 RhiDiagnostic GraphicsDevice::draw_indexed(BufferHandle indices, IndexType type, uint32_t index_count,
-                                           size_t offset, uint32_t instance_count) {
-    return encode_indexed(indices, type, index_count, offset, instance_count, nullptr);
+                                           size_t offset, uint32_t instance_count, uint32_t first_instance) {
+    return encode_indexed(indices, type, index_count, offset, instance_count, first_instance, nullptr);
 }
 RhiDiagnostic GraphicsDevice::draw_indexed(const TransientSlice& indices, IndexType type, uint32_t index_count,
-                                           size_t offset, uint32_t instance_count) {
+                                           size_t offset, uint32_t instance_count, uint32_t first_instance) {
     if (auto state = require_state(State::pass, "draw_indexed")) return state;
     if (auto error = check_slice(indices)) return error;
-    return encode_indexed(indices.buffer, type, index_count, offset, instance_count, &indices);
+    return encode_indexed(indices.buffer, type, index_count, offset, instance_count, first_instance, &indices);
 }
 RhiDiagnostic GraphicsDevice::encode_indexed(BufferHandle indices, IndexType type, uint32_t index_count, size_t offset,
-                                             uint32_t instance_count, const TransientSlice* slice) {
+                                             uint32_t instance_count, uint32_t first_instance, const TransientSlice* slice) {
     if (auto state = require_state(State::pass, "draw_indexed")) return state;
     if (!m_pipeline_set) return fail(RhiError::wrong_state, "draw_indexed requires set_pipeline in the current pass");
     auto diagnostic = RhiDiagnostic{};
@@ -834,6 +835,8 @@ RhiDiagnostic GraphicsDevice::encode_indexed(BufferHandle indices, IndexType typ
     if (type > IndexType::uint32) return fail(RhiError::invalid_usage, "Unknown index type");
     if (index_count == 0 || instance_count == 0)
         return fail(RhiError::invalid_usage, "draw_indexed needs a nonzero index and instance count");
+    if (first_instance > std::numeric_limits<uint32_t>::max() - instance_count)
+        return fail(RhiError::out_of_range, "draw_indexed's instances run past the last instance number");
     if ((begin + offset) % 4)
         return fail(RhiError::misaligned, "Index buffer offset " + std::to_string(begin + offset) + " must be a multiple of 4");
     const auto bytes = static_cast<uint64_t>(index_count) * index_size(type);
@@ -841,7 +844,7 @@ RhiDiagnostic GraphicsDevice::encode_indexed(BufferHandle indices, IndexType typ
         return fail(RhiError::out_of_range, std::to_string(index_count) + " indices at offset " + std::to_string(offset) +
             " exceed " + (slice ? std::string("the upload slice") : "index buffer" + quoted(desc->label)) +
             " of size " + std::to_string(size));
-    backend_draw_indexed(indices.slot, type, index_count, begin + offset, instance_count);
+    backend_draw_indexed(indices.slot, type, index_count, begin + offset, instance_count, first_instance);
     count_draw(index_count, instance_count);
     return {};
 }

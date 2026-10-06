@@ -124,12 +124,14 @@ public:
     /// (0: no clamp). Every pass starts with none. Shadow maps use it against self-shadowing.
     RhiDiagnostic set_depth_bias(float constant, float slope, float clamp = 0.0f);
     RhiDiagnostic draw(uint32_t vertex_count, uint32_t first_vertex = 0, uint32_t instance_count = 1);
+    /// Instances are numbered from `first_instance` (#1025): a shader's instance_id starts there, so one
+    /// bound per-instance array serves several draws.
     RhiDiagnostic draw_indexed(BufferHandle indices, IndexType type, uint32_t index_count,
-                               size_t offset = 0, uint32_t instance_count = 1);
+                               size_t offset = 0, uint32_t instance_count = 1, uint32_t first_instance = 0);
     /// Indices from this frame's upload memory; `offset` is relative to the slice and the indices
     /// must lie inside it.
     RhiDiagnostic draw_indexed(const TransientSlice& indices, IndexType type, uint32_t index_count,
-                               size_t offset = 0, uint32_t instance_count = 1);
+                               size_t offset = 0, uint32_t instance_count = 1, uint32_t first_instance = 0);
     RhiDiagnostic end_render_pass();
     /// Presents an acquired surface and submits. An open pass is closed and reported as wrong_state.
     RhiDiagnostic end_frame();
@@ -203,7 +205,7 @@ protected:
     virtual void backend_set_depth_bias(float constant, float slope, float clamp) = 0;
     virtual void backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) = 0;
     virtual void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
-                                      uint32_t instance_count) = 0;
+                                      uint32_t instance_count, uint32_t first_instance) = 0;
     virtual void backend_end_pass() = 0;
     /// Commit the frame (presenting the acquired surface, if any). Completion must eventually call
     /// completion()->complete(serial), from any thread; failures call report().
@@ -267,7 +269,7 @@ private:
     RhiDiagnostic bind_uniform(uint32_t index, BufferHandle buffer, size_t offset, bool allow_internal);
     RhiDiagnostic check_slice(const TransientSlice& slice) const;
     RhiDiagnostic encode_indexed(BufferHandle indices, IndexType type, uint32_t index_count, size_t offset,
-                                 uint32_t instance_count, const TransientSlice* slice);
+                                 uint32_t instance_count, uint32_t first_instance, const TransientSlice* slice);
     void count_draw(uint32_t elements, uint32_t instances) noexcept;
     RhiDiagnostic validate_attachment(const TextureHandle& handle, bool depth, uint32_t& width,
                                       uint32_t& height) const;

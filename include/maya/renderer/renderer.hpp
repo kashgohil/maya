@@ -1,6 +1,8 @@
 #pragma once
 
+#include "maya/renderer/draw_batches.hpp"
 #include "maya/renderer/light_plan.hpp"
+#include "maya/renderer/shader_constants.hpp"
 #include "maya/renderer/render_snapshot.hpp"
 #include "maya/renderer/render_target.hpp"
 #include "maya/core/texture.hpp"
@@ -22,13 +24,22 @@ struct PixelRect {
 };
 struct RendererStats {
     uint64_t views = 0;
-    uint64_t draws = 0;
+    uint64_t draws = 0; // the views' instanced draws, one per batch (#1025)
+    uint64_t instances = 0; // instances drawn in views
+    uint64_t culled = 0; // instances left out of views by their frustum
     uint64_t presents = 0;
     uint64_t debug_draws = 0; // instanced draws of debug lines and outlines, both depth passes
     uint64_t debug_shapes = 0; // outlines drawn, counted once per view
     uint64_t debug_lines = 0; // lines drawn, counted once per view
     uint64_t shadow_maps = 0; // cascades and spot light maps rendered
-    uint64_t shadow_draws = 0; // instances drawn into them
+    uint64_t shadow_draws = 0; // instanced draws into them, one per batch
+    uint64_t shadow_instances = 0; // instances drawn into them
+};
+/// What the last view drew (docs/renderer.md#culling-and-batching).
+struct RenderViewReport {
+    size_t drawn = 0; // instances inside the view
+    size_t culled = 0; // instances outside it
+    size_t batches = 0; // the view pass's instanced draws
 };
 /// What lit the last view (docs/renderer.md#lights): lights beyond the limits are reported here, never
 /// silently dropped. The editor shows it in Diagnostics.
@@ -67,6 +78,7 @@ public:
     const RendererStats& stats() const noexcept { return m_stats; }
     /// The last view's lights.
     const RenderLightReport& last_lights() const noexcept { return m_lights; }
+    const RenderViewReport& last_view() const noexcept { return m_view_report; }
 
 private:
     // Lit surfaces by alpha mode (blend or not) and sidedness; masks discard in the opaque pipelines.
@@ -82,10 +94,11 @@ private:
     RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug = false);
     RhiDiagnostic encode_debug(const DebugDraw& debug, const RenderView& view, const TransientSlice& view_constants,
                                PipelineHandle front, PipelineHandle behind);
-    /// Renders one atlas of 2 x 2 shadow maps: each from its view-projection, with the instances `casts` lets through.
+    /// Renders one atlas of 2 x 2 shadow maps: each from its view-projection, drawing its batches.
     RhiDiagnostic encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
-                                      const std::vector<math::Mat4>& maps,
-                                      const std::function<bool(uint32_t map, const RenderInstance&)>& casts);
+                                      const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches);
+    /// Binds the frame's instances and draw order (buffers 1 and 4) in the open pass.
+    RhiDiagnostic bind_instances();
     RhiDiagnostic prepare_shadows(const LightPlan& plan);
     bool session_changed() noexcept;
     void release() noexcept;
@@ -104,9 +117,14 @@ private:
     std::unique_ptr<Texture> m_sun_atlas, m_spot_atlas, m_no_shadows;
     bool m_no_shadows_cleared = false;
     std::unique_ptr<Sampler> m_shadow_sampler; // linear comparison: filtered 0/1 results
-    std::vector<TransientSlice> m_draw_constants; // each instance's, uploaded once per view for every pass
+    /// Each view's instances (their transforms) and every pass's drawing order, uploaded once per view and
+    /// read by instanced draws (#1025).
+    std::vector<DrawConstants> m_instance_data;
+    DrawList m_draws;
+    BatchScratch m_batch_scratch;
+    TransientSlice m_instances, m_order;
     RenderLightReport m_lights;
-    std::vector<uint32_t> m_order; // instances in drawing order, reused
+    RenderViewReport m_view_report;
     RendererStats m_stats{};
     std::vector<float> m_debug_data; // packed debug lines or outlines of one kind, reused
     std::vector<uint32_t> m_debug_segments; // each outline's circle segments, reused

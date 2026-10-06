@@ -267,6 +267,7 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         result.resident = memory(stage.device, stage.registry, world.size());
         counters.unique_meshes = result.resident.assets.meshes;
         counters.unique_materials = result.resident.assets.materials;
+        counters.centers_in_view = stage.renderer.last_view().drawn; // the view culls by bounds (#1025)
         const auto& lights = stage.renderer.last_lights();
         counters.local_lights = lights.local;
         counters.dropped_lights = lights.dropped.size();
@@ -278,24 +279,6 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         }
     }
     return samples;
-}
-
-/// Instances whose origin projects inside the view: what a frustum test on origins would keep.
-size_t centers_in_view(const SceneDocument& document, const Manifest& manifest, EntityId camera) {
-    auto built = instantiate_scene(document, {[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }});
-    if (!built) return 0;
-    const auto handle = built.world->find(camera);
-    const auto view = handle ? extract_render_view(*built.world, *handle, manifest.width, manifest.height) : std::nullopt;
-    if (!view) return 0;
-    auto inside = size_t{0};
-    built.world->for_each<TransformComponent, MeshRendererComponent>(
-        [&](EntityHandle entity, const TransformComponent&, const MeshRendererComponent&) {
-            const auto matrix = built.world->world_matrix(entity);
-            if (!matrix) return;
-            const auto clip = view->matrices.view_projection * math::Vec4(matrix->elements[12], matrix->elements[13], matrix->elements[14], 1.0f);
-            if (clip.w > 0.0f && std::abs(clip.x) <= clip.w && std::abs(clip.y) <= clip.w && clip.z >= 0.0f && clip.z <= clip.w) ++inside;
-        });
-    return inside;
 }
 
 std::string thread_qos() {
@@ -774,7 +757,6 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         return;
     }
     result.unavailable = {
-        {"culling", "the renderer submits every instance; counters.centers_in_view counts what an origin frustum test keeps"},
         {"gpu_core_count", "Metal does not report it"},
         {"cold_cache_load", "the OS file cache is not controlled; the registry is evicted between load cycles"},
     };
@@ -813,7 +795,6 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
             if (auto problems = validate_scene(document, context); !problems.empty())
                 throw std::runtime_error("the generated scene is invalid: " + problems.front().message);
         }
-        result.counters.centers_in_view = centers_in_view(document, manifest, camera);
 
         auto renderer = Renderer(device, std::move(renderer_shader));
         auto target = RenderTarget(device, {Format::rgba8_unorm, false, "benchmark view"});
@@ -1217,7 +1198,7 @@ std::string to_text(const Result& r) {
     if (r.uninstrumented) out << "  without instrumentation: frame " << summarize(r.uninstrumented->frame).mean << " ms\n";
     if (!r.runs.empty())
         out << "  " << r.counters.draws << " draws, " << r.counters.triangles << " triangles, " << r.counters.unique_meshes
-            << " unique meshes, " << r.counters.centers_in_view << " of " << r.counters.mesh_renderers << " in view\n";
+            << " unique meshes, " << r.counters.centers_in_view << " of " << r.counters.mesh_renderers << " drawn in view\n";
     if (!r.runs.empty() && (r.counters.local_lights > 0 || r.counters.shadow_maps > 0))
         out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
             << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "

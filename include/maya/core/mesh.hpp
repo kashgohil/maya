@@ -76,11 +76,12 @@ public:
     }
     BufferHandle vertex_buffer() const noexcept { return m_vb; }
     BufferHandle index_buffer() const noexcept { return m_ib; }
-    /// Binds vertices at buffer index 0 and draws. Requires an open pass with a pipeline set.
-    RhiDiagnostic draw() const {
+    /// Binds vertices at buffer index 0 and draws `instances` copies, numbered from `first_instance`.
+    /// Requires an open pass with a pipeline set.
+    RhiDiagnostic draw(uint32_t instances = 1, uint32_t first_instance = 0) const {
         if (!valid()) return {RhiError::stale_handle, "Mesh has no GPU buffers (upload failed or device session ended)"};
         if (auto error = m_device.set_vertex_buffer(0, m_vb)) return error;
-        return m_device.draw_indexed(m_ib, IndexType::uint32, m_index_count);
+        return m_device.draw_indexed(m_ib, IndexType::uint32, m_index_count, 0, instances, first_instance);
     }
 private:
     GraphicsDevice& m_device;

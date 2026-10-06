@@ -48,7 +48,7 @@ protected:
     void backend_set_viewport(const Viewport&) override {}
     void backend_set_depth_bias(float, float, float) override {}
     void backend_draw(uint32_t, uint32_t, uint32_t) override {}
-    void backend_draw_indexed(uint32_t, IndexType, uint32_t, size_t, uint32_t) override {}
+    void backend_draw_indexed(uint32_t, IndexType, uint32_t, size_t, uint32_t, uint32_t) override {}
     void backend_end_pass() override {}
     void backend_submit(uint64_t serial, bool present) override;
     void backend_abandon_frame() noexcept override {}

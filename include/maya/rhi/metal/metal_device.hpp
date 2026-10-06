@@ -42,7 +42,7 @@ protected:
     void backend_set_depth_bias(float constant, float slope, float clamp) override;
     void backend_draw(uint32_t vertex_count, uint32_t first_vertex, uint32_t instance_count) override;
     void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t index_count, size_t offset,
-                              uint32_t instance_count) override;
+                              uint32_t instance_count, uint32_t first_instance) override;
     void backend_end_pass() override;
     void backend_submit(uint64_t serial, bool present) override;
     void backend_abandon_frame() noexcept override;

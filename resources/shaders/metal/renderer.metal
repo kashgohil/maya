@@ -48,7 +48,7 @@ struct ViewConstants {
     Shadows shadows;
 };
 
-struct DrawConstants { // per draw, for the vertex stage
+struct DrawConstants { // per instance, for the vertex stage: an array indexed through the pass's order
     float4x4 model;
     float4 normal_matrix[3];
 };
@@ -75,11 +75,15 @@ struct LitOut {
     float2 uv;
 };
 
-vertex LitOut litVertex(uint id [[vertex_id]],
+// Instanced draws (#1025): each instance number indexes the pass's order, which picks the instance's
+// transform from the view's instances. Both are uploaded once per view and bound for every pass.
+vertex LitOut litVertex(uint id [[vertex_id]], uint instance [[instance_id]],
                         constant Vertex* vertices [[buffer(0)]],
-                        constant DrawConstants& draw [[buffer(1)]],
-                        constant ViewConstants& view [[buffer(2)]]) {
+                        const device DrawConstants* instances [[buffer(1)]],
+                        constant ViewConstants& view [[buffer(2)]],
+                        const device uint* order [[buffer(4)]]) {
     const Vertex v = vertices[id];
+    const DrawConstants draw = instances[order[instance]];
     const float4 world = draw.model * float4(v.position, 1.0);
     // Inverse transpose of the model's linear part keeps normals perpendicular under nonuniform scale;
     // tangents lie in the surface, so the model matrix itself carries them.
@@ -162,9 +166,11 @@ struct ShadowOut {
     float2 uv;
     float alpha;
 };
-vertex ShadowOut shadowVertex(uint id [[vertex_id]], constant Vertex* vertices [[buffer(0)]],
-                              constant DrawConstants& draw [[buffer(1)]], constant ShadowConstants& shadow [[buffer(2)]]) {
+vertex ShadowOut shadowVertex(uint id [[vertex_id]], uint instance [[instance_id]], constant Vertex* vertices [[buffer(0)]],
+                              const device DrawConstants* instances [[buffer(1)]], constant ShadowConstants& shadow [[buffer(2)]],
+                              const device uint* order [[buffer(4)]]) {
     const Vertex v = vertices[id];
+    const DrawConstants draw = instances[order[instance]];
     ShadowOut out;
     out.position = shadow.view_projection * (draw.model * float4(v.position, 1.0));
     out.uv = v.uv;

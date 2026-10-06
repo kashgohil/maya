@@ -66,9 +66,9 @@ struct RenderInstance {
     /// Columns of the inverse transpose of world's linear part, so nonuniform scale keeps normals
     /// perpendicular to surfaces. The shader renormalizes, so only its direction matters.
     std::array<math::Vec3, 3> normal_matrix{math::Vec3{1, 0, 0}, math::Vec3{0, 1, 0}, math::Vec3{0, 0, 1}};
-    RenderMaterial material{};
-    /// A world-space sphere around the mesh, for culling shadow casters; infinite when the mesh has no
-    /// CPU geometry.
+    uint32_t material = 0; // index into RenderSnapshot::materials, which instances share (#1025)
+    /// A world-space sphere around the mesh, for culling views and shadow casters; infinite when the mesh
+    /// has no CPU geometry.
     math::Vec3 bounds_center{0.0f};
     float bounds_radius = std::numeric_limits<float>::infinity();
 };
@@ -128,6 +128,7 @@ struct RenderSnapshot {
     uint64_t world = 0; // World::token() of the source
     std::vector<AssetLease<MeshAsset>> meshes; // one per distinct mesh asset
     std::vector<AssetLease<TextureAsset>> textures; // one per distinct texture the materials use
+    std::vector<RenderMaterial> materials; // copied once each, and shared by the instances that use them
     std::vector<RenderInstance> instances;
     std::vector<RenderDirectionalLight> lights; // enabled directional lights in EntityId order
     std::vector<RenderLocalLight> local_lights; // enabled point and spot lights in EntityId order

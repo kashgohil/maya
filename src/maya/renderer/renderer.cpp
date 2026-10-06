@@ -181,9 +181,13 @@ RhiDiagnostic Renderer::prepare_shadows(const LightPlan& plan) {
     return {};
 }
 
+RhiDiagnostic Renderer::bind_instances() {
+    if (auto error = m_device.set_uniform_buffer(1, m_instances)) return error;
+    return m_device.set_uniform_buffer(4, m_order);
+}
+
 RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
-                                            const std::vector<math::Mat4>& maps,
-                                            const std::function<bool(uint32_t map, const RenderInstance&)>& casts) {
+                                            const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches) {
     auto opaque = PipelineHandle{}, masked = PipelineHandle{};
     if (auto error = pipeline(Format::depth32_float, PipelineKind::shadow, opaque)) return error;
     if (auto error = pipeline(Format::depth32_float, PipelineKind::shadow_masked, masked)) return error;
@@ -194,6 +198,8 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
     const auto encode = [&]() -> RhiDiagnostic {
         const auto size = atlas.desc().width / 2;
         if (auto error = m_device.set_depth_bias(0.0f, shadow_slope_bias)) return error;
+        if (m_order.size > 0)
+            if (auto error = bind_instances()) return error;
         for (uint32_t map = 0; map < maps.size(); ++map) {
             const auto x = (map & 1) * size, y = (map >> 1) * size;
             if (auto error = m_device.set_viewport({float(x), float(y), float(size), float(size)})) return error;
@@ -202,10 +208,8 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
             const auto uploaded = m_device.upload_transient(&constants, sizeof(constants));
             if (!uploaded) return uploaded.diagnostic;
             auto bound = PipelineHandle{};
-            for (uint32_t i = 0; i < snapshot.instances.size(); ++i) {
-                const auto& instance = snapshot.instances[i];
-                const auto& material = instance.material;
-                if (material.alpha_mode == AlphaMode::blend || !casts(map, instance)) continue; // see-through surfaces cast none
+            for (const auto& batch : batches[map]) { // opaque casters by mesh, then masked ones by material and mesh
+                const auto& material = snapshot.materials[batch.material];
                 const auto mask = material.alpha_mode == AlphaMode::mask;
                 if (const auto wanted = mask ? masked : opaque; wanted != bound) {
                     if (auto error = m_device.set_pipeline(wanted)) return error;
@@ -222,9 +226,9 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
                     if (auto error = m_device.set_texture(0, asset->texture().handle())) return error;
                     if (auto error = m_device.set_sampler(0, asset->sampler().handle())) return error;
                 }
-                if (auto error = m_device.set_uniform_buffer(1, m_draw_constants[i])) return error;
-                if (auto error = snapshot.meshes[instance.mesh].value().mesh().draw()) return error;
+                if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first)) return error;
                 ++m_stats.shadow_draws;
+                m_stats.shadow_instances += batch.count;
             }
             ++m_stats.shadow_maps;
         }
@@ -244,10 +248,13 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     for (const auto& instance : snapshot.instances) {
         if (instance.mesh >= snapshot.meshes.size())
             return {RhiError::invalid_usage, "Render snapshot instance refers to a mesh it does not hold"};
-        for (const auto texture : instance.material.textures)
-            if (texture != no_texture && texture != placeholder_texture && texture >= snapshot.textures.size())
-                return {RhiError::invalid_usage, "Render snapshot instance refers to a texture it does not hold"};
+        if (instance.material >= snapshot.materials.size())
+            return {RhiError::invalid_usage, "Render snapshot instance refers to a material it does not hold"};
     }
+    for (const auto& material : snapshot.materials)
+        for (const auto texture : material.textures)
+            if (texture != no_texture && texture != placeholder_texture && texture >= snapshot.textures.size())
+                return {RhiError::invalid_usage, "Render snapshot material refers to a texture it does not hold"};
     // Lit pipelines are created when a material first needs them; a debug view drawn by the lit pass uses
     // their debug variants instead.
     const auto debugging = lit_debug_view(view.debug_view);
@@ -261,7 +268,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         return kind == PipelineKind::lit ? 0 : kind == PipelineKind::lit_double_sided ? 1 : kind == PipelineKind::lit_blend ? 2 : 3;
     };
     for (const auto& instance : snapshot.instances) {
-        const auto kind = lit_kind(instance.material);
+        const auto kind = lit_kind(snapshot.materials[instance.material]);
         if (!lit[lit_index(kind)].valid())
             if (auto error = pipeline(target.scene_format(), kind, lit[lit_index(kind)], debugging)) return error;
     }
@@ -287,19 +294,6 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     auto sky_pipeline = PipelineHandle{};
     if (sky)
         if (auto error = pipeline(target.scene_format(), PipelineKind::sky, sky_pipeline)) return error;
-    // Opaque and masked surfaces in snapshot order, then blended ones back to front.
-    m_order.clear();
-    for (uint32_t i = 0; i < snapshot.instances.size(); ++i)
-        if (snapshot.instances[i].material.alpha_mode != AlphaMode::blend) m_order.push_back(i);
-    const auto opaque = m_order.size();
-    for (uint32_t i = 0; i < snapshot.instances.size(); ++i)
-        if (snapshot.instances[i].material.alpha_mode == AlphaMode::blend) m_order.push_back(i);
-    const auto distance = [&](uint32_t i) {
-        const auto& world = snapshot.instances[i].world;
-        return (math::Vec3{world.at(0, 3), world.at(1, 3), world.at(2, 3)} - view.position).length_squared();
-    };
-    std::stable_sort(m_order.begin() + std::ptrdiff_t(opaque), m_order.end(),
-                     [&](uint32_t a, uint32_t b) { return distance(a) > distance(b); });
     auto debug_front = PipelineHandle{}, debug_behind = PipelineHandle{};
     if (!snapshot.debug.empty()) { // no debug pipelines until something is drawn with them
         if (auto error = pipeline(target.color_format(), PipelineKind::debug_front, debug_front)) return error;
@@ -313,29 +307,47 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     for (const auto index : plan.dropped) m_lights.dropped.push_back(snapshot.local_lights[index].entity);
     for (const auto index : plan.unshadowed) m_lights.unshadowed.push_back(snapshot.local_lights[index].entity);
     if (auto error = prepare_shadows(plan)) return error;
-    m_draw_constants.clear();
-    for (const auto& instance : snapshot.instances) {
-        auto draw = DrawConstants{};
-        draw.model = instance.world;
-        for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
-        const auto uploaded = m_device.upload_transient(&draw, sizeof(draw));
-        if (!uploaded) return uploaded.diagnostic;
-        m_draw_constants.push_back(uploaded.slice);
+    // What every pass draws (docs/renderer.md#culling-and-batching): the view's instances inside its frustum
+    // and each shadow map's casters, grouped into instanced draws of one mesh and material. Every
+    // instance's transform and every pass's order are uploaded once, and read by all passes.
+    m_draws.clear();
+    const auto view_batches = plan_view_batches(snapshot, view, m_draws, m_batch_scratch);
+    m_view_report = {view_batches.drawn, view_batches.culled, view_batches.opaque.size() + view_batches.blended.size()};
+    auto sun_maps = std::vector<math::Mat4>{}, spot_maps = std::vector<math::Mat4>{};
+    auto sun_batches = std::vector<std::vector<DrawBatch>>{}, spot_batches = std::vector<std::vector<DrawBatch>>{};
+    if (plan.sun)
+        for (const auto& cascade : plan.cascades) {
+            sun_maps.push_back(cascade.view_projection);
+            sun_batches.push_back(plan_shadow_batches(snapshot, [&](const RenderInstance& instance) { return casts_into(cascade, instance); },
+                                                      m_draws, m_batch_scratch));
+        }
+    for (const auto& spot : plan.spot_shadows) {
+        spot_maps.push_back(spot.view_projection);
+        const auto& light = snapshot.local_lights[spot.light];
+        spot_batches.push_back(plan_shadow_batches(snapshot, [&](const RenderInstance& instance) { return casts_into(light, instance); },
+                                                   m_draws, m_batch_scratch));
     }
-    if (plan.sun) {
-        auto maps = std::vector<math::Mat4>{};
-        for (const auto& cascade : plan.cascades) maps.push_back(cascade.view_projection);
-        if (auto error = encode_shadow_atlas(*m_sun_atlas, snapshot, "sun shadows", maps, [&](uint32_t map, const RenderInstance& instance) {
-                return casts_into(plan.cascades[map], instance);
-            })) return error;
+    m_instances = {};
+    m_order = {};
+    if (!m_draws.order.empty()) {
+        m_instance_data.resize(snapshot.instances.size());
+        for (size_t i = 0; i < snapshot.instances.size(); ++i) {
+            const auto& instance = snapshot.instances[i];
+            auto& draw = m_instance_data[i];
+            draw.model = instance.world;
+            for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
+        }
+        const auto instances = m_device.upload_transient(m_instance_data.data(), m_instance_data.size() * sizeof(DrawConstants));
+        if (!instances) return instances.diagnostic;
+        const auto order = m_device.upload_transient(m_draws.order.data(), m_draws.order.size() * sizeof(uint32_t));
+        if (!order) return order.diagnostic;
+        m_instances = instances.slice;
+        m_order = order.slice;
     }
-    if (!plan.spot_shadows.empty()) {
-        auto maps = std::vector<math::Mat4>{};
-        for (const auto& spot : plan.spot_shadows) maps.push_back(spot.view_projection);
-        if (auto error = encode_shadow_atlas(*m_spot_atlas, snapshot, "spot shadows", maps, [&](uint32_t map, const RenderInstance& instance) {
-                return casts_into(snapshot.local_lights[plan.spot_shadows[map].light], instance);
-            })) return error;
-    }
+    if (plan.sun)
+        if (auto error = encode_shadow_atlas(*m_sun_atlas, snapshot, "sun shadows", sun_maps, sun_batches)) return error;
+    if (!plan.spot_shadows.empty())
+        if (auto error = encode_shadow_atlas(*m_spot_atlas, snapshot, "spot shadows", spot_maps, spot_batches)) return error;
 
     auto constants = ViewConstants{};
     constants.view_projection = view.matrices.view_projection;
@@ -405,6 +417,10 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         if (auto error = m_device.set_texture(8, (plan.sun ? *m_sun_atlas : *m_no_shadows).handle())) return error;
         if (auto error = m_device.set_texture(9, (plan.spot_shadows.empty() ? *m_no_shadows : *m_spot_atlas).handle())) return error;
         if (auto error = m_device.set_sampler(8, m_shadow_sampler->handle())) return error;
+        // The view's constants, instances, and order stay bound for the whole pass.
+        if (auto error = m_device.set_uniform_buffer(2, uploaded_view.slice)) return error;
+        if (m_order.size > 0)
+            if (auto error = bind_instances()) return error;
         auto sky_drawn = !sky;
         const auto draw_sky = [&]() -> RhiDiagnostic { // after opaque surfaces, before blended ones
             sky_drawn = true;
@@ -414,15 +430,10 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             if (auto error = m_device.set_texture(6, environment->asset.value().background().handle())) return error;
             return m_device.draw(3);
         };
-        for (const auto index : m_order) {
-            const auto& instance = snapshot.instances[index];
-            const auto& material = instance.material;
-            if (!sky_drawn && material.alpha_mode == AlphaMode::blend)
-                if (auto error = draw_sky()) return error;
+        const auto draw = [&](const DrawBatch& batch) -> RhiDiagnostic {
+            const auto& material = snapshot.materials[batch.material];
             if (const auto pipeline = lit[lit_index(lit_kind(material))]; pipeline != bound_pipeline) {
                 if (auto error = m_device.set_pipeline(pipeline)) return error;
-                if (!bound_pipeline.valid())
-                    if (auto error = m_device.set_uniform_buffer(2, uploaded_view.slice)) return error;
                 bound_pipeline = pipeline;
             }
             const auto constants = material_constants(material);
@@ -444,11 +455,19 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
                 if (auto error = m_device.set_uniform_buffer(3, uploaded.slice)) return error;
                 bound_material = constants;
             }
-            if (auto error = m_device.set_uniform_buffer(1, m_draw_constants[index])) return error;
-            if (auto error = snapshot.meshes[instance.mesh].value().mesh().draw()) return error;
+            if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first)) return error;
             ++m_stats.draws;
-        }
-        if (!sky_drawn) return draw_sky();
+            m_stats.instances += batch.count;
+            return {};
+        };
+        // Opaque and masked surfaces, the sky where none was drawn, then blended surfaces back to front.
+        for (const auto& batch : view_batches.opaque)
+            if (auto error = draw(batch)) return error;
+        if (!sky_drawn)
+            if (auto error = draw_sky()) return error;
+        for (const auto& batch : view_batches.blended)
+            if (auto error = draw(batch)) return error;
+        m_stats.culled += view_batches.culled;
         return {};
     };
     auto result = encode();

@@ -130,28 +130,40 @@ public:
         slot(MaterialSlot::emissive, value.emissive_texture);
         return material;
     }
-    RenderMaterial material(AssetRef<MaterialAsset> ref, EntityId entity) {
-        if (!ref.valid()) return copy(MaterialAsset{}, {}, entity);
+    /// The material's index in the snapshot's materials, each copied once (#1025).
+    uint32_t material(AssetRef<MaterialAsset> ref, EntityId entity) {
+        if (!ref.valid()) return shared(m_default, MaterialAsset{}, entity);
         if (const auto found = m_materials.find(ref.id); found != m_materials.end()) {
             if (!found->second) report(RenderIssue::missing_material, entity, ref.id,
                 "Entity " + id_text(entity) + " uses the fallback material: " + id_text(ref.id) + " is unavailable");
-            return found->second ? *found->second : copy(fallback_material(), {}, entity);
+            return found->second ? *found->second : shared(m_fallback, fallback_material(), entity);
         }
         const auto acquired = m_assets.acquire(ref);
-        auto value = std::optional<RenderMaterial>{};
-        if (acquired) value = copy(acquired.lease.value(), ref.id, entity);
+        auto value = std::optional<uint32_t>{};
+        if (acquired) value = add(copy(acquired.lease.value(), ref.id, entity));
         else report(RenderIssue::missing_material, entity, ref.id, "Entity " + id_text(entity) +
             " uses the fallback material: " + id_text(ref.id) + " is unavailable: " + acquired.diagnostic.message);
         m_materials.emplace(ref.id, value);
-        return value ? *value : copy(fallback_material(), {}, entity);
+        return value ? *value : shared(m_fallback, fallback_material(), entity);
     }
 
 private:
+    uint32_t add(const RenderMaterial& material) {
+        m_out.materials.push_back(material);
+        return uint32_t(m_out.materials.size() - 1);
+    }
+    /// The default or fallback material, added the first time an instance needs it.
+    uint32_t shared(std::optional<uint32_t>& index, const MaterialAsset& value, EntityId entity) {
+        if (!index) index = add(copy(value, {}, entity));
+        return *index;
+    }
+
     AssetRegistry& m_assets;
     RenderSnapshot& m_out;
+    std::optional<uint32_t> m_default, m_fallback;
     // Each asset is acquired once per extraction, so every instance draws the same version.
     std::unordered_map<AssetId, std::optional<uint32_t>, PersistentIdHash> m_meshes;
-    std::unordered_map<AssetId, std::optional<RenderMaterial>, PersistentIdHash> m_materials;
+    std::unordered_map<AssetId, std::optional<uint32_t>, PersistentIdHash> m_materials; // index into the snapshot's
     struct TextureEntry {
         std::optional<uint32_t> index; // into the snapshot's textures, when it could be acquired
         TextureRole role = TextureRole::color;
