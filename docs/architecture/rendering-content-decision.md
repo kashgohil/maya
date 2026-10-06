@@ -195,7 +195,7 @@ Recipe version 1, approved by the project owner on 2 October 2026:
 Sponza is excluded: it is under the Cryengine Limited License Agreement.
 
 **The visual bar:**
-- **Material correctness.** MetalRoughSpheres and NormalTangentMirrorTest match the Khronos glTF Sample Viewer's renders under the same environment, exposure, and tone mapper, within a tolerance declared in [#1033](https://work.rezee.app/kash/issues/1033).
+- **Material correctness.** MetalRoughSpheres and NormalTangentMirrorTest match the Khronos glTF Sample Viewer's renders under the same environment, exposure, and tone mapper, within a tolerance declared in [#1033](https://work.rezee.app/kash/issues/1033). (Moved to [#1036](https://work.rezee.app/kash/issues/1036) by the owner on 3 October 2026, which imports the samples; [declared there](../import.md#the-sample-viewer-comparison).)
 - **R1's views** are reviewed and approved by the project owner, then blessed as references, compared as the [V1 references](../acceptance.md#regression-scenes) are.
 - **Along the camera path,** no shadow acne, visible cascade seams, or shimmer.
 - **The editor, the player, and the package** render the same images.
