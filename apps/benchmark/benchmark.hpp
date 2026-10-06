@@ -4,6 +4,7 @@
 #include "maya/assets/registry.hpp"
 #include "maya/core/system_info.hpp"
 #include "maya/metrics/metrics.hpp"
+#include "maya/renderer/render_snapshot.hpp"
 #include "maya/rhi/graphics_device.hpp"
 #include "maya/scene/scene_io.hpp"
 #include <filesystem>
@@ -50,6 +51,7 @@ struct Manifest {
     uint32_t slope_from = 11; // cycle workloads: the first cycle of the footprint slope's fit
     bool overhead = true; // also a matched run without CPU scopes or GPU pass timing, to measure their cost
     bool present = false; // present every frame to a window and record display pacing (#1026)
+    DebugView debug_view = DebugView::none; // what the view shows (#1037): to measure a debug view's cost
     // Physics (P1): `count` is the dynamic bodies; warmup and samples are ticks.
     uint32_t obstacles = 500;
     uint32_t scripted = 500;

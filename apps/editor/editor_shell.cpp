@@ -1003,15 +1003,9 @@ void EditorShell::set_physics_debug(const PhysicsDebugOptions& options) {
     save_preferences();
 }
 
-void EditorShell::set_exposure_view(ExposureView view) {
-    if (view == m_preferences.exposure_view) return;
-    m_preferences.exposure_view = view;
-    save_preferences();
-}
-
-void EditorShell::set_shadow_view(ShadowView view) {
-    if (view == m_preferences.shadow_view) return;
-    m_preferences.shadow_view = view;
+void EditorShell::set_debug_view(DebugView view) {
+    if (view == m_preferences.debug_view) return;
+    m_preferences.debug_view = view;
     save_preferences();
 }
 
@@ -1084,11 +1078,10 @@ void EditorShell::render_viewport() {
     }
     if (!m_debug_draw.empty()) options.debug = &m_debug_draw;
     view->debug_line_width = 1.5f * std::max(m_font_scale, 1.0f);
-    view->exposure_view = m_preferences.exposure_view;
+    view->debug_view = m_preferences.debug_view;
     auto snapshot = extract_render_snapshot(world, *m_assets, options);
     m_performance.extract.add(clock.milliseconds());
     m_extraction = snapshot.stats;
-    view->shadow_view = m_preferences.shadow_view;
     m_frame_problems = snapshot.diagnostics;
     clock.restart();
     const auto rendered = m_renderer.render(snapshot, *view, m_viewport);

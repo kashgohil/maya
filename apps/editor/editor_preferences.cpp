@@ -13,11 +13,6 @@ constexpr std::pair<PhysicsDebugCategory, const char*> categories[] = {
     {PhysicsDebugCategory::colliders, "colliders"}, {PhysicsDebugCategory::contacts, "contacts"},
     {PhysicsDebugCategory::body_state, "body-state"}, {PhysicsDebugCategory::triggers, "triggers"},
     {PhysicsDebugCategory::queries, "queries"}};
-constexpr std::pair<ExposureView, const char*> exposure_views[] = {
-    {ExposureView::none, "none"}, {ExposureView::luminance, "luminance"}, {ExposureView::false_color, "false-color"}};
-constexpr std::pair<ShadowView, const char*> shadow_views[] = {
-    {ShadowView::none, "none"}, {ShadowView::cascades, "cascades"}, {ShadowView::texels, "texels"}};
-
 } // namespace
 
 void write_preferences(std::ostream& output, const EditorPreferences& preferences) {
@@ -27,10 +22,7 @@ void write_preferences(std::ostream& output, const EditorPreferences& preference
     for (const auto& [category, name] : categories)
         if (preferences.physics_debug.has(category)) out << ' ' << name;
     out << "\nphysics-debug-groups " << std::hex << preferences.physics_debug.groups << std::dec << '\n';
-    for (const auto& [view, name] : exposure_views)
-        if (view == preferences.exposure_view) out << "exposure-view " << name << '\n';
-    for (const auto& [view, name] : shadow_views)
-        if (view == preferences.shadow_view) out << "shadow-view " << name << '\n';
+    out << "debug-view " << debug_view_name(preferences.debug_view) << '\n';
     output << out.str();
 }
 
@@ -58,18 +50,14 @@ PreferencesReadResult read_preferences(std::istream& input) {
             const auto parsed = std::from_chars(text.data(), text.data() + text.size(), groups, 16);
             if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) result.preferences.physics_debug.groups = groups;
             else result.error = "physics-debug-groups needs a hexadecimal mask";
-        } else if (key == "exposure-view") {
+        } else if (key == "debug-view" || key == "exposure-view" || key == "shadow-view") {
+            // One view at a time (#1037); files from #1032 and #1034 kept exposure and shadow views apart.
             auto name = std::string{};
             words >> name;
-            const auto known = std::ranges::find(exposure_views, name, [](const auto& entry) { return std::string(entry.second); });
-            if (known != std::end(exposure_views)) result.preferences.exposure_view = known->first;
-            else result.error = "exposure-view needs none, luminance, or false-color";
-        } else if (key == "shadow-view") {
-            auto name = std::string{};
-            words >> name;
-            const auto known = std::ranges::find(shadow_views, name, [](const auto& entry) { return std::string(entry.second); });
-            if (known != std::end(shadow_views)) result.preferences.shadow_view = known->first;
-            else result.error = "shadow-view needs none, cascades, or texels";
+            const auto known = debug_view_named(name);
+            if (known && key == "debug-view") result.preferences.debug_view = *known;
+            else if (known && *known != DebugView::none) result.preferences.debug_view = *known;
+            else if (!known) result.error = key + " needs a debug view's name, such as none, base-color, or false-color";
         }
     }
     return result;

@@ -251,8 +251,7 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     ImGui::SameLine(0.0f, 8.0f);
     if (tool(icon::cube_transparent, m_collider_editing, "Edit collider   C")) set_collider_editing(!m_collider_editing);
     m_layout.controls.push_back({"tool.collider", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
-    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.exposure_view != ExposureView::none ||
-                            m_preferences.shadow_view != ShadowView::none, "Debug views"))
+    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.debug_view != DebugView::none, "Debug views"))
         ImGui::OpenPopup("physics-debug");
     m_layout.controls.push_back({"tool.physics-debug", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
     ImGui::PopStyleVar(3);
@@ -339,37 +338,39 @@ void EditorShell::draw_physics_debug_menu() {
     if (!ImGui::BeginPopup("physics-debug")) return;
     auto options = m_preferences.physics_debug;
     const auto remember = [&](const char* key) { m_layout.controls.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()}); };
-    // Exposure views replace the image with its exposed luminance (docs/renderer.md#exposure-views).
-    theme::caption(m_fonts, "EXPOSURE");
-    const auto exposure = [&](ExposureView view, const char* label, const char* key, const char* tip) {
-        if (ImGui::RadioButton(label, m_preferences.exposure_view == view)) set_exposure_view(view);
-        remember(key);
+    // Debug views, one at a time (docs/renderer.md#debug-views): what shading uses, the light it gives, the
+    // sun's shadow maps, and the exposed light by stops. Each is saved as it is chosen.
+    const auto view = [&](DebugView value, const char* label, const char* tip) {
+        if (ImGui::RadioButton(label, m_preferences.debug_view == value)) set_debug_view(value);
+        const auto key = "debug.view." + std::string(debug_view_name(value));
+        m_layout.controls.push_back({key, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
     };
-    exposure(ExposureView::none, "Image", "debug.exposure.none", "The tone-mapped image.");
-    ImGui::SameLine();
-    exposure(ExposureView::luminance, "Luminance", "debug.exposure.luminance",
-             "Exposed luminance in grey by stops from middle grey: black at -8, white at +8.");
-    ImGui::SameLine();
-    exposure(ExposureView::false_color, "False color", "debug.exposure.false-color",
-             "A color per band of stops from middle grey: blues under, grey within half a stop, yellow to red over, "
-             "pink past +6.");
-    ImGui::Dummy({0.0f, 4.0f});
-    // Shadow views tint the sun's cascades or checker their texels (docs/renderer.md#shadow-views).
-    theme::caption(m_fonts, "SHADOWS");
-    const auto shadows = [&](ShadowView view, const char* label, const char* key, const char* tip) {
-        if (ImGui::RadioButton(label, m_preferences.shadow_view == view)) set_shadow_view(view);
-        remember(key);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    const auto row = [&](const char* caption, std::initializer_list<std::tuple<DebugView, const char*, const char*>> views) {
+        theme::caption(m_fonts, caption);
+        auto column = 0;
+        for (const auto& [value, label, tip] : views) {
+            if (column++ % 4 != 0) ImGui::SameLine(); // four to a line
+            view(value, label, tip);
+        }
+        ImGui::Dummy({0.0f, 4.0f});
     };
-    shadows(ShadowView::none, "Lit", "debug.shadows.none", "The lit image.");
-    ImGui::SameLine();
-    shadows(ShadowView::cascades, "Cascades", "debug.shadows.cascades",
-            "Tints each of the sun's four shadow cascades: red, green, blue, yellow, nearest first.");
-    ImGui::SameLine();
-    shadows(ShadowView::texels, "Texels", "debug.shadows.texels",
-            "Checkers the shadow maps' texels where they land: big squares mean blocky shadows there.");
-    ImGui::Dummy({0.0f, 4.0f});
+    row("IMAGE", {{DebugView::none, "Lit", "The lit, tone-mapped image."}});
+    row("MATERIAL", {{DebugView::base_color, "Base color", "Base color as authored: factor, map, and vertex color."},
+                     {DebugView::normals, "Normals", "The surface's own normal in world space, as 0.5 + 0.5 n: +X red, +Y green, +Z blue."},
+                     {DebugView::shading_normals, "Shading normals", "The normal shading uses, with the normal map."},
+                     {DebugView::metallic, "Metallic", "Metallic in grey: black is not metal, white is."},
+                     {DebugView::roughness, "Roughness", "Perceptual roughness in grey: black is smooth."},
+                     {DebugView::occlusion, "Occlusion", "Ambient occlusion in grey: what darkens light from the surroundings."},
+                     {DebugView::emissive, "Emissive", "Emitted light as authored, clipped at 1."}});
+    row("LIGHTING", {{DebugView::direct_light, "Direct", "Light from directional, point, and spot lights alone, with their shadows."},
+                     {DebugView::environment_light, "Environment", "Light from the surroundings alone: the environment or the ambient light."},
+                     {DebugView::lighting, "Lighting only", "All light on white, fully rough, nonmetallic surfaces: lighting without albedo."}});
+    row("SHADOWS", {{DebugView::cascades, "Cascades", "Tints each of the sun's four shadow cascades: red, green, blue, yellow, nearest first."},
+                    {DebugView::texels, "Texels", "Checkers the sun's shadow-map texels where they land: big squares mean blocky shadows there."}});
+    row("EXPOSURE", {{DebugView::luminance, "Luminance", "Exposed luminance in grey by stops from middle grey: black at -8, white at +8."},
+                     {DebugView::false_color, "False color", "A color per band of stops from middle grey: blues under, grey within half a stop, "
+                                                             "yellow to red over, pink past +6."}});
     theme::caption(m_fonts, "PHYSICS DEBUG");
     const auto category = [&](PhysicsDebugCategory value, const char* label, const char* key, const char* tip) {
         auto on = options.has(value);

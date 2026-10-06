@@ -280,6 +280,20 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
 
 float exposure_scale(float ev100) noexcept { return 1.0f / (1.2f * std::exp2(ev100)); }
 
+namespace {
+constexpr std::array<std::string_view, 15> debug_view_names = {
+    "none", "luminance", "false-color", "base-color", "normals", "shading-normals", "metallic", "roughness", "occlusion",
+    "emissive", "direct-light", "environment-light", "lighting", "cascades", "texels"};
+} // namespace
+std::string_view debug_view_name(DebugView view) noexcept {
+    return size_t(view) < debug_view_names.size() ? debug_view_names[size_t(view)] : std::string_view{};
+}
+std::optional<DebugView> debug_view_named(std::string_view name) noexcept {
+    const auto found = std::ranges::find(debug_view_names, name);
+    if (found == debug_view_names.end()) return std::nullopt;
+    return DebugView(found - debug_view_names.begin());
+}
+
 std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Mat4& pose,
                                            uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return std::nullopt;

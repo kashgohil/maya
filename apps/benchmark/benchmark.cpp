@@ -142,6 +142,7 @@ struct Stage {
     uint32_t width, height;
     bool present = false; // also into the device's surface
     const std::function<void()>* poll = nullptr; // between frames, untimed
+    DebugView debug_view = DebugView::none;
 };
 
 struct FrameSample {
@@ -168,8 +169,9 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     const auto& world = session.world();
     const auto handle = world.find(camera);
     if (!handle) throw std::runtime_error("The camera entity is missing");
-    const auto view = extract_render_view(world, *handle, stage.width, stage.height);
+    auto view = extract_render_view(world, *handle, stage.width, stage.height);
     if (!view) throw std::runtime_error("The camera has no valid view");
+    view->debug_view = stage.debug_view;
     const auto snapshot = extract_render_snapshot(world, stage.registry);
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
     lap(sample.extract);
@@ -709,6 +711,10 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         } else if (key == "present") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.present = text == "on";
+        } else if (key == "debug_view") {
+            const auto view = bool(in >> text) ? debug_view_named(text) : std::nullopt;
+            ok = view.has_value();
+            if (view) manifest.debug_view = *view;
         } else return fail(number_of_line, "unknown key '" + key + "'");
         if (!ok) return fail(number_of_line, "invalid value for '" + key + "'");
         if (in >> text) return fail(number_of_line, "unexpected '" + text + "' after '" + key + "'");
@@ -814,7 +820,7 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (auto error = target.resize(manifest.width, manifest.height)) throw std::runtime_error(error.message);
         if (manifest.present && device.surface_format() == Format::undefined)
             throw std::runtime_error("'present on' needs a window; this device has no surface");
-        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll};
+        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view};
         // The warmed empty session: the device, the project's catalog, the view target, and what the
         // renderer keeps (its texture placeholder), with no content.
         if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
@@ -945,6 +951,7 @@ std::string to_json(const Result& r) {
     json.field("cycles", m.cycles);
     json.field("ticks", m.ticks);
     json.field("present", m.present);
+    json.field("debug_view", debug_view_name(m.debug_view));
     json.close('}');
     json.key("environment");
     json.open('{');

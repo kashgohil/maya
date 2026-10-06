@@ -75,6 +75,8 @@ public:
             m_session->set_physics_debug_capture(true);
             std::cerr << "[Player] drawing the physics debug views\n";
         }
+        if (m_options.debug_view != DebugView::none)
+            std::cerr << "[Player] showing the " << debug_view_name(m_options.debug_view) << " debug view\n";
         if (m_options.replay) {
             m_session->start_replay(m_recording.inputs, m_recording.checkpoints);
             std::cerr << "[Player] replaying " << m_recording.inputs.size() << " ticks of " << scene_name << " from "
@@ -118,8 +120,9 @@ public:
         if (auto error = m_view->resize(target.width, target.height)) throw std::runtime_error(error.message);
         // Poses between the last two ticks, so motion is smooth at any display rate.
         const auto poses = m_session->presentation();
-        const auto view = extract_render_view(world, *camera, target.width, target.height, &poses);
+        auto view = extract_render_view(world, *camera, target.width, target.height, &poses);
         if (!view) throw std::runtime_error("[Player] the camera entity has no valid view");
+        view->debug_view = m_options.debug_view; // none unless asked for
         auto options = RenderExtractOptions{};
         options.poses = &poses;
         if (m_options.debug_physics) { // never drawn otherwise

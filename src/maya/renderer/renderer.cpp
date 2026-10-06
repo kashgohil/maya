@@ -83,17 +83,18 @@ bool Renderer::session_changed() noexcept {
     return true;
 }
 
-RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandle& out) {
+RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug) {
     session_changed();
     const auto found = std::ranges::find_if(m_pipelines, [&](const CachedPipeline& cached) {
-        return cached.format == format && cached.kind == kind;
+        return cached.format == format && cached.kind == kind && cached.debug == debug;
     });
     if (found != m_pipelines.end()) {
         out = found->handle;
         return found->error;
     }
     auto desc = PipelineDesc{};
-    desc.shader_source = m_shader_source;
+    // Debug views are compiled only into their own pipelines, so the lit ones never carry them.
+    desc.shader_source = debug ? "#define MAYA_DEBUG_VIEWS 1\n" + m_shader_source : m_shader_source;
     desc.color_formats = {format};
     if (kind == PipelineKind::shadow || kind == PipelineKind::shadow_masked) {
         // Depth alone; masked materials cut themselves out. Both faces cast, so thin and open surfaces do.
@@ -142,12 +143,12 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
         desc.blend = blend ? BlendMode::alpha : BlendMode::opaque;
         desc.cull = double_sided ? CullMode::none : CullMode::back; // positive-scale transforms never flip winding
         desc.front_face = Winding::counter_clockwise;
-        desc.label = std::string(blend ? "blended" : "lit") + (double_sided ? " double-sided" : "") + " mesh";
+        desc.label = std::string(blend ? "blended" : "lit") + (double_sided ? " double-sided" : "") + " mesh" + (debug ? " (debug view)" : "");
     }
     auto created = m_device.create_pipeline(desc);
     // A lost session is not cached, so the next session tries again.
     if (!created && created.diagnostic.code == RhiError::device_unavailable) return created.diagnostic;
-    m_pipelines.push_back({format, kind, created.handle, created.diagnostic});
+    m_pipelines.push_back({format, kind, debug, created.handle, created.diagnostic});
     out = created.handle;
     return std::move(created.diagnostic);
 }
@@ -247,7 +248,9 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             if (texture != no_texture && texture != placeholder_texture && texture >= snapshot.textures.size())
                 return {RhiError::invalid_usage, "Render snapshot instance refers to a texture it does not hold"};
     }
-    // Lit pipelines are created when a material first needs them.
+    // Lit pipelines are created when a material first needs them; a debug view drawn by the lit pass uses
+    // their debug variants instead.
+    const auto debugging = lit_debug_view(view.debug_view);
     const auto lit_kind = [](const RenderMaterial& material) {
         if (material.alpha_mode == AlphaMode::blend)
             return material.double_sided ? PipelineKind::lit_blend_double_sided : PipelineKind::lit_blend;
@@ -260,7 +263,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     for (const auto& instance : snapshot.instances) {
         const auto kind = lit_kind(instance.material);
         if (!lit[lit_index(kind)].valid())
-            if (auto error = pipeline(target.scene_format(), kind, lit[lit_index(kind)])) return error;
+            if (auto error = pipeline(target.scene_format(), kind, lit[lit_index(kind)], debugging)) return error;
     }
     auto tone_map = PipelineHandle{};
     if (auto error = pipeline(target.color_format(), PipelineKind::tone_map, tone_map)) return error;
@@ -280,7 +283,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             return {RhiError::device_unavailable, "The renderer's environment textures could not be created"};
     }
     const auto& environment = snapshot.environment;
-    const auto sky = environment && environment->background;
+    const auto sky = environment && environment->background && !material_debug_view(view.debug_view); // inputs, not light
     auto sky_pipeline = PipelineHandle{};
     if (sky)
         if (auto error = pipeline(target.scene_format(), PipelineKind::sky, sky_pipeline)) return error;
@@ -375,7 +378,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         shadows.spots[m] = plan.spot_shadows[m].view_projection;
         (&shadows.spot_texel.x)[m] = plan.spot_shadows[m].texel_per_metre;
     }
-    shadows.view_forward = {plan.view_forward, float(view.shadow_view)};
+    shadows.view_forward = {plan.view_forward, float(view.debug_view)};
     const auto uploaded_view = m_device.upload_transient(&constants, sizeof(constants));
     if (!uploaded_view) return uploaded_view.diagnostic;
 
@@ -458,7 +461,10 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     output.label = "tone map";
     if (auto error = m_device.begin_render_pass(output)) return error;
     const auto tone = [&]() -> RhiDiagnostic {
-        const auto constants = ToneMapConstants{view.exposure, uint32_t(view.tone_mapping), uint32_t(view.exposure_view), 0};
+        // 1 luminance, 2 false color, 3 material inputs shown as they are; light otherwise.
+        const auto mode = view.debug_view == DebugView::luminance ? 1u : view.debug_view == DebugView::false_color ? 2u
+                          : material_debug_view(view.debug_view) ? 3u : 0u;
+        const auto constants = ToneMapConstants{view.exposure, uint32_t(view.tone_mapping), mode, 0};
         const auto uploaded = m_device.upload_transient(&constants, sizeof(constants));
         if (!uploaded) return uploaded.diagnostic;
         if (auto error = m_device.set_pipeline(tone_map)) return error;

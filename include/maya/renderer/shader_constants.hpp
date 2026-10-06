@@ -33,7 +33,7 @@ struct GpuShadows {
     math::Vec4 sun; // x bias and y normal bias in texels, z the view's near plane, w the sun's index in lights + 1 (0: none)
     math::Mat4 spots[max_shadowed_spot_lights]; // world to each spot light's clip space
     math::Vec4 spot_texel; // metres per texel at one metre from each spot light
-    math::Vec4 view_forward; // xyz the view's forward axis, w the ShadowView
+    math::Vec4 view_forward; // xyz the view's forward axis, w the DebugView (read by the debug pipelines only)
 };
 /// Uploaded once per view.
 struct ViewConstants {
@@ -90,7 +90,7 @@ struct DebugConstants {
 struct ToneMapConstants {
     float exposure; // a scale: exposure_scale(EV100)
     uint32_t tone_mapping; // ToneMapping
-    uint32_t view; // ExposureView
+    uint32_t view; // 0 light, 1 luminance, 2 false color, 3 material inputs as they are
     uint32_t pad;
 };
 inline constexpr size_t debug_line_floats = 12;

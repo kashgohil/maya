@@ -12,8 +12,7 @@ namespace maya::editor {
 /// ("maya-editor-preferences 1"), in ~/Library/Application Support/Maya by default.
 struct EditorPreferences {
     PhysicsDebugOptions physics_debug{}; // the viewport's physics debug views
-    ExposureView exposure_view = ExposureView::none; // the viewport's exposure view (docs/renderer.md#exposure-views)
-    ShadowView shadow_view = ShadowView::none; // the viewport's shadow view (docs/renderer.md#shadow-views)
+    DebugView debug_view = DebugView::none; // the viewport's debug view (docs/renderer.md#debug-views)
     bool operator==(const EditorPreferences&) const = default;
 };
 

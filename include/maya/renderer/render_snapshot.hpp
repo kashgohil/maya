@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace maya {
@@ -146,19 +147,33 @@ struct RenderSnapshot {
 RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets,
                                        const RenderExtractOptions& options = {});
 
-/// What the tone-mapping pass shows (docs/renderer.md#exposure-views): the image, or diagnostic views
-/// of the exposed scene's luminance.
-enum class ExposureView : uint8_t {
-    none, // the tone-mapped image
-    luminance, // grey by stops from middle grey (0.18): black at -8, white at +8
+/// What a view shows instead of its lit image (docs/renderer.md#debug-views), one at a time. Material
+/// views show the shading's inputs as they are, without exposure or tone mapping; lighting and shadow
+/// views are light, exposed and tone-mapped; exposure views show the exposed light by stops.
+enum class DebugView : uint8_t {
+    none, // the lit, tone-mapped image
+    luminance, // exposed luminance in grey by stops from middle grey (0.18): black at -8, white at +8
     false_color, // a color per band of stops from middle grey
+    base_color, // as authored: the factor times the map and the vertex color
+    normals, // the surface's own normal, world space, as 0.5 + 0.5 n
+    shading_normals, // with the normal map, as shading uses it
+    metallic, // grey: 0 black, 1 white
+    roughness, // perceptual, as authored, in grey
+    occlusion, // grey: what darkens light from the surroundings
+    emissive, // as authored, clipped at 1
+    direct_light, // the lit image from directional, point, and spot lights alone
+    environment_light, // the lit image from the surroundings alone (environment or ambient)
+    lighting, // all light on a white, fully rough, nonmetallic surface: lighting without albedo
+    cascades, // tinted by the sun's cascade that shadows each surface: red, green, blue, yellow
+    texels, // and a checker of that cascade's shadow-map texels
 };
-/// What the view pass shows instead of the lit image: shadow diagnostics (docs/renderer.md#shadow-views).
-enum class ShadowView : uint8_t {
-    none,
-    cascades, // surfaces tinted by the sun's cascade that shadows them: red, green, blue, yellow
-    texels, // a checker of the shadow-map texels that cover each surface: their size on screen
-};
+/// Whether the view's lit pass draws it (with the debug pipelines), rather than the tone-mapping pass alone.
+constexpr bool lit_debug_view(DebugView view) noexcept { return view >= DebugView::base_color; }
+/// Whether it shows the shading's inputs, unexposed.
+constexpr bool material_debug_view(DebugView view) noexcept { return view >= DebugView::base_color && view <= DebugView::emissive; }
+/// Stable names, for preferences and command lines ("none", "false-color", ...), and back.
+std::string_view debug_view_name(DebugView view) noexcept;
+std::optional<DebugView> debug_view_named(std::string_view name) noexcept;
 /// The scale an exposure in EV100 applies to scene values: 1 / (1.2 x 2^EV100), the photometric
 /// saturation-based exposure (ISO 100, K = 12.5, q = 0.65).
 float exposure_scale(float ev100) noexcept;
@@ -174,8 +189,7 @@ struct RenderView {
     float debug_line_width = 1.5f; // framebuffer pixels
     float exposure = exposure_scale(0.0f); // the camera's, as a scale
     ToneMapping tone_mapping = ToneMapping::agx;
-    ExposureView exposure_view = ExposureView::none;
-    ShadowView shadow_view = ShadowView::none;
+    DebugView debug_view = DebugView::none; // what it shows instead of the lit image
 };
 /// A view from camera data and a rigid world pose, e.g. an editor camera that is tool state.
 /// Returns nullopt for a zero size or an invalid camera/pose.

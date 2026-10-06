@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/core/application.hpp"
+#include "maya/renderer/render_snapshot.hpp"
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -18,6 +19,8 @@ struct PlayerOptions {
     std::optional<std::filesystem::path> replay;
     /// Draws every physics debug view over the game (docs/physics.md#debug-views), for debugging.
     bool debug_physics = false;
+    /// Shows a debug view instead of the lit image (docs/renderer.md#debug-views), for debugging.
+    DebugView debug_view = DebugView::none;
 };
 
 /// Runs a saved scene: opens the project and scene, starts a play session with the built-in systems,

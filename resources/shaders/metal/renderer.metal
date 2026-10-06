@@ -30,7 +30,7 @@ struct Shadows {
     float4 sun; // x bias and y normal bias in texels, z the view's near plane, w the sun's index + 1 (0: none)
     float4x4 spots[4]; // world to each spot light's clip space
     float4 spot_texel; // metres per texel at one metre from each spot light
-    float4 view_forward; // xyz the view's forward axis, w the shadow view (0 none, 1 cascades, 2 texels)
+    float4 view_forward; // xyz the view's forward axis, w the DebugView (debug pipelines only)
 };
 
 struct ViewConstants {
@@ -242,6 +242,19 @@ float3 direct_light(float3 N, float3 V, float3 L, float3 f0, float3 c_diff, floa
     return (diffuse + specular) * NdotL;
 }
 
+float3 srgb_encode(float3 c) {
+    c = saturate(c);
+    return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
+}
+
+// Debug views (docs/renderer.md#debug-views) are compiled only into the debug pipelines, which the renderer
+// builds with MAYA_DEBUG_VIEWS defined when a view needs them; the lit pipelines never carry them.
+#ifdef MAYA_DEBUG_VIEWS
+constant uint debug_base_color = 3, debug_normals = 4, debug_shading_normals = 5, debug_metallic = 6, debug_roughness = 7,
+              debug_occlusion = 8, debug_emissive = 9, debug_direct = 10, debug_environment = 11, debug_lighting = 12,
+              debug_cascades = 13, debug_texels = 14; // DebugView
+#endif
+
 fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                             constant ViewConstants& view [[buffer(2)]],
                             constant MaterialConstants& material [[buffer(3)]],
@@ -266,6 +279,19 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
         roughness *= sample.g;
         metallic *= sample.b;
     }
+#ifdef MAYA_DEBUG_VIEWS
+    const uint debug_view = uint(view.shadows.view_forward.w);
+    const float authored_roughness = roughness;
+    if (debug_view == debug_lighting) { // lighting without albedo: white, fully rough, and not metallic
+        base.rgb = float3(1.0);
+        metallic = 0.0;
+        roughness = 1.0;
+    }
+    const bool with_surroundings = debug_view != debug_direct, with_direct = debug_view != debug_environment;
+    const bool with_emitted = debug_view < debug_direct || debug_view > debug_lighting;
+#else
+    constexpr bool with_surroundings = true, with_direct = true, with_emitted = true;
+#endif
     metallic = saturate(metallic);
     roughness = clamp(roughness, min_roughness, 1.0);
     const float alpha = roughness * roughness;
@@ -305,12 +331,12 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     const float3 dielectric_share = surroundings_share(float3(0.04), scale_bias, NdotV, roughness);
     const float3 metal_share = surroundings_share(base.rgb, scale_bias, NdotV, roughness);
     const float3 dielectric = (1.0 - dielectric_share) * base.rgb * diffuse_light + dielectric_share * specular_light;
-    float3 rgb = mix(dielectric, metal_share * specular_light, metallic) * occlusion;
+    float3 rgb = with_surroundings ? mix(dielectric, metal_share * specular_light, metallic) * occlusion : float3(0.0);
 
     // Directional lights: illuminance in lux; the sun is shadowed by its cascades.
     const uint lights = min(view.light_count.x, 4u);
     const uint sun = uint(view.shadows.sun.w);
-    for (uint i = 0; i < lights; ++i) {
+    for (uint i = 0; with_direct && i < lights; ++i) {
         const float3 L = view.lights[i].direction_to_light.xyz;
         float lit = 1.0;
         if (i + 1 == sun && dot(N, L) > 0.0) lit = sun_lit(view, sun_shadows, shadow_sampler, in.world_position, Ng, L);
@@ -319,7 +345,7 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
     // Point and spot lights (docs/renderer.md#lights): candela / d^2, faded to nothing at the range as glTF
     // recommends, and a spot's between its cones.
     const uint locals = min(view.local_count.x, 16u);
-    for (uint i = 0; i < locals; ++i) {
+    for (uint i = 0; with_direct && i < locals; ++i) {
         const LocalLight light = view.local_lights[i];
         float3 L = light.position_range.xyz - in.world_position;
         const float distance = length(L);
@@ -339,25 +365,38 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
 
     float3 emitted = material.emissive.rgb;
     if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, uv).rgb;
-    rgb += emitted;
+    if (with_emitted) rgb += emitted;
 
-    // Shadow views (docs/renderer.md#shadow-views): the sun's cascade tints each surface, and a checker
-    // shows its shadow-map texels.
-    const uint shadow_view = uint(view.shadows.view_forward.w);
-    if (shadow_view != 0 && sun != 0) {
+#ifdef MAYA_DEBUG_VIEWS
+    // Material inputs are written as display values, which the tone-mapping pass shows unchanged: colors
+    // sRGB-encoded as authored, and data as grey or as 0.5 + 0.5 n.
+    const float out_alpha = alpha_mode == 2 ? base.a : 1.0;
+    switch (debug_view) {
+    case debug_base_color: return float4(srgb_encode(base.rgb), out_alpha);
+    case debug_normals: return float4(Ng * 0.5 + 0.5, out_alpha);
+    case debug_shading_normals: return float4(N * 0.5 + 0.5, out_alpha);
+    case debug_metallic: return float4(float3(metallic), out_alpha);
+    case debug_roughness: return float4(float3(saturate(authored_roughness)), out_alpha);
+    case debug_occlusion: return float4(float3(occlusion), out_alpha);
+    case debug_emissive: return float4(srgb_encode(emitted), out_alpha);
+    default: break;
+    }
+    // Shadow views: the sun's cascade tints each surface, and a checker shows its shadow-map texels.
+    if ((debug_view == debug_cascades || debug_view == debug_texels) && sun != 0) {
         const float depth = dot(in.world_position - view.camera_position.xyz, view.shadows.view_forward.xyz);
         if (depth < view.shadows.cascade_far[3]) {
             float blend;
             const uint c = cascade_at(view, depth, blend);
             const float3 tints[4] = {float3(1.0, 0.35, 0.35), float3(0.35, 1.0, 0.35), float3(0.35, 0.5, 1.0), float3(1.0, 1.0, 0.35)};
             rgb *= tints[c] * 1.5;
-            if (shadow_view == 2) {
+            if (debug_view == debug_texels) {
                 const float4 clip = view.shadows.cascades[c] * float4(in.world_position, 1.0);
                 const float2 texel = floor(atlas_uv(clip, c) * 4096.0);
                 if ((int(texel.x) + int(texel.y)) & 1) rgb *= 0.55;
             }
         }
     }
+#endif
     return float4(rgb, alpha_mode == 2 ? base.a : 1.0);
 }
 
@@ -575,11 +614,6 @@ float3 pbr_neutral(float3 c) {
     return mix(c, float3(new_peak), g);
 }
 
-float3 srgb_encode(float3 c) {
-    c = saturate(c);
-    return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
-}
-
 // False color by stops from middle grey (0.18), after exposure: blues under, grey around middle grey,
 // yellow to red over, pink where the image is clipped.
 float3 false_color(float stops) {
@@ -596,6 +630,7 @@ float3 false_color(float stops) {
 
 fragment float4 toneMapFragment(ToneMapOut in [[stage_in]], texture2d<float> scene [[texture(0)]],
                                 constant ToneMapConstants& constants [[buffer(0)]]) {
+    if (constants.view == 3) return float4(saturate(scene.read(uint2(in.position.xy)).rgb), 1.0); // material debug views
     const float3 light = max(scene.read(uint2(in.position.xy)).rgb, 0.0) * constants.exposure;
     if (constants.view != 0) {
         const float luminance = dot(light, float3(0.2126, 0.7152, 0.0722)); // Rec. 709

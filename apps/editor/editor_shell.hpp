@@ -320,10 +320,8 @@ public:
     const PhysicsDebugOptions& physics_debug() const noexcept { return m_preferences.physics_debug; }
     void set_physics_debug(const PhysicsDebugOptions& options);
     /// The viewport's exposure view: the image, or its luminance or false-color exposure. Saved as a preference.
-    ExposureView exposure_view() const noexcept { return m_preferences.exposure_view; }
-    void set_exposure_view(ExposureView view);
-    ShadowView shadow_view() const noexcept { return m_preferences.shadow_view; }
-    void set_shadow_view(ShadowView view);
+    DebugView debug_view() const noexcept { return m_preferences.debug_view; }
+    void set_debug_view(DebugView view);
     /// While on, the primary selection's collider shows size and offset handles in place of the
     /// transform gizmo. Each drag is one undoable edit, validated as the Inspector's are.
     bool collider_editing() const noexcept { return m_collider_editing; }

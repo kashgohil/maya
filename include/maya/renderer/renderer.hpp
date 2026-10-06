@@ -75,10 +75,11 @@ private:
     struct CachedPipeline {
         Format format = Format::undefined;
         PipelineKind kind = PipelineKind::lit;
+        bool debug = false; // compiled with the debug views (docs/renderer.md#debug-views)
         PipelineHandle handle;
         RhiDiagnostic error; // a failed compile is not retried every frame
     };
-    RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out);
+    RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug = false);
     RhiDiagnostic encode_debug(const DebugDraw& debug, const RenderView& view, const TransientSlice& view_constants,
                                PipelineHandle front, PipelineHandle behind);
     /// Renders one atlas of 2 x 2 shadow maps: each from its view-projection, with the instances `casts` lets through.
