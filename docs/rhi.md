@@ -29,7 +29,7 @@ if (surface) {
 }
 ```
 
-Within a pass, `set_scissor(rect)` (#999) restricts later draws to a nonempty rectangle inside the attachments, in pixels from the top left. Each pass starts unclipped. `draw_indexed` can also read indices from a [frame upload slice](#frame-pacing-and-upload-memory), with the offset relative to the slice. The editor's UI draws this way.
+Within a pass, `set_scissor(rect)` (#999) restricts later draws to a nonempty rectangle inside the attachments, in pixels from the top left. Each pass starts unclipped. `draw_indexed` can also read indices from a [frame upload slice](#frame-pacing-and-upload-memory), with the offset relative to the slice. The editor's UI draws this way. Its last arguments draw several instances (`instance_count`) numbered from `first_instance` (#1025; Metal's `baseInstance`), so one bound per-instance array serves several draws.
 
 A frame runs `begin_frame` → any number of render passes → `end_frame`. `end_frame` presents an acquired surface and submits. Offscreen passes target any texture created with `render_target` usage and never touch the drawable. The same frame can render offscreen targets and present, only render offscreen, or only present. `Engine::tick` calls `begin_frame`/`end_frame` around `Application::on_render`, and treats a failure from either as a frame failure. GPU execution errors reported by completed frames are logged through `take_gpu_errors()`.
 
@@ -96,7 +96,7 @@ Metal frame command buffers are created with **unretained references**. Correctn
 - A missing drawable, a zero-sized surface, or a headless session returns a diagnostic from `acquire_surface`. Callers skip presentation, and offscreen passes and submission continue.
 - `shutdown()` is nonthrowing and idempotent. It ends an open pass, discards an uncommitted frame without presenting, waits for submitted frames, releases every live and retired resource, expires the resource lifetime, and invalidates all handles. `initialize()` starts a new session with fresh handles; a failed backend initialization rolls itself back.
 
-`Mesh`, `Texture`, and the [renderer](renderer.md) use this API. `Mesh::draw` and `Texture::bind` return the first diagnostic. `Renderer::render` opens and closes its own pass. It uploads each instance's constants to its own slice of frame upload memory, so instances keep their own transforms and values within a frame.
+`Mesh`, `Texture`, and the [renderer](renderer.md) use this API. `Mesh::draw` and `Texture::bind` return the first diagnostic. `Renderer::render` opens and closes its own pass. It uploads all of a view's instances' transforms as one array in frame upload memory, and draws instances of one mesh and material with one instanced draw ([culling and batching](renderer.md#culling-and-batching), #1025).
 
 ## Frame pacing and upload memory
 

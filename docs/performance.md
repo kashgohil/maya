@@ -175,7 +175,7 @@ The JSON holds:
 
 - the manifest;
 - the environment, build, and quality settings (resolution, formats, antialiasing, lighting, shadows, presentation, simulation), including the thermal state at the start and at the end and the measuring thread's quality of service. The text summary warns when either thermal state is not nominal;
-- counters, including `centers_in_view`: instances whose origin projects into the view; and (#1034) the last view's point and spot lights drawn, left out, and drawn without shadows, and shadow maps and shadow draws per view;
+- counters, including `centers_in_view`: the instances the view drew, inside its frustum by their bounds (since #1025; before, those whose origin projected into the view); and (#1034) the last view's point and spot lights drawn, left out, and drawn without shadows, and shadow maps and shadow draws per view;
 - baseline and resident memory, tracked and reported;
 - for each run: throughput, summaries of the frame, of each CPU scope, and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
 - for each run, per pass name: a summary of the GPU time of that frame's passes with the name (`gpu_pass_ms`), with the raw values; `gpu_pass_mismatches`, timed passes outside their frame's GPU time, which must be 0; and `untimed_passes`;
@@ -219,8 +219,9 @@ Ranges are across the three runs.
 
 - **Missing GPU samples.** None of the runs lost a GPU sample.
 - **Where the CPU time goes.** At 10,000 instances, a frame spends 0.14 ms simulating, 0.47 ms extracting, and 1.43 ms encoding. At 100,000 instances it spends 1.9 ms, 4.7 ms, and 14.2 ms.
-  - Encoding is one draw with its own uploaded constants per instance.
-  - Without culling, the subset view costs the same as the full one.
+  - Encoding was one draw with its own uploaded constants per instance.
+  - Without culling, the subset view cost the same as the full one.
+  - Since #1025 instances are batched and culled: 0.12 ms of encoding at 10,000 and 1.4 ms at 100,000 ([renderer](renderer.md#culling-and-batching)).
 - **Instrumentation overhead.** The matched runs without CPU scopes differed by −3.0% to +0.5% of the frame, in both directions. That is within the variation between runs, so no overhead was measurable.
 - **Asset sharing.** In every I1 case the counters match the known sharing: one resident mesh (1,680 bytes in two buffers) and one material, whatever the instance count. The upload high water is 256 bytes per instance.
 - **Memory.** Tracked textures are the 1920×1080 view target (15.8 MiB). Tracked upload memory is 192 MiB, or 384 MiB for `i1_100k`. Metal reports 209 MiB for the device (401 MiB for `i1_100k`), which is mostly that upload memory.

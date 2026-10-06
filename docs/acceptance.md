@@ -159,10 +159,10 @@ Every budget shares these conditions:
 | --- | --- | --- | --- | --- |
 | Tracked counts after load, play, and resize cycles | Exactly the empty session | Tests, on every CTest run; `l1_load` and `l1_play` | Exact in every run | Any drift is a defect |
 | Process footprint slope over cycles 101–300 (11–100 before #1024) | At most 100 KB/cycle | `l1_load`, `l1_play` | See [#1024's baselines](#physics-baselines) | About twice the observed spread; flags growth of 10 MiB per 100 cycles. The window moved on 1 October 2026, approved by the project owner; the limit stayed. |
-| I1 10k frame | CPU P99 at most 2.5 ms; GPU P95 at most 1.5 ms | `i1_10k`, `i1_10k_subset` | 2.04–2.13 ms; 1.14–1.22 ms | About 20% above the observations. Tighten once repeated baselines show the variance. |
+| I1 10k frame | CPU P99 at most 1.0 ms; GPU P95 at most 1.3 ms (2.5 ms and 1.5 ms before #1025) | `i1_10k`, `i1_10k_subset` | 0.80–0.86 ms; 0.67–1.06 ms (2.04–2.13 ms and 1.14–1.22 ms before instancing) | About 20% above the observations. Tightened on 6 October 2026 with instanced, culled draws (#1025), approved by the project owner. |
 | Loading a 10,000-entity scene | P95 at most 50 ms | `l1_load` | 35.1 ms cool (46.4 ms throttled) | About 40% above the cool observations |
 | Starting play | P95 at most 10 ms | `l1_play` | 6.8 ms cool (7.2 ms throttled) | About 45% above the cool observations |
-| I1 100k | **No budget** | — | 20.5–20.8 ms CPU, over the proposed 16.67 ms target | A stress input, not a capacity. Instancing and culling come first. |
+| I1 100k frame | CPU P99 at most 10.5 ms; GPU P95 at most 5.5 ms | `i1_100k` | 8.6–9.0 ms; 4.4 ms (20.5–22.4 ms CPU before #1025) | About 20% above the observations, and under the proposed 16.67 ms target. Added on 6 October 2026 with #1025's instancing and culling, approved by the project owner. Before, it had no budget: 21 ms of CPU, over the target. |
 
 The benchmarks are not part of CTest, so the timing and slope budgets are checked by running the manifests on the reference machine, not on every build.
 
@@ -172,8 +172,8 @@ The benchmarks are not part of CTest, so the timing and slope budgets are checke
   - The contract's Baseline profile (Apple M1, 8-core GPU, 16 GiB, 1920×1080) and Headroom profile (M2 Pro) were not available. Both are **unmeasured**.
   - The measurements above come from an M4 Pro. They are that machine's observations and are not interchangeable with either profile.
 - **Scale.** The sample scene is not evidence of large-game readiness, and neither is I1: its 100,000 instances are a stress input, not a promised capacity.
-  - At 100,000 instances a frame takes about 21 ms of CPU time, which is over the proposed 16.67 ms interactive target. The renderer encodes one draw with its own constants per instance and does not cull. On this machine, the full 100k protocol also runs into thermal throttling.
-  - Instancing, batching, and culling are the known next steps.
+  - At 100,000 instances a frame took about 21 ms of CPU time at #1005, over the proposed 16.67 ms interactive target: the renderer encoded one draw with its own constants per instance and did not cull. Since #1025 it batches instances into instanced draws and culls each pass, and a frame takes 8.2–8.4 ms (P99 8.6–9.0 ms); what remains is mostly extraction ([renderer](renderer.md#culling-and-batching)).
+  - On this machine, the full 100k protocol can run into thermal throttling, and an idle machine's sleep spoils long unattended runs: keep it awake (`caffeinate -dimsu`).
 - **Not implemented at #1005, so not measured:** per-pass GPU timing, streaming (S1), physics, scripting, texture and PBR/shadow quality, import and cook times, and edit-to-preview latency. Physics and scripting are measured for milestone 2 below.
 - **Present pacing** is not measured: benchmarks render offscreen. The editor's live display shows the frame interval, but it is not a controlled measurement.
 - **Retained footprint.** The ~200 MiB footprint plateau after the first load cycle is unattributed. Attributing it needs Instruments on the reference hardware.
