@@ -183,6 +183,8 @@ A hand-made `.app` with the player, the shaders, and the sample project:
 
 So a packaged player ([#1039](https://work.rezee.app/kash/issues/1039)) resolves resources only from its bundle (`Contents/Resources`: shaders, fonts, and the cooked project), with no parent search, working directory, or environment variable. Development builds keep today's search. Shaders ship as source, compiled at start as today; a precompiled library is a later option.
 
+**Implemented** by #1039 ([packages](../projects.md#packages)): `maya_package` writes the bundle, with the startup scene and named scenes and exactly the assets they reach, cooked; the player finds only its bundle when it runs from one, and a test launches a package from inside the checkout without its shader and sees it refuse to start. The player opens no fonts, so a package holds none.
+
 ## R1: the realistic reference environment
 
 Recipe version 1, approved by the project owner on 2 October 2026:

@@ -102,6 +102,33 @@ Each placement or assignment is one undo step. Duplicating an instance with ⌘D
 
 **Missing assets stay diagnosable.** A project whose files are partly missing still opens. Its scenes open, and references are never changed or dropped. The Assets panel marks the missing files. The renderer skips meshes it cannot load and uses the fallback material, and reports each in Diagnostics. Restoring a file and choosing Reload or Refresh brings it back.
 
+## Packages
+
+[Issue #1039](https://work.rezee.app/kash/issues/1039) packages a project as a standalone macOS application, in the layout the [rendering record](architecture/rendering-content-decision.md#packaging-a-bundle-that-finds-only-itself) chose:
+
+```bash
+maya_package <project> <output.app> [--scene <path>]... [--name <name>] [--player <path>] [--shader <path>]
+```
+
+- **What it holds.** The project's startup scene, any scenes named with `--scene`, and exactly the assets they reach: meshes, materials, scripts, and environments named by the scenes' components, and the textures the materials name. They are found through the same references [scene validation](scene.md#validation-and-diagnostics) follows, so a scene the editor loads packages, and nothing it does not use is included.
+- **Cooked.** Meshes (OBJ and imported glTF parts), textures (PNG, JPEG, KTX2, and imported images), and environments are cooked as the editor cooks them, by the same `AssetCooker` and through the project's [cook cache](assets.md#cook-cache), for a GPU that samples ASTC (Apple silicon). Each is one file, `cooked/<asset id>.cooked-mesh`, `.cooked-texture`, or `.cooked-environment`, in the cache's checked envelope ([cooked content](assets.md#cooked-content)). Scenes, materials, and scripts are copied as authored. A package never holds source images or models, texture or environment descriptors, import files, or the cook cache.
+- **Layout.** `<Name>.app/Contents/MacOS/maya_player`, `Contents/Info.plist`, and `Contents/Resources`: `resources/shaders/metal/renderer.metal`, `package.maya`, and `project/` with its project file (content `content`, catalog `catalog.maya`, the startup scene, and the project's script limits and collision groups) and its content: the catalog, now naming the cooked files, scenes, materials, scripts, and `cooked/`. Shaders ship as source, compiled at start.
+- **The manifest** (`package.maya`, `maya-package 1`) names the package, the build that made it (revision, build type, and compiler), the project, its scenes (the startup scene first), and every file in `Contents/Resources` with its size and SHA-256, then one digest over them all. `verify_package` checks a package against it.
+- **Failure.** A scene that does not load, a reference the catalog lacks or of the wrong kind, and an asset whose file is missing or cannot be cooked each fail packaging with the asset and the reason (`mesh pyramid.obj: Cannot open OBJ: ...`). Nothing is written: the package is built beside the output (`<output>.partial`) and moved into place only when complete, so an earlier package stays. An output that exists and is not a package is refused, never overwritten.
+- **Repeatable.** The same project and build make the same package, byte for byte, whether its content is cooked again or read from the cook cache: cooking is deterministic, files are written in order, and nothing records a time.
+- **Not signed.** The player keeps the ad-hoc signature the linker gave it; the bundle itself is not signed or notarized, which distributing it beyond this machine will need.
+
+**The packaged player.** An executable in `<name>.app/Contents/MacOS/` whose `Contents/Resources` holds `package.maya` resolves files only from there (`FileSystem::package_resources`): never `MAYA_RESOURCES`, a parent folder, or the working directory. So a package without its shader fails to start even inside the checkout ("the renderer shader was not found"), rather than borrowing the checkout's. The player opens the manifest's project, loads with `PackageAssetProvider`, which reads only cooked files and refuses anything else or a damaged one, and runs the startup scene, or another of the package's scenes named on its command line. It takes no project argument, and reports the package, its content digest, and the build that made it. Recording, replay, and the debug options work as in [development builds](play.md#the-player).
+
+**Size and time** (Release on the M4 Pro reference machine, thermal state nominal):
+
+| Package | Content | Bundle | Packaging, cold / warm cook cache |
+| --- | --- | --- | --- |
+| The sample, with its material and physics scenes | 3 scenes, 3 meshes, 4 textures, 1 environment (the 1k sky), 20 materials, 1 script | 12.8 MiB: the player 5.5 MiB, Resources 7.4 MiB, mostly the cooked sky | 232 ms / 104 ms |
+| R1, assembled from the fetched content (ASTC) | 3 models, 54 textures, the 2k workshop HDRI, 4 lights | 250 MiB | 14.5 s cold, nearly all of it cooking ASTC |
+
+Cold packaging cooks what the cook cache lacks, as loading in the editor would; a warm cache skips it, leaving reading, writing, and hashing. With RGBA8 instead of ASTC, R1's package is 1.2 GB.
+
 ## Decisions and limits
 
 - **Material factors are not edited in the editor yet.** Materials are files. Edit a material file, then choose Reload in its row. Editing factors in place means writing asset files, with their own undo, outside scene history. That is a separate piece of work.
@@ -129,6 +156,8 @@ Release measurements on this machine, with scene entities in groups of ten, each
 Opening a project and refreshing it register every catalog entry, which canonicalizes each path, and check that each file exists. The panel reads the catalog only then. It filters only when the filter text or the lists change, and each column draws only its visible rows. A first version copied and filtered the whole catalog every frame and searched the missing list for each row, which cost 21 ms per frame at 10,000 entries. Listing scene files stops after 4,096 directory entries, and Diagnostics says so.
 
 ## Tests
+
+- [package_tests.cpp](../tests/package_tests.cpp) (#1039; `maya_package`, labels `cpu;package`, and `maya_package_gpu`, labels `gpu;package`) packages copies of the sample project. On the CPU: the startup and named scenes with exactly what they reach, cooked files that unwrap into what cooking the sources gives, materials and scripts unchanged, and nothing else (no source images or models, descriptors, import files, or cook cache), and the startup scene alone reaching no textures, environments, or scripts; the same package three times, byte for byte, from a cold and a warm cook cache; refusals with the reason for a missing mesh file, an undecodable texture image, a missing environment image, a scene naming an asset the catalog lacks, a scene outside the project, and an output that is not a bundle or is something else, each leaving the earlier package as it was; the manifest's digest, a changed, missing, or extra file, and damaged or uncooked files refused by `PackageAssetProvider`; and an imported glTF file packaged without its source. On Metal: the packaged sample's basic and material scenes, and R1 assembled from the fetched content, render pixel for pixel as they do from their sources; the packaged player runs from a copy in a temporary folder with `MAYA_RESOURCES` unset; and inside the build folder, with its shader removed and `MAYA_RESOURCES` naming the checkout, it refuses to start. The R1 case is skipped without the fetched content, cooks RGBA8 unless `MAYA_R1_COMPRESSION=astc`, and takes about 6 minutes in an unoptimized build.
 
 - [project_tests.cpp](../tests/project_tests.cpp) (in `maya_asset_tests`) covers:
   - project files that round-trip, with or without a startup scene;

@@ -124,7 +124,7 @@ Each setting appears exactly once, in any order; blank lines are allowed. `read_
 
 A PNG or JPEG source is cooked when its texture loads and the [cook cache](#cook-cache) does not have it ([texture_cook.hpp](../include/maya/assets/texture_cook.hpp)):
 
-1. **Decode** with stb_image (PNG and JPEG only, from memory) to straight-alpha RGBA8, exactly the stored values: no color management or premultiplication. Images above the device's largest texture are refused before their pixels are decoded. stb_image is not hardened against hostile files; it cooks the project's own content, and packaged games will read cooked KTX2 only ([#1039](https://work.rezee.app/kash/issues/1039)).
+1. **Decode** with stb_image (PNG and JPEG only, from memory) to straight-alpha RGBA8, exactly the stored values: no color management or premultiplication. Images above the device's largest texture are refused before their pixels are decoded. stb_image is not hardened against hostile files; it cooks the project's own content, and [packages](projects.md#packages) hold only cooked content (#1039).
 2. **Mips** with stb_image_resize2, each level halved from the one before: sRGB-correct with alpha-weighted color for color, every channel independent for data, and renormalized for normals (a straight-up normal where a texel holds no direction).
 3. **Compress** with astcenc 5.7.0 at medium quality on every core, or keep RGBA8. A device that cannot sample ASTC gets RGBA8. The same source, settings, and device always give the same bytes, whatever the thread count.
 
@@ -194,6 +194,12 @@ Values above the half-float range (65,504) are clamped. An `EnvironmentAsset` ow
 - **Deterministic:** cooking is, so the same source and settings give byte-identical entries; the [import workload](performance.md#import) checks this on every run.
 
 A cached environment reports a cooking time of 0. With R1's content, loading from the cache is 8 times faster than cooking ([cost](import.md#cost)).
+
+## Cooked content
+
+Since [#1039](https://work.rezee.app/kash/issues/1039) cooking is separate from the device ([asset_cooker.hpp](../include/maya/assets/asset_cooker.hpp)). `AssetCooker` turns an OBJ file, a texture or environment file, or an imported glTF part into its cooked form (`CookedMesh`: welded vertices with tangents and indices; `CookedTexture`: the mip chain in its GPU format, the sampler, and the role; `CookedEnvironment`) for the `CookLimits` it is given (ASTC or RGBA8, and the largest dimension), through the cook cache with the same keys and entries as before. `FileAssetProvider` cooks for its device's limits and uploads (`upload_mesh`, `upload_texture`, `upload_environment`); packaging cooks and writes the results into a [package](projects.md#packages), whose `PackageAssetProvider` uploads them. `ModelLoader::parse_obj` reads an OBJ without a device.
+
+A package's cooked files are `write_cooked_mesh`, `write_cooked_texture` (the role, the sampler, then KTX2), and `write_cooked_environment` payloads in the cache's checked envelope (`wrap_cooked`: "MAYACOOK", the format, the payload's size and SHA-256). `unwrap_cooked` and the readers refuse damaged or malformed bytes, so a damaged package fails to load that asset, with the reason, rather than drawing garbage.
 
 ## Loading and reload
 
