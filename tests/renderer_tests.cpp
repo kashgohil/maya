@@ -46,7 +46,14 @@ public:
     /// Frames complete only when told to, so retirement is observable.
     void finish_frames() { complete_through(stats().submitted_frames); }
 
+    struct ShadowDraw {
+        ShadowConstants shadow;
+        DrawConstants constants;
+        std::string pipeline;
+    };
     std::vector<Draw> draws;
+    std::vector<ShadowDraw> shadow_draws; // into shadow maps, apart from the view's draws
+    std::vector<RenderPassDesc> shadow_passes; // shadow maps, and the one-time clear of the empty one
     std::vector<Present> presents;
     std::vector<ToneMap> tone_maps;
     std::vector<DebugCall> debug;
@@ -67,7 +74,7 @@ protected:
         std::memcpy(m_buffers[slot].data() + offset, data, size);
     }
     RhiDiagnostic backend_begin_pass(const RenderPassDesc& desc) override {
-        passes.push_back(desc);
+        (desc.label.ends_with("shadows") ? shadow_passes : passes).push_back(desc);
         return NullGraphicsDevice::backend_begin_pass(desc);
     }
     void backend_set_vertex_buffer(uint32_t index, uint32_t slot, size_t offset) override { m_bound[index] = {slot, offset}; }
@@ -108,6 +115,10 @@ protected:
         debug.push_back({m_pipeline, constants, vertices, instances, std::move(data)});
     }
     void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t) override {
+        if (m_pipeline.ends_with("shadow caster")) {
+            shadow_draws.push_back({read<ShadowConstants>(2), read<DrawConstants>(1), m_pipeline});
+            return;
+        }
         sequence.push_back(m_pipeline);
         draws.push_back({read<DrawConstants>(1), read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot,
                          m_pipeline, m_textures});
@@ -324,7 +335,7 @@ TEST_CASE("Directional lights come from entity rotation, color, and intensity", 
         light({0, 5}, {LightKind::directional, {1.0f, 0.5f, 0.25f}, 2.0f});
         for (uint64_t i = 1; i <= 4; ++i) light({0, 10 + i}, {});
         light({0, 1}, {LightKind::directional, {1.0f}, 1.0f, 10, 0.5f, 0.7f, false}); // disabled
-        light({0, 2}, {LightKind::point}); // not rendered yet
+        light({0, 2}, {LightKind::point}); // a local light
         light({0, 3}, {}, false); // no transform
     });
     const auto snapshot = extract_render_snapshot(world, *project.registry, {{0.5f, 0.25f, 0.125f}});
@@ -339,7 +350,8 @@ TEST_CASE("Directional lights come from entity rotation, color, and intensity", 
         return std::ranges::count(snapshot.diagnostics, code, &RenderDiagnostic::code);
     };
     CHECK(count(RenderIssue::light_limit) == 1);
-    CHECK(count(RenderIssue::unsupported_light) == 1);
+    REQUIRE(snapshot.local_lights.size() == 1);
+    CHECK(snapshot.local_lights[0].entity == EntityId{0, 2});
     CHECK(count(RenderIssue::missing_transform) == 1);
     CHECK(snapshot.ambient.y == 0.25f);
     (void)created;
@@ -549,7 +561,9 @@ TEST_CASE("Render targets reallocate only on resize and retire replaced textures
 }
 
 TEST_CASE("Renderer validates views and closes its pass when upload memory runs out", "[renderer]") {
-    CapturingDevice device({3, 1024}); // room for the view constants and a few draws
+    // Room for the eight draws' constants, the view's (nine 256-byte slices), and the material's: then the
+    // tone map's constants run out, inside its pass.
+    CapturingDevice device({3, 8 * 256 + 9 * 256 + 256});
     TestProject project(device, {{"cube.mesh", unit_cube()}});
     const auto cube = project.add<MeshAsset>(1, "cube.mesh");
     World world;
@@ -575,7 +589,9 @@ TEST_CASE("Renderer validates views and closes its pass when upload memory runs 
 
     const auto error = renderer.render(snapshot, view_of(8, 8), target);
     CHECK(error.code == RhiError::out_of_memory);
-    CHECK(device.draws.size() == 1); // view constants in two 256-byte slices, the material's in one, then one draw
+    CHECK(device.draws.size() == 8);
+    REQUIRE(device.passes.size() == 2);
+    CHECK(device.passes.back().label == "tone map");
     CHECK_FALSE(device.end_frame()); // the pass was closed, so the frame ends cleanly
     CHECK(device.stats().transient_failures == 1);
 }
@@ -630,7 +646,7 @@ TEST_CASE("Renderer recreates its pipelines in a new device session", "[renderer
     REQUIRE(device.initialize(nullptr));
     frame();
     CHECK(device.stats().pipelines == pipelines);
-    CHECK(device.stats().samplers == 3); // presenting's, the texture placeholder's, and the split-sum table's
+    CHECK(device.stats().samplers == 4); // presenting's, the texture placeholder's, the split-sum table's, and shadows'
 }
 
 TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw each kind twice when there are", "[renderer][debug]") {
@@ -1072,4 +1088,76 @@ TEST_CASE("The environment reaches the view constants and its slots, and the sky
     empty.instances.clear();
     render(empty);
     CHECK(device.sequence == std::vector<std::string>{"sky", "tone map"});
+}
+
+TEST_CASE("Point and spot lights come from position, rotation, candela, range, and cones; one directional light casts shadows", "[renderer][lights]") {
+    CapturingDevice device;
+    TestProject project(device, {});
+    World world;
+    const auto tilt = math::Quat::from_axis_angle({1, 0, 0}, -math::PI / 2.0f); // local +Z to world +Y: shining down
+    build_world(world, [&](WorldCommands& commands) {
+        const auto light = [&](EntityId id, LightComponent value, math::Vec3 position = {}) {
+            auto entity = commands.create(id);
+            commands.add(entity, TransformComponent{position, tilt, {1.0f}});
+            commands.add(entity, value);
+        };
+        auto point = LightComponent{LightKind::point, {1.0f, 0.5f, 0.25f}, 40.0f, 12.0f};
+        light({0, 7}, point, {1, 2, 3});
+        auto spot = LightComponent{LightKind::spot, {1.0f}, 25.0f, 8.0f, 0.4f, 1.2f};
+        spot.shadow_bias = 2.5f;
+        spot.shadow_normal_bias = 0.5f;
+        light({0, 3}, spot, {0, 5, 0});
+        auto quiet = spot;
+        quiet.cast_shadows = false;
+        light({0, 4}, quiet);
+        // Three directional lights asking for shadows: the first by EntityId gets them, the others are reported.
+        auto sun = LightComponent{};
+        sun.shadow_distance = 80.0f;
+        light({0, 20}, sun);
+        light({0, 21}, LightComponent{});
+        light({0, 22}, LightComponent{});
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry, {});
+    REQUIRE(snapshot.local_lights.size() == 3);
+    const auto& spot = snapshot.local_lights[0]; // in EntityId order
+    CHECK(spot.entity == EntityId{0, 3});
+    CHECK(spot.kind == LightKind::spot);
+    CHECK(spot.position.y == 5.0f);
+    CHECK(spot.direction.y == Approx(-1.0f)); // local -Z
+    CHECK(spot.intensity.x == 25.0f); // candela
+    CHECK(spot.range == 8.0f);
+    CHECK(spot.cos_inner == Approx(std::cos(0.2f))); // half the full angles
+    CHECK(spot.cos_outer == Approx(std::cos(0.6f)));
+    CHECK(spot.shadow.cast);
+    CHECK(spot.shadow.bias == 2.5f);
+    CHECK(spot.shadow.normal_bias == 0.5f);
+    CHECK_FALSE(snapshot.local_lights[1].shadow.cast);
+    const auto& point = snapshot.local_lights[2];
+    CHECK(point.kind == LightKind::point);
+    CHECK(point.position.z == 3.0f);
+    CHECK(point.intensity.y == 20.0f); // color x candela
+    CHECK(point.range == 12.0f);
+    CHECK_FALSE(point.shadow.cast); // point lights cast no shadows yet
+    REQUIRE(snapshot.lights.size() == 3);
+    CHECK(snapshot.lights[0].shadow.cast);
+    CHECK(snapshot.lights[0].shadow_distance == 80.0f);
+    CHECK_FALSE(snapshot.lights[1].shadow.cast);
+    CHECK_FALSE(snapshot.lights[2].shadow.cast);
+    const auto limited = std::ranges::count(snapshot.diagnostics, RenderIssue::shadow_limit, &RenderDiagnostic::code);
+    CHECK(limited == 2);
+    CHECK(snapshot.diagnostics.size() == 2);
+
+    // Past the extraction limit, the highest EntityIds are left out and reported.
+    World many;
+    build_world(many, [&](WorldCommands& commands) {
+        for (uint64_t i = 0; i < max_extracted_local_lights + 3; ++i) {
+            auto entity = commands.create({0, 1000 + i});
+            commands.add(entity, TransformComponent{});
+            commands.add(entity, LightComponent{LightKind::point});
+        }
+    });
+    const auto crowded = extract_render_snapshot(many, *project.registry, {});
+    CHECK(crowded.local_lights.size() == max_extracted_local_lights);
+    CHECK(crowded.local_lights.back().entity == EntityId{0, 1000 + max_extracted_local_lights - 1});
+    CHECK(std::ranges::count(crowded.diagnostics, RenderIssue::light_limit, &RenderDiagnostic::code) == 3);
 }

@@ -61,6 +61,15 @@ inline Rgb reflected(const Surface& s, const Direction& N, const Direction& V, c
     return out;
 }
 
+/// A point or spot light's falloff at distance d (#1034): 1 / d^2, faded to nothing at its range as glTF's
+/// KHR_lights_punctual recommends, so illuminance is candela x this.
+inline double point_falloff(double d, double range) { return std::clamp(1.0 - std::pow(d / range, 4.0), 0.0, 1.0) / (d * d); }
+/// A spot light's fade between its cones, from the cosine of the angle off its axis.
+inline double spot_falloff(double cos_angle, double cos_inner, double cos_outer) {
+    const auto t = std::clamp((cos_angle - cos_outer) / (cos_inner - cos_outer), 0.0, 1.0);
+    return t * t;
+}
+
 /// The specular's share of light from the surroundings, as glTF's Sample Renderer computes it (#1036):
 /// the split-sum table's scale and bias (environment_cook.hpp) with a roughness-dependent Fresnel,
 /// k = F0 + (max(1 - roughness, F0) - F0)(1 - N.V)^5, giving E_ss = k x scale + bias; plus Fdez-Aguera's

@@ -60,14 +60,14 @@ TEST_CASE("Editor preferences round-trip, skip lines they do not know, and refus
     preferences.physics_debug = {uint8_t(PhysicsDebugCategory::colliders) | uint8_t(PhysicsDebugCategory::queries), 0x00F3};
     auto text = std::stringstream{};
     write_preferences(text, preferences);
-    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\nexposure-view none\n");
+    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\nexposure-view none\nshadow-view none\n");
     auto read = read_preferences(text);
     CHECK(read.error.empty());
     CHECK(read.preferences == preferences);
     preferences.exposure_view = ExposureView::false_color; // #1032
     auto exposure = std::stringstream{};
     write_preferences(exposure, preferences);
-    CHECK(exposure.str().ends_with("exposure-view false-color\n"));
+    CHECK(exposure.str().find("\nexposure-view false-color\n") != std::string::npos);
     CHECK(read_preferences(exposure).preferences.exposure_view == ExposureView::false_color);
     auto unknown_view = std::istringstream("maya-editor-preferences 1\nexposure-view sepia\n");
     CHECK(read_preferences(unknown_view).error == "exposure-view needs none, luminance, or false-color");

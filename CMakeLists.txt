@@ -443,7 +443,7 @@ if(BUILD_TESTING)
     add_test(NAME maya_scene COMMAND maya_scene_tests)
     set_tests_properties(maya_scene PROPERTIES LABELS "cpu;scene" TIMEOUT 60)
 
-    add_executable(maya_renderer_tests tests/renderer_tests.cpp)
+    add_executable(maya_renderer_tests tests/renderer_tests.cpp tests/light_plan_tests.cpp)
     target_link_libraries(maya_renderer_tests PRIVATE MayaRenderer Catch2::Catch2WithMain)
     target_include_directories(maya_renderer_tests PRIVATE tests)
     maya_target_options(maya_renderer_tests)
@@ -518,6 +518,7 @@ if(BUILD_TESTING)
         tests/rhi_tests.cpp
         tests/renderer_gpu_tests.cpp
         tests/material_gpu_tests.cpp
+        tests/lighting_gpu_tests.cpp
         tests/camera_tests.cpp
         tests/vector_tests.cpp
         tests/matrix_tests.cpp
@@ -558,7 +559,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/sample_viewer_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/sample_viewer_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps

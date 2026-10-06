@@ -1,5 +1,6 @@
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <csignal>
 #include <filesystem>
@@ -454,7 +455,8 @@ TEST_CASE("Failed loads keep the active scene", "[scene]") {
 
     const auto corrupt = project.root / "corrupt.scene";
     const auto text = read_file(good);
-    write_file(corrupt, text.substr(0, text.rfind('\n', text.size() / 2) + 1) + "component\n"); // cut short, then a bad line
+    // Cut short after its first entity, then a bad line.
+    write_file(corrupt, text.substr(0, text.find("\nentity", text.find("\nentity") + 1) + 1) + "component\n");
     fs::create_directory(project.root / "folder.scene");
     const auto failures = std::vector<std::pair<fs::path, SceneError>>{
         {corrupt, SceneError::malformed},
@@ -755,4 +757,36 @@ TEST_CASE("Environment components round-trip as readable scene text", "[scene][e
     REQUIRE(none);
     CHECK_FALSE(std::get<EnvironmentComponent>(none.document.entities[0].components[0]).environment.valid());
     CHECK_FALSE(read_scene(std::string_view(replace(text, "environment 6d617961 59", "environment sky")), any));
+}
+
+TEST_CASE("Version 1 lights load with point and spot intensities converted from lumens to candela, and save as version 2", "[scene][lights]") {
+    Project project;
+    // Lights written before #1034: point and spot intensities in lumens (4 pi x candela), no shadow settings.
+    const auto light = [](std::string_view kind, std::string_view intensity) {
+        return "  component maya.light 1\n    kind " + std::string(kind) + "\n    color 1 1 1\n    intensity " + std::string(intensity) +
+               "\n    range 10\n    inner_cone 0.5\n    outer_cone 0.75\n    enabled true\n";
+    };
+    const auto text = "maya-scene 1\nentity 1 1\n" + light("point", "1256.6371") + "end\nentity 1 2\n" + light("spot", "125.66371") +
+                      "end\nentity 1 3\n" + light("directional", "3") + "end\n";
+    const auto loaded = read_scene(std::string_view(text), project.context());
+    INFO(text);
+    REQUIRE(loaded);
+    const auto intensity = [&](size_t entity) { return std::get<LightComponent>(loaded.document.entities[entity].components.front()).intensity; };
+    CHECK(intensity(0) == Catch::Approx(100.0f));
+    CHECK(intensity(1) == Catch::Approx(10.0f));
+    CHECK(intensity(2) == 3.0f); // lux, unchanged
+    const auto& point = std::get<LightComponent>(loaded.document.entities[0].components.front());
+    CHECK(point.cast_shadows); // the shadow settings take their defaults
+    CHECK(point.shadow_bias == 1.0f);
+    CHECK(point.shadow_distance == 60.0f);
+    // Saving writes version 2 in candela, which loads unchanged.
+    const auto saved = encode(loaded.document, project.context());
+    CHECK(saved.find("component maya.light 2\n") != std::string::npos);
+    CHECK(saved.find("    cast_shadows true\n") != std::string::npos);
+    const auto again = read_scene(std::string_view(saved), project.context());
+    REQUIRE(again);
+    CHECK(std::get<LightComponent>(again.document.entities[0].components.front()).intensity == intensity(0));
+    CHECK(std::get<LightComponent>(again.document.entities[1].components.front()).intensity == intensity(1));
+    for (const auto& property : component_schema("maya.light")->properties)
+        CHECK(property.since == (property.id >= PropertyId(8) ? 2u : 1u));
 }

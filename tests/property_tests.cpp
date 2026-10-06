@@ -60,8 +60,9 @@ TEST_CASE("Property schemas have stable identities, discoverable defaults, and t
     for (const auto& schema : component_schemas()) {
         REQUIRE(ids.insert(schema.id).second);
         REQUIRE(names.insert(schema.name).second);
-        // Every schema is version 1 except the camera's (2: exposure and tone mapping, #1032).
-        REQUIRE(schema.version == (schema.id == ComponentId::camera ? 2u : 1u));
+        // Every schema is version 1 except the camera's (2: exposure and tone mapping, #1032) and the
+        // light's (2: candela and shadows, #1034).
+        REQUIRE(schema.version == (schema.id == ComponentId::camera || schema.id == ComponentId::light ? 2u : 1u));
         for (const auto& property : schema.properties) REQUIRE((property.since >= 1 && property.since <= schema.version));
         REQUIRE(component_schema(schema.name) == &schema);
         auto value = default_component(schema.id);

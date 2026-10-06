@@ -152,6 +152,7 @@ TEST_CASE("An imported scene dragged from the Assets panel into the viewport is 
     REQUIRE(harness.shell.import_model("models/props.gltf", false));
     auto& scene = *harness.shell.scene();
     harness.frames(2);
+    filter_assets(harness, "props");
     drag(harness, control(harness, "scene.models/props.scene"), harness.viewport_center());
     harness.frames(1);
     const auto placed = roots_named(scene, "props");

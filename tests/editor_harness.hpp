@@ -28,6 +28,7 @@ public:
     size_t indexed_draws = 0;
 
 protected:
+    bool color_pass = false;
     RhiDiagnostic backend_create_texture(uint32_t slot, const TextureDesc& desc, const void* data) override {
         if (fail_texture && fail_texture(desc)) return {RhiError::out_of_memory, "injected texture failure: " + desc.label};
         return NullGraphicsDevice::backend_create_texture(slot, desc, data);
@@ -37,7 +38,12 @@ protected:
         pipelines.push_back(desc);
         return NullGraphicsDevice::backend_create_pipeline(slot, desc);
     }
-    void backend_set_scissor(const ScissorRect& rect) override { scissors.push_back(rect); }
+    RhiDiagnostic backend_begin_pass(const RenderPassDesc& desc) override {
+        color_pass = !desc.colors.empty();
+        return NullGraphicsDevice::backend_begin_pass(desc);
+    }
+    // Scissors in color passes only: the renderer's shadow passes scissor each map in its atlas.
+    void backend_set_scissor(const ScissorRect& rect) override { if (color_pass) scissors.push_back(rect); }
     void backend_set_texture(uint32_t, uint32_t slot) override { sampled.push_back(slot); }
     void backend_draw_indexed(uint32_t slot, IndexType type, uint32_t count, size_t offset, uint32_t instances) override {
         ++indexed_draws;
@@ -151,6 +157,17 @@ inline void press(Harness& harness, ImVec2 at, MouseButton button = MouseButton:
     harness.frame({MouseMoveEvent{at.x, at.y}});
     harness.frame({MouseButtonEvent{button, true, KeyModifiers::none}});
     harness.frame({MouseButtonEvent{button, false, KeyModifiers::none}});
+}
+
+/// Types into the Assets panel's filter, so a row the panel's height would hide is listed.
+inline void filter_assets(Harness& harness, const std::string& text) {
+    const auto* field = harness.shell.layout().control("assets.filter");
+    REQUIRE(field);
+    press(harness, {(field->min.x + field->max.x) / 2, (field->min.y + field->max.y) / 2});
+    for (const auto c : text) harness.frame({TextEvent{uint32_t(c)}});
+    harness.frame(key(KeyCode::Enter, true)); // Escape would revert it
+    harness.frame(key(KeyCode::Enter, false));
+    harness.frames(2);
 }
 
 inline ImVec2 row_center(Harness& harness, EntityId id) {

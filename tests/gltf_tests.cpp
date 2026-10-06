@@ -332,7 +332,7 @@ TEST_CASE("Punctual lights convert to Maya's units and full cone angles; perspec
     CHECK(document.lights[0].light.intensity == 3); // lux
     CHECK(document.lights[0].light.color.y == 0.5f);
     CHECK(document.lights[1].light.kind == LightKind::point);
-    CHECK_THAT(document.lights[1].light.intensity, WithinAbs(40 * math::PI, 1e-3)); // 10 cd over 4 pi steradians
+    CHECK(document.lights[1].light.intensity == 10); // candela, as glTF's
     CHECK(document.lights[1].light.range == 7);
     const auto& spot = document.lights[2].light;
     CHECK(spot.kind == LightKind::spot);
