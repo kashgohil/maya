@@ -60,17 +60,22 @@ TEST_CASE("Editor preferences round-trip, skip lines they do not know, and refus
     preferences.physics_debug = {uint8_t(PhysicsDebugCategory::colliders) | uint8_t(PhysicsDebugCategory::queries), 0x00F3};
     auto text = std::stringstream{};
     write_preferences(text, preferences);
-    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\nexposure-view none\nshadow-view none\n");
+    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\ndebug-view none\n");
     auto read = read_preferences(text);
     CHECK(read.error.empty());
     CHECK(read.preferences == preferences);
-    preferences.exposure_view = ExposureView::false_color; // #1032
+    preferences.debug_view = DebugView::false_color; // #1032, one choice since #1037
     auto exposure = std::stringstream{};
     write_preferences(exposure, preferences);
-    CHECK(exposure.str().find("\nexposure-view false-color\n") != std::string::npos);
-    CHECK(read_preferences(exposure).preferences.exposure_view == ExposureView::false_color);
-    auto unknown_view = std::istringstream("maya-editor-preferences 1\nexposure-view sepia\n");
-    CHECK(read_preferences(unknown_view).error == "exposure-view needs none, luminance, or false-color");
+    CHECK(exposure.str().ends_with("\ndebug-view false-color\n"));
+    CHECK(read_preferences(exposure).preferences.debug_view == DebugView::false_color);
+    auto unknown_view = std::istringstream("maya-editor-preferences 1\ndebug-view sepia\n");
+    CHECK(read_preferences(unknown_view).error == "debug-view needs a debug view's name, such as none, base-color, or false-color");
+    // Files from #1032 and #1034 kept exposure and shadow views apart; either is read as the one view.
+    auto older = std::istringstream("maya-editor-preferences 1\nexposure-view none\nshadow-view texels\n");
+    CHECK(read_preferences(older).preferences.debug_view == DebugView::texels);
+    auto oldest = std::istringstream("maya-editor-preferences 1\nexposure-view luminance\n");
+    CHECK(read_preferences(oldest).preferences.debug_view == DebugView::luminance);
 
     auto newer = std::istringstream("maya-editor-preferences 1\ntheme \"night\"\nphysics-debug contacts sparkles\n");
     read = read_preferences(newer);
@@ -266,21 +271,21 @@ TEST_CASE("Exposure views come from the eye menu and are saved; the editor camer
         Harness harness;
         harness.shell.use_preferences_file(file);
         harness.frames(3);
-        CHECK(harness.shell.exposure_view() == ExposureView::none);
+        CHECK(harness.shell.debug_view() == DebugView::none);
         press(harness, control(harness, "tool.physics-debug"));
         harness.frames(2); // the menu sizes itself on its first frame
-        press(harness, control(harness, "debug.exposure.false-color"));
+        press(harness, control(harness, "debug.view.false-color"));
         harness.frames(2);
-        CHECK(harness.shell.exposure_view() == ExposureView::false_color);
+        CHECK(harness.shell.debug_view() == DebugView::false_color);
         CHECK(fs::exists(file));
-        press(harness, control(harness, "debug.exposure.luminance"));
+        press(harness, control(harness, "debug.view.luminance"));
         harness.frames(2);
-        CHECK(harness.shell.exposure_view() == ExposureView::luminance);
+        CHECK(harness.shell.debug_view() == DebugView::luminance);
     }
     // A new editor starts with it.
     Harness again;
     again.shell.use_preferences_file(file);
-    CHECK(again.shell.exposure_view() == ExposureView::luminance);
+    CHECK(again.shell.debug_view() == DebugView::luminance);
     again.frames(3);
 
     // The Scene view's exposure is the editor camera's, typed in the Inspector; the scene is not edited.

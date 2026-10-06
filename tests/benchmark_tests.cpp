@@ -101,6 +101,10 @@ present on
     CHECK(defaults.manifest.runs == 3);
     CHECK(defaults.manifest.seed == 990);
     CHECK_FALSE(defaults.manifest.present); // offscreen unless asked
+    CHECK(defaults.manifest.debug_view == DebugView::none); // the lit image unless asked (#1037)
+    const auto debug = parse(minimal + "debug_view shading-normals\n");
+    REQUIRE(debug);
+    CHECK(debug.manifest.debug_view == DebugView::shading_normals);
 
     const auto rejected = [](const std::string& text, const std::string& reason) {
         const auto result = parse(text);
@@ -114,6 +118,7 @@ present on
     rejected(minimal + "frames 5\n", "line 5: unknown key 'frames'");
     rejected(minimal + "count 0\n", "invalid value for 'count'");
     rejected(minimal + "rotating 1.5\n", "invalid value for 'rotating'");
+    rejected(minimal + "debug_view sepia\n", "invalid value for 'debug_view'");
     rejected(minimal + "camera 1 1 1 1 1 1\n", "invalid value for 'camera'"); // looking at itself
     rejected(minimal + "samples 10 20\n", "unexpected '20' after 'samples'");
     rejected(minimal + "present maybe\n", "invalid value for 'present'");

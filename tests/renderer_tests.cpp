@@ -59,6 +59,8 @@ public:
     std::vector<DebugCall> debug;
     std::vector<RenderPassDesc> passes;
     size_t pipelines_created = 0;
+    std::vector<std::string> pipeline_labels; // in creation order
+    size_t debug_sources = 0; // pipelines compiled with the debug views' define
     size_t material_binds = 0; // material constants bound (buffer 3)
     std::vector<std::string> sequence; // the pipeline of every draw, in order
     std::unordered_map<uint32_t, uint32_t> bound_textures; // slot to native texture, as last bound
@@ -90,6 +92,8 @@ protected:
     RhiDiagnostic backend_create_pipeline(uint32_t slot, const PipelineDesc& desc) override {
         m_labels[slot] = desc.label;
         ++pipelines_created;
+        pipeline_labels.push_back(desc.label);
+        if (desc.shader_source.starts_with("#define MAYA_DEBUG_VIEWS 1\n")) ++debug_sources;
         return NullGraphicsDevice::backend_create_pipeline(slot, desc);
     }
     void backend_set_pipeline(uint32_t slot) override {
@@ -1160,4 +1164,70 @@ TEST_CASE("Point and spot lights come from position, rotation, candela, range, a
     CHECK(crowded.local_lights.size() == max_extracted_local_lights);
     CHECK(crowded.local_lights.back().entity == EntityId{0, 1000 + max_extracted_local_lights - 1});
     CHECK(std::ranges::count(crowded.diagnostics, RenderIssue::light_limit, &RenderDiagnostic::code) == 3);
+}
+
+TEST_CASE("Debug views cost nothing until chosen, and then draw the same surfaces with their own pipelines", "[renderer][debug-views]") {
+    CapturingDevice device;
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {{"solid.material", red}}, {},
+                        {{"sky.environment", environment_image(64, [](const math::Vec3&) { return math::Vec3{1.0f}; })}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto solid = project.add<MaterialAsset>(2, "solid.material");
+    const auto sky = project.add<EnvironmentAsset>(4, "sky.environment");
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        auto entity = commands.create();
+        commands.add(entity, TransformComponent{});
+        commands.add(entity, MeshRendererComponent{cube, solid, true});
+        commands.add(commands.create(), EnvironmentComponent{sky, 1.0f, 0.0f, true});
+    });
+    const auto snapshot = extract_render_snapshot(world, *project.registry);
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(8, 8));
+    const auto render = [&](DebugView shown) {
+        device.draws.clear();
+        device.sequence.clear();
+        device.passes.clear();
+        device.tone_maps.clear();
+        auto view = view_of(8, 8);
+        view.debug_view = shown;
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(renderer.render(snapshot, view, target));
+        REQUIRE_FALSE(device.end_frame());
+        device.finish_frames();
+    };
+    // Off: no debug pipelines, and exactly the lit frame's passes and draws.
+    render(DebugView::none);
+    CHECK(device.debug_sources == 0);
+    const auto lit_sequence = device.sequence;
+    const auto lit_passes = device.passes.size();
+    CHECK(lit_sequence == std::vector<std::string>{"lit mesh", "sky", "tone map"});
+    CHECK(device.tone_maps.back().constants.view == 0);
+    const auto created = device.pipelines_created;
+    // The exposure views change only the tone-mapping pass's constants.
+    for (const auto [shown, mode] : {std::pair{DebugView::luminance, 1u}, std::pair{DebugView::false_color, 2u}}) {
+        render(shown);
+        CHECK(device.sequence == lit_sequence);
+        CHECK(device.tone_maps.back().constants.view == mode);
+    }
+    CHECK(device.pipelines_created == created);
+    // A material view: the same draws through debug pipelines, no sky, inputs shown as they are.
+    render(DebugView::base_color);
+    CHECK(device.sequence == std::vector<std::string>{"lit mesh (debug view)", "tone map"});
+    CHECK(device.passes.size() == lit_passes);
+    CHECK(device.tone_maps.back().constants.view == 3);
+    CHECK(device.draws.back().view.shadows.view_forward.w == float(DebugView::base_color));
+    CHECK(device.debug_sources == 1);
+    // Lighting and shadow views keep the sky, and are light.
+    render(DebugView::direct_light);
+    CHECK(device.sequence == std::vector<std::string>{"lit mesh (debug view)", "sky", "tone map"});
+    CHECK(device.tone_maps.back().constants.view == 0);
+    render(DebugView::cascades);
+    CHECK(device.sequence == std::vector<std::string>{"lit mesh (debug view)", "sky", "tone map"});
+    CHECK(device.debug_sources == 1); // built once
+    // Off again: back to the lit pipelines, with nothing more created.
+    const auto before = device.pipelines_created;
+    render(DebugView::none);
+    CHECK(device.sequence == lit_sequence);
+    CHECK(device.pipelines_created == before);
 }

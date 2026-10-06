@@ -314,7 +314,7 @@ namespace {
 /// Renders a large white cube filling a 16x16 view, lit only by `ambient`: every pixel's scene light is
 /// the ambient color. Returns the centre pixel.
 Pixel ambient_pixel(GpuFixture& fixture, const math::Vec3& ambient, float exposure, ToneMapping tone,
-                    ExposureView shown = ExposureView::none) {
+                    DebugView shown = DebugView::none) {
     World world;
     build_world(world, [&](WorldCommands& commands) { fixture.add_mesh(commands, fixture.cube, fixture.white, {{0, 0, 0}, {}, {4.0f}}); });
     const auto snapshot = extract_render_snapshot(world, *fixture.project->registry, RenderExtractOptions{ambient});
@@ -323,7 +323,7 @@ Pixel ambient_pixel(GpuFixture& fixture, const math::Vec3& ambient, float exposu
     camera.tone_mapping = tone;
     auto view = make_render_view(camera, look_pose({0, 0, 5}, {0, 0, 0}), 16, 16);
     REQUIRE(view);
-    view->exposure_view = shown;
+    view->debug_view = shown;
     auto target = RenderTarget(fixture.device, {Format::rgba8_unorm, true, "ambient"});
     return pixel(fixture.render(snapshot, *view, target), 16, 8, 8);
 }
@@ -413,19 +413,19 @@ TEST_CASE("Metal exposure views show luminance by stops, and bands of false colo
     GpuFixture fixture;
     const auto middle = 0.18f / exposure_scale(0.0f); // scene light that is middle grey once exposed
     // Luminance: grey by stops from middle grey, -8 black to +8 white, without sRGB encoding.
-    CHECK(near(ambient_pixel(fixture, math::Vec3{middle}, 0.0f, ToneMapping::agx, ExposureView::luminance), {128, 128, 128}, 1));
-    CHECK(near(ambient_pixel(fixture, math::Vec3{middle * 16.0f}, 0.0f, ToneMapping::agx, ExposureView::luminance), {191, 191, 191}, 1));
-    CHECK(near(ambient_pixel(fixture, math::Vec3{middle / 16.0f}, 0.0f, ToneMapping::agx, ExposureView::luminance), {64, 64, 64}, 1));
+    CHECK(near(ambient_pixel(fixture, math::Vec3{middle}, 0.0f, ToneMapping::agx, DebugView::luminance), {128, 128, 128}, 1));
+    CHECK(near(ambient_pixel(fixture, math::Vec3{middle * 16.0f}, 0.0f, ToneMapping::agx, DebugView::luminance), {191, 191, 191}, 1));
+    CHECK(near(ambient_pixel(fixture, math::Vec3{middle / 16.0f}, 0.0f, ToneMapping::agx, DebugView::luminance), {64, 64, 64}, 1));
     // False color by band: middle grey, three stops over, five under, and clipped.
     const auto band = [&](float stops) {
-        return ambient_pixel(fixture, math::Vec3{middle * std::exp2(stops)}, 0.0f, ToneMapping::pbr_neutral, ExposureView::false_color);
+        return ambient_pixel(fixture, math::Vec3{middle * std::exp2(stops)}, 0.0f, ToneMapping::pbr_neutral, DebugView::false_color);
     };
     CHECK(near(band(0.0f), {128, 128, 128}, 1));
     CHECK(near(band(3.0f), {255, 140, 0}, 1));
     CHECK(near(band(-5.0f), {0, 51, 230}, 1));
     CHECK(near(band(7.0f), {255, 153, 230}, 1));
     // The views ignore the tone mapper: they show exposed luminance.
-    CHECK(ambient_pixel(fixture, math::Vec3{middle}, 0.0f, ToneMapping::agx, ExposureView::false_color) == band(0.0f));
+    CHECK(ambient_pixel(fixture, math::Vec3{middle}, 0.0f, ToneMapping::agx, DebugView::false_color) == band(0.0f));
 }
 
 TEST_CASE("Metal renders the same image from a scene camera and from that camera's data and pose", "[rhi][renderer][tone]") {

@@ -70,7 +70,7 @@ struct LightingFixture {
     }
     /// Renders the scene `build` makes from `eye` toward `look`, and reads back the HDR scene light.
     Hdr render(const std::function<void(WorldCommands&)>& build, const math::Vec3& eye, const math::Vec3& look, float fov,
-               uint32_t width, uint32_t height, ShadowView shadow_view = ShadowView::none, const math::Vec3& up = {0, 1, 0}) {
+               uint32_t width, uint32_t height, DebugView debug_view = DebugView::none, const math::Vec3& up = {0, 1, 0}) {
         World world;
         build_world(world, build);
         const auto snapshot = extract_render_snapshot(world, *project->registry, {math::Vec3{0.0f}});
@@ -82,7 +82,7 @@ struct LightingFixture {
         auto view = make_render_view(camera, look_pose(eye, look, up), width, height);
         REQUIRE(view);
         view->clear_color = {0, 0, 0, 1};
-        view->shadow_view = shadow_view;
+        view->debug_view = debug_view;
         if (!target) target = std::make_unique<RenderTarget>(device, RenderTargetDesc{Format::rgba8_unorm, true, "lighting"});
         REQUIRE_FALSE(target->resize(width, height));
         REQUIRE_FALSE(device.begin_frame());
@@ -202,7 +202,7 @@ TEST_CASE("The sun's shadows fall where its light is blocked, with no acne on li
     };
     // Seen from straight above, so the floor right beside the cube is in view.
     const auto eye = math::Vec3{0, 12, 0};
-    const auto image = fixture.render(scene(false), eye, {0, 0, 0}, 0.9f, 255, 255, ShadowView::none, {0, 0, -1});
+    const auto image = fixture.render(scene(false), eye, {0, 0, 0}, 0.9f, 255, 255, DebugView::none, {0, 0, -1});
     const auto lit_at = [&](const math::Vec3& p, const Direction& N) {
         return reflected(rough_white, N, normalize({eye.x - p.x, eye.y - p.y, eye.z - p.z}), direction(to_light))[0] * math::PI;
     };
@@ -221,7 +221,7 @@ TEST_CASE("The sun's shadows fall where its light is blocked, with no acne on li
     CHECK(fixture.red(image, under_top) < 0.05 * lit_at(under_top, {0, 1, 0}));
 
     // Thin quads cast too, and a standing one's shadow starts at its foot (no peter-panning).
-    const auto thin = fixture.render(scene(true), eye, {0, 0, 0}, 0.9f, 1023, 1023, ShadowView::none, {0, 0, -1}); // 1.1 cm pixels
+    const auto thin = fixture.render(scene(true), eye, {0, 0, 0}, 0.9f, 1023, 1023, DebugView::none, {0, 0, -1}); // 1.1 cm pixels
     const auto under = math::Vec3{3, 1, 3} - to_light * (1.0f / to_light.y);
     CHECK(fixture.red(thin, under) < 0.05 * lit_at(under, {0, 1, 0}));
     CHECK(fixture.red(thin, {1.95f, 0, 0}) < 0.05 * lit_at({1.95f, 0, 0}, {0, 1, 0})); // 5 cm behind the wall's foot
@@ -304,7 +304,7 @@ TEST_CASE("Spot lights cast shadows from their own maps", "[rhi][shadows]") {
         fixture.add(commands, fixture.cube_mesh, {{0, 1.5f, 0}, {}, {1.5f}});
         auto spot = LightComponent{LightKind::spot, {1.0f}, 200.0f, 30.0f, 1.0f, 1.6f};
         LightingFixture::light(commands, spot, {0, 6, 0}, rotation_to({0, 1, 0}));
-    }, {0, 14, 0}, {0, 0, 0}, 0.8f, 255, 255, ShadowView::none, {0, 0, -1});
+    }, {0, 14, 0}, {0, 0, 0}, 0.8f, 255, 255, DebugView::none, {0, 0, -1});
     const auto lit = fixture.red(image, {2.0f, 0, 0}); // in the inner cone, beside the shadow
     CHECK(lit > 0.0f);
     CHECK(fixture.red(image, {1.05f, 0, 0}) < 0.05f * lit);
@@ -359,7 +359,7 @@ TEST_CASE("A camera sliding over the floor sees the sun's shadows hold still: no
         // One pixel further east each frame, which is not a whole number of any cascade's texels: the floor
         // moves exactly one pixel west in the image, and its shadows should move with it.
         const auto x = float(frame) * metres_per_pixel;
-        const auto image = fixture.render(scene, {x, height_above, 0}, {x, 0, 0}, fov, width, height, ShadowView::none, {0, 0, -1});
+        const auto image = fixture.render(scene, {x, height_above, 0}, {x, 0, 0}, fov, width, height, DebugView::none, {0, 0, -1});
         if (!previous.empty()) {
             // Compare with the previous frame moved one pixel, away from the image's edges.
             for (uint32_t py = 2; py < height - 2; ++py)

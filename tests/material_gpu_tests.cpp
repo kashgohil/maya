@@ -132,6 +132,7 @@ struct MaterialFixture {
         auto view = make_render_view(camera, look_pose({0, 0, 50}, {0, 0, 0}), size, size);
         REQUIRE(view);
         view->clear_color = clear;
+        view->debug_view = debug_view;
         if (!target) target = std::make_unique<RenderTarget>(device, RenderTargetDesc{Format::rgba8_unorm, true, "materials"});
         REQUIRE_FALSE(target->resize(size, size));
         REQUIRE_FALSE(device.begin_frame());
@@ -161,6 +162,15 @@ struct MaterialFixture {
     std::map<std::string, AssetRef<TextureAsset>> texture_refs;
     std::map<std::string, AssetRef<EnvironmentAsset>> environment_refs;
     std::optional<EnvironmentComponent> environment;
+    DebugView debug_view = DebugView::none; // what later renders show (#1037)
+
+    /// The last render's displayed pixel at the centre: tone-mapped, sRGB-encoded RGBA8.
+    std::array<uint8_t, 4> displayed() {
+        auto bytes = std::vector<std::byte>{};
+        REQUIRE_FALSE(device.read_texture(target->color(), bytes));
+        const auto at = (size_t(size / 2) * size + size / 2) * 4;
+        return {uint8_t(bytes[at]), uint8_t(bytes[at + 1]), uint8_t(bytes[at + 2]), uint8_t(bytes[at + 3])};
+    }
 };
 
 std::array<float, 4> at(const Hdr& image, uint32_t x = size / 2, uint32_t y = size / 2) { return image[size_t(y) * size + x]; }
@@ -628,4 +638,101 @@ TEST_CASE("Metal reads the split-sum table at its texel centres, between them as
     // White metal: all of it.
     fixture.set(0, {{1, 1, 1, 1}, 1.0f, 1.0f});
     CHECK(std::abs(at(fixture.render({{0}}, {}))[0] - 1.0f) < 0.004f);
+}
+
+double srgb_encode(double c) {
+    c = std::clamp(c, 0.0, 1.0);
+    return c <= 0.0031308 ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055;
+}
+
+TEST_CASE("Material debug views show the shading's inputs as they are, with and without maps", "[rhi][debug-views]") {
+    MaterialFixture fixture({{"orm.texture", solid_image({64, 128, 255, 255}, TextureRole::data)},
+                             {"tilt.texture", solid_image({218, 218, 218, 128}, TextureRole::normal)}});
+    auto material = MaterialAsset{{0.5f, 0.25f, 0.75f, 1.0f}, 0.3f, 0.6f};
+    material.emissive = {0.2f, 0.4f, 0.6f};
+    fixture.set(0, material);
+    const auto shown = [&](DebugView view, size_t slot = 0) {
+        fixture.debug_view = view;
+        return at(fixture.render({{slot}}, {{{0, 0, 1}, 3.0f}}, math::Vec3{0.25f}));
+    };
+    const auto grey = [](double v) { return Rgb{v, v, v}; };
+    // Colors as authored, sRGB-encoded for display; data as values.
+    const auto base = Rgb{srgb_encode(0.5), srgb_encode(0.25), srgb_encode(0.75)};
+    CHECK(near(shown(DebugView::base_color), base, 0.002));
+    CHECK(near(shown(DebugView::emissive), {srgb_encode(0.2), srgb_encode(0.4), srgb_encode(0.6)}, 0.002));
+    CHECK(near(shown(DebugView::metallic), grey(0.3), 0.002));
+    CHECK(near(shown(DebugView::roughness), grey(0.6), 0.002));
+    CHECK(near(shown(DebugView::occlusion), grey(1.0), 0.002));
+    CHECK(near(shown(DebugView::normals), {0.5, 0.5, 1.0}, 0.002)); // facing +Z
+    CHECK(near(shown(DebugView::shading_normals), {0.5, 0.5, 1.0}, 0.002));
+    // The display shows them unchanged: no exposure, no tone mapping.
+    shown(DebugView::base_color);
+    const auto pixel = fixture.displayed();
+    for (int c = 0; c < 3; ++c) CHECK(std::abs(int(pixel[c]) - int(std::lround(base[c] * 255.0))) <= 1);
+
+    // With maps: roughness from green, metallic from blue, occlusion from red, and a normal map tilting
+    // the shading normal toward +u (+X) while the surface's own stays.
+    material.metallic_roughness_texture = fixture.texture("orm.texture");
+    material.occlusion_texture = fixture.texture("orm.texture");
+    material.normal_texture = fixture.texture("tilt.texture");
+    fixture.set(1, material);
+    CHECK(near(shown(DebugView::roughness, 1), grey(0.6 * 128 / 255.0), 0.002));
+    CHECK(near(shown(DebugView::metallic, 1), grey(0.3), 0.002));
+    CHECK(near(shown(DebugView::occlusion, 1), grey(64 / 255.0), 0.002));
+    CHECK(near(shown(DebugView::normals, 1), {0.5, 0.5, 1.0}, 0.002));
+    const auto tilted = shown(DebugView::shading_normals, 1);
+    const auto x = 218 / 255.0 * 2.0 - 1.0; // y is 128 / 255: about 0
+    const auto n = Rgb{x, 128 / 255.0 * 2.0 - 1.0, std::sqrt(1.0 - x * x)};
+    SHOWN(tilted, n);
+    CHECK(near(tilted, {0.5 + 0.5 * n[0], 0.5 + 0.5 * n[1], 0.5 + 0.5 * n[2]}, 0.01));
+}
+
+TEST_CASE("Lighting debug views split the lit image into direct light and light from the surroundings, and light white surfaces", "[rhi][debug-views]") {
+    MaterialFixture fixture;
+    auto material = MaterialAsset{{0.8f, 0.2f, 0.1f, 1.0f}, 0.0f, 0.5f};
+    material.emissive = {0.1f, 0.1f, 0.1f};
+    fixture.set(0, material);
+    const auto L = normalize({0.3, 0.2, 1.0});
+    const auto lights = std::vector<Light>{{L, 3.0f}};
+    const auto ambient = 0.25f;
+    const auto shown = [&](DebugView view, size_t slot = 0) {
+        fixture.debug_view = view;
+        return at(fixture.render({{slot}}, lights, math::Vec3{ambient}));
+    };
+    const auto surface = Surface{{0.8, 0.2, 0.1}, 0, 0.5};
+    const auto direct = times(reflected(surface, {0, 0, 1}, {0, 0, 1}, L), 3.0);
+    const auto surroundings = times(environment(surface, 1.0), ambient);
+    const auto lit = shown(DebugView::none);
+    SHOWN(lit, plus(plus(direct, surroundings), {0.1, 0.1, 0.1}));
+    CHECK(near(lit, plus(plus(direct, surroundings), {0.1, 0.1, 0.1})));
+    // Each without the other, and without emitted light.
+    const auto direct_only = shown(DebugView::direct_light);
+    SHOWN(direct_only, direct);
+    CHECK(near(direct_only, direct));
+    const auto environment_only = shown(DebugView::environment_light);
+    SHOWN(environment_only, surroundings);
+    CHECK(near(environment_only, surroundings));
+    // Lighting without albedo: as if the surface were white, fully rough, and not metallic, whatever it is.
+    auto metal = MaterialAsset{{1.0f, 0.5f, 0.0f, 1.0f}, 1.0f, 0.1f};
+    fixture.set(1, metal);
+    const auto white = Surface{{1, 1, 1}, 0, 1};
+    const auto expected = plus(times(reflected(white, {0, 0, 1}, {0, 0, 1}, L), 3.0), times(environment(white, 1.0), ambient));
+    for (const size_t slot : {size_t{0}, size_t{1}}) {
+        const auto lighting = shown(DebugView::lighting, slot);
+        INFO("slot " << slot);
+        SHOWN(lighting, expected);
+        CHECK(near(lighting, expected));
+    }
+}
+
+TEST_CASE("Material debug views leave out the sky, which lighting views keep", "[rhi][debug-views]") {
+    MaterialFixture fixture({}, {{"sky.environment", uniform_environment(1.5f)}});
+    fixture.use("sky.environment", 1.0f, 0.0f, true);
+    const auto shown = [&](DebugView view) {
+        fixture.debug_view = view;
+        return at(fixture.render({}, {}));
+    };
+    CHECK(near(shown(DebugView::none), {1.5, 1.5, 1.5}, 0.02));
+    CHECK(near(shown(DebugView::environment_light), {1.5, 1.5, 1.5}, 0.02));
+    CHECK(near(shown(DebugView::base_color), {clear[0], clear[1], clear[2]})); // the clear color, as it is
 }

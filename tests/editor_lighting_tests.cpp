@@ -1,15 +1,12 @@
 // Lights in the editor (#1034, docs/editor.md#lights): point and spot lights from the Create menu, the
-// Inspector showing the settings each kind uses, the shadow views, and the view's light limits reported.
+// Inspector showing the settings each kind uses, and the view's light limits reported. The shadow views are
+// with the other debug views (editor_debug_view_tests.cpp).
 
 #include "editor_harness.hpp"
-#include <filesystem>
-#include <sstream>
-#include <unistd.h>
 
 using namespace maya;
 using namespace maya::editor;
 using namespace maya::editor::testing;
-namespace fs = std::filesystem;
 
 namespace {
 ImVec2 control(Harness& harness, std::string_view key) {
@@ -74,40 +71,6 @@ TEST_CASE("Point and spot lights come from the Create menu, and the Inspector sh
     CHECK_FALSE(layout.field("light.inner_cone"));
     CHECK(layout.field("light.shadow_distance"));
     CHECK(layout.field("light.shadow_bias"));
-}
-
-TEST_CASE("Shadow views come from the eye menu and are saved", "[editor][shadows]") {
-    // Preferences round-trip them, and name the choices when the file has another.
-    auto preferences = EditorPreferences{};
-    preferences.shadow_view = ShadowView::texels;
-    auto text = std::stringstream{};
-    write_preferences(text, preferences);
-    CHECK(text.str().ends_with("shadow-view texels\n"));
-    CHECK(read_preferences(text).preferences.shadow_view == ShadowView::texels);
-    auto unknown = std::istringstream("maya-editor-preferences 1\nshadow-view moody\n");
-    CHECK(read_preferences(unknown).error == "shadow-view needs none, cascades, or texels");
-
-    const auto folder = fs::temp_directory_path() / ("maya-shadow-view-" + std::to_string(::getpid()));
-    fs::remove_all(folder);
-    const auto file = folder / "editor.preferences";
-    {
-        Harness harness;
-        harness.shell.use_preferences_file(file);
-        harness.frames(3);
-        CHECK(harness.shell.shadow_view() == ShadowView::none);
-        press(harness, control(harness, "tool.physics-debug"));
-        harness.frames(2);
-        press(harness, control(harness, "debug.shadows.cascades"));
-        harness.frames(2);
-        CHECK(harness.shell.shadow_view() == ShadowView::cascades);
-        press(harness, control(harness, "debug.shadows.texels"));
-        harness.frames(2);
-        CHECK(harness.shell.shadow_view() == ShadowView::texels);
-    }
-    Harness again;
-    again.shell.use_preferences_file(file);
-    CHECK(again.shell.shadow_view() == ShadowView::texels);
-    fs::remove_all(folder);
 }
 
 TEST_CASE("Diagnostics shows the view's lights, and the ones it leaves out or draws without shadows", "[editor][lights]") {

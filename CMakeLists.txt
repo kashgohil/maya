@@ -559,7 +559,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/sample_viewer_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
@@ -680,6 +680,15 @@ if(BUILD_TESTING)
             "-DCOMMAND=$<TARGET_FILE:maya_player>|${sample_project}|physics.scene|--debug-physics|--smoke|60"
             -DEXIT_CODE=0 "-DEXPECT=drawing the physics debug views" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
         set_tests_properties(maya_player_debug_physics PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # So do the shading debug views (#1037); an unknown one is refused.
+        add_test(NAME maya_player_debug_view COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_player>|${sample_project}|materials.scene|--debug-view|shading-normals|--smoke|60"
+            -DEXIT_CODE=0 "-DEXPECT=showing the shading-normals debug view" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        add_test(NAME maya_player_debug_view_unknown COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_player>|${sample_project}|--debug-view|sepia"
+            -DEXIT_CODE=2 "-DEXPECT=--debug-view needs a view" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        set_tests_properties(maya_player_debug_view maya_player_debug_view_unknown PROPERTIES LABELS "gpu;smoke" TIMEOUT 30 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
     endif()
 
