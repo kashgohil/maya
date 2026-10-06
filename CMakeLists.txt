@@ -557,7 +557,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/sample_viewer_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
@@ -565,7 +565,7 @@ if(BUILD_TESTING)
         target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain z)
         set(MAYA_ACCEPTANCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/acceptance")
         target_compile_definitions(maya_editor_tests PRIVATE MAYA_ACCEPTANCE_DIR="${MAYA_ACCEPTANCE_DIR}"
-            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}")
         maya_target_options(maya_editor_tests)
         add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]")
         set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 60)

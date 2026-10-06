@@ -537,7 +537,7 @@ TEST_CASE("Metal takes diffuse light from the environment's irradiance and turns
     const auto dim = at(fixture.render({{0}}, {}));
     fixture.use("side.environment", 1.0f, -math::PI / 2);
     const auto bright = at(fixture.render({{0}}, {}));
-    const auto share = specular_share(surface, 1.0)[0];
+    const auto share = specular_share({0.04, 0.04, 0.04}, 1.0, 1.0)[0]; // a dielectric's
     const auto diffuse_swing = (1.0 - share) * 4.0 / 3.0;
     INFO("dim " << dim[0] << ", bright " << bright[0] << ", diffuse swing " << diffuse_swing << ", specular share " << share);
     CHECK(bright[0] - dim[0] >= diffuse_swing * 0.98);
@@ -552,7 +552,7 @@ TEST_CASE("Metal reflects the environment in smooth metal along the mirror direc
     fixture.use("axes.environment");
     fixture.set(0, {{1, 1, 1, 1}, 1.0f, 0.0f});
     const auto shown = at(fixture.render({{0}}, {}));
-    const auto share = specular_share({{1, 1, 1}, 1, 0}, 1.0)[0];
+    const auto share = specular_share({1, 1, 1}, 1.0, min_roughness)[0]; // a white metal's, at the shader's smallest roughness
     const auto expected = times(Rgb{2.0, 1.0, 0.5}, share);
     SHOWN(shown, expected);
     CHECK(near(shown, expected, 0.02));
@@ -560,7 +560,7 @@ TEST_CASE("Metal reflects the environment in smooth metal along the mirror direc
     const auto tilted = at(fixture.render({{0, {{}, math::Quat::from_axis_angle({1, 0, 0}, -0.3f), {1.0f}}}}, {}));
     const auto NdotV = std::cos(0.3);
     const auto R = Direction{0.0, 2.0 * NdotV * std::sin(0.3), 2.0 * NdotV * NdotV - 1.0};
-    const auto tilted_expected = times(Rgb{1.0 + R[2], 1.0 + R[1], 0.5}, specular_share({{1, 1, 1}, 1, 0}, NdotV)[0]);
+    const auto tilted_expected = times(Rgb{1.0 + R[2], 1.0 + R[1], 0.5}, specular_share({1, 1, 1}, NdotV, min_roughness)[0]);
     SHOWN(tilted, tilted_expected);
     CHECK(near(tilted, tilted_expected, 0.02));
     // Occlusion darkens light from the surroundings, the reflection included.
@@ -614,13 +614,18 @@ TEST_CASE("Metal falls back to the ambient light when the environment is missing
 TEST_CASE("Metal reads the split-sum table at its texel centres, between them as well as at its ends", "[rhi][environments]") {
     MaterialFixture fixture({}, {{"uniform.environment", uniform_environment(1.0f)}});
     fixture.use("uniform.environment");
-    // A white metal in a uniform environment shows scale + bias exactly; where it changes fastest with
-    // roughness, half a texel's offset in the lookup would move it by about 1%.
+    // A dark metal in a uniform environment shows its share of it, made from the table's scale and bias.
+    // (A white one shows all of it at every roughness: multiple scattering returns what single scattering
+    // loses.) Where the share changes fastest with roughness, half a texel's offset in the lookup would
+    // move it by about 1%.
     for (const auto roughness : {0.55f, 0.6f, 0.65f, 0.7f, 1.0f}) {
-        fixture.set(0, {{1, 1, 1, 1}, 1.0f, roughness});
+        fixture.set(0, {{0.25f, 0.25f, 0.25f, 1}, 1.0f, roughness});
         const auto shown = at(fixture.render({{0}}, {}));
-        const auto [scale, bias] = brdf_scale_bias(1.0, roughness, 4096);
-        INFO("roughness " << roughness << ": shown " << shown[0] << ", expected " << scale + bias);
-        CHECK(std::abs(shown[0] - (scale + bias)) < 0.004 * (scale + bias));
+        const auto expected = specular_share({0.25, 0.25, 0.25}, 1.0, roughness, 4096)[0];
+        INFO("roughness " << roughness << ": shown " << shown[0] << ", expected " << expected);
+        CHECK(std::abs(shown[0] - expected) < 0.004 * expected);
     }
+    // White metal: all of it.
+    fixture.set(0, {{1, 1, 1, 1}, 1.0f, 1.0f});
+    CHECK(std::abs(at(fixture.render({{0}}, {}))[0] - 1.0f) < 0.004f);
 }

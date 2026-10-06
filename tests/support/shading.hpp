@@ -61,23 +61,37 @@ inline Rgb reflected(const Surface& s, const Direction& N, const Direction& V, c
     return out;
 }
 
-/// The specular's share of light from the surroundings: F0 x scale + bias from the split-sum table
-/// (environment_cook.hpp), per channel.
-inline Rgb specular_share(const Surface& s, double NdotV) {
-    const auto roughness = std::clamp(s.roughness, min_roughness, 1.0);
-    const auto metallic = std::clamp(s.metallic, 0.0, 1.0);
-    const auto [scale, bias] = brdf_scale_bias(std::max(NdotV, 1e-4), roughness);
+/// The specular's share of light from the surroundings, as glTF's Sample Renderer computes it (#1036):
+/// the split-sum table's scale and bias (environment_cook.hpp) with a roughness-dependent Fresnel,
+/// k = F0 + (max(1 - roughness, F0) - F0)(1 - N.V)^5, giving E_ss = k x scale + bias; plus Fdez-Aguera's
+/// multiple scattering, E_ss x E_ms x F_avg / (1 - F_avg x E_ms), with E_ms = 1 - (scale + bias) and
+/// F_avg = F0 + (1 - F0) / 21. Per channel.
+inline Rgb specular_share(const Rgb& f0, double NdotV, double roughness, uint32_t samples = 512) {
+    const auto [scale, bias] = brdf_scale_bias(std::max(NdotV, 1e-4), roughness, samples);
+    const auto missing = 1.0 - (scale + bias);
     auto out = Rgb{};
-    for (int c = 0; c < 3; ++c) out[c] = (0.04 + (s.base[c] - 0.04) * metallic) * scale + bias;
+    for (int c = 0; c < 3; ++c) {
+        const auto k = f0[c] + (std::max(1.0 - roughness, f0[c]) - f0[c]) * std::pow(1.0 - std::max(NdotV, 1e-4), 5.0);
+        const auto single = k * scale + bias;
+        const auto average = f0[c] + (1.0 - f0[c]) / 21.0;
+        out[c] = single + missing * single * average / (1.0 - average * missing);
+    }
     return out;
 }
 /// What light from the surroundings sends toward V, before occlusion: `diffuse` light (irradiance / pi)
-/// to the diffuse share, and `specular` light (the prefiltered radiance) to the specular's.
+/// and `specular` light (the prefiltered radiance). As glTF defines a material, a dielectric's result
+/// (diffuse, with the specular's share of F0 = 0.04 taken from it, plus that share of the specular) and a
+/// metal's (its share, F0 = base color, of the specular) are mixed by metallic.
 inline Rgb surroundings(const Surface& s, double NdotV, const Rgb& diffuse, const Rgb& specular) {
-    const auto share = specular_share(s, NdotV);
+    const auto roughness = std::clamp(s.roughness, min_roughness, 1.0);
     const auto metallic = std::clamp(s.metallic, 0.0, 1.0);
+    const auto dielectric = specular_share({0.04, 0.04, 0.04}, NdotV, roughness);
+    const auto metal = specular_share(s.base, NdotV, roughness);
     auto out = Rgb{};
-    for (int c = 0; c < 3; ++c) out[c] = s.base[c] * (1.0 - metallic) * (1.0 - share[c]) * diffuse[c] + share[c] * specular[c];
+    for (int c = 0; c < 3; ++c) {
+        const auto from_dielectric = (1.0 - dielectric[c]) * s.base[c] * diffuse[c] + dielectric[c] * specular[c];
+        out[c] = from_dielectric + (metal[c] * specular[c] - from_dielectric) * metallic;
+    }
     return out;
 }
 /// What a uniform environment of radiance 1 (the ambient light) sends toward V, before occlusion.
