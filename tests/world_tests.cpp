@@ -423,3 +423,38 @@ TEST_CASE("Command batches can drop their newest commands", "[world]") {
     CHECK_FALSE(world.find(EntityId{1, 2}));
     CHECK(world.find(EntityId{1, 3}));
 }
+
+TEST_CASE("The names revision counts commits that change names or the hierarchy, and no others", "[world]") {
+    World world;
+    const auto revision = [&] { return world.names_revision(); };
+    auto commands = world.commands();
+    const auto parent = commands.create();
+    commands.add(parent, TransformComponent{});
+    const auto child = commands.create();
+    commands.add(child, TransformComponent{});
+    auto created = world.commit(commands);
+    REQUIRE(created);
+    CHECK(revision() == 1); // created
+    const auto a = created.created[parent.index], b = created.created[child.index];
+    const auto changes = [&](auto&& stage) {
+        const auto before = revision();
+        auto batch = world.commands();
+        stage(batch);
+        REQUIRE(world.commit(batch));
+        return revision() != before;
+    };
+    CHECK_FALSE(changes([&](WorldCommands& batch) { batch.set_transform(a, TransformComponent{{1, 0, 0}, {}, {1, 1, 1}}); }));
+    CHECK_FALSE(changes([&](WorldCommands& batch) { batch.replace(b, TransformComponent{{0, 2, 0}, {}, {1, 1, 1}}); }));
+    CHECK_FALSE(changes([&](WorldCommands& batch) { batch.add(a, SpinComponent{}); }));
+    CHECK(changes([&](WorldCommands& batch) { batch.add(a, NameComponent{"Arm"}); }));
+    CHECK(changes([&](WorldCommands& batch) { batch.replace(a, NameComponent{"Leg"}); }));
+    CHECK(changes([&](WorldCommands& batch) { batch.reparent(b, a, ReparentPolicy::keep_local); }));
+    CHECK(changes([&](WorldCommands& batch) { batch.remove<NameComponent>(a); }));
+    CHECK(changes([&](WorldCommands& batch) { batch.destroy(b); }));
+    // A rejected commit changes nothing.
+    const auto before = revision();
+    auto rejected = world.commands();
+    rejected.replace(b, NameComponent{"gone"});
+    CHECK_FALSE(world.commit(rejected));
+    CHECK(revision() == before);
+}

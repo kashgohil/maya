@@ -516,6 +516,20 @@ if(BUILD_TESTING)
     add_test(NAME maya_assets_samples COMMAND maya_asset_tests "[samples]")
     set_tests_properties(maya_assets_samples PROPERTIES LABELS "cpu;assets" TIMEOUT 120)
 
+    # Skeletal animation (#1038): sampling, binding, the animation system, and skinning's joint matrices
+    # against an independent evaluator that reads the Khronos samples with cgltf alone.
+    add_executable(maya_animation_tests tests/animation_tests.cpp tests/animation_samples_tests.cpp)
+    target_link_libraries(maya_animation_tests PRIVATE MayaImport MayaSimulation MayaRenderer Catch2::Catch2WithMain)
+    target_include_directories(maya_animation_tests PRIVATE tests)
+    target_include_directories(maya_animation_tests SYSTEM PRIVATE ${cgltf_SOURCE_DIR})
+    target_compile_definitions(maya_animation_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}")
+    maya_target_options(maya_animation_tests)
+    add_test(NAME maya_animation COMMAND maya_animation_tests "~[samples]")
+    set_tests_properties(maya_animation PROPERTIES LABELS "cpu;animation" TIMEOUT 60)
+    add_test(NAME maya_animation_samples COMMAND maya_animation_tests "[samples]")
+    set_tests_properties(maya_animation_samples PROPERTIES LABELS "cpu;animation" TIMEOUT 180)
+
     # KTX2 interoperability: Khronos's `ktx validate` (KTX-Software 4.3 or later) checks every format
     # and layout Maya writes, when the tool is installed or MAYA_KTX_TOOL names it.
     add_executable(maya_ktx2_samples tests/ktx2_samples.cpp)
@@ -577,7 +591,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
@@ -748,6 +762,14 @@ if(BUILD_TESTING)
             set_tests_properties(maya_benchmark_smoke_${manifest} PROPERTIES LABELS "gpu;smoke;benchmark" TIMEOUT 120
                 RUN_SERIAL TRUE ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         endforeach()
+        # A1 at a glance (#1038), when the samples it plays are there.
+        if(EXISTS "${MAYA_RENDER_SAMPLES}/Models/CesiumMan/glTF-Binary/CesiumMan.glb")
+            add_test(NAME maya_benchmark_smoke_a1 COMMAND ${CMAKE_COMMAND}
+                "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/a1.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-a1.json"
+                -DEXIT_CODE=0 "-DEXPECT=results: " -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+            set_tests_properties(maya_benchmark_smoke_a1 PROPERTIES LABELS "gpu;smoke;benchmark" TIMEOUT 120
+                RUN_SERIAL TRUE ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        endif()
         # P1 at a tenth of its size: it must complete, and every run and worker count must end alike (#1024).
         add_test(NAME maya_benchmark_smoke_p1_small COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/p1_small.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-p1_small.json"

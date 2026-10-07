@@ -60,14 +60,14 @@ TEST_CASE("Editor preferences round-trip, skip lines they do not know, and refus
     preferences.physics_debug = {uint8_t(PhysicsDebugCategory::colliders) | uint8_t(PhysicsDebugCategory::queries), 0x00F3};
     auto text = std::stringstream{};
     write_preferences(text, preferences);
-    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\ndebug-view none\n");
+    CHECK(text.str() == "maya-editor-preferences 1\nphysics-debug colliders queries\nphysics-debug-groups f3\ndebug-view none\nskeletons off\n");
     auto read = read_preferences(text);
     CHECK(read.error.empty());
     CHECK(read.preferences == preferences);
     preferences.debug_view = DebugView::false_color; // #1032, one choice since #1037
     auto exposure = std::stringstream{};
     write_preferences(exposure, preferences);
-    CHECK(exposure.str().ends_with("\ndebug-view false-color\n"));
+    CHECK(exposure.str().find("\ndebug-view false-color\n") != std::string::npos);
     CHECK(read_preferences(exposure).preferences.debug_view == DebugView::false_color);
     auto unknown_view = std::istringstream("maya-editor-preferences 1\ndebug-view sepia\n");
     CHECK(read_preferences(unknown_view).error == "debug-view needs a debug view's name, such as none, base-color, or false-color");

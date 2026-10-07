@@ -98,7 +98,7 @@ PlayerReplay replay_as_player(const ProjectCopy& copy, EditorDevice& device, con
     REQUIRE(replay_refusal(recording, recorded_assets(*assets.registry, scene.document), {}).empty());
     auto scripts = project_script_settings(project.project.settings);
     scripts.seed = recording.seed;
-    auto started = PlaySession::start(scene.document, context, play_systems(registry_script_sources(*assets.registry), scripts));
+    auto started = PlaySession::start(scene.document, context, play_systems(registry_script_sources(*assets.registry), registry_animation_clips(*assets.registry), scripts));
     INFO(started.error);
     REQUIRE(started);
     started.session->start_replay(recording.inputs, recording.checkpoints);

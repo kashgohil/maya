@@ -101,7 +101,7 @@ TEST_CASE("The same scene plays the same in the player's path and in the editor"
     auto loaded = load_scene_file(*project.project.startup_scene, asset_property_context(*assets.registry));
     REQUIRE(loaded);
     auto player = PlaySession::start(std::move(loaded.document), asset_property_context(*assets.registry),
-                                     play_systems(registry_script_sources(*assets.registry)));
+                                     play_systems(registry_script_sources(*assets.registry), registry_animation_clips(*assets.registry)));
     REQUIRE(player);
     // The editor's path: the open scene's document, through the Play button.
     Harness harness;

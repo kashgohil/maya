@@ -5,6 +5,7 @@
 #include "maya/assets/gltf.hpp"
 #include "maya/assets/import_file.hpp"
 #include "support/gltf.hpp"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <atomic>
@@ -348,6 +349,113 @@ TEST_CASE("Punctual lights convert to Maya's units and full cone angles; perspec
     CHECK(document.nodes[1].camera == 0u);
     CHECK_FALSE(document.nodes[2].camera); // orthographic: left out
     CHECK(has(document.warnings, "cameras[2]", "orthographic"));
+}
+
+namespace {
+/// A quad skinned to two joints (Hips, and its child Bone), with a clip that turns Hips (linear) and moves
+/// Bone (cubic spline). Vertex weights: {2, 2} (scaled to a half each), {1}, none (the first joint), {1/4, 3/4}.
+std::string skinned_quad(std::vector<float> weight_values = {2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0.25f, 0.75f, 0, 0},
+                         std::vector<float> key_times = {0, 1, 2}) {
+    auto buffer = test::GltfBuffer{};
+    const auto positions = buffer.view(std::vector<float>{0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0});
+    const auto indices = buffer.view(std::vector<uint16_t>{0, 1, 2, 3});
+    const auto joints = buffer.view(std::vector<uint8_t>{0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0});
+    const auto weights = buffer.view(weight_values);
+    const auto inverse_bind = buffer.view(std::vector<float>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+                                                             1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 0, 1});
+    const auto times = buffer.view(key_times);
+    const auto turns = buffer.view(std::vector<float>{0, 0, 0, 1, 0, 0.7071068f, 0, 0.7071068f, 0, 1, 0, 0});
+    const auto spline_times = buffer.view(std::vector<float>{0, 2});
+    const auto moves = buffer.view(std::vector<float>{0, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 2, 0, 0, 0, 0, 0});
+    const auto view = [](size_t index) { return std::to_string(index); };
+    return R"({"asset":{"version":"2.0"},)" + buffer.json() + R"(,"accessors":[
+        {"bufferView":)" + view(positions) + R"(,"componentType":5126,"count":4,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+        {"bufferView":)" + view(indices) + R"(,"componentType":5123,"count":4,"type":"SCALAR"},
+        {"bufferView":)" + view(joints) + R"(,"componentType":5121,"count":4,"type":"VEC4"},
+        {"bufferView":)" + view(weights) + R"(,"componentType":5126,"count":4,"type":"VEC4"},
+        {"bufferView":)" + view(inverse_bind) + R"(,"componentType":5126,"count":2,"type":"MAT4"},
+        {"bufferView":)" + view(times) + R"(,"componentType":5126,"count":3,"type":"SCALAR","min":[0],"max":[2]},
+        {"bufferView":)" + view(turns) + R"(,"componentType":5126,"count":3,"type":"VEC4"},
+        {"bufferView":)" + view(spline_times) + R"(,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[2]},
+        {"bufferView":)" + view(moves) + R"(,"componentType":5126,"count":6,"type":"VEC3"}],
+        "meshes":[{"name":"Quad","primitives":[{"mode":5,"indices":1,"attributes":{"POSITION":0,"JOINTS_0":2,"WEIGHTS_0":3}}]}],
+        "skins":[{"name":"Rig","joints":[1,2],"inverseBindMatrices":4}],
+        "animations":[{"name":"Wave","samplers":[{"input":5,"output":6},{"input":7,"output":8,"interpolation":"CUBICSPLINE"}],
+                       "channels":[{"sampler":0,"target":{"node":1,"path":"rotation"}},{"sampler":1,"target":{"node":2,"path":"translation"}}]}],
+        "nodes":[{"name":"Skinned","mesh":0,"skin":0},{"name":"Hips","children":[2,3,4]},{"name":"Bone","translation":[0,1,0]},
+                 {"name":"Bone"},{}],
+        "scenes":[{"nodes":[0,1]}],"scene":0})";
+}
+} // namespace
+
+TEST_CASE("Skins and clips read with their joints, inverse bind matrices, samplers, and keys, and weights sum to 1", "[assets][gltf][animation]") {
+    const Folder folder;
+    const auto opened = open_text(folder, skinned_quad());
+    REQUIRE_OPEN(opened);
+    const auto& document = opened.file->document();
+    CHECK(document.warnings.empty());
+    REQUIRE(document.skins.size() == 1);
+    CHECK(document.skins[0].name == "Rig");
+    CHECK(document.skins[0].joints == std::vector<uint32_t>{1, 2});
+    CHECK(document.skins[0].inverse_bind[1].at(1, 3) == -1.0f);
+    CHECK(document.nodes[0].skin == 0u);
+    CHECK_FALSE(document.nodes[1].skin);
+    REQUIRE(document.animations.size() == 1);
+    const auto& clip = document.animations[0];
+    CHECK(clip.name == "Wave");
+    CHECK(clip.duration == 2.0f);
+    REQUIRE(clip.channels.size() == 2);
+    CHECK(clip.channels[0].node == 1);
+    CHECK(clip.channels[0].path == ChannelPath::rotation);
+    CHECK(clip.channels[0].interpolation == Interpolation::linear);
+    CHECK(clip.channels[1].interpolation == Interpolation::cubic_spline);
+    CHECK(clip.channels[1].values.size() == 18); // in-tangent, value, and out-tangent per key
+    // Joints and weights, each vertex's weights scaled to sum to 1, and none on the first joint.
+    const auto geometry = opened.file->primitive(0, 0);
+    REQUIRE(geometry);
+    REQUIRE(geometry.skin.size() == geometry.vertices.size());
+    for (size_t v = 0; v < geometry.vertices.size(); ++v) {
+        const auto& skin = geometry.skin[v];
+        CHECK(skin.weights[0] + skin.weights[1] + skin.weights[2] + skin.weights[3] == Catch::Approx(1.0f));
+        const auto& p = geometry.vertices[v].position;
+        if (p.x == 0 && p.y == 0) CHECK((skin.weights[0] == 0.5f && skin.weights[1] == 0.5f));
+        if (p.x == 0 && p.y == 1) CHECK((skin.joints[0] == 1 && skin.weights[0] == 1.0f));
+        if (p.x == 1 && p.y == 1) CHECK(skin.weights[1] == 0.75f);
+    }
+    // Names and paths as skins and clips bind by: unique among siblings, the unnamed by index.
+    CHECK(gltf_node_names(document) == std::vector<std::string>{"Skinned", "Hips", "Bone", "Bone 2", "Node 4"});
+    CHECK(gltf_node_paths(document) == std::vector<std::string>{"Skinned", "Hips", "Hips/Bone", "Hips/Bone 2", "Hips/Node 4"});
+}
+
+TEST_CASE("Broken skins and clips are refused where they are wrong", "[assets][gltf][animation]") {
+    const Folder folder;
+    const auto refused = [&](std::string_view from, std::string_view to, std::string_view path, std::string_view words) {
+        auto json = skinned_quad();
+        replace_once(json, from, to);
+        const auto opened = open_text(folder, json);
+        INFO(problems(opened.errors));
+        CHECK_FALSE(opened);
+        CHECK(has(opened.errors, path, words));
+    };
+    refused(R"("joints":[1,2],"inverseBindMatrices":4)", R"("joints":[1,2,3],"inverseBindMatrices":4)", "skins[0].inverseBindMatrices",
+            "needs a 4x4 matrix for each of its 3 joints");
+    // Keys out of order.
+    const auto unordered = open_text(folder, skinned_quad({}, {0, 2, 1}));
+    CHECK_FALSE(unordered);
+    CHECK(has(unordered.errors, "animations[0].channels[0]", "does not increase"));
+    // A skin on a node without a mesh is left out, with a warning.
+    auto meshless = skinned_quad();
+    replace_once(meshless, R"({"name":"Hips","children":[2,3,4]})", R"({"name":"Hips","children":[2,3,4],"skin":0})");
+    const auto warned = open_text(folder, meshless);
+    REQUIRE_OPEN(warned);
+    CHECK(has(warned.file->document().warnings, "nodes[1]", "has a skin but no mesh"));
+    CHECK_FALSE(warned.file->document().nodes[1].skin);
+    // Negative weights fail the primitive's geometry, with the attributes' names.
+    const auto negative = open_text(folder, skinned_quad({1, 0, 0, 0, 1, 0, 0, 0, -1, 2, 0, 0, 1, 0, 0, 0}));
+    REQUIRE_OPEN(negative);
+    const auto geometry = negative.file->primitive(0, 0);
+    CHECK_FALSE(geometry);
+    CHECK(geometry.error.find("JOINTS_0 or WEIGHTS_0") != std::string::npos);
 }
 
 TEST_CASE("Every Khronos sample Maya reads opens, with drawable geometry and decodable images", "[assets][gltf][samples]") {

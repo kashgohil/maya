@@ -54,7 +54,7 @@ public:
 }
 
 TEST_CASE("Property schemas have stable identities, discoverable defaults, and typed access", "[properties]") {
-    REQUIRE(component_schemas().size() == 12);
+    REQUIRE(component_schemas().size() == 14);
     auto ids = std::set<ComponentId>{};
     auto names = std::set<std::string_view>{};
     for (const auto& schema : component_schemas()) {
@@ -454,4 +454,43 @@ TEST_CASE("Environment components name an environment asset, its intensity and r
     REQUIRE(edit(value, 1, AssetRef<EnvironmentAsset>{texture}, context).error == PropertyError::wrong_reference_type);
     REQUIRE(edit(value, 1, AssetRef<EnvironmentAsset>{{9, 9}}, context).error == PropertyError::missing_reference);
     REQUIRE(edit(value, 1, AssetRef<TextureAsset>{environment}, context).error == PropertyError::type_mismatch);
+}
+
+TEST_CASE("Skin and animation components name a skin and a clip, and how the clip plays", "[properties][animation]") {
+    REQUIRE(static_cast<uint32_t>(ComponentId::skin) == 13); // #1038
+    REQUIRE(static_cast<uint32_t>(ComponentId::animation) == 14);
+    REQUIRE(component_schema("maya.skin")->id == ComponentId::skin);
+    REQUIRE(component_schema("maya.animation")->id == ComponentId::animation);
+    REQUIRE(property_schema(ComponentId::skin, "skin")->type == PropertyType::skin_ref);
+    REQUIRE(property_schema(ComponentId::skin, "skin")->encoding == PropertyEncoding::persistent_asset_id);
+    REQUIRE(property_schema(ComponentId::animation, "clip")->type == PropertyType::animation_ref);
+    REQUIRE(property_schema(ComponentId::animation, "clip")->encoding == PropertyEncoding::persistent_asset_id);
+    REQUIRE(property_schema(ComponentId::animation, "start")->units == "s");
+    // Defaults: no clip, playing and looping at normal speed from the start.
+    const auto defaults = AnimationComponent{};
+    CHECK(defaults.playing);
+    CHECK(defaults.loop);
+    CHECK(defaults.speed == 1.0f);
+    CHECK(defaults.start == 0.0f);
+    auto value = ComponentValue{AnimationComponent{}};
+    CHECK(edit(value, 4, -2.5f));
+    CHECK(edit(value, 4, 101.0f).error == PropertyError::invalid_value);
+    CHECK(edit(value, 4, NAN).error == PropertyError::invalid_value);
+    CHECK(edit(value, 5, 3.0f));
+    CHECK(edit(value, 5, -0.1f).error == PropertyError::invalid_value);
+    CHECK(edit(value, 2, false));
+    CHECK_FALSE(std::get<AnimationComponent>(value).playing);
+    // References are checked against the catalog as a skin and a clip.
+    const auto skin = AssetId{0x616e, 1}, clip = AssetId{0x616e, 2};
+    const auto context = PropertyValidationContext{[&](AssetId id, ReferenceKind kind) {
+        if (id == skin) return kind == ReferenceKind::skin ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+        if (id == clip) return kind == ReferenceKind::animation ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+        return ReferenceStatus::missing;
+    }};
+    CHECK(edit(value, 1, AssetRef<AnimationAsset>{clip}, context));
+    CHECK(edit(value, 1, AssetRef<AnimationAsset>{skin}, context).error == PropertyError::wrong_reference_type);
+    CHECK(edit(value, 1, AssetRef<SkinAsset>{clip}, context).error == PropertyError::type_mismatch);
+    auto skinned = ComponentValue{SkinComponent{}};
+    CHECK(edit(skinned, 1, AssetRef<SkinAsset>{skin}, context));
+    CHECK(edit(skinned, 1, AssetRef<SkinAsset>{{9, 9}}, context).error == PropertyError::missing_reference);
 }

@@ -759,6 +759,33 @@ TEST_CASE("Environment components round-trip as readable scene text", "[scene][e
     CHECK_FALSE(read_scene(std::string_view(replace(text, "environment 6d617961 59", "environment sky")), any));
 }
 
+TEST_CASE("Skin and animation components round-trip as readable scene text", "[scene][animation]") {
+    const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    auto document = SceneDocument{};
+    document.entities = {SceneEntity{EntityId{1, 1}, {}, {TransformComponent{}, AnimationComponent{AssetRef<AnimationAsset>{{0x616e, 0x2}}, false, true, -1.5f, 0.25f}}},
+                         SceneEntity{EntityId{1, 2}, EntityId{1, 1}, {TransformComponent{}, SkinComponent{AssetRef<SkinAsset>{{0x616e, 0x1}}}}}};
+    const auto text = encode(document, any);
+    CHECK(text.find("  component maya.animation 1\n    clip 616e 2\n    playing false\n    loop true\n    speed -1.5\n    start 0.25\n") !=
+          std::string::npos);
+    CHECK(text.find("  component maya.skin 1\n    skin 616e 1\n") != std::string::npos);
+    auto loaded = read_scene(std::string_view(text), any);
+    REQUIRE(loaded);
+    const auto& animation = std::get<AnimationComponent>(loaded.document.entities[0].components[1]);
+    CHECK(animation.clip.id == AssetId{0x616e, 0x2});
+    CHECK(animation.speed == -1.5f);
+    CHECK(encode(loaded.document, any) == text);
+    const auto none = read_scene(std::string_view(replace(text, "clip 616e 2", "clip none")), any);
+    REQUIRE(none);
+    CHECK_FALSE(std::get<AnimationComponent>(none.document.entities[0].components[1]).clip.valid());
+    CHECK_FALSE(read_scene(std::string_view(replace(text, "skin 616e 1", "skin walk")), any));
+    // A clip where a skin belongs is refused by the catalog.
+    const auto kinds = PropertyValidationContext{[](AssetId id, ReferenceKind kind) {
+        return (id.low == 2) == (kind == ReferenceKind::animation) ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+    }};
+    CHECK(read_scene(std::string_view(text), kinds));
+    CHECK_FALSE(read_scene(std::string_view(replace(text, "skin 616e 1", "skin 616e 2")), kinds));
+}
+
 TEST_CASE("Version 1 lights load with point and spot intensities converted from lumens to candela, and save as version 2", "[scene][lights]") {
     Project project;
     // Lights written before #1034: point and spot intensities in lumens (4 pi x candela), no shadow settings.

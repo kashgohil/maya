@@ -1,0 +1,14 @@
+maya-benchmark 1
+# A1 at a glance: nine walking CesiumMen, for the smoke tests (skipped without the samples).
+name "smoke-a1"
+workload animation
+content "../../build/render-samples"
+models "Models/CesiumMan/glTF-Binary/CesiumMan.glb"
+count 9
+spacing 1.2
+seed 990
+camera 0 3 6 0 0.6 0
+resolution 320 180
+warmup 5
+samples 20
+runs 2

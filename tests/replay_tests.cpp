@@ -71,7 +71,7 @@ std::unique_ptr<PlaySession> start(const SceneDocument& document) {
         const auto found = sources.find(id);
         if (found == sources.end()) return {std::nullopt, "not in the test's sources"};
         return {found->second, {}};
-    });
+    }, {});
     const auto any_asset = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
     auto started = PlaySession::start(document, any_asset, std::move(systems));
     INFO(started.error);

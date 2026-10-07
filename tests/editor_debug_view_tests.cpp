@@ -38,7 +38,7 @@ TEST_CASE("Debug views have stable names, and preferences keep one of them", "[e
         preferences.debug_view = view;
         auto text = std::stringstream{};
         write_preferences(text, preferences);
-        CHECK(text.str().ends_with("\ndebug-view " + std::string(debug_view_name(view)) + "\n"));
+        CHECK(text.str().find("\ndebug-view " + std::string(debug_view_name(view)) + "\n") != std::string::npos);
         CHECK(read_preferences(text).preferences.debug_view == view);
     }
     CHECK_FALSE(debug_view_named("sepia"));

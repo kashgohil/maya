@@ -12,6 +12,8 @@
 #include "maya/package/packager.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "maya/scene/scene_io.hpp"
+#include "maya/simulation/script_assets.hpp"
+#include "maya/simulation/play_session.hpp"
 #include "support/gltf.hpp"
 #include "support/metal_view.hpp"
 #include "support/render_scene.hpp"
@@ -144,6 +146,16 @@ TEST_CASE("A package holds its scenes and exactly the assets they reach, cooked,
             CHECK(record.path.extension() == cooked_environment_extension);
             REQUIRE(payload);
             CHECK(read_cooked_environment(*payload));
+            break;
+        case AssetKind::skin: // R1's CesiumMan has them; the sample project does not
+            CHECK(record.path.extension() == cooked_skin_extension);
+            REQUIRE(payload);
+            CHECK(read_skin(*payload));
+            break;
+        case AssetKind::animation:
+            CHECK(record.path.extension() == cooked_animation_extension);
+            REQUIRE(payload);
+            CHECK(read_animation(*payload));
             break;
         case AssetKind::material:
         case AssetKind::script:
@@ -350,6 +362,68 @@ void launch_elsewhere(const fs::path& bundle, const fs::path& folder, const std:
 }
 } // namespace
 
+TEST_CASE("A package cooks the skins and clips its scenes reach, and its clips play as the project's do", "[package][samples]") {
+    const auto sample = fs::path(MAYA_RENDER_SAMPLES) / "Models/RiggedSimple/glTF-Binary/RiggedSimple.glb";
+    if (!fs::exists(sample)) SKIP("no samples; run tools/fetch_render_samples.sh");
+    const Scratch scratch;
+    const auto project = copy_sample(scratch);
+    fs::create_directories(project / "assets/models");
+    fs::copy_file(sample, project / "assets/models/RiggedSimple.glb");
+    auto opened = open_project(project);
+    REQUIRE(opened);
+    const auto imported = import_gltf(opened.project, "models/RiggedSimple.glb");
+    REQUIRE(imported);
+    const auto bundle = scratch.root / "out/Rigged.app";
+    const auto report = package_project(options_for(project, bundle, {imported.scene}));
+    INFO(report.error);
+    REQUIRE(report);
+    CHECK(report.skins == 1);
+    CHECK(report.animations == 1);
+    // Cooked skins and clips unwrap into what cooking the file's parts gives.
+    auto cooker = AssetCooker{};
+    for (const auto& record : packaged_catalog(bundle)) {
+        const auto source = std::ranges::find(imported.records, record.id, &AssetRecord::id);
+        const auto payload = unwrap_cooked(read_bytes(bundle / "Contents/Resources/project/content" / record.path));
+        if (record.kind == AssetKind::skin) {
+            REQUIRE(payload);
+            CHECK(*payload == write_skin(*cooker.imported_skin(project / "assets/models/RiggedSimple.glb", split_asset_path(source->path).part).value));
+        }
+        if (record.kind == AssetKind::animation) {
+            REQUIRE(payload);
+            CHECK(*payload == write_animation(*cooker.imported_animation(project / "assets/models/RiggedSimple.glb",
+                                                                         split_asset_path(source->path).part).value));
+        }
+    }
+    // The scene played from the package and from the project: the same poses, tick for tick.
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    {
+        const auto sources = source_registry(device, project);
+        const auto packaged = package_registry(device, bundle);
+        const auto play = [](AssetRegistry& registry, const fs::path& scene) {
+            const auto context = asset_property_context(registry);
+            auto loaded = load_scene_file(scene, context);
+            REQUIRE(loaded);
+            auto started = PlaySession::start(std::move(loaded.document), context,
+                                              play_systems(registry_script_sources(registry), registry_animation_clips(registry)));
+            INFO(started.error);
+            REQUIRE(started);
+            auto hashes = std::vector<uint64_t>{};
+            for (int frame = 0; frame < 90; ++frame) {
+                const auto result = started.session->update(1.0 / 60.0);
+                REQUIRE(result.error.empty());
+                CHECK(result.messages.empty());
+                hashes.push_back(started.session->state_hash());
+            }
+            return hashes;
+        };
+        const auto from_project = play(*sources, project / "assets" / imported.scene);
+        CHECK(from_project.front() != from_project.back()); // it moved
+        CHECK(play(*packaged, bundle / "Contents/Resources/project/content" / imported.scene) == from_project);
+    }
+    device.shutdown();
+}
+
 TEST_CASE("The packaged sample draws what the editor draws, and runs from a folder outside the checkout", "[package][gpu]") {
     const Scratch scratch;
     const auto project = copy_sample(scratch);
@@ -465,10 +539,17 @@ TEST_CASE("R1 packaged draws what the editor draws, and runs from a folder outsi
     INFO(report.error);
     REQUIRE(report);
     WARN("R1 package: " << report.bytes << " bytes, " << report.textures << " textures, in " << report.milliseconds << " ms");
+    CHECK(report.skins == 1); // CesiumMan's, and its walk (#1038)
+    CHECK(report.animations == 1);
     {
         test::Gpu gpu;
         const auto sources = source_registry(gpu.device, root);
         const auto packaged = package_registry(gpu.device, bundle);
+        for (const auto& record : packaged_catalog(bundle)) {
+            INFO(record.path.generic_string());
+            if (record.kind == AssetKind::skin) CHECK(packaged->acquire(AssetRef<SkinAsset>{record.id}).lease.value().joints.size() == 19);
+            if (record.kind == AssetKind::animation) CHECK(packaged->acquire(AssetRef<AnimationAsset>{record.id}).lease.value().duration > 1.0f);
+        }
         const auto from_sources = render_scene(gpu, *sources, root / "r1.scene", camera, 480, 270);
         const auto from_package = render_scene(gpu, *packaged, bundle / "Contents/Resources/project/content/r1.scene", camera, 480, 270);
         CHECK(from_package.rgb == from_sources.rgb);

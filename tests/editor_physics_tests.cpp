@@ -184,7 +184,7 @@ TEST_CASE("The physics sample plays the same in the player's path and in the edi
     auto loaded = load_scene_file(file, asset_property_context(*assets.registry));
     REQUIRE(loaded);
     auto player = PlaySession::start(std::move(loaded.document), asset_property_context(*assets.registry),
-                                     play_systems(registry_script_sources(*assets.registry)));
+                                     play_systems(registry_script_sources(*assets.registry), registry_animation_clips(*assets.registry)));
     INFO(player.error);
     REQUIRE(player);
     // The editor's path: the same scene opened, then Play.
