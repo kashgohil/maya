@@ -461,6 +461,11 @@ if(BUILD_TESTING)
     add_test(NAME maya_library_headers COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_library_headers.cmake)
     set_tests_properties(maya_library_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
+    # check_milestone.sh reports failed and flaky tests and keeps their logs (#1027): checked on a throwaway
+    # CTest project with a passing, a failing, and a flaky test.
+    add_test(NAME maya_check_milestone_selftest COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_milestone_selftest.sh"
+        "${CMAKE_CURRENT_BINARY_DIR}/check-milestone-selftest")
+    set_tests_properties(maya_check_milestone_selftest PROPERTIES LABELS "cpu" TIMEOUT 60)
 
     # Khronos sample content from tools/fetch_render_samples.sh: the glTF, animation, and R1 tests read it
     # when it is present.
