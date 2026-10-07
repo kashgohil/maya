@@ -1,8 +1,11 @@
 #include "jolt_runtime.hpp"
+#include "maya/jobs/jobs.hpp"
 #include "maya/physics/physics.hpp"
 
 #include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
+#include <Jolt/Core/FixedSizeFreeList.h>
+#include <Jolt/Core/JobSystemSingleThreaded.h>
+#include <Jolt/Core/JobSystemWithBarrier.h>
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/RegisterTypes.h>
@@ -83,14 +86,50 @@ bool assert_failed(const char* expression, const char* message, const char* file
 }
 #endif
 
-int default_workers() noexcept {
-    const auto hardware = int(std::max(1u, std::thread::hardware_concurrency()));
-    return std::clamp(hardware - 1, 0, 7);
-}
+int default_workers() noexcept { return std::min(job_system().workers(JobTier::frame), 7); }
+
+// Jolt on the process's job system (docs/jobs.md#physics): each Jolt job becomes a frame-tier job when
+// its dependencies are met. Jolt splits a step into at most GetMaxConcurrency() parallel jobs, which is
+// how the configured worker count still limits physics.
+class SharedPoolJobs final : public JPH::JobSystemWithBarrier {
+public:
+    SharedPoolJobs() : JobSystemWithBarrier(JPH::cMaxPhysicsBarriers) { m_jobs.Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsJobs); }
+    void set_workers(int workers) noexcept { m_concurrency.store(workers + 1, std::memory_order_relaxed); }
+    int GetMaxConcurrency() const override { return m_concurrency.load(std::memory_order_relaxed); }
+    JobHandle CreateJob(const char* name, JPH::ColorArg color, const JobFunction& function, JPH::uint32 dependencies) override {
+        auto index = m_jobs.ConstructObject(name, color, this, function, dependencies);
+        while (index == AvailableJobs::cInvalidObjectIndex) { // every slot in use: let running jobs finish
+            std::this_thread::yield();
+            index = m_jobs.ConstructObject(name, color, this, function, dependencies);
+        }
+        auto* job = &m_jobs.Get(index);
+        auto handle = JobHandle(job);
+        if (dependencies == 0) QueueJob(job);
+        return handle;
+    }
+
+protected:
+    void QueueJob(Job* job) override {
+        job->AddRef();
+        job_system().submit(JobTier::frame, [job](JobContext&) {
+            job->Execute();
+            job->Release();
+        });
+    }
+    void QueueJobs(Job** jobs, JPH::uint count) override {
+        for (JPH::uint i = 0; i < count; ++i) QueueJob(jobs[i]);
+    }
+    void FreeJob(Job* job) override { m_jobs.DestructObject(job); }
+
+private:
+    using AvailableJobs = JPH::FixedSizeFreeList<Job>;
+    AvailableJobs m_jobs;
+    std::atomic<int> m_concurrency{1};
+};
 
 std::atomic<int> g_workers{-1}; // requested; -1 is the default
-std::unique_ptr<JPH::JobSystemThreadPool> g_pool;
-int g_pool_workers = -1; // what the pool runs
+std::unique_ptr<SharedPoolJobs> g_pool;
+std::unique_ptr<JPH::JobSystemSingleThreaded> g_single; // zero workers: the stepping thread runs every job
 
 } // namespace
 
@@ -113,13 +152,12 @@ void initialize_jolt() {
 
 JPH::JobSystem& physics_jobs() {
     const auto workers = physics_worker_threads();
-    if (!g_pool) {
-        g_pool = std::make_unique<JPH::JobSystemThreadPool>(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, workers);
-        g_pool_workers = workers;
-    } else if (g_pool_workers != workers) {
-        g_pool->SetNumThreads(workers);
-        g_pool_workers = workers;
+    if (workers == 0) {
+        if (!g_single) g_single = std::make_unique<JPH::JobSystemSingleThreaded>(JPH::cMaxPhysicsJobs);
+        return *g_single;
     }
+    if (!g_pool) g_pool = std::make_unique<SharedPoolJobs>();
+    g_pool->set_workers(std::min(workers, job_system().workers(JobTier::frame)));
     return *g_pool;
 }
 
@@ -159,7 +197,7 @@ void set_physics_worker_threads(int count) {
 
 int physics_worker_threads() noexcept {
     const auto requested = g_workers.load(std::memory_order_relaxed);
-    return requested < 0 ? default_workers() : requested;
+    return requested < 0 ? default_workers() : std::min(requested, job_system().workers(JobTier::frame));
 }
 
 } // namespace maya

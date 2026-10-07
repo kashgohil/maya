@@ -49,6 +49,13 @@ add_library(Maya::World ALIAS MayaWorld)
 target_include_directories(MayaWorld PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaWorld)
 
+# The process's job system: frame and background tiers, dependencies, cancellation, and owner-thread
+# completions (docs/jobs.md). It depends on nothing else in Maya.
+add_library(MayaJobs STATIC src/maya/jobs/jobs.cpp)
+add_library(Maya::Jobs ALIAS MayaJobs)
+target_include_directories(MayaJobs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+maya_target_options(MayaJobs)
+
 # CPU-side graphics API: handle tables, validation, deferred retirement, and a null backend.
 add_library(MayaRHI STATIC
     src/maya/rhi/graphics_device.cpp
@@ -86,7 +93,7 @@ add_library(MayaTextures STATIC
 add_library(Maya::Textures ALIAS MayaTextures)
 target_include_directories(MayaTextures PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(MayaTextures SYSTEM PRIVATE ${stb_SOURCE_DIR} ${astcenc_SOURCE_DIR}/Source)
-target_link_libraries(MayaTextures PUBLIC MayaRHI PRIVATE astcenc-neon-static)
+target_link_libraries(MayaTextures PUBLIC MayaRHI MayaJobs PRIVATE astcenc-neon-static)
 maya_target_options(MayaTextures)
 # stb's own code is not sanitized, like the other dependencies: stb_image_resize2 indexes its sRGB
 # table through a pointer offset before the table (in bounds once indexed), which UBSan reports.
@@ -202,7 +209,7 @@ add_library(MayaPhysics STATIC
     src/maya/physics/jolt_runtime.cpp
     src/maya/physics/physics_world.cpp)
 add_library(Maya::Physics ALIAS MayaPhysics)
-target_link_libraries(MayaPhysics PUBLIC MayaWorld PRIVATE Jolt)
+target_link_libraries(MayaPhysics PUBLIC MayaWorld MayaJobs PRIVATE Jolt)
 maya_target_options(MayaPhysics)
 
 # How this build was made (revision, configuration, compiler), regenerated on every build so benchmark

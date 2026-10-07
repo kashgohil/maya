@@ -1,4 +1,5 @@
 #include "maya/assets/texture_cook.hpp"
+#include "maya/jobs/jobs.hpp"
 #include <astcenc.h>
 #include <stb_image.h>
 #include <stb_image_resize2.h>
@@ -6,7 +7,6 @@
 #include <cmath>
 #include <limits>
 #include <memory>
-#include <thread>
 
 namespace maya {
 namespace {
@@ -51,7 +51,7 @@ struct ContextDeleter {
 };
 
 /// Compresses every level with one astcenc context, `threads` workers per level.
-std::string compress_astc(const std::vector<Level>& levels, Format format, TextureRole role, unsigned threads, std::vector<std::byte>& out) {
+std::string compress_astc(const std::vector<Level>& levels, Format format, TextureRole role, unsigned threads, JobTier tier, std::vector<std::byte>& out) {
     const auto block = block_extent(format);
     const auto profile = is_srgb_format(format) ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR;
     const auto flags = role == TextureRole::normal ? ASTCENC_FLG_MAP_NORMAL : 0u;
@@ -72,12 +72,14 @@ std::string compress_astc(const std::vector<Level>& levels, Format format, Textu
         const auto start = out.size();
         out.resize(start + bytes);
         auto* destination = reinterpret_cast<uint8_t*>(out.data() + start);
+        // astcenc's threads claim blocks as they arrive, so its thread indices can run on however many pool
+        // threads are free; each index runs once, and the last to finish has compressed every block.
         auto statuses = std::vector<astcenc_error>(threads, ASTCENC_SUCCESS);
-        auto workers = std::vector<std::thread>{};
-        workers.reserve(threads);
-        for (unsigned t = 0; t < threads; ++t)
-            workers.emplace_back([&, t] { statuses[t] = astcenc_compress_image(context.get(), &image, &swizzle, destination, bytes, t); });
-        for (auto& worker : workers) worker.join();
+        const auto compress = [&](uint32_t first, uint32_t last) {
+            for (auto t = first; t < last; ++t) statuses[t] = astcenc_compress_image(context.get(), &image, &swizzle, destination, bytes, t);
+        };
+        if (threads == 1) compress(0, 1);
+        else job_system().parallel_for(tier, threads, 1, compress);
         for (const auto status : statuses)
             if (status != ASTCENC_SUCCESS) return std::string("astcenc failed: ") + astcenc_get_error_string(status);
         astcenc_compress_reset(context.get());
@@ -138,8 +140,8 @@ TextureCookResult cook_texture(const SourceImage& source, const TextureSettings&
     image.mip_levels = count;
     image.data.reserve(texture_bytes(image.desc()));
     if (is_compressed_format(format)) {
-        const auto threads = options.threads ? options.threads : std::max(1u, std::thread::hardware_concurrency());
-        if (auto error = compress_astc(levels, format, settings.role, threads, image.data); !error.empty()) {
+        const auto threads = options.threads ? options.threads : unsigned(job_system().workers(options.tier)) + 1;
+        if (auto error = compress_astc(levels, format, settings.role, threads, options.tier, image.data); !error.empty()) {
             result.error = std::move(error);
             result.image = {};
         }

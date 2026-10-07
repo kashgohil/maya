@@ -158,9 +158,10 @@ PhysicsMemory physics_memory() noexcept;
 std::string physics_configuration();
 void reset_physics_peak() noexcept;
 
-/// Worker threads in the process's one physics job pool; the calling thread also runs jobs. -1
-/// chooses the default (one less than the hardware threads, at most 7). Results are the same for any
-/// count. Takes effect for the next step; call it on the thread that steps worlds.
+/// How many of the job system's frame workers a step may use at once (docs/jobs.md#physics); the
+/// stepping thread also runs jobs. -1 chooses the default (the frame tier's workers, at most 7); 0 runs
+/// every job on the stepping thread; larger counts are capped at the frame tier's workers. Results are the
+/// same for any count. Takes effect for the next step; call it on the thread that steps worlds.
 void set_physics_worker_threads(int count);
 int physics_worker_threads() noexcept;
 

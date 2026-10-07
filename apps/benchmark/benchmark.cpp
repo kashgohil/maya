@@ -951,10 +951,52 @@ Result run(const Manifest& manifest, GraphicsDevice& device, std::string rendere
     result.manifest = manifest;
     result.system = system_info();
     result.build = build_info();
+    job_system().reset_peaks();
+    result.jobs.start = job_system().stats();
+    const auto watch = Stopwatch{};
     run_workload(result, manifest, device, std::move(renderer_shader), poll);
+    result.jobs.end = job_system().stats();
+    result.jobs.seconds = watch.milliseconds() / 1000.0;
+    for (const auto& samples : result.runs) result.jobs.frames += samples.frame.size();
+    if (result.uninstrumented) result.jobs.frames += result.uninstrumented->frame.size();
+    for (const auto& physics : result.physics_runs) result.jobs.frames += physics.tick.size();
     result.thermal_state_at_end = system_info().thermal_state; // throttling during a run shows here
     result.thread_qos = thread_qos();
     return result;
+}
+
+// What the job system did during the benchmark: counts and busy time by tier, per measured frame where
+// there were frames, and the completion queues' work (docs/jobs.md#instruments).
+void write_jobs(Json& json, const JobsRecord& jobs) {
+    json.key("jobs");
+    json.open('{');
+    json.field("seconds", jobs.seconds);
+    json.field("frames", jobs.frames);
+    const auto tier = [&](std::string_view name, const JobTierStats& start, const JobTierStats& end) {
+        json.key(name);
+        json.open('{');
+        json.field("workers", end.workers);
+        json.field("submitted", end.submitted - start.submitted);
+        json.field("succeeded", end.succeeded - start.succeeded);
+        json.field("failed", end.failed - start.failed);
+        json.field("cancelled", end.cancelled - start.cancelled);
+        json.field("busy_ms", end.busy_ms - start.busy_ms);
+        json.field("queued_peak", end.queued_peak);
+        json.key("jobs_per_frame");
+        if (jobs.frames) json.value(double(end.submitted - start.submitted) / double(jobs.frames)); else json.null();
+        json.key("busy_ms_per_frame");
+        if (jobs.frames) json.value((end.busy_ms - start.busy_ms) / double(jobs.frames)); else json.null();
+        json.close('}');
+    };
+    tier("frame", jobs.start.frame, jobs.end.frame);
+    tier("background", jobs.start.background, jobs.end.background);
+    json.key("completions");
+    json.open('{');
+    json.field("applied", jobs.end.completions_applied - jobs.start.completions_applied);
+    json.field("discarded", jobs.end.completions_discarded - jobs.start.completions_discarded);
+    json.field("drain_ms", jobs.end.drain_ms - jobs.start.drain_ms);
+    json.close('}');
+    json.close('}');
 }
 
 std::string to_json(const Result& r) {
@@ -1058,6 +1100,7 @@ std::string to_json(const Result& r) {
     json.field("skinned_instances", c.skinned);
     json.field("joints_per_view", c.joints);
     json.close('}');
+    write_jobs(json, r.jobs);
     json.key("load");
     if (r.load) {
         json.open('{');

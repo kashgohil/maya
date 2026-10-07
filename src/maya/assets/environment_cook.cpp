@@ -1,6 +1,5 @@
 #include "maya/assets/environment_cook.hpp"
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -12,7 +11,6 @@
 #include <ostream>
 #include <sstream>
 #include <stb_image.h>
-#include <thread>
 
 namespace maya {
 namespace {
@@ -114,17 +112,15 @@ std::array<double, 9> sh_basis(double x, double y, double z) {
             0.315392 * (3.0 * z * z - 1.0), 1.092548 * x * z, 0.546274 * (x * x - y * y)};
 }
 
-template<class Work> void parallel(uint32_t tasks, unsigned threads, Work&& work) {
-    if (threads == 0) threads = std::max(1u, std::thread::hardware_concurrency());
-    threads = std::min(threads, std::max(tasks, 1u));
-    auto next = std::atomic<uint32_t>{0};
-    const auto run = [&] {
-        for (auto task = next++; task < tasks; task = next++) work(task);
-    };
-    auto pool = std::vector<std::thread>{};
-    for (unsigned i = 1; i < threads; ++i) pool.emplace_back(run);
-    run();
-    for (auto& thread : pool) thread.join();
+// One thread alone (threads == 1), or the job system's tier with the calling thread (docs/jobs.md#cooking).
+template<class Work> void parallel(uint32_t tasks, unsigned threads, JobTier tier, Work&& work) {
+    if (threads == 1) {
+        for (uint32_t task = 0; task < tasks; ++task) work(task);
+        return;
+    }
+    job_system().parallel_for(tier, tasks, 1, [&](uint32_t first, uint32_t last) {
+        for (auto task = first; task < last; ++task) work(task);
+    });
 }
 } // namespace
 
@@ -244,7 +240,7 @@ math::Vec3 evaluate_irradiance(const std::array<math::Vec3, 9>& c, const math::V
     return {std::max(e.x, 0.0f), std::max(e.y, 0.0f), std::max(e.z, 0.0f)};
 }
 
-CookedEnvironment cook_environment(const HdrImage& image, const EnvironmentSettings& settings, unsigned threads) {
+CookedEnvironment cook_environment(const HdrImage& image, const EnvironmentSettings& settings, unsigned threads, JobTier tier) {
     const auto start = std::chrono::steady_clock::now();
     auto cooked = CookedEnvironment{};
     const auto source = Equirect(image);
@@ -292,7 +288,7 @@ CookedEnvironment cook_environment(const HdrImage& image, const EnvironmentSetti
     cooked.specular.resize(total);
     const auto texel_solid_angle = 4.0 * pi / (double(image.width) * image.height);
     const auto mirror_lod = float(std::max(0.0, std::log2(double(image.width) / (4.0 * settings.specular_size))));
-    parallel(cooked.specular_levels * 6, threads, [&](uint32_t task) {
+    parallel(cooked.specular_levels * 6, threads, tier, [&](uint32_t task) {
         const auto level = task / 6, face = task % 6;
         const auto size = settings.specular_size >> level;
         const auto roughness = cooked.specular_levels > 1 ? double(level) / double(cooked.specular_levels - 1) : 0.0;

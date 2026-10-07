@@ -11,7 +11,7 @@ namespace maya::detail {
 /// They are kept until exit: Jolt's type registry is global, not per world.
 void initialize_jolt();
 
-/// The process's one job pool, created on first use with the configured worker count.
+/// Jolt's view of the process's job system (its frame tier), or the stepping thread alone for zero workers.
 JPH::JobSystem& physics_jobs();
 
 } // namespace maya::detail

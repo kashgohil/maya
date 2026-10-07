@@ -1,5 +1,6 @@
 #pragma once
 #include "maya/assets/texture_data.hpp"
+#include "maya/jobs/jobs.hpp"
 
 namespace maya {
 /// A decoded source image as straight-alpha RGBA8 rows, exactly as stored in the file: no color
@@ -21,7 +22,8 @@ SourceImageResult decode_image(std::span<const std::byte> file, uint32_t max_dim
 
 struct TextureCookOptions {
     bool astc = true; // when false, ASTC settings cook to RGBA8 (the device cannot sample ASTC)
-    unsigned threads = 0; // ASTC compression threads; 0 uses every core
+    unsigned threads = 0; // ASTC compression threads: 1 is the calling thread alone; 0 is the tier's workers and the caller
+    JobTier tier = JobTier::frame; // the job system tier that compresses; frame while a caller waits (docs/jobs.md#cooking)
 };
 struct TextureCookResult {
     TextureImage image;

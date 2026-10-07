@@ -3,6 +3,7 @@
 #include "maya/core/build_info.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/system_info.hpp"
+#include "maya/jobs/jobs.hpp"
 #include "maya/metrics/metrics.hpp"
 #include "maya/renderer/render_snapshot.hpp"
 #include "maya/rhi/graphics_device.hpp"
@@ -172,6 +173,13 @@ struct ImportSample {
     std::string cache_digest; // of every cache entry, in path order: equal across runs when cooking is deterministic
 };
 
+/// The job system over the whole benchmark (docs/jobs.md#instruments).
+struct JobsRecord {
+    JobStats start, end;
+    double seconds = 0.0; // wall time between the two
+    uint64_t frames = 0; // frames sampled (or physics ticks run) in that time
+};
+
 struct Result {
     Manifest manifest;
     SystemInfo system;
@@ -195,6 +203,7 @@ struct Result {
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended
     std::string thread_qos; // the measuring thread's quality-of-service class
     std::optional<SceneLoad> load; // scene workload: loading it before the runs
+    JobsRecord jobs;
 };
 
 /// P1's scene, version 1, as scene data (docs/architecture/performance-baseline.md#p1-physics-stress),

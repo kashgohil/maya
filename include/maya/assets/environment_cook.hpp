@@ -3,6 +3,7 @@
 // surroundings, cooked on the CPU into what the renderer samples, as the rendering and content record
 // chose. No GPU compute is used.
 
+#include "maya/jobs/jobs.hpp"
 #include "maya/math/vector.hpp"
 #include <array>
 #include <cstddef>
@@ -66,9 +67,11 @@ struct CookedEnvironment {
     std::vector<std::byte> specular;
     double milliseconds = 0; // cooking time, decoding excluded
 };
-/// Cooks an environment on `threads` threads (0: every core). Deterministic: the same image and
-/// settings give the same bytes, whatever the thread count.
-CookedEnvironment cook_environment(const HdrImage& image, const EnvironmentSettings& settings, unsigned threads = 0);
+/// Cooks an environment on the job system's `tier` and the calling thread, or on the calling thread alone
+/// when `threads` is 1 (docs/jobs.md#cooking). Deterministic: the same image and settings give the same
+/// bytes, whatever the thread count.
+CookedEnvironment cook_environment(const HdrImage& image, const EnvironmentSettings& settings, unsigned threads = 0,
+                                   JobTier tier = JobTier::frame);
 /// A cooked environment as bytes, for the cook cache: read_cooked_environment gives it back exactly,
 /// or null for bytes that are not one.
 std::vector<std::byte> write_cooked_environment(const CookedEnvironment& cooked);
