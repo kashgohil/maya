@@ -17,7 +17,6 @@ option(MAYA_BUILD_EDITOR "Build the editor application" ON)
 option(MAYA_BUILD_PLAYER "Build the standalone player with the basic-scene project" ON)
 option(MAYA_BUILD_SAMPLES "Build sample executables" ON)
 option(MAYA_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(MAYA_BUILD_PROTOTYPES "Build the rendering and content library prototypes (#1030)" OFF)
 set(MAYA_SANITIZERS "address,undefined" CACHE STRING "Comma-separated Clang sanitizers when enabled")
 include(CTest)
 include(FetchContent)
@@ -313,6 +312,15 @@ if(MAYA_BUILD_PLAYER)
 endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
+    # R1, the realistic reference environment (#1040), assembled from the fetched samples (docs/acceptance.md#r1).
+    add_library(MayaR1 STATIC apps/r1/r1.cpp)
+    target_include_directories(MayaR1 PUBLIC apps/r1)
+    target_link_libraries(MayaR1 PUBLIC MayaImport MayaScene)
+    maya_target_options(MayaR1)
+    add_executable(maya_r1 apps/r1/main.cpp)
+    target_link_libraries(maya_r1 PRIVATE MayaR1)
+    maya_target_options(maya_r1)
+
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
     add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp apps/benchmark/import_workload.cpp
         apps/benchmark/animation_workload.cpp)
@@ -381,50 +389,6 @@ if(MAYA_BUILD_SAMPLES)
     add_executable(maya_sample samples/basic_scene/main.cpp)
     target_link_libraries(maya_sample PRIVATE MayaDesktop MayaPlayer)
     maya_target_options(maya_sample)
-endif()
-
-if(MAYA_BUILD_PROTOTYPES)
-    # Library prototypes for the rendering and content decisions (#1030,
-    # docs/architecture/rendering-content-decision.md). They are not engine code; the milestone's issues
-    # replace them. Sources are pinned; their headers are system headers, so Maya's warnings apply to
-    # Maya code only. Sample models come from tools/fetch_render_samples.sh, never from the repository.
-    enable_language(C)
-    function(maya_prototype_system_headers target)
-        get_target_property(directories ${target} INTERFACE_INCLUDE_DIRECTORIES)
-        set_target_properties(${target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${directories}")
-    endfunction()
-
-    # glTF 2.0 parsers: cgltf (MIT, single header), fastgltf (MIT, with simdjson), tinygltf 3 (MIT, C11).
-    # cgltf is the engine's own dependency (above).
-    FetchContent_Declare(tinygltf GIT_REPOSITORY https://github.com/syoyo/tinygltf.git GIT_TAG v3.0.1 GIT_SHALLOW TRUE)
-    FetchContent_Declare(fastgltf GIT_REPOSITORY https://github.com/spnda/fastgltf.git GIT_TAG v0.9.1 GIT_SHALLOW TRUE)
-    # stb and astc-encoder are the engine's own dependencies (above).
-    FetchContent_MakeAvailable(tinygltf)
-    set(FASTGLTF_DOWNLOAD_SIMDJSON ON CACHE BOOL "" FORCE)
-    set(FASTGLTF_COMPILE_AS_CPP20 OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(fastgltf)
-    set_property(DIRECTORY ${fastgltf_SOURCE_DIR} PROPERTY EXCLUDE_FROM_ALL TRUE)
-    maya_prototype_system_headers(fastgltf)
-
-    add_library(MayaPrototypeThirdParty STATIC prototypes/content/third_party.cpp ${tinygltf_SOURCE_DIR}/tiny_gltf_v3.c)
-    target_include_directories(MayaPrototypeThirdParty SYSTEM PUBLIC ${cgltf_SOURCE_DIR} ${tinygltf_SOURCE_DIR} ${stb_SOURCE_DIR}
-        ${astcenc_SOURCE_DIR}/Source)
-    target_compile_definitions(MayaPrototypeThirdParty PRIVATE TINYGLTF3_ENABLE_FS)
-    target_link_libraries(MayaPrototypeThirdParty PUBLIC fastgltf astcenc-neon-static)
-    set_source_files_properties(${tinygltf_SOURCE_DIR}/tiny_gltf_v3.c PROPERTIES COMPILE_OPTIONS "-w")
-
-    add_executable(maya_import_prototype prototypes/content/import_prototype.cpp)
-    add_executable(maya_texture_prototype prototypes/content/texture_prototype.mm)
-    add_executable(maya_render_prototype prototypes/render/render_prototype.mm)
-    foreach(prototype maya_import_prototype maya_texture_prototype maya_render_prototype)
-        target_link_libraries(${prototype} PRIVATE MayaPrototypeThirdParty)
-        target_include_directories(${prototype} PRIVATE prototypes)
-        maya_target_options(${prototype})
-    endforeach()
-    target_link_libraries(maya_texture_prototype PRIVATE "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO" ${METAL_LIBRARY})
-    target_link_libraries(maya_render_prototype PRIVATE "-framework Foundation" ${METAL_LIBRARY})
-    target_compile_options(maya_texture_prototype PRIVATE -fobjc-arc)
-    target_compile_options(maya_render_prototype PRIVATE -fobjc-arc)
 endif()
 
 if(BUILD_TESTING)
@@ -498,8 +462,8 @@ if(BUILD_TESTING)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_library_headers.cmake)
     set_tests_properties(maya_library_headers PROPERTIES LABELS "cpu;isolation" TIMEOUT 30)
 
-    # Khronos sample content from tools/fetch_render_samples.sh: the #1030 prototypes need it, and the
-    # glTF tests read it when it is present.
+    # Khronos sample content from tools/fetch_render_samples.sh: the glTF, animation, and R1 tests read it
+    # when it is present.
     set(MAYA_RENDER_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/render-samples" CACHE PATH
         "Khronos sample content, from tools/fetch_render_samples.sh")
     add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp tests/material_tests.cpp

@@ -131,6 +131,13 @@ struct Counters {
     size_t joints = 0; // skin matrices uploaded per view
 };
 
+/// Scene workload: loading the scene, once before the runs, in milliseconds.
+struct SceneLoad {
+    double scene_ms = 0.0; // read and validate the scene file
+    double start_ms = 0.0; // build its World and start its play session
+    double first_frame_ms = 0.0; // the first frame, which loads what it draws (through the project's cook cache)
+};
+
 /// P1: one run's per-tick samples (milliseconds and counts) and what it ended with.
 struct PhysicsRun {
     int workers = -1; // as configured
@@ -187,6 +194,7 @@ struct Result {
     std::optional<double> refresh_hz; // presenting runs: the display's refresh rate
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended
     std::string thread_qos; // the measuring thread's quality-of-service class
+    std::optional<SceneLoad> load; // scene workload: loading it before the runs
 };
 
 /// P1's scene, version 1, as scene data (docs/architecture/performance-baseline.md#p1-physics-stress),

@@ -34,7 +34,10 @@ else
     note "unavailable  GPU checks: no Metal device"
     note "unavailable  Windowed checks: no Metal device"
 fi
-note "manual       Interactive checks: docs/acceptance.md, steps 1-9, and physics and behavior steps 1-8"
-note "manual       Benchmark baselines: a Release build and benchmarks/*.benchmark, including P1 (docs/performance.md)"
+if [ ! -f "$build/r1/r1.scene" ]; then
+    note "unavailable  R1 checks (maya_r1_*, R1 packaging): no fetched samples; run tools/fetch_render_samples.sh"
+fi
+note "manual       Interactive checks: docs/acceptance.md, steps 1-9, physics and behavior steps 1-8, and rendering and content steps 1-8"
+note "manual       Benchmark baselines: a Release build and benchmarks/*.benchmark, including P1, A1, and R1 (docs/performance.md)"
 printf "\nSummary:%s\n" "$summary"
 exit $status

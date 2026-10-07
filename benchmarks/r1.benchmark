@@ -1,0 +1,17 @@
+maya-benchmark 1
+# R1, the realistic reference environment (#1040, recipe version 1, docs/acceptance.md#r1): ABeautifulGame,
+# FlightHelmet, and CesiumMan walking a loop around the board, under the Aerodynamics Workshop HDRI with a
+# shadowed sun, a shadowed spot light, and two point lights, seen from the camera that circles the board in
+# 600 ticks. Every system of play runs, as in the player, and the scene loads through its cook cache.
+# Assemble it first, with ASTC textures as packages ship them:
+#   maya_r1 build/render-samples build/r1-astc
+# then load it once (any run), so the cook cache is warm before measuring.
+name "r1"
+workload scene
+project "../build/r1-astc"
+scene "r1.scene"
+resolution 1920 1080
+upload_mib 64
+warmup 600
+samples 3000
+runs 3

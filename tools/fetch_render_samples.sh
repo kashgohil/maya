@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches the glTF sample models #1030's prototypes and #1038's skinning tests read, from
+# Fetches the glTF sample models the glTF, animation, and R1 tests read (#1030, #1038, #1040), from
 # KhronosGroup/glTF-Sample-Assets at a pinned commit, and one Poly Haven HDRI by its hash, into a folder
 # outside the repository (default: build/render-samples). The models keep their own licenses (each
 # folder's README and LICENSE.md); none of them is committed here.

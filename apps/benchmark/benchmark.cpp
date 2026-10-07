@@ -1,5 +1,6 @@
 #include "benchmark.hpp"
 #include "benchmark_detail.hpp"
+#include "maya/assets/cook_cache.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/renderer/renderer.hpp"
@@ -142,6 +143,8 @@ struct FrameSample {
 };
 /// The systems each workload plays: A1 every system of play, so its clips play; the others the built-in ones.
 std::vector<std::unique_ptr<SimulationSystem>> systems_for(const Manifest& manifest, AssetRegistry& registry) {
+    if (manifest.workload == Workload::scene) // as the player runs it: scripts and clips too
+        return play_systems(registry_script_sources(registry), registry_animation_clips(registry));
     if (manifest.workload != Workload::animation) return builtin_systems();
     return play_systems([](AssetId) -> ScriptSourceResult { return {std::nullopt, "the benchmark has no scripts"}; },
                         registry_animation_clips(registry));
@@ -404,6 +407,10 @@ void write_memory(Json& json, std::string_view name, const MemorySample& m) {
     json.field("mesh_cpu_bytes", m.assets.mesh_cpu_bytes);
     json.field("resident_textures", m.assets.textures);
     json.field("texture_gpu_bytes", m.assets.texture_gpu_bytes);
+    json.field("resident_environments", m.assets.environments);
+    json.field("environment_gpu_bytes", m.assets.environment_gpu_bytes);
+    json.field("resident_skins", m.assets.skins);
+    json.field("resident_animations", m.assets.animations);
     json.close('}');
     json.close('}');
     json.key("reported");
@@ -799,7 +806,9 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         }
         auto opened = open_project(project_path);
         if (!opened) throw std::runtime_error(opened.error);
-        auto assets = open_project_assets(opened.project, std::make_unique<FileAssetProvider>(device));
+        // A project's scene loads through its cook cache, as the player does; generated scenes cook nothing.
+        auto cache = manifest.workload == Workload::scene ? std::make_shared<CookCache>(cook_cache_folder(opened.project)) : nullptr;
+        auto assets = open_project_assets(opened.project, std::make_unique<FileAssetProvider>(device, cache));
         if (!assets) throw std::runtime_error(assets.error);
         auto& registry = *assets.registry;
         const auto context = asset_property_context(registry);
@@ -809,12 +818,11 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (manifest.workload == Workload::scene) {
             const auto path = manifest.scene.empty() ? opened.project.startup_scene : opened.project.resolve(manifest.scene);
             if (!path) throw std::runtime_error("the project has no scene to run; name one with 'scene'");
+            auto clock = Stopwatch{};
             auto loaded = load_scene_file(*path, context);
             if (!loaded) throw std::runtime_error(loaded.diagnostics.front().message);
+            result.load = SceneLoad{clock.milliseconds()};
             document = std::move(loaded.document);
-            auto probe = PlaySession::start(document, context, {});
-            if (!probe || !probe.session->camera()) throw std::runtime_error("the scene has no camera");
-            camera = *probe.session->camera();
         } else if (manifest.workload == Workload::animation) {
             auto loaded = load_scene_file(animated_scene_path, context);
             if (!loaded) throw std::runtime_error(loaded.diagnostics.front().message);
@@ -845,6 +853,17 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (auto ended = device.end_frame(); !warmed) warmed = std::move(ended);
         if (warmed) throw std::runtime_error(warmed.message);
         result.baseline = memory(device, registry, 0);
+        if (manifest.workload == Workload::scene) {
+            // Starting play and the first frame, which loads what the scene draws through the cook cache.
+            auto clock = Stopwatch{};
+            auto probe = PlaySession::start(document, context, systems_for(manifest, registry));
+            if (!probe) throw std::runtime_error(probe.error.empty() ? probe.diagnostics.front().message : probe.error);
+            if (!probe.session->camera()) throw std::runtime_error("the scene has no camera");
+            result.load->start_ms = clock.milliseconds();
+            camera = *probe.session->camera();
+            result.load->first_frame_ms = run_frame(stage, *probe.session, camera, false).frame;
+            device.take_gpu_timings();
+        }
 
         if (manifest.workload == Workload::instances || manifest.workload == Workload::scene || manifest.workload == Workload::animation) {
             for (uint32_t i = 0; i < manifest.runs; ++i)
@@ -1039,6 +1058,16 @@ std::string to_json(const Result& r) {
     json.field("skinned_instances", c.skinned);
     json.field("joints_per_view", c.joints);
     json.close('}');
+    json.key("load");
+    if (r.load) {
+        json.open('{');
+        json.field("scene_ms", r.load->scene_ms);
+        json.field("start_ms", r.load->start_ms);
+        json.field("first_frame_ms", r.load->first_frame_ms);
+        json.close('}');
+    } else {
+        json.null();
+    }
     write_memory(json, "baseline_memory", r.baseline);
     write_memory(json, "resident_memory", r.resident);
     json.key("runs");
@@ -1254,6 +1283,9 @@ std::string to_text(const Result& r) {
         out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
             << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "
             << r.counters.shadow_draws << " shadow draws per view\n";
+    if (r.load)
+        out << "  load: scene " << r.load->scene_ms << " ms, start " << r.load->start_ms << " ms, first frame " << r.load->first_frame_ms
+            << " ms (through the project's cook cache: cooking first when it is empty)\n";
     if (!r.runs.empty() && r.manifest.workload == Workload::animation)
         out << "  " << r.counters.animated << " playing clips, " << r.counters.skinned << " drawn skinned, " << r.counters.joints
             << " joints per view\n";
