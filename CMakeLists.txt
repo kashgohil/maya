@@ -539,33 +539,21 @@ if(BUILD_TESTING)
     set(MAYA_GPU_TEST_ENVIRONMENT "MTL_DEBUG_LAYER=1")
     set_tests_properties(maya_rhi PROPERTIES LABELS "gpu" TIMEOUT 60 ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
 
-    # The #1030 library prototypes check what the rendering and content decision relies on. They need
-    # the sample content from tools/fetch_render_samples.sh, and skip (77) without it.
-    if(MAYA_BUILD_PROTOTYPES)
-        add_test(NAME maya_prototype_import COMMAND maya_import_prototype "${MAYA_RENDER_SAMPLES}")
-        set_tests_properties(maya_prototype_import PROPERTIES LABELS "cpu;prototype" TIMEOUT 120 SKIP_RETURN_CODE 77)
-        add_test(NAME maya_prototype_texture COMMAND maya_texture_prototype "${MAYA_RENDER_SAMPLES}")
-        set_tests_properties(maya_prototype_texture PROPERTIES LABELS "cpu;prototype" TIMEOUT 300 SKIP_RETURN_CODE 77)
-        add_test(NAME maya_prototype_render COMMAND maya_render_prototype "${MAYA_RENDER_SAMPLES}"
-            "${CMAKE_CURRENT_BINARY_DIR}/render-prototype")
-        set_tests_properties(maya_prototype_render PROPERTIES LABELS "gpu;prototype" TIMEOUT 120 SKIP_RETURN_CODE 77
-            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
-    endif()
-
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/r1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
-        target_link_libraries(maya_editor_tests PRIVATE MayaEditor Catch2::Catch2WithMain z)
+        target_link_libraries(maya_editor_tests PRIVATE MayaEditor MayaR1 Catch2::Catch2WithMain z)
         set(MAYA_ACCEPTANCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/acceptance")
+        set(MAYA_R1_PROJECT "${CMAKE_CURRENT_BINARY_DIR}/r1")
         target_compile_definitions(maya_editor_tests PRIVATE MAYA_ACCEPTANCE_DIR="${MAYA_ACCEPTANCE_DIR}"
-            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}")
+            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}" MAYA_R1_PROJECT="${MAYA_R1_PROJECT}")
         maya_target_options(maya_editor_tests)
-        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]")
+        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]~[r1]")
         set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 60)
         add_test(NAME maya_editor_gpu COMMAND maya_editor_tests "[gpu]~[acceptance]~[visual]")
         set_tests_properties(maya_editor_gpu PROPERTIES LABELS "gpu;editor" TIMEOUT 60
@@ -573,12 +561,17 @@ if(BUILD_TESTING)
 
         # Milestone acceptance (docs/acceptance.md): authoring in the editor writes a project that the
         # player's path renders on Metal and the real maya_player runs from another directory.
-        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]~[physics]")
+        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]~[physics]~[content]")
         set_tests_properties(maya_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 60
             FIXTURES_SETUP authored_project)
         add_test(NAME maya_acceptance_render COMMAND maya_editor_tests "[acceptance][gpu]")
         set_tests_properties(maya_acceptance_render PROPERTIES LABELS "gpu;acceptance" TIMEOUT 120 RUN_SERIAL TRUE
             FIXTURES_REQUIRED authored_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 3 (#1040): content imported, placed, edited, lit, played, reloaded, and saved in the editor;
+        # package_tests.cpp then packages it and runs it outside the checkout.
+        add_test(NAME maya_content_acceptance_author COMMAND maya_editor_tests "[acceptance][content][author]")
+        set_tests_properties(maya_content_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 120
+            FIXTURES_SETUP content_project)
         # Milestone 2 (#1024): the reference physics interaction authored, played, edited, replayed, reset,
         # and broken in the editor; then the real player runs it from another directory.
         add_test(NAME maya_physics_acceptance_author COMMAND maya_editor_tests "[acceptance][physics][author]")
@@ -592,9 +585,20 @@ if(BUILD_TESTING)
                 WORKING_DIRECTORY "${MAYA_ACCEPTANCE_DIR}/elsewhere" FIXTURES_REQUIRED physics_project
                 ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         endif()
-        add_test(NAME maya_visual_reference COMMAND maya_editor_tests "[visual]")
+        add_test(NAME maya_visual_reference COMMAND maya_editor_tests "[visual]~[r1]")
         set_tests_properties(maya_visual_reference PROPERTIES LABELS "gpu;acceptance;visual" TIMEOUT 120 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 3 (#1040): R1 assembled from the fetched samples (skipped, 77, without them), with RGBA8
+        # textures, which unoptimized builds cook far faster than ASTC; its cook cache stays between runs, so
+        # only the first run cooks. Then its views and camera path against the approved references.
+        add_test(NAME maya_r1_assemble COMMAND maya_r1 --compression rgba8 "${MAYA_RENDER_SAMPLES}" "${MAYA_R1_PROJECT}")
+        set_tests_properties(maya_r1_assemble PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 60 SKIP_RETURN_CODE 77
+            FIXTURES_SETUP r1_project)
+        add_test(NAME maya_r1_steady COMMAND maya_editor_tests "[r1][steady]")
+        set_tests_properties(maya_r1_steady PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 600 FIXTURES_REQUIRED r1_project)
+        add_test(NAME maya_r1_reference COMMAND maya_editor_tests "[r1][visual]")
+        set_tests_properties(maya_r1_reference PROPERTIES LABELS "gpu;acceptance;visual;r1" TIMEOUT 900 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         if(TARGET maya_player)
             add_test(NAME maya_acceptance_player COMMAND ${CMAKE_COMMAND}
                 "-DCOMMAND=$<TARGET_FILE:maya_player>|../Authored Game|levels/authored.scene|--smoke|120"
@@ -691,18 +695,23 @@ if(BUILD_TESTING)
     # Packages (#1039): packaging on the CPU, and packaged players on Metal, run from outside the checkout.
     if(TARGET maya_package)
         add_executable(maya_package_tests tests/package_tests.cpp)
-        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaImport MayaRuntime Catch2::Catch2WithMain z)
+        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaRuntime MayaR1 Catch2::Catch2WithMain z)
         target_include_directories(maya_package_tests PRIVATE tests)
         target_compile_definitions(maya_package_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
             MAYA_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}"
-            MAYA_PLAYER="$<TARGET_FILE:maya_player>")
+            MAYA_PLAYER="$<TARGET_FILE:maya_player>" MAYA_R1_PROJECT="${CMAKE_CURRENT_BINARY_DIR}/r1"
+            MAYA_ACCEPTANCE_DIR="${CMAKE_CURRENT_BINARY_DIR}/acceptance")
         add_dependencies(maya_package_tests maya_player)
         maya_target_options(maya_package_tests)
         add_test(NAME maya_package COMMAND maya_package_tests "~[gpu]")
         set_tests_properties(maya_package PROPERTIES LABELS "cpu;package" TIMEOUT 120)
-        add_test(NAME maya_package_gpu COMMAND maya_package_tests "[gpu]")
-        set_tests_properties(maya_package_gpu PROPERTIES LABELS "gpu;package" TIMEOUT 600 RUN_SERIAL TRUE
-            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        add_test(NAME maya_package_gpu COMMAND maya_package_tests "[gpu]~[acceptance]")
+        set_tests_properties(maya_package_gpu PROPERTIES LABELS "gpu;smoke;package" TIMEOUT 900 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 3 (#1040): the content workflow's scene, packaged and run outside the checkout.
+        add_test(NAME maya_content_acceptance_package COMMAND maya_package_tests "[acceptance][content]")
+        set_tests_properties(maya_content_acceptance_package PROPERTIES LABELS "gpu;smoke;acceptance" TIMEOUT 300 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED content_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
     endif()
 
     # The benchmark runner: its logic on the null device (CPU), and its command line on Metal with

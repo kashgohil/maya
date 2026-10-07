@@ -10,6 +10,7 @@
 #include "maya/assets/registry.hpp"
 #include "maya/import/gltf_import.hpp"
 #include "maya/package/packager.hpp"
+#include "r1.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "maya/scene/scene_io.hpp"
 #include "maya/simulation/script_assets.hpp"
@@ -349,11 +350,11 @@ std::unique_ptr<AssetRegistry> package_registry(GraphicsDevice& device, const fs
     return std::move(assets.registry);
 }
 /// The packaged player, launched from a copy of the bundle in another folder with no way back to the checkout.
-void launch_elsewhere(const fs::path& bundle, const fs::path& folder, const std::string& expect) {
+void launch_elsewhere(const fs::path& bundle, const fs::path& folder, const std::string& expect, const std::string& scene = {}) {
     fs::create_directories(folder);
     const auto copy = folder / bundle.filename();
     fs::copy(bundle, copy, fs::copy_options::recursive);
-    const auto [status, output] = run("cd " + quoted(folder) + " && env -u MAYA_RESOURCES " + quoted(copy / "Contents/MacOS/maya_player") + " --smoke 30");
+    const auto [status, output] = run("cd " + quoted(folder) + " && env -u MAYA_RESOURCES " + quoted(copy / "Contents/MacOS/maya_player") + (scene.empty() ? std::string{} : " " + quoted(fs::path(scene))) + " --smoke 30");
     INFO(output);
     CHECK(status == 0);
     CHECK(output.find("[Player] package ") != std::string::npos);
@@ -456,103 +457,86 @@ TEST_CASE("The packaged sample draws what the editor draws, and runs from a fold
 }
 
 TEST_CASE("R1 packaged draws what the editor draws, and runs from a folder outside the checkout", "[package][gpu][samples]") {
-    const auto samples = fs::path(MAYA_RENDER_SAMPLES);
-    if (!fs::is_directory(samples / "Models") || !fs::is_regular_file(samples / "hdri/aerodynamics_workshop_2k.hdr"))
-        SKIP("no samples; run tools/fetch_render_samples.sh");
-    // R1 as the rendering record defines it: its three models under the workshop HDRI, with a sun, a spot
-    // light, and two point lights.
+    // R1 as maya_r1 assembles it (the r1_project fixture, RGBA8 textures; docs/acceptance.md#r1), packaged
+    // through its warm cook cache.
+    const auto r1 = fs::path(MAYA_R1_PROJECT);
+    if (!fs::is_regular_file(r1 / "r1.scene")) SKIP("R1 is not assembled; fetch the samples (tools/fetch_render_samples.sh) and run the r1_project fixture");
     const Scratch scratch;
-    const auto root = scratch.root / "R1";
-    fs::create_directories(root / "models");
-    fs::create_directories(root / "environments");
-    std::ofstream(root / "project.maya") << "maya-project 1\ncontent \".\"\ncatalog \"catalog.maya\"\nstartup \"r1.scene\"\n";
-    std::ofstream(root / "catalog.maya") << "maya-assets 1\n";
-    auto opened = open_project(root);
-    REQUIRE(opened);
-    auto entities = std::vector<SceneEntity>{};
-    const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
-    const auto place = [&](const char* relative, const math::Vec3& at, float scale) {
-        const auto source = samples / "Models" / relative;
-        const auto target = root / "models" / source.filename();
-        fs::copy_file(source, target);
-        // RGBA8 unless asked for ASTC (MAYA_R1_COMPRESSION=astc), which unoptimized builds cook very slowly.
-        const auto* compression = std::getenv("MAYA_R1_COMPRESSION");
-        std::ofstream(target.string() + ".import") << "maya-import 1\ncompression " << (compression ? compression : "rgba8")
-                                                    << "\nmips on\nscale 1\nup y\nlights on\ncameras on\n";
-        if (source.extension() == ".gltf") {
-            const auto file = GltfFile::open(source);
-            REQUIRE(file);
-            for (const auto& named : file.file->document().files) {
-                fs::create_directories((target.parent_path() / named).parent_path());
-                fs::copy_file(source.parent_path() / named, target.parent_path() / named, fs::copy_options::skip_existing);
-            }
-        }
-        const auto imported = import_gltf(opened.project, fs::path("models") / source.filename());
-        INFO(relative);
-        REQUIRE(imported);
-        auto scene = load_scene_file(root / imported.scene, any);
-        REQUIRE(scene);
-        for (auto& entity : scene.document.entities) {
-            if (!entity.parent)
-                for (auto& component : entity.components)
-                    if (auto* transform = std::get_if<TransformComponent>(&component)) {
-                        transform->translation = at;
-                        transform->scale = math::Vec3{scale};
-                    }
-            entities.push_back(std::move(entity));
-        }
-    };
-    place("ABeautifulGame/glTF-Binary/ABeautifulGame.glb", {0, 0, 0}, 1.0f);
-    place("FlightHelmet/glTF/FlightHelmet.gltf", {-0.9f, 0, 0}, 1.0f);
-    place("CesiumMan/glTF-Binary/CesiumMan.glb", {0.9f, 0, 0}, 0.5f);
-    fs::copy_file(samples / "hdri/aerodynamics_workshop_2k.hdr", root / "environments/workshop.hdr");
-    std::ofstream(root / "environments/workshop.environment") << "maya-environment 1\nsource \"workshop.hdr\"\nspecular_size 128\nsamples 256\n";
-    {
-        auto input = std::ifstream(root / "catalog.maya");
-        auto catalog = read_asset_catalog(input);
-        REQUIRE(catalog);
-        catalog.records.push_back({AssetId{0x52310000, 1}, AssetKind::environment, "environments/workshop.environment"});
-        auto output = std::ofstream(root / "catalog.maya");
-        write_asset_catalog(output, catalog.records);
-    }
-    const auto camera = EntityId{0x52310000, 2};
-    const auto light = [&](uint64_t id, LightComponent value, const math::Vec3& at, const math::Vec3& toward) {
-        entities.push_back({EntityId{0x52310000, id}, std::nullopt, {test::look_transform(at, toward), value}});
-    };
-    entities.push_back({camera, std::nullopt, {test::look_transform({0, 0.6f, 2.4f}, {0, 0.25f, 0}), CameraComponent{}}});
-    light(3, LightComponent{LightKind::directional, {1.0f, 0.95f, 0.9f}, 3.0f}, {2, 4, 3}, {0, 0, 0});
-    light(4, LightComponent{LightKind::spot, {1.0f}, 40.0f, 6.0f, 0.4f, 0.8f}, {0, 2.5f, 1}, {0, 0, 0});
-    light(5, LightComponent{LightKind::point, {1.0f, 0.7f, 0.4f}, 8.0f, 5.0f}, {-1.2f, 1.0f, 0.6f}, {0, 0, 0});
-    light(6, LightComponent{LightKind::point, {0.5f, 0.7f, 1.0f}, 8.0f, 5.0f}, {1.2f, 1.0f, 0.6f}, {0, 0, 0});
-    entities.push_back({EntityId{0x52310000, 7}, std::nullopt, {EnvironmentComponent{AssetRef<EnvironmentAsset>{{0x52310000, 1}}, 1.0f, 0.0f, true}}});
-    const auto context = [&] {
-        auto input = std::ifstream(root / "catalog.maya");
-        return read_asset_catalog(input).records;
-    }();
-    REQUIRE(save_scene_file(root / "r1.scene", SceneDocument{std::move(entities)},
-                            PropertyValidationContext{[&](AssetId id, ReferenceKind) {
-                                return std::ranges::find(context, id, &AssetRecord::id) != context.end() ? ReferenceStatus::valid : ReferenceStatus::missing;
-                            }}).empty());
-
     const auto bundle = scratch.root / "R1.app";
-    const auto report = package_project(options_for(root, bundle));
+    const auto report = package_project(options_for(r1, bundle));
     INFO(report.error);
     REQUIRE(report);
     WARN("R1 package: " << report.bytes << " bytes, " << report.textures << " textures, in " << report.milliseconds << " ms");
-    CHECK(report.skins == 1); // CesiumMan's, and its walk (#1038)
-    CHECK(report.animations == 1);
+    CHECK(report.skins == 1); // CesiumMan's (#1038)
+    CHECK(report.animations == 2); // his walk, and the camera path and walk loop
+    CHECK(report.environments == 1);
     {
         test::Gpu gpu;
-        const auto sources = source_registry(gpu.device, root);
+        const auto sources = source_registry(gpu.device, r1);
         const auto packaged = package_registry(gpu.device, bundle);
         for (const auto& record : packaged_catalog(bundle)) {
             INFO(record.path.generic_string());
             if (record.kind == AssetKind::skin) CHECK(packaged->acquire(AssetRef<SkinAsset>{record.id}).lease.value().joints.size() == 19);
             if (record.kind == AssetKind::animation) CHECK(packaged->acquire(AssetRef<AnimationAsset>{record.id}).lease.value().duration > 1.0f);
         }
-        const auto from_sources = render_scene(gpu, *sources, root / "r1.scene", camera, 480, 270);
-        const auto from_package = render_scene(gpu, *packaged, bundle / "Contents/Resources/project/content/r1.scene", camera, 480, 270);
-        CHECK(from_package.rgb == from_sources.rgb);
+        // Each named view, as authored: the same cooked content gives the same pixels.
+        for (const auto& view : r1::views()) {
+            INFO(view.name);
+            const auto from_sources = render_scene(gpu, *sources, r1 / "r1.scene", view.camera, 480, 270);
+            const auto from_package = render_scene(gpu, *packaged, bundle / "Contents/Resources/project/content/r1.scene", view.camera, 480, 270);
+            CHECK(from_package.rgb == from_sources.rgb);
+        }
+        // Played 300 ticks, through the path camera: CesiumMan walked and the camera turned alike.
+        const auto played = [&](AssetRegistry& registry, const fs::path& scene) {
+            const auto context = asset_property_context(registry);
+            auto loaded = load_scene_file(scene, context);
+            REQUIRE(loaded);
+            auto started = PlaySession::start(std::move(loaded.document), context,
+                                              play_systems(registry_script_sources(registry), registry_animation_clips(registry)));
+            REQUIRE(started);
+            auto& session = *started.session;
+            session.clock().pause();
+            while (session.clock().tick() < 300) {
+                session.clock().step();
+                REQUIRE(session.update(0.0).error.empty());
+            }
+            const auto& world = session.world();
+            auto view = extract_render_view(world, *world.find(*session.camera()), 480, 270);
+            REQUIRE(view);
+            return gpu.render(world, registry, *view);
+        };
+        CHECK(played(*packaged, bundle / "Contents/Resources/project/content/r1.scene").rgb == played(*sources, r1 / "r1.scene").rgb);
     }
-    launch_elsewhere(bundle, scratch.root / "elsewhere", "R1 / r1.scene");
+    launch_elsewhere(bundle, scratch.root / "elsewhere", "r1 / r1.scene");
+}
+
+TEST_CASE("The content workflow's scene runs from a standalone package outside the checkout with the same image", "[acceptance][content][gpu]") {
+    // Written by maya_content_acceptance_author (content_acceptance_tests.cpp, fixture content_project).
+    const auto project = fs::path(MAYA_ACCEPTANCE_DIR) / "Content Game";
+    const auto scene = fs::path("levels/lit.scene");
+    REQUIRE(fs::is_regular_file(project / "assets" / scene));
+    const Scratch scratch;
+    const auto bundle = scratch.root / "Content Game.app";
+    const auto report = package_project(options_for(project, bundle, {scene}));
+    INFO(report.error);
+    REQUIRE(report);
+    CHECK(report.environments == 1); // the workshop
+    CHECK(report.meshes >= 3); // the imported model's parts, among the startup scene's
+    {
+        test::Gpu gpu;
+        const auto sources = source_registry(gpu.device, project);
+        const auto packaged = package_registry(gpu.device, bundle);
+        const auto context = asset_property_context(*sources);
+        auto loaded = load_scene_file(project / "assets" / scene, context);
+        REQUIRE(loaded);
+        const auto probe = PlaySession::start(std::move(loaded.document), context, {});
+        REQUIRE(probe);
+        const auto camera = *probe.session->camera();
+        const auto from_sources = render_scene(gpu, *sources, project / "assets" / scene, camera, 480, 270);
+        const auto from_package = render_scene(gpu, *packaged, bundle / "Contents/Resources/project/content" / scene, camera, 480, 270);
+        CHECK(from_package.rgb == from_sources.rgb);
+        // Something was drawn: the props under the spot light differ from the plain sky.
+        CHECK(std::ranges::count(from_sources.rgb, from_sources.rgb.front()) < std::ptrdiff_t(from_sources.rgb.size() / 2));
+    }
+    launch_elsewhere(bundle, scratch.root / "elsewhere", "Content Game / levels/lit.scene", scene.generic_string());
 }

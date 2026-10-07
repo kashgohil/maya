@@ -454,8 +454,9 @@ TEST_CASE("Presenting runs record when each frame was shown, its interval, and m
     test::TimingDevice device({.surface = true, .surface_width = 64, .surface_height = 36});
     auto window = 1;
     REQUIRE(device.initialize(&window, {3, size_t{8} << 20}));
-    // The fourth sampled frame is never shown: the interval across it is two refresh periods.
-    device.dropped = {device.stats().submitted_frames + manifest.warmup + 4};
+    // The fourth sampled frame is never shown: the interval across it is two refresh periods. A scene's
+    // first frame, timed for loading (#1040), comes before the warmup.
+    device.dropped = {device.stats().submitted_frames + 1 + manifest.warmup + 4};
     auto polls = 0;
     const auto result = run(manifest, device, shader, [&] { ++polls; });
     INFO(result.failure);

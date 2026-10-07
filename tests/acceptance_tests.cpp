@@ -64,7 +64,7 @@ math::Mat4 pose(const math::Vec3& from, const math::Vec3& to) {
 
 TEST_CASE("A scene is created, placed, edited, saved, and reopened in the editor without code changes", "[acceptance][author]") {
     auto error = std::error_code{};
-    fs::remove_all(acceptance_dir(), error);
+    fs::remove_all(authored_project(), error); // only this project: the other milestones' are written beside it
     fs::create_directories(authored_project());
     fs::create_directories(acceptance_dir() / "elsewhere"); // where the player is started from
     fs::copy(sample_project().parent_path() / "assets", authored_project() / "assets", fs::copy_options::recursive);
