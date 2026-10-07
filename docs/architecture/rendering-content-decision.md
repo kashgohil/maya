@@ -175,6 +175,8 @@ Per character, mean of 1,000 evaluations through cgltf's generic accessor reads:
 - **Presentation** interpolates joint poses between ticks, as it interpolates transforms ([play](../play.md#between-ticks)).
 - **Skinning** is on the GPU (4 joints per vertex, the palette in per-draw memory): 100 characters like CesiumMan would cost about 3.3 ms of CPU to skin. No animation library is needed for glTF's linear, step, and cubic-spline samplers.
 
+**As built in #1038** ([animation](../animation.md)), with one change from the above, which the issue's owner chose: the animation system runs after the scripts in phase 3 and reads components as the tick began, like every system, so **a script's clip change shows one tick later**, not that tick; replays repeat it exactly either way. Joints are entities, whose transforms the clip writes through the tick's commands, so presentation and replay need nothing of their own. Clips keep glTF's channels (keys per channel, not per joint). The palette is one upload per frame that every pass reads, each instance holding its range.
+
 ## Packaging: a bundle that finds only itself
 
 A hand-made `.app` with the player, the shaders, and the sample project:

@@ -77,7 +77,7 @@ An entity has at most one script. In the editor, a script is attached by draggin
 | `update(self, frame_dt)` | Once per host frame after its ticks, also while paused. Read-only. |
 | `stop(self)` | Once, if `start` ran. When the entity is destroyed, loses its component, or gets another script, this is the next tick, and the entity may already be gone (`self.entity:alive()` is false). At the end of play, newest first, with no world left to change. |
 
-A script's hooks are the functions its table holds when it loads; functions added to the table later are not called. The scripts run as one system, `script_system`, which `play_systems` places after the built-in ones.
+A script's hooks are the functions its table holds when it loads; functions added to the table later are not called. The scripts run as one system, `script_system`, which `play_systems` places after the built-in ones and before [animation](animation.md#playing).
 
 ## The engine API
 
@@ -105,7 +105,7 @@ An entity value holds a persistent ID and is checked again on every use.
 | `position()`, `rotation()`, `scale()` | The local transform. |
 | `world_position()`, `world_rotation()` | The world pose. |
 | `set_position(v)`, `set_rotation(q)`, `set_scale(v)` | Change the local transform. |
-| `has(component)`, `get(component, property)`, `set(component, property, value)` | Any component's properties by name, such as `get("maya.light", "intensity")`; the `maya.` prefix is optional. Choices are names such as `"spot"`. Asset references and script values are not settable from scripts yet. |
+| `has(component)`, `get(component, property)`, `set(component, property, value)` | Any component's properties by name, such as `get("maya.light", "intensity")`; the `maya.` prefix is optional. Choices are names such as `"spot"`. Asset references read as their ID's text (`"6d617961 1a30"`), or nil; an animation's `clip` (#1038) is set from such text or nil, checked against the catalog. Other asset references and script values are not settable from scripts yet. |
 | `destroy()` | Queues the entity's removal, with everything below it. |
 
 Reads see the World as the previous tick committed it.
@@ -223,7 +223,7 @@ Luau's `pairs` order over keys that are tables, functions, or userdata depends o
 ```cpp
 #include "maya/simulation/script_assets.hpp"
 
-auto systems = maya::play_systems(maya::registry_script_sources(registry)); // built-ins, then scripts
+auto systems = maya::play_systems(maya::registry_script_sources(registry), maya::registry_animation_clips(registry)); // built-ins, scripts, animation
 auto started = maya::PlaySession::start(document, maya::asset_property_context(registry), std::move(systems));
 const auto frame = started.session->update(wall_delta);
 for (const auto& message : frame.messages) report(message.level, message.text);
@@ -237,7 +237,8 @@ for (const auto& message : frame.messages) report(message.level, message.text);
 ```cpp
 auto settings = maya::project_script_settings(project.settings);
 settings.reloads = std::make_shared<maya::ScriptReloads>(settings.limits);
-auto systems = maya::play_systems(sources, settings);
+settings.assets = maya::asset_property_context(registry); // asset references scripts set are checked against the catalog
+auto systems = maya::play_systems(sources, maya::registry_animation_clips(registry), settings);
 // ... later, when a script file changed:
 if (auto error = settings.reloads->offer(script_id, {"scripts/mover.luau", new_text}); !error.empty()) report(error);
 ```

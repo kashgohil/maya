@@ -34,7 +34,9 @@ In the editor, a file dropped on the window, or chosen in the Scene menu's **Imp
 | Perspective camera | A camera: `yfov`, `znear`, and `zfar` (an infinite far plane becomes at least 1,000 m). Orthographic cameras are left out, with a warning. |
 | `KHR_lights_punctual` light | A light ([below](#lights)). |
 | Scene | The default scene's root nodes, or the first scene's, or every node without a parent. |
-| Skins, animations, morph targets | Not imported, with a warning: skinned meshes keep their bind pose, and morphed meshes their base shape. |
+| Skin | A [skin](animation.md#skins-and-clips): its joints by name path and its inverse bind matrices. The skinned mesh's primitives keep `JOINTS_0` and `WEIGHTS_0` as a second vertex stream (weights scaled to sum to 1, or all on the first joint where they sum to 0), and their entities get a `maya.skin`. A skin of 1 to 65,536 joints is read; one with no joints, or inverse bind matrices that are not 4×4 for each joint or not finite, is refused with its JSON path. A skin on a node without a mesh is left out with a warning. A primitive whose weights are negative or not finite fails to load, with its path; joint indices past its skin's joints are clamped to the last when it is drawn. |
+| Animation | A [clip](animation.md#skins-and-clips): each channel's target node by name path, its property (translation, rotation, or scale), its sampler (step, linear, or cubic spline), and its keys. Keys out of order, values that do not match them, or values that are not finite are refused with their JSON path. Morph-target weight channels are left out, with a warning. The import's root gets a `maya.animation` playing the first clip, looping. |
+| Morph targets | Not imported, with a warning: morphed meshes keep their base shape. |
 
 glTF's conventions are Maya's: +Y up, −Z forward, metres, counter-clockwise front faces, and texture coordinates with v growing downward. Images are read from buffer views, data URIs, or files at or below the glTF file's folder, never elsewhere.
 
@@ -54,7 +56,7 @@ Lights shine along their node's −Z in both, and cast shadows by default (point
 For `models/helmet.glb`, an import writes, in this order:
 
 1. `models/helmet/materials/<name>.material`: a [material file](assets.md#materials) per glTF material, named after it (made safe for a file name, and numbered when a name is taken), and `default.material`, glTF's default material (white, fully metallic, fully rough), when a primitive has none.
-2. `models/helmet.scene`: a root entity named after the file, holding the file's nodes in order. A node whose mesh has one drawn primitive gets its mesh renderer; a mesh with several primitives, which Maya draws with one material each, gets a child entity per primitive, named after its material.
+2. `models/helmet.scene`: a root entity named after the file, holding the file's nodes in order. A node whose mesh has one drawn primitive gets its mesh renderer; a mesh with several primitives, which Maya draws with one material each, gets a child entity per primitive, named after its material. Nodes are named uniquely among their siblings (a node's name, else its mesh's, else `Node <index>`, with ` 2`, ` 3`, ... for repeats), so skins and clips can [bind](animation.md#binding) to them by name. A skinned mesh's entities get a `maya.skin`, and the root a `maya.animation` with the first clip.
 3. `models/helmet.glb.import`: the [import file](#import-files).
 4. The project's catalog, with the [entries](#catalog-entries) for the parts and the material files.
 
@@ -71,8 +73,9 @@ texture 6d617961 1a2c "models/helmet.glb#texture/2/color"
 
 - `mesh/<mesh>/<primitive>`: a glTF mesh's primitive.
 - `texture/<texture>/<role>`: a glTF texture cooked as `color` (base color and emissive maps), `data` (metallic-roughness and occlusion), or `normal`. A texture used in two roles is two entries.
+- `skin/<skin>` and `animation/<animation>` (#1038): a glTF skin and a clip ([animation](animation.md#skins-and-clips)).
 
-Only a path whose file ends in `.gltf` or `.glb` has a part, so `notes/a#b.obj` is still a file. Only meshes and textures can be parts. The registry checks the file, not the part, for presence and for staying inside the project, and calls `AssetProvider::load_imported_mesh` or `load_imported_texture`; the defaults refuse. `FileAssetProvider` keeps the last glTF file it opened while it is unchanged on disk, so a file's parts parse it once. An imported texture's compression and mips come from the import file, its role from its part, and its sampler from the glTF file (with Maya's anisotropy, 8, where it filters between mips).
+Only a path whose file ends in `.gltf` or `.glb` has a part, so `notes/a#b.obj` is still a file. Only meshes, textures, skins, and clips can be parts. The registry checks the file, not the part, for presence and for staying inside the project, and calls `AssetProvider::load_imported_mesh`, `load_imported_texture`, `load_imported_skin`, or `load_imported_animation`; the defaults refuse. `FileAssetProvider` keeps the last glTF file it opened while it is unchanged on disk, so a file's parts parse it once. An imported texture's compression and mips come from the import file, its role from its part, and its sampler from the glTF file (with Maya's anisotropy, 8, where it filters between mips).
 
 ### Import files
 
@@ -90,6 +93,8 @@ scene "helmet.scene" 51ac09e2d3b4f607
 mesh 6d617961 1a2b "mesh/0/0" "Helmet/0"
 texture 6d617961 1a2c "texture/2/color" "Albedo/color"
 material 6d617961 1a2d "helmet/materials/Metal.material" "Metal" 9f3c2b1a00ffe1d2
+skin 6d617961 1a31 "skin/0" "Armature"
+animation 6d617961 1a32 "animation/0" "Walk"
 entity 6d617961 1a2e "/Helmet"
 file "textures/albedo.png"
 ```
@@ -110,6 +115,7 @@ The scale and axis conversion apply to the import's **root entity**, so the whol
 | --- | --- |
 | `mesh`, `texture` | `<mesh name>/<primitive>`, `<texture name>/<role>` (a texture's name, else its image's, else its file's stem) |
 | `material` | the material's name, and the file written (relative to the import file) and the hash of the text written |
+| `skin`, `animation` | the skin's or clip's name, else `#<index>` (#1038) |
 | `entity` | the node's path from the root: `/Root/Panel`, with `/primitive <n>` for a primitive's entity |
 | `scene` | the scene file and the hash of the text written |
 | `file` | a file the source names (buffers and images), relative to the import file |
@@ -120,8 +126,8 @@ Identities that repeat are numbered (`Panel/0 ~2`). IDs are nonzero and unique w
 
 Importing a file again (from the Scene menu, or because the editor saw it change) keeps every ID it can match:
 
-- **By identity:** a mesh, texture, material, or entity whose identity the import file has keeps its ID.
-- **Renamed parts:** a mesh or texture whose identity is new, but which is where a vanished one was (the same part of the file), keeps that one's ID, and is reported as renamed. A part found in the catalog with another ID, such as one imported before the import file was deleted, keeps that ID too.
+- **By identity:** a mesh, texture, material, skin, clip, or entity whose identity the import file has keeps its ID.
+- **Renamed parts:** a mesh, texture, skin, or clip whose identity is new, but which is where a vanished one was (the same part of the file), keeps that one's ID, and is reported as renamed. A part found in the catalog with another ID, such as one imported before the import file was deleted, keeps that ID too.
 - **Edited files are kept:** a material or scene file whose text no longer has the hash the import wrote was edited, and is left as it is (`kept`, logged). Its recorded hash stays, so later imports keep it too. An unedited one is written again, and a deleted one is written afresh.
 - **Reported:** what was added, renamed, and removed since the last import (`added`, `renamed`, `removed`). A removed mesh or texture leaves the catalog, so a scene still using it reports it [missing](renderer.md#render-snapshots); a removed material's file and entry stay in the project.
 

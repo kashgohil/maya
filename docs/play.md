@@ -7,7 +7,8 @@
 `MayaSimulation` / `Maya::Simulation` ([play_session.hpp](../include/maya/simulation/play_session.hpp), [simulation.hpp](../include/maya/simulation/simulation.hpp)) is CPU-only and links MayaWorld, MayaScene, and [MayaPhysics](physics.md). MayaRuntime links it, so the player and the editor share one implementation.
 
 ```cpp
-auto started = maya::PlaySession::start(document, maya::asset_property_context(registry), maya::play_systems(maya::registry_script_sources(registry)));
+auto started = maya::PlaySession::start(document, maya::asset_property_context(registry),
+                                        maya::play_systems(maya::registry_script_sources(registry), maya::registry_animation_clips(registry)));
 if (!started) { /* started.diagnostics (the scene) or started.error (a system) says why */ }
 auto& session = *started.session;
 session.input().feed(events_for_the_game);              // this host frame's gameplay events
@@ -57,14 +58,15 @@ A `SimulationSystem` has a name, `start`, `fixed_update`, `late_fixed_update`, `
   - the tick's command batch;
   - its `InputFrame`;
   - the tick index, simulation time, and fixed interval;
-  - `bodies`, for physics requests, and `physics`, the body state after the previous step ([physics](physics.md#requests-during-a-tick)).
+  - `bodies`, for physics requests, and `physics`, the body state after the previous step ([physics](physics.md#requests-during-a-tick));
+  - `jumps`, where a system lists entities whose pose jumps this tick, as a teleport's does: they and their descendants are shown at their new pose rather than between the two ([between ticks](#between-ticks); since #1038, for clip changes).
 - **After the step.** `late_fixed_update` (phase 7, #1021) gets the same kind of `TickContext`, with `events` holding the step's sorted contact and trigger events and `physics` the completed step. Its commands join the tick's batch; its body requests apply before the next step ([physics](physics.md#the-fixed-tick)). It also runs once when the session stops, with `stopping` set and the events that end every contact in progress; nothing done then is kept.
 - **Once per frame.** `frame` gets a `FrameContext`: the World and physics state as the last tick left them, the frame's admitted wall time, `alpha`, the tick and time, and the messages. It may not change anything. Its default does nothing.
 - **When writes appear.** A system writes through the commands. Its writes are visible to the next tick, not to later systems in the same tick, so the result does not depend on how many systems read a value.
 - **One writer.** Each transform should have one writer. Physics writes kinematic and dynamic bodies' transforms, and a system that writes one fails.
 - **Determinism.** The same scene, input, and frame times give the same World.
 
-Two built-in systems (`builtin_systems()`) run in this order, driven by two authored components. `play_systems(sources)` returns them followed by the [script system](scripting.md), which runs `maya.script` components; the player and the editor use it. The editor edits them like any other component, and scene files save them.
+Two built-in systems (`builtin_systems()`) run in this order, driven by two authored components. `play_systems(sources, clips)` returns them followed by the [script system](scripting.md), which runs `maya.script` components, and (since #1038) the [animation system](animation.md#playing), which plays `maya.animation` clips; the player and the editor use it. The editor edits them like any other component, and scene files save them.
 
 | Component | Properties | While playing |
 | --- | --- | --- |
@@ -73,7 +75,7 @@ Two built-in systems (`builtin_systems()`) run in this order, driven by two auth
 
 The sample's spinning pyramid and flying camera are now these components in [basic.scene](../samples/basic_scene/assets/basic.scene). They are no longer sample code: `basic_scene.cpp` and `MayaBasicScene` are gone.
 
-The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Animation arrives later. Since #1016, phase 2 keeps a pose history and views show [poses between ticks](#between-ticks). Since #1023, sessions can be [recorded and replayed](#recording-and-replay). Capture modes are still contracts.
+The play session implements the scheduling contract's clock and modes, its input assignment rules, and phases 1–6: committing, latching input, fixed-update hooks, and, since #1017, [body preparation, the physics step, and synchronization](physics.md#the-fixed-tick). This tick's commands commit at the end of the tick, which is the contract's phase 1 of the next tick with nothing queued in between. Since #1018, [scripts](scripting.md) run in phase 3 as one system. Since #1021, phase 7 delivers [contact and trigger events](physics.md#contact-and-trigger-events) and runs `late_fixed_update`. Since #1038, [animation](animation.md#playing) runs in phase 3 after the scripts, writing joints' transforms through the tick's commands. Since #1016, phase 2 keeps a pose history and views show [poses between ticks](#between-ticks). Since #1023, sessions can be [recorded and replayed](#recording-and-replay). Capture modes are still contracts.
 
 ## Between ticks
 
@@ -82,7 +84,7 @@ Ticks come at 60 Hz, and frames at whatever rate the display runs. Showing only 
 - **History (phase 2).** As each tick's batch commits, the session keeps the local transform each changed entity had before it. The World holds the current one.
 - **`PlaySession::presentation()`** returns the poses to show now as `PresentationPoses`: world matrices for the entities that moved in the last tick, and their descendants. Everything else shows the World's own. It takes the clock's `alpha()`, the progress towards the next tick. At a completed tick (alpha 0) the previous pose shows, so views run one interval behind the simulation, as the contract intends.
 - **Interpolation.** Translation and scale move linearly, and rotation turns along the shortest arc (`interpolate_transform`). World matrices are then composed down the hierarchy from the shown poses, so a child keeps its place on its parent; matrices are never blended.
-- **Resets.** A teleport, a reparent, or a new entity has no pose to come from: that entity and everything below it show their current pose until the next tick. Body-mode changes will reset too, once motion types can change during play.
+- **Resets.** A teleport, a reparent, a new entity, or an entity a system lists in `TickContext::jumps` (a clip that changed or started again) has no pose to come from: that entity and everything below it show their current pose until the next tick. Body-mode changes will reset too, once motion types can change during play.
 - **Pause and step** show the completed tick (alpha 1).
 - **Read-only.** Presentation never writes the World, physics, or the authored scene.
 - **One path.** The player and the editor's Play (Game and Scene views) pass the poses to extraction (`RenderExtractOptions::poses`) and to the camera's view (`extract_render_view`).
@@ -100,7 +102,7 @@ History is the difference from the same ticks without it (about 20–28 ns per m
 ## The player
 
 ```bash
-maya_player [project [scene]] [--record file | --replay file] [--debug-physics] [--debug-view name] [--smoke N]
+maya_player [project [scene]] [--record file | --replay file] [--debug-physics] [--debug-skeletons] [--debug-view name] [--smoke N]
 ```
 
 - **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project. A [packaged](projects.md#packages) player runs its own project and takes no project argument; a scene argument must be one of its scenes.
@@ -109,6 +111,7 @@ maya_player [project [scene]] [--record file | --replay file] [--debug-physics] 
 - **Input.** Every window event goes to the game, and the cursor is captured. Escape closes the window.
 - **`--record file`** records the session and writes it to `file` when the window closes ([recording and replay](#recording-and-replay)).
 - **`--debug-physics`** draws every [physics debug view](physics.md#debug-views) over the game, for debugging. Without it the player draws none.
+- **`--debug-skeletons`** (#1038) draws skinned meshes' [skeletons](animation.md#debug-view) over the game.
 - **`--debug-view name`** (#1037) shows a [debug view](renderer.md#debug-views) instead of the lit image, such as `base-color`, `shading-normals`, or `direct-light`, and says so: `[Player] showing the base-color debug view`. An unknown name exits with code 2 and lists the views. Without it the player shows the lit image and builds no debug pipelines.
 - **`--replay file`** plays a recording's scene with its input instead of the window's. The scene comes from the recording, so no scene argument is needed. At the end the player reports `[Player] the replay matches the recording: 120 ticks, 2 checkpoints, and the final state` and stays on the last frame. A replay that differs fails with exit code 1, and so does a recording that cannot be replayed.
 

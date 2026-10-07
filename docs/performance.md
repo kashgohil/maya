@@ -109,7 +109,7 @@ A manifest is a small versioned text file. Its keys may appear in any order, eac
 ```text
 maya-benchmark 1
 name "i1-10k"
-workload instances           # instances, scene, load_cycles, play_cycles, physics, or import
+workload instances           # instances, scene, load_cycles, play_cycles, physics, import, or animation
 project "../samples/basic_scene"
 mesh 6d617961 2              # catalog IDs of the shared mesh and material
 material 6d617961 11
@@ -136,6 +136,7 @@ debug_view none              # a debug view's name, to measure its cost (#1037; 
 | `play_cycles` | L1 play reset. Starts and stops play sessions from the same authored scene. The authored World must be unchanged afterwards. |
 | `physics` | P1 physics stress ([recipe](architecture/performance-baseline.md#p1-physics-stress), #1024). Generates the P1 scene and ticks it back to back, headless: no project, views, or device work. Each worker configuration runs `runs` times. |
 | `import` | glTF import and cooking ([below](#import), #1036). No project or views: each model is imported into a new project and loaded into the device, cold and warm. |
+| `animation` | A1 skeletal animation ([below](#animation), #1038): copies of an imported skinned model playing their clips under a sun that casts shadows, with every system of play. |
 
 Cycle workloads take `cycles`, `ticks` (frames per cycle), and `slope_from`, the first cycle of the footprint slope's fit (default 11). The L1 manifests run 300 cycles and fit from cycle 101, once allocator warm-up has finished (#1024).
 
@@ -167,6 +168,20 @@ runs 3
 
 For each run and model, it copies the model (and the files a `.gltf` names) into a new project in the temporary folder, then measures, each in a new session: **import** ([import_gltf](import.md)); **cold load**, every mesh, texture, and material the import cataloged loaded through an empty [cook cache](assets.md#cook-cache), so cooked and written; and **warm load**, the same from the cache. It records the counts, triangles, texture GPU bytes, the cache's size and hits, and a digest of every cache entry. The run **fails** when runs cooked different bytes, or when a warm load missed the cache. The text summary gives each model's median. [r1_import](../benchmarks/r1_import.benchmark) runs R1's hero content; its results are in the [import doc](import.md#cost). The OS file cache is not controlled, so "cold" means an empty cook cache, not unread files.
 
+### Animation
+
+The animation workload ([animation_workload.cpp](../apps/benchmark/animation_workload.cpp)) also takes `content` and one model instead of a project, mesh, and material:
+
+```text
+workload animation
+content "../build/render-samples"
+models "Models/CesiumMan/glTF-Binary/CesiumMan.glb"
+count 100                    # copies, `spacing` metres apart on a square grid
+skinning on                  # off: drawn as authored, unskinned, for skinning's cost by difference
+```
+
+It imports the model into a new project in the temporary folder, then lays out `count` copies of its scene, each starting its clip at a seeded time so their poses differ, with a camera and a sun casting four cascades. Every run plays them with `play_systems` (the [animation system](animation.md#playing) among them), one tick and one view a frame. Besides the frame's usual measures, each instrumented run records **each system's time in the tick** (`cpu_ms.systems`, such as `Animation`), and the counters give the clips playing, the instances drawn skinned, and the joints uploaded per view. The GPU's per-pass times (`view`, `sun shadows`) with `skinning on`, against the same scene with `skinning off`, give skinning's cost per pass. [a1_animation](../benchmarks/a1_animation.benchmark) and [a1_unskinned](../benchmarks/a1_unskinned.benchmark) run 100 CesiumMen; their results are in the [animation doc](animation.md#cost).
+
 The seed selection uses SplitMix64, so it is the same on every machine. Generated scenes are built with the same World, scene, and asset APIs as authored content. Before a run, the generated scene is validated against the project's catalog, just as a scene file is.
 
 ### Results
@@ -175,9 +190,9 @@ The JSON holds:
 
 - the manifest;
 - the environment, build, and quality settings (resolution, formats, antialiasing, lighting, shadows, presentation, simulation), including the thermal state at the start and at the end and the measuring thread's quality of service. The text summary warns when either thermal state is not nominal;
-- counters, including `centers_in_view`: the instances the view drew, inside its frustum by their bounds (since #1025; before, those whose origin projected into the view); and (#1034) the last view's point and spot lights drawn, left out, and drawn without shadows, and shadow maps and shadow draws per view;
+- counters, including `centers_in_view`: the instances the view drew, inside its frustum by their bounds (since #1025; before, those whose origin projected into the view); and (#1034) the last view's point and spot lights drawn, left out, and drawn without shadows, and shadow maps and shadow draws per view; and (#1038) the clips playing, the instances drawn skinned, and the joints uploaded per view;
 - baseline and resident memory, tracked and reported;
-- for each run: throughput, summaries of the frame, of each CPU scope, and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
+- for each run: throughput, summaries of the frame, of each CPU scope (and, since #1038, of each play system's time in the frame's tick, `cpu_ms.systems`), and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
 - for each run, per pass name: a summary of the GPU time of that frame's passes with the name (`gpu_pass_ms`), with the raw values; `gpu_pass_mismatches`, timed passes outside their frame's GPU time, which must be 0; and `untimed_passes`;
 - for presenting runs, under `presentation`: frames `shown`, `not_shown`, and `unreported`, the display's `refresh_hz`, a summary of present-to-present intervals of consecutive shown frames (`interval_ms`, raw in `present_interval_ms`), and `missed_deadlines`, intervals longer than 1.5 refresh periods. A frame that was never shown makes the interval across it two periods, so it counts as missed. `null` when the refresh rate is unknown. ProMotion displays may run below their maximum rate when the system chooses; the rate recorded is the maximum;
 - the uninstrumented run (no CPU scopes and no GPU pass timing), and the overhead of instrumentation on the CPU frame and on GPU time;

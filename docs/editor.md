@@ -118,7 +118,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
 [Issue #1022](https://work.rezee.app/kash/issues/1022) adds two tools to the viewport's tool bar (and the eye to the Game/Scene toggle while playing):
 
-- **Debug views** (the eye) opens a menu. At the top are the [debug views](renderer.md#debug-views), one at a time for the Scene and Game views alike (since #1037; the exposure views came with #1032 and the shadow views with #1034), in rows: IMAGE (Lit, the image itself); MATERIAL (Base color, Normals, Shading normals, Metallic, Roughness, Occlusion, Emissive); LIGHTING (Direct, Environment, Lighting only); SHADOWS (Cascades, Texels); and EXPOSURE (Luminance, False color). Each has a tooltip saying what it shows. Below them is a check for each physics debug [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries. Below them is a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
+- **Debug views** (the eye) opens a menu in two columns, so it fits a small window (since #1038). On the left are the [debug views](renderer.md#debug-views), one at a time for the Scene and Game views alike (since #1037; the exposure views came with #1032 and the shadow views with #1034), in rows: IMAGE (Lit, the image itself); MATERIAL (Base color, Normals, Shading normals, Metallic, Roughness, Occlusion, Emissive); LIGHTING (Direct, Environment, Lighting only); SHADOWS (Cascades, Texels); and EXPOSURE (Luminance, False color). Each has a tooltip saying what it shows. On the right is what is drawn over them: ANIMATION's Skeletons ([below](#animation)); a check for each physics debug [category](physics.md#debug-views): Colliders, Body state, Triggers, Contacts, and Queries; and a check for each of the project's 16 collision groups, by name, with All and None. While editing, outlines come from the collider components; while playing, from the play session's physics world, in the Scene and Game views alike. Contacts and queries exist only in Play, and are captured only while their check is on.
 - **Edit collider** (the transparent cube, or C) puts handles on the primary selection's collider in place of the transform gizmo, and outlines that collider in the selection's color:
   - a box has a dot on each face; a drag moves that face, holding the opposite one still, which changes the half extents and the offset together;
   - a sphere has a dot on each axis, which changes its radius about a fixed centre;
@@ -127,7 +127,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
   Each drag is one undo step, named "Resize the collider of …" or "Move the collider of …", and goes through `SceneEditor::set_component`, so it is validated as the Inspector's edits are. Sizes never go below 5 mm. Handles are hidden while playing, and an entity without a collider keeps its gizmo.
 
-**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories, a `physics-debug-groups` mask, and a `debug-view` line naming the debug view (`none`, `base-color`, `false-color`, ...; [names](renderer.md#debug-views)). Files from before #1037 kept `exposure-view` and `shadow-view` lines; either is read as the debug view. They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
+**Preferences.** The checks are saved as soon as they change, to `~/Library/Application Support/Maya/editor.preferences`: a versioned text file (`maya-editor-preferences 1`) with a `physics-debug` line of categories, a `physics-debug-groups` mask, a `debug-view` line naming the debug view (`none`, `base-color`, `false-color`, ...; [names](renderer.md#debug-views)), and a `skeletons` line (`on` or `off`, since #1038). Files from before #1037 kept `exposure-view` and `shadow-view` lines; either is read as the debug view. They are the person's, not the project's, so they are not in project files. Lines the editor does not know are skipped, so a newer editor's file still opens. `EditorShell::use_preferences_file` picks the file; the editor application passes the default, and tests their own.
 
 ## Materials
 
@@ -156,10 +156,20 @@ To support this, the RHI gained three general features (see [the graphics device
 
 - **Dropping** a `.gltf` or `.glb` file anywhere on the window imports it and places its scene in the open scene, in front of the camera, as one undo step ("Place helmet"). GLFW does not say where a file was dropped, so it is not placed under the pointer. A file from outside the content root is first copied into `models/` (a `.gltf`, with the buffers and images it names, into `models/<name>/`); a copy that would replace a file is refused, with a notice. Other files are not imported, and Diagnostics says so.
 - **The Scene menu's Import model** lists the project's glTF files; one already imported says *reimport*. Importing from the menu places nothing.
-- **What happens** is logged: what was made ("Imported models/helmet.glb: 1 meshes, 5 textures, 1 materials, scene models/helmet.scene"), each warning with its JSON path, each kept file, and what was added, renamed, or removed since the last import. The project is then refreshed, so every view loads the new catalog. A failure shows its problems in a notice and changes nothing.
+- **What happens** is logged: what was made ("Imported models/helmet.glb: 1 meshes, 5 textures, 1 materials, scene models/helmet.scene", with "1 skins, 1 clips" when it has them), each warning with its JSON path, each kept file, and what was added, renamed, or removed since the last import. The project is then refreshed, so every view loads the new catalog. A failure shows its problems in a notice and changes nothing.
 - **The Assets panel** names an imported part by what its import file calls it ("Panel", "Panel 1" for a mesh's second primitive, "Albedo"), with its catalog path in the filter and the tooltip, and never reports a part missing while its file is there.
 - **Placing.** An imported scene (any scene file, in fact) dragged from the Assets panel's Scenes column into the viewport, or placed from its menu (**Place in scene**), is copied into the open scene where it lands (`place_scene`, `SceneEditor::insert`): every entity gets a new ID, the copy's root is moved there and renamed when its name is taken (*helmet (1)*), and it is one undo step. Copies are not linked to their source: a reimport changes the import's own scene, and the copies keep their entities, edits, and overrides while their meshes and materials load the new versions.
 - **The import's own scene**, open when it is imported again: shown again when it has no unsaved edits; otherwise a notice says that saving keeps the edits, after which imports keep the file as edited.
+
+## Animation
+
+[Issue #1038](https://work.rezee.app/kash/issues/1038) plays imported models' clips ([animation](animation.md)):
+
+- **The Assets panel** lists skins and clips in their own column, ANIMATION, marked with a bone and a film strip, named by the file's names ("Walk"; an unnamed one as "fox clip 2").
+- **Assigning a clip**, by dropping it on an object, double-clicking it with a selection, or from its menu, plays it on the nearest of that object and its ancestors that already plays one (an imported model's root, when the object is its mesh), keeping how it plays; or else on the object itself. A skin assigned to an object gives it a Skin component. Each is one undo step.
+- **The Inspector** edits the Animation component (clip, playing, loop, speed, start) and the Skin component like any other; their asset fields take clips and skins only.
+- **Play** plays the clips as the player does, tick for tick; Stop returns the joints to their authored poses. Outside Play, joints show their authored poses. Problems the animation system reports, such as a renamed joint, are logged under Play, as `Animation: 'Fox' has no entity at ...`.
+- **Skeletons**, in the debug menu's ANIMATION section, draws every bound skin's bones and joint axes through the meshes, in the Scene and Game views and in Play.
 
 ## Watched files
 
@@ -214,6 +224,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 ## Limitations
 
 - Layout, window placement, and editor camera state (including its exposure and tone mapping) are not saved between runs; the preferences file holds only the debug views so far.
+- Clips do not play outside Play: there is no scrubbing or preview of a clip in the Scene view yet.
 - Dialogs are drawn in the editor window; there are no native open or save panels, so models are imported by dropping them or from the Scene menu's list.
 - No IME composition, gamepad or keyboard navigation of the UI, or multiple OS windows (ImGui multi-viewports).
 - The cursor-shape service covers arrow, text, hand, and horizontal/vertical resize. GLFW 3.3 has no diagonal or "not allowed" cursors.

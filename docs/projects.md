@@ -71,7 +71,7 @@ Undoing back to the saved state counts as no changes, so nothing is asked. A sav
 
 ## The Assets panel
 
-The Assets panel is the bottom panel shown first (Diagnostics is its neighbouring tab). It has a filter and a refresh button above six columns:
+The Assets panel is the bottom panel shown first (Diagnostics is its neighbouring tab). It has a filter and a refresh button above seven columns:
 
 - **Scenes:** the `.scene` files in the content folder, with the open scene highlighted. Double-click one to open it.
 - **Meshes:** meshes from the catalog, by file name.
@@ -79,6 +79,7 @@ The Assets panel is the bottom panel shown first (Diagnostics is its neighbourin
 - **Scripts:** [scripts](scripting.md) from the catalog (#1020). Their status is kept current, since the editor watches script files.
 - **Textures:** [textures](assets.md#textures) from the catalog (#1031), each with a thumbnail.
 - **Environments:** [environments](assets.md#environments) from the catalog (#1035). Double-clicking one lights the scene with it ([environments](editor.md#environments)).
+- **Animation:** imported skins and clips (#1038). A clip dropped on a model plays on it ([animation](editor.md#animation)).
 
 A row may show a status: **missing** (amber) when its file is not in the content folder, **failed** (red) when loading failed, **error** (red) for a script that does not compile, or **not loaded** for a mesh no frame has drawn yet or a texture waiting its turn. Materials load when their row is shown, since they are small CPU data. The tooltip shows the path, the ID, and the reason for a problem. The right-click menu has **Place in scene** (meshes), **Open** (scripts: in the application the system uses for the file, else the default text editor), **Assign to selection** (not textures), **Reload** (read the file again; a material with unsaved edits keeps them; materials, textures, environments, and their source images also reload by themselves when they change, [watched files](editor.md#watched-files)), and **Copy ID**.
 
@@ -88,6 +89,7 @@ A row may show a status: **missing** (amber) when its file is not in the content
 | --- | --- |
 | Drag a mesh into the viewport | A new entity named after the file, placed where it is dropped. It rests on the surface under the pointer, else on the ground plane (y = 0) within 500 m, else 5 m in front of the camera. It is lifted by how far the mesh reaches below its origin, so it sits on the surface. |
 | Drag a material or script onto an object in the viewport | Assigns it to that object. |
+| Drag a clip onto an object in the viewport or a Hierarchy row | Plays it on the nearest of that object and its ancestors that plays a clip, keeping how it plays, or else on that object ([animation](editor.md#animation)). |
 | Drag an environment into the viewport or onto a Hierarchy row | Lights the scene with it: the scene's Environment component gets it, or a new Environment entity is made. |
 | Drag a mesh, material, or script onto a Hierarchy row | Assigns it to that entity. An entity with a transform but no mesh renderer gets one for a mesh or material. A script replaces the entity's script, keeping the values the new script declares. |
 | Drag a mesh onto the Hierarchy's empty space | Places it in view, as a double-click does. |
@@ -110,8 +112,8 @@ Each placement or assignment is one undo step. Duplicating an instance with ⌘D
 maya_package <project> <output.app> [--scene <path>]... [--name <name>] [--player <path>] [--shader <path>]
 ```
 
-- **What it holds.** The project's startup scene, any scenes named with `--scene`, and exactly the assets they reach: meshes, materials, scripts, and environments named by the scenes' components, and the textures the materials name. They are found through the same references [scene validation](scene.md#validation-and-diagnostics) follows, so a scene the editor loads packages, and nothing it does not use is included.
-- **Cooked.** Meshes (OBJ and imported glTF parts), textures (PNG, JPEG, KTX2, and imported images), and environments are cooked as the editor cooks them, by the same `AssetCooker` and through the project's [cook cache](assets.md#cook-cache), for a GPU that samples ASTC (Apple silicon). Each is one file, `cooked/<asset id>.cooked-mesh`, `.cooked-texture`, or `.cooked-environment`, in the cache's checked envelope ([cooked content](assets.md#cooked-content)). Scenes, materials, and scripts are copied as authored. A package never holds source images or models, texture or environment descriptors, import files, or the cook cache.
+- **What it holds.** The project's startup scene, any scenes named with `--scene`, and exactly the assets they reach: meshes, materials, scripts, environments, skins, and clips named by the scenes' components, and the textures the materials name. They are found through the same references [scene validation](scene.md#validation-and-diagnostics) follows, so a scene the editor loads packages, and nothing it does not use is included.
+- **Cooked.** Meshes (OBJ and imported glTF parts), textures (PNG, JPEG, KTX2, and imported images), and environments are cooked as the editor cooks them, by the same `AssetCooker` and through the project's [cook cache](assets.md#cook-cache), for a GPU that samples ASTC (Apple silicon). Skins and clips (#1038) are read from their glTF files. Each is one file, `cooked/<asset id>.cooked-mesh`, `.cooked-texture`, `.cooked-environment`, `.cooked-skin`, or `.cooked-animation`, in the cache's checked envelope ([cooked content](assets.md#cooked-content)). Scenes, materials, and scripts are copied as authored. A package never holds source images or models, texture or environment descriptors, import files, or the cook cache.
 - **Layout.** `<Name>.app/Contents/MacOS/maya_player`, `Contents/Info.plist`, and `Contents/Resources`: `resources/shaders/metal/renderer.metal`, `package.maya`, and `project/` with its project file (content `content`, catalog `catalog.maya`, the startup scene, and the project's script limits and collision groups) and its content: the catalog, now naming the cooked files, scenes, materials, scripts, and `cooked/`. Shaders ship as source, compiled at start.
 - **The manifest** (`package.maya`, `maya-package 1`) names the package, the build that made it (revision, build type, and compiler), the project, its scenes (the startup scene first), and every file in `Contents/Resources` with its size and SHA-256, then one digest over them all. `verify_package` checks a package against it.
 - **Failure.** A scene that does not load, a reference the catalog lacks or of the wrong kind, and an asset whose file is missing or cannot be cooked each fail packaging with the asset and the reason (`mesh pyramid.obj: Cannot open OBJ: ...`). Nothing is written: the package is built beside the output (`<output>.partial`) and moved into place only when complete, so an earlier package stays. An output that exists and is not a package is refused, never overwritten.
