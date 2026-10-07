@@ -105,7 +105,7 @@ History is the difference from the same ticks without it (about 20–28 ns per m
 maya_player [project [scene]] [--record file | --replay file] [--debug-physics] [--debug-skeletons] [--debug-view name] [--smoke N]
 ```
 
-- **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project. A [packaged](projects.md#packages) player runs its own project and takes no project argument; a scene argument must be one of its scenes.
+- **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project. A [packaged](projects.md#packages) player runs its own project and takes no project argument: its one argument, when given, is one of its scenes.
 - **Scene.** The scene is relative to the project's content root. Without one, the player uses the project's startup scene.
 - **View.** The player shows the scene's first camera, in document order, at the window's size.
 - **Input.** Every window event goes to the game, and the cursor is captured. Escape closes the window.

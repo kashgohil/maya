@@ -28,7 +28,7 @@ The decisions were made from prototypes built behind `MAYA_BUILD_PROTOTYPES` (of
 | `maya_texture_prototype` | Decodes 122 images (105 MiB of PNG and JPEG) with stb_image and with ImageIO, builds mip chains, compresses three maps with astcenc at three block sizes and two qualities, reports Metal's formats, and builds an environment's irradiance and prefiltered levels. |
 | `maya_render_prototype` | On Metal directly: tone maps an HDR view and an exposure chart with four operators (images and GPU times), and renders 10,000 boxes with cascaded shadows at 1920 × 1080 in three scene-target formats. |
 
-They run in CTest under the `prototype` label when the option is on and the samples are present. The milestone's issues replace them; they are removed with the last of those issues, as #1018 removed #1015's.
+They ran in CTest under the `prototype` label when the option was on and the samples were present. The milestone's issues replaced them, and [#1040](https://work.rezee.app/kash/issues/1040), the last, removed them, as #1018 removed #1015's; their measurements stay recorded here.
 
 ## The RHI this milestone needs
 
@@ -206,4 +206,4 @@ Sponza is excluded: it is under the Cryengine Limited License Agreement.
 - **Along the camera path,** no shadow acne, visible cascade seams, or shimmer.
 - **The editor, the player, and the package** render the same images.
 
-R1's benchmark manifest and budgets come with [#1040](https://work.rezee.app/kash/issues/1040).
+**As built in #1040** ([acceptance](../acceptance.md#r1)): `maya_r1` assembles R1 from the fetched content. CesiumMan walks his loop by riding a node that a generated clip turns around the board, which also flies the camera along its path; an 8 m floor, which the recipe left open, receives the shadows. The five views are overview, board, helmet, walker, and grazing. Its manifest, `benchmarks/r1.benchmark`, and its baselines are in the [acceptance record](../acceptance.md#rendering-and-content-baselines).

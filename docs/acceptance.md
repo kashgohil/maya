@@ -1,6 +1,6 @@
 # Milestone acceptance: author, save, and run a scene
 
-[Issue #1005](https://work.rezee.app/kash/issues/1005) closes the first milestone ([#988](https://work.rezee.app/kash/issues/988)), and [#1024](https://work.rezee.app/kash/issues/1024) the second, physics and behavior ([#1014](https://work.rezee.app/kash/issues/1014); [below](#milestone-2-physics-and-behavior)). This page is the acceptance record:
+[Issue #1005](https://work.rezee.app/kash/issues/1005) closes the first milestone ([#988](https://work.rezee.app/kash/issues/988)), [#1024](https://work.rezee.app/kash/issues/1024) the second, physics and behavior ([#1014](https://work.rezee.app/kash/issues/1014); [below](#milestone-2-physics-and-behavior)), and [#1040](https://work.rezee.app/kash/issues/1040) the third, rendering and content ([#1029](https://work.rezee.app/kash/issues/1029); [below](#milestone-3-rendering-and-content)). This page is the acceptance record:
 
 - the automated checks, split by what they need;
 - a short manual script for what only a person at the machine can check;
@@ -295,4 +295,148 @@ The footprint-slope budget above now uses cycles 101–300: `l1_load` +35 and `l
 - **Contact constraints** are not counted: Jolt does not report them. Touching pairs and solid contacts are counted instead.
 - **20,000 bodies** do not fit a 60 Hz frame on this machine with the default workers. It is a stress input, not a capacity.
 - **What a person checks.** The editor's interaction (debug views, handles, pause and step, a script reloading while playing) is covered by tests on the null device, and by the manual script on the real editor.
+
+## Milestone 3: rendering and content
+
+[Issue #1040](https://work.rezee.app/kash/issues/1040) closes the rendering and content milestone ([#1029](https://work.rezee.app/kash/issues/1029)): import content, author a realistic scene with physically based materials, physical lights, shadows, and an environment, play it, and ship it as a standalone package. The checks run in the same three groups as above. The [rendering and content record](architecture/rendering-content-decision.md) (#1030) chose the stack; its prototypes, behind `MAYA_BUILD_PROTOTYPES`, are removed now that the milestone's issues have replaced them.
+
+In [check_milestone.sh](../tools/check_milestone.sh)'s groups: the CPU group adds `maya_content_acceptance_author`, `maya_r1_assemble`, and `maya_r1_steady`; the headless GPU group `maya_r1_reference`; and the windowed group `maya_content_acceptance_package` and `maya_package_gpu`, which launch real packaged players (since #1040 they carry the `smoke` label). Without the fetched samples, the script reports the R1 checks as unavailable.
+
+### The content workflow, automated
+
+[content_acceptance_tests.cpp](../tests/content_acceptance_tests.cpp) and [package_tests.cpp](../tests/package_tests.cpp), with two CTest entries chained by a fixture:
+
+1. **`maya_content_acceptance_author`** (CPU) drives the editor on a fresh copy of the sample project in `build/acceptance/Content Game`.
+   - **Import.** A glTF file and the normal map it names are saved into the project, as a modelling program would. The Scene menu's import catalogs its meshes, textures, and materials and places it in view.
+   - **Edit.** The model is moved, turned, and renamed; a project material is dropped on its tile's Hierarchy row, and edited (rougher, orange).
+   - **Light.** The new scene's sun casts shadows; a spot light comes from the Create menu and is aimed at the model; the workshop environment is used from the Assets panel. Nothing is skipped when drawn.
+   - **Play.** A panel spins in Play only; Stop returns the scene's text to the authored one.
+   - **Reload.** The normal map changes on disk: the editor imports the model again, the texture reloads, and the placement, name, and material survive.
+   - **Save.** ⌘S writes `levels/lit` and the edited material at version 2; a fresh editor reopens the same scene text.
+2. **`maya_content_acceptance_package`** (windowed) packages the project with `levels/lit.scene` and renders it from the sources and from the package: the same pixels. The packaged player, copied to a temporary folder with `MAYA_RESOURCES` unset, runs `levels/lit.scene` for 30 frames.
+
+**Elsewhere in the milestone.**
+- Textures, materials, lights, shadows, and environments: [texture_gpu_tests.cpp](../tests/texture_gpu_tests.cpp), [material_gpu_tests.cpp](../tests/material_gpu_tests.cpp), [lighting_gpu_tests.cpp](../tests/lighting_gpu_tests.cpp), and the editor's tests of each.
+- Import, cooking, and reimport: [gltf_tests.cpp](../tests/gltf_tests.cpp), [import_tests.cpp](../tests/import_tests.cpp), [cook_cache_tests.cpp](../tests/cook_cache_tests.cpp), and [editor_import_tests.cpp](../tests/editor_import_tests.cpp); the Sample Viewer comparison in [sample_viewer_tests.cpp](../tests/sample_viewer_tests.cpp).
+- Instancing and culling: [draw_batches_tests.cpp](../tests/draw_batches_tests.cpp); debug views: [editor_debug_view_tests.cpp](../tests/editor_debug_view_tests.cpp); animation: [animation_tests.cpp](../tests/animation_tests.cpp) and [animation_samples_tests.cpp](../tests/animation_samples_tests.cpp); packages: [package_tests.cpp](../tests/package_tests.cpp).
+
+### R1
+
+R1 is the realistic reference environment, recipe version 1 ([record](architecture/rendering-content-decision.md#r1-the-realistic-reference-environment)). Its content is fetched by [fetch_render_samples.sh](../tools/fetch_render_samples.sh), never committed, so **`maya_r1`** ([apps/r1](../apps/r1)) assembles the project from it:
+
+```bash
+tools/fetch_render_samples.sh                  # once: build/render-samples
+maya_r1 build/render-samples build/r1-astc      # ASTC textures, as packages ship them
+maya_r1 --compression rgba8 build/render-samples build/r1   # what the tests use: far faster to cook in unoptimized builds
+```
+
+- **Content.** ABeautifulGame's chess set on its board at the origin (0.7 m square), FlightHelmet to its left, and CesiumMan at half scale (0.75 m) walking a loop of 0.8 m radius around the board. An 8 m floor (grey, roughness 0.75), which the recipe left open, receives their shadows.
+- **Light.** The Aerodynamics Workshop HDRI (2k) for the environment and the sky; a shadowed sun (3 lux), a shadowed spot light over the board (40 cd), and a warm and a cool point light (8 cd).
+- **Motion.** `models/r1_paths.gltf`, which `maya_r1` writes, holds the **path camera** and the **walk loop** and one 10-second clip that turns both once around the board: the camera at 2.6 m and 1.35 m high, looking at the board, and the loop, which CesiumMan rides. The path camera is the scene's first camera, so the player, the editor's Game view, and the benchmark all follow it, through the [animation system](animation.md).
+- **Views.** Five cameras, `View: overview`, `board`, `helmet`, `walker`, and `grazing` (a low view along the floor, for long shadows and cascade edges), with fixed IDs.
+- **Again.** Assembling again imports again, which keeps every ID, and keeps the cook cache, so only the first load cooks.
+
+CTest's **`maya_r1_assemble`** (fixture `r1_project`, skipped with 77 without the samples) writes `build/r1` with RGBA8 textures. In an unoptimized build, its first load cooks for about 6 minutes; later runs read the cook cache.
+
+**The visual bar** ([r1_tests.cpp](../tests/r1_tests.cpp), `maya_r1_reference`):
+- The five views at the first tick, and the path camera at ticks 1, 150, 300, and 450, match the references in [tests/references/r1](../tests/references/r1), at 640 × 360 with the usual tolerance. The project owner approved them on 7 October 2026.
+- **The editor and the player** show the same image: the editor on Metal plays R1 in its Game view, held at tick 300, and every pixel of its viewport (between its tool bar and its "Click to play" hint) equals the player's path at the same size and tick.
+- **The package** ([package_tests.cpp](../tests/package_tests.cpp), `maya_package_gpu`): R1 packaged through its warm cook cache renders each view, and the path after 300 ticks of play, pixel for pixel as from its sources, and the packaged player runs from a folder outside the checkout.
+- **No acne, cascade seams, or shimmer** along the path: the cascades' stability and bias are tested in [lighting_gpu_tests.cpp](../tests/lighting_gpu_tests.cpp) (#1034), and the path is reviewed in the [manual script](#manual-script-rendering-and-content).
+
+### Steady states, rendering and content
+
+| Repeated work | Returns to | Checked by |
+| --- | --- | --- |
+| With R1 open in the editor: three unchanged reimports of CesiumMan, every texture reloaded, and 10 Play/Stop rounds of 60 ticks | The same device buffers, textures, samplers, and pending retirements, and the same resident and leased assets, as R1 first shown; the first Play loads the two clips, which the registry keeps | `maya_r1_steady` ([r1_tests.cpp](../tests/r1_tests.cpp)) |
+| 40 Play/Stop rounds of the sample | Device buffers, textures, pipelines, and pending retirements at the empty session | `editor_play_tests.cpp` |
+| Reimporting a model, unchanged or changed | Every ID kept; edited material and scene files kept | `import_tests.cpp`, `editor_import_tests.cpp` |
+| Packaging the same project again, from a cold or a warm cook cache | Byte-identical packages | `package_tests.cpp` |
+| Cooking the same content again | Byte-identical cook cache entries | `r1_import` benchmark |
+
+### Regression scenes, rendering and content
+
+| Scene | Where | Purpose |
+| --- | --- | --- |
+| R1 | assembled by `maya_r1` | The milestone's reference environment, its views, and its path |
+| The material test scene | [materials.scene](../samples/basic_scene/assets/materials.scene) | Spheres across metallic and roughness, and textured surfaces, under two environments, and every debug view |
+| The lights test scene | [lights.scene](../samples/basic_scene/assets/lights.scene) | Physical light units and shadows |
+| MetalRoughSpheres, NormalTangentMirrorTest | fetched | Against the Khronos Sample Viewer |
+| CesiumMan and Fox | fetched | Skinning, against [references](../tests/references/animation) and an independent evaluator |
+| The content workflow | `levels/lit.scene`, written by the acceptance test | The milestone's workflow end to end |
+| A1, I1, R1 | [benchmarks](../benchmarks) | Animation, instancing, and the reference environment's cost |
+
+### Manual script, rendering and content
+
+Run on the reference machine with a Release build, after `maya_r1 build/render-samples build/r1-astc`.
+
+1. **Open R1.** `maya_editor build/r1-astc`: the scene opens on the board under the workshop. The first open cooks R1's textures (about 15 seconds); reopening is quick.
+2. **Debug views.** From the eye menu, choose Base color, Normals, Roughness, Cascades, and Texels in turn, then Lit. Turn on Skeletons: CesiumMan's bones show through him.
+3. **Play the path.** Press ⌘P and choose the Game view. The camera circles the board in 10 seconds while CesiumMan walks his loop. Watch the board's and pieces' shadows as the camera moves: no acne, no seams between cascades, no shimmer. Stop: CesiumMan is back in his authored pose, and the camera at its start.
+4. **Edit a material.** Select a chess piece, unfold its material in the Inspector, and drag Roughness: every piece of that material changes at once. ⌘Z undoes it.
+5. **Light.** Select the spot light and turn its outer cone wider: the pool on the board grows, with its shadow. Diagnostics lists the view's lights.
+6. **Import.** Drag `build/render-samples/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb` onto the window: it is copied into `models/`, imported, and placed in view.
+7. **Package.** `maya_package build/r1-astc R1.app`, then copy `R1.app` elsewhere and open it: the same path, with the same images.
+8. **Benchmark.** `maya_benchmark benchmarks/r1.benchmark r1.json` on a cool machine: the results should be near the [baselines](#rendering-and-content-baselines).
+
+### Rendering and content baselines
+
+Measured for #1040 on 7 October 2026, on the Mac16,7 above (Apple M4 Pro, macOS 26.6.2), in a Release build of revision `49b64ed` plus #1040's changes, with R1 assembled with ASTC textures (`build/r1-astc`). The thermal state was nominal at the start and the end of every run. Two invocations of [r1](../benchmarks/r1.benchmark) after one that warmed the cook cache, each three runs of 600 warmup and 3,000 sampled frames at 1920 × 1080, offscreen, along the camera path.
+
+**Per frame** (means of the six runs; one run was disturbed and is listed apart):
+
+| | Mean | P95 / P99 |
+| --- | --- | --- |
+| GPU frame | 2.60–2.62 ms | P95 2.70–2.71 ms |
+| `view` pass | 1.00–1.01 ms | |
+| `sun shadows` (4 cascades) | 1.35–1.36 ms | |
+| `spot shadows` (1 map) | 0.44–0.45 ms | |
+| `tone map` | 0.07 ms | |
+| CPU frame | 1.97–1.98 ms | P99 2.12–2.16 ms |
+| of which waiting for the GPU | 1.86–1.87 ms | |
+| simulation (animation 0.003 ms), extraction, encoding, submission | 0.010, 0.039, 0.052, 0.004 ms | |
+
+R1 is bound by the GPU: the CPU's own work is 0.1 ms of a 2 ms frame, which it spends waiting for frames in flight. The disturbed run (the third of the first invocation) took 2.82 ms on the GPU (P95 4.08 ms) and 2.13 ms on the CPU (P99 3.85 ms), with the same counts.
+
+**Counts per frame:** 119 instanced draws of 289 instances and 8.0 million triangles, over 4 passes; 5 shadow maps (the sun's four cascades and one spot map) with 94.5 shadow draws; 3 point and spot lights, none left out or unshadowed; 57 mesh renderers, all in view; 1 skinned instance (CesiumMan, 19 joints).
+
+**Memory**, with R1 resident:
+
+| | |
+| --- | --- |
+| Textures (54, ASTC with mips) | 178.3 MiB |
+| Meshes | 44.1 MiB on the GPU, 13.1 MiB of picking geometry |
+| The environment (background and specular cube) | 22.3 MiB |
+| Tracked device memory | 312.3 MiB of textures (with the view targets and shadow maps), 44.1 MiB of buffers |
+| Reported by Metal | 565 MiB allocated |
+| Process | 923 MiB footprint, 427 MiB resident (peak 447 MiB) |
+
+**Loading** (through the cook cache): reading `r1.scene` 1.3–1.5 ms; building its World and starting play 1.7–2.3 ms; the first frame, which loads every mesh, texture, and the environment from the cache and uploads them, 1.66–1.67 s. With an empty cook cache, the first frame cooks everything: 12.8 s.
+
+**Import and cooking** ([r1_import](../benchmarks/r1_import.benchmark), medians of three runs; every run cooked the same bytes):
+
+| Model | Import | Cold load (cooking) | Warm load (cache) | Content |
+| --- | --- | --- | --- | --- |
+| ABeautifulGame | 89 ms | 8.37 s | 1.04 s | 15 meshes, 38 textures, 574k triangles; 173 MiB cached |
+| FlightHelmet | 53 ms | 3.92 s | 0.45 s | 6 meshes, 15 textures, 95k triangles; 48 MiB cached |
+| CesiumMan | 25 ms | 58 ms | 7 ms | 1 mesh, 1 texture, 4.7k triangles, a skin, and a clip |
+
+### Rendering and content budgets
+
+Approved on 7 October 2026 by the project owner, from the baselines above. They share the conditions of the [milestone 1 budgets](#budgets) (the reference machine, a Release build, user-interactive quality of service, nominal at the start and the end), on `r1.benchmark` with R1 recipe version 1 assembled with ASTC textures. A change to the recipe is a new version and needs a new baseline.
+
+| Budget | Limit | Checked by | Observed | Rationale |
+| --- | --- | --- | --- | --- |
+| R1 GPU frame | P95 at most 3.3 ms | `r1` | 2.70–2.71 ms | About 20% above the observations; R1 is bound by the GPU |
+| R1 CPU work per frame | Simulation, extraction, and encoding together at most 0.2 ms (means) | `r1` | 0.10 ms | The CPU frame is mostly waiting for the GPU, so it is not budgeted itself |
+| R1 memory | Metal-reported allocation at most 700 MiB | `r1` | 565 MiB | About 20% above the observation |
+| R1 warm load | The first frame through a warm cook cache at most 2.0 s | `r1` | 1.66–1.67 s | About 20% above the observation |
+| Cold cooking and import | **No budget** | `r1`, `r1_import` | 12.8 s cold first frame; per model above | Recorded; cooking cost depends on the content's textures |
+
+### Limits, rendering and content
+
+- **One machine.** These are M4 Pro observations, as above.
+- **R1's content is fetched.** Without it, the R1 checks are reported unavailable, not passed.
+- **Shimmer is reviewed, not measured.** The automated checks hold cascade stability in test scenes and compare R1 at four points along its path; a person watches the whole path.
+- **The editor's comparison** excludes its overlays (the Game view's tool bar and hint), which draw over the view.
 
