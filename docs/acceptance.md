@@ -35,6 +35,25 @@ tools/check_milestone.sh build
 
 The script ends by listing the manual steps and benchmark baselines as **manual**. Neither is run automatically: one needs a person, the other a quiet machine and a Release build.
 
+### Logs, failures, and flaky tests
+
+Each run keeps its logs in `<build>/milestone-logs/<date>-<time>/` (#1027). The summary ends with this folder's path.
+
+- `environment.txt`: the date, the revision (`git describe --always --dirty`), the build type, the machine and macOS version, the load average, and `pmset -g therm`'s thermal state.
+- `cpu.log`, `gpu.log`, `windowed.log`: each group's CTest output, with `--output-on-failure`.
+- `<group>.<test>.rerun.log`: the output of each failed test, run again on its own.
+
+The script runs each failed test again once, alone. A test that fails again is **FAILED**. A test that passes alone is **FLAKY**, and its group is not reported as passed. Both lines name the test and its logs.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Every group that ran passed. Groups that could not run are still listed as unavailable. |
+| 1 | At least one test failed twice. |
+| 3 | No test failed twice, but at least one was flaky. |
+| 2 | No configured build in the given directory. |
+
+`maya_check_milestone_selftest` (CPU) checks this reporting. It runs the script on a throwaway CTest project with a passing, a failing, and a flaky test, and checks the summary, the exit codes, and the logs.
+
 ### The acceptance workflow, automated
 
 [acceptance_tests.cpp](../tests/acceptance_tests.cpp) and three CTest entries chained by a fixture:

@@ -14,7 +14,7 @@ cmake --build build -j 4
 ./build/maya_sample
 ctest --test-dir build -L cpu --output-on-failure
 ctest --test-dir build -L gpu --output-on-failure
-tools/check_milestone.sh build   # CPU, headless GPU, and windowed groups; reports what could not run
+tools/check_milestone.sh build   # CPU, headless GPU, and windowed groups; logs in build/milestone-logs; exit 1 failed, 3 flaky
 ```
 
 GPU tests require an interactive macOS session. Applications support `--smoke [positive frame count]`. Use `MAYA_ENABLE_SANITIZERS=ON` in a separate build directory for ASan/UBSan.
