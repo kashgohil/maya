@@ -11,6 +11,7 @@ These are implementation contracts for the next issues, ready for review. They d
 | [Performance baseline](performance-baseline.md) | Proposed hardware and repeatable workloads, including the physics stress workload P1 (#1015), measurement protocol, and budget decisions. |
 | [Physics and scripting libraries](physics-scripting-decision.md) | #1015: Jolt Physics and Luau, chosen from prototypes in this build, with their pinning, build options, threading, determinism, memory, and embedding. |
 | [Rendering and content stack](rendering-content-decision.md) | #1030: cgltf, stb, astcenc, ASTC in KTX2, RGBA16F with EV100 and AgX, glTF metallic-roughness and light units, cascaded shadows, CPU-cooked image-based lighting, GPU skinning, bundle-only packaging, and the R1 reference environment, chosen from prototypes in this build. |
+| [World-scale stack](world-scale-decision.md) | #1060: a two-tier Maya job pool, double-precision positions with camera-relative rendering, 128 m cells cooked to binary with a 1 ms activation budget, a loose-grid spatial index, meshoptimizer LOD, CDLOD terrain with Jolt height fields, seeded generators with stable item IDs, and the W1 reference world, chosen from prototypes in this build. |
 
 ## Current implementation and migration
 
@@ -25,7 +26,7 @@ The source audit below is against commit `0b5eb8e`. Subsequent implementation is
 | [Renderer](../../src/maya/renderer/renderer.cpp), [shader](../../resources/shaders/metal/renderer.metal) | Legacy draws reused one uniform region, used the model's upper 3x3 for normals, and read normals at the wrong vertex offset. | #996 explicit passes, #997 per-draw upload memory, and #998 extraction, offscreen views, and inverse-transpose normals (done). |
 | [RHI handles](../../include/maya/rhi/resource.hpp), [Metal device](../../src/maya/rhi/metal/metal_device.mm) | Integer resource IDs and device-wide cleanup; no individual retirement API. | #996 validated handles, explicit passes, and deferred retirement; #997 bounded frames in flight and per-frame upload memory (done). |
 
-Storage layout, an ECS library, a physics library, a scripting language, an editor UI library, and a general job system are not selected by this issue. (#999 later selected Dear ImGui for the initial editor UI, and #1015 selected [Jolt Physics and Luau](physics-scripting-decision.md).) In particular, validated handles and component access rules must survive whichever storage strategy #991 selects.
+Storage layout, an ECS library, a physics library, a scripting language, an editor UI library, and a general job system are not selected by this issue. (#999 later selected Dear ImGui for the initial editor UI, #1015 selected [Jolt Physics and Luau](physics-scripting-decision.md), and #1060 selected a [two-tier Maya job pool](world-scale-decision.md#jobs-a-two-tier-pool).) In particular, validated handles and component access rules must survive whichever storage strategy #991 selects.
 
 ## Scenario review
 
@@ -49,7 +50,7 @@ These remain open rather than being resolved by convenient defaults in the proto
 | Decision | Evidence needed / decision point |
 | --- | --- |
 | Shipping platforms and minimum hardware | Select actual representative game content and supported device matrix before promising a minimum spec. macOS/Metal is the implementation base only. |
-| Required world extent and precision | Measure camera, picking, contact, and joint error at increasing distances. Decide double precision, cell-relative coordinates, or origin rebasing before the streaming format and physics integration are fixed. |
+| Required world extent and precision | Decided in #1060: double-precision world positions, double-precision Jolt, and camera-relative rendering, from an origin-offset sweep to 10 km ([record](world-scale-decision.md#coordinates-double-positions)). The supported extent is checked across W1 (11.6 km); a larger range needs a longer sweep. |
 | Frame, memory, load, and iteration budgets | Run the proposed workloads through #1004; allocate budgets with headroom on named hardware. No production numbers have been approved. Regression budgets for the M4 Pro reference runs were approved in [acceptance](../acceptance.md#budgets). |
 | Game genres, content density, and physics workload | Choose a representative game slice, active/sleeping body mix, query/constraint count, and traversal speed before scale acceptance. |
 | Simulation frequency and overload policy for shipping | Validate the proposed 60 Hz profile against physics stability, input latency, and CPU cost. Multiplayer/rollback requirements may alter timing and determinism needs. |
