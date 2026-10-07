@@ -822,6 +822,22 @@ if(BUILD_TESTING)
         set_tests_properties(maya_benchmark_bad_manifest PROPERTIES LABELS "cpu;benchmark" TIMEOUT 15)
     endif()
 
+    # The world-scale prototypes (#1060), when built. They time work on every core, so they run alone, and
+    # fail with UNEXPECTED lines when what the decision relies on breaks. The LOD half of the visibility
+    # prototype reads build/render-samples and build/world-samples where they were fetched.
+    if(MAYA_BUILD_PROTOTYPES)
+        add_test(NAME maya_prototype_jobs COMMAND maya_jobs_prototype)
+        add_test(NAME maya_prototype_precision COMMAND maya_precision_prototype)
+        add_test(NAME maya_prototype_precision_double COMMAND maya_precision_prototype_double)
+        add_test(NAME maya_prototype_cells COMMAND maya_cells_prototype ${CMAKE_CURRENT_BINARY_DIR}/cells-prototype)
+        add_test(NAME maya_prototype_visibility COMMAND maya_visibility_prototype)
+        add_test(NAME maya_prototype_terrain COMMAND maya_terrain_prototype)
+        set_tests_properties(maya_prototype_jobs maya_prototype_precision maya_prototype_precision_double maya_prototype_cells
+            maya_prototype_visibility PROPERTIES LABELS "cpu;prototype" RUN_SERIAL TRUE TIMEOUT 300)
+        set_tests_properties(maya_prototype_terrain PROPERTIES LABELS "gpu;prototype" RUN_SERIAL TRUE TIMEOUT 300
+            ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+    endif()
+
     foreach(app maya_player maya_editor maya_sample)
         if(TARGET ${app})
             add_test(NAME ${app}_help COMMAND ${app} --help)
