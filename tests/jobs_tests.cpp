@@ -307,6 +307,29 @@ TEST_CASE("Completions reach the owner in order, under a budget, and stale ones 
     CHECK_FALSE(ran);
 }
 
+TEST_CASE("Bursts of small jobs never strand a job, whatever the worker count", "[jobs][stress]") {
+    // A lost wake-up leaves every worker asleep with a job queued. Each burst must finish by a deadline,
+    // so a lost wake-up fails here instead of hanging (it once did, with four workers).
+    for (const auto workers : {1, 2, 4, 13}) {
+        auto system = JobSystem(JobSystemConfig{workers, workers});
+        for (int round = 0; round < 40; ++round) {
+            const auto tier = round % 2 ? JobTier::frame : JobTier::background;
+            auto handles = std::vector<JobHandle>{};
+            for (int i = 0; i < 2000; ++i) handles.push_back(system.submit(tier, [](JobContext&) {}));
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            auto all_done = false;
+            while (!all_done && std::chrono::steady_clock::now() < deadline) {
+                all_done = std::all_of(handles.begin(), handles.end(), [](const JobHandle& h) { return h.done(); });
+                if (!all_done) std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
+            INFO(workers << " workers, round " << round);
+            REQUIRE(all_done);
+            // Let the workers fall asleep between bursts, which is when a wake-up can be lost.
+            if (round % 4 == 3) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+}
+
 TEST_CASE("100,000 small jobs with random dependencies and cancellation all end", "[jobs][stress]") {
     auto system = JobSystem(JobSystemConfig{});
     auto random = std::mt19937(1061);
