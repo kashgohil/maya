@@ -18,7 +18,8 @@ The tiers are separate threads, so a worker busy with a 2 ms decode never holds 
 - **Failure.** A job fails by calling `context.fail(message)` or by throwing; the message reaches whoever waits, as a value. A job whose prerequisite failed does not run: it fails with "a prerequisite failed: …", and so on down a chain.
 - **Cancellation** is cooperative. `cancel()` stops a job that has not started (it never runs), and a running job sees `context.cancelled()`, which it checks between steps. A cancelled job ends cancelled even if it returns normally; it never reports success. Dependents of a cancelled job are cancelled.
 - **Waiting inside a job.** A worker that waits runs other jobs of its tier meanwhile, so jobs that wait for jobs cannot exhaust the tier.
-- **Queues.** Each worker has its own queue; a job submitted from a worker goes to that worker's queue, others round-robin, and an idle worker takes from its own queue, then from the others'. Sleeping workers wait on an atomic counter that every submission bumps, so no wake-up is lost.
+- **Queues.** Each worker has its own queue; a job submitted from a worker goes to that worker's queue, others round-robin, and an idle worker takes from its own queue, then from the others', skipping empty ones without locking them.
+- **Sleeping and waking.** A worker with nothing to do spins for a few microseconds (pause instructions, no system calls), so a burst of small jobs finds it awake; then it sleeps on its own lock and condition. To sleep, it sets its bit in the tier's sleeper mask and reads the tier's epoch, which every submission bumps, once more; a submission claims one sleeper's bit and signals only that worker. A worker whose bit a submission missed has seen the bumped epoch, so no wake-up is lost, and each sleeper is signalled at most once. `std::atomic::wait` is not used for this: libc++ keys those waits through a table shared by unrelated atomics, so its `notify_one` can wake the wrong thread, and a version that relied on it stranded jobs with every worker asleep.
 
 `parallel_for(tier, count, grain, body)` calls `body(begin, end)` over chunks of `grain` on the tier's workers and the calling thread, and returns when every chunk is done. Chunks are claimed as workers become free, so a parallel-for inside a job of the same tier cannot deadlock. The first exception a chunk throws is rethrown after the rest finish.
 
@@ -62,6 +63,7 @@ ASTC compression and environment prefiltering run as parallel-fors on the job sy
 - a scope cancels and waits for its jobs before its owner goes;
 - destroying a system with 400 dependent jobs in flight ends every one;
 - completion queues apply in order, under a budget (at least one each call), discard stale completions, and drop posts after the queue is gone;
+- bursts of 2,000 empty jobs on systems of 1, 2, 4, and 13 workers, 40 rounds each with pauses that let the workers fall asleep, each burst finishing by a deadline: a lost wake-up fails here rather than hanging (a mutation that claims a sleeper without signalling it fails in the first rounds);
 - a stress run of 100,000 jobs with random dependencies and cancellation, where every job ends, none fails, and jobs cancelled before they could start never run.
 
 `maya_jobs_timing` (cpu, run alone) holds the two-tier property: a frame of 64 parallel 0.1 ms chunks takes no more than 1.5× as long while background work fills every background worker, and urgent frame jobs start within 1 ms at P99. `maya_physics`' "[jobs]" case checks that physics steps on the frame tier, that zero workers keeps it on the stepping thread with the same results, and the worker cap.
@@ -78,10 +80,16 @@ Release on the M4 Pro reference machine (thermal state nominal), against a Relea
 | R1 import, cold load of FlightHelmet | 3.92–3.93 s | 3.91–3.93 s | 6.70–6.80 s |
 | Cook cache digests | — | identical | identical |
 
+The final code (with the wake-up fix below) against the old, run back to back on a warmer machine: ABeautifulGame 8.53 and 8.94 s against 9.03 and 8.66 s, FlightHelmet 4.07 and 4.03 s against 4.36 and 4.07 s; equal within run-to-run noise.
+
 | P1 (`p1_physics`, three runs per configuration) | Jolt's pool, before #1061 | The frame tier |
 | --- | --- | --- |
 | Tick, default workers (7): mean / P99 | 6.14–6.19 / 6.68–6.75 ms | 6.02–6.11 / 6.48–6.63 ms |
 | Tick, no workers: mean / P99 | 11.6–12.0 / 13.1–15.2 ms | 11.4–11.6 / 13.0–13.2 ms |
 | Final state | `77030e51…` | the same |
 
-P1 uses about 27.5 frame-tier jobs a tick. The two-tier timing test: a frame of 64 parallel 0.1 ms chunks takes 0.54–0.58 ms idle and 0.53–0.56 ms with background work on every background worker; with the background tier at user-initiated instead of utility, 1.3–2.5 ms.
+The final code in a later round: mean 6.16–6.23 ms and P99 6.69–6.92 ms against the old code's 6.22–6.27 and 6.77–6.85 ms in the same round, with the same final state; the budget is a P99 of 8.5 ms.
+
+P1 uses about 27.5 frame-tier jobs a tick.
+
+**Spawn cost.** Submitting 200,000 empty jobs in a burst and waiting for them costs 0.82–0.85 µs a job with 13 workers a tier, 0.29–0.36 µs with 4, and 0.15 µs with 1 (the #1060 prototype's single-lock pool: 2.4 µs). With many workers the cost is workers waking for jobs that last nanoseconds; jobs worth running on a pool are far longer. The two-tier timing test: a frame of 64 parallel 0.1 ms chunks takes 0.54–0.58 ms idle and 0.53–0.56 ms with background work on every background worker; with the background tier at user-initiated instead of utility, 1.3–2.5 ms.
