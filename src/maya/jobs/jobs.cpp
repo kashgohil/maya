@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
+#include <condition_variable>
 #include <deque>
 #include <exception>
 #include <mutex>
@@ -70,8 +72,9 @@ int default_workers() noexcept { return std::max(1, int(std::thread::hardware_co
 class JobRuntime {
 public:
     explicit JobRuntime(JobSystemConfig config) {
-        const int counts[2] = {config.frame_workers < 0 ? default_workers() : std::max(1, config.frame_workers),
-                               config.background_workers < 0 ? default_workers() : std::max(1, config.background_workers)};
+        // At most 64 workers a tier: a tier's sleepers are bits of one word.
+        const int counts[2] = {std::min(64, config.frame_workers < 0 ? default_workers() : std::max(1, config.frame_workers)),
+                               std::min(64, config.background_workers < 0 ? default_workers() : std::max(1, config.background_workers))};
         for (int t = 0; t < 2; ++t) {
             auto& tier = m_tiers[size_t(t)];
             for (int w = 0; w < counts[t]; ++w) tier.queues.push_back(std::make_unique<Queue>());
@@ -84,7 +87,8 @@ public:
         m_stopping.store(true, std::memory_order_release);
         for (auto& tier : m_tiers) {
             tier.epoch.fetch_add(1, std::memory_order_seq_cst);
-            tier.epoch.notify_all();
+            auto sleepers = tier.sleepers.exchange(0, std::memory_order_seq_cst);
+            for (; sleepers; sleepers &= sleepers - 1) signal(*tier.queues[size_t(std::countr_zero(sleepers))]);
         }
         for (auto& tier : m_tiers)
             for (auto& thread : tier.threads) thread.join();
@@ -210,12 +214,22 @@ private:
     struct Queue {
         std::mutex mutex;
         std::deque<std::shared_ptr<JobState>> jobs;
+        std::atomic<int> size{0}; // changed under the lock; read without it, so idle workers skip empty queues
+        // Where the queue's worker sleeps: its own lock and condition, so waking one worker touches no
+        // lock that another uses.
+        std::mutex park_mutex;
+        std::condition_variable park;
+        bool signalled = false;
     };
     struct Tier {
         std::vector<std::unique_ptr<Queue>> queues; // one per worker
         std::vector<std::thread> threads;
-        std::atomic<uint32_t> epoch{0}; // bumped on every push; sleeping workers wait for it to change
-        std::atomic<int> sleeping{0};
+        // Bumped on every push. A worker about to sleep sets its bit in `sleepers`, then reads the epoch
+        // again; a waker claims a bit and signals that worker's own condition. (Not std::atomic::wait:
+        // libc++ keys those waits through a shared table, so its notify_one can wake a thread waiting on
+        // another atomic and lose the wake-up.)
+        std::atomic<uint32_t> epoch{0};
+        std::atomic<uint64_t> sleepers{0};
         std::atomic<uint32_t> next_queue{0};
         std::atomic<uint64_t> submitted{0}, succeeded{0}, failed{0}, cancelled{0}, busy_ns{0};
         std::atomic<int64_t> queued{0}, queued_peak{0};
@@ -232,6 +246,14 @@ private:
         auto& tier = m_tiers[size_t(tier_index)];
         for (;;) {
             if (auto job = take(tier_index, worker)) {
+                if (tier.queued.load(std::memory_order_relaxed) > 0) wake(tier);
+                run(job);
+                continue;
+            }
+            // A moment's spinning before sleeping (a few microseconds of pause instructions, no system
+            // calls) keeps workers awake through a burst of small jobs, which would otherwise cost a
+            // sleep and a wake-up each.
+            if (auto job = spin(tier)) {
                 run(job);
                 continue;
             }
@@ -241,10 +263,31 @@ private:
                 continue;
             }
             if (stopping()) return;
-            tier.sleeping.fetch_add(1, std::memory_order_seq_cst);
-            tier.epoch.wait(epoch, std::memory_order_seq_cst);
-            tier.sleeping.fetch_sub(1, std::memory_order_seq_cst);
+            const auto bit = uint64_t{1} << worker;
+            auto& queue = *tier.queues[size_t(worker)];
+            tier.sleepers.fetch_or(bit, std::memory_order_seq_cst);
+            if (tier.epoch.load(std::memory_order_seq_cst) == epoch && !stopping()) {
+                park(queue);
+            } else if (!(tier.sleepers.fetch_and(~bit, std::memory_order_seq_cst) & bit)) {
+                // Something arrived after all, but a waker had already claimed this worker: take its signal.
+                park(queue);
+            }
         }
+    }
+
+    std::shared_ptr<JobState> spin(Tier& tier) {
+        const auto tier_index = int(&tier - m_tiers.data());
+        for (int i = 0; i < 2048; ++i) {
+            if (tier.queued.load(std::memory_order_relaxed) > 0)
+                if (auto job = take(tier_index, t_worker)) return job;
+            if (stopping()) return nullptr;
+#if defined(__aarch64__)
+            __asm__ __volatile__("isb");
+#else
+            __builtin_ia32_pause();
+#endif
+        }
+        return nullptr;
     }
 
     // A job from the worker's own queue, else stolen from another of the tier's queues.
@@ -254,10 +297,12 @@ private:
         const auto first = worker >= 0 ? size_t(worker) : size_t(tier.next_queue.load(std::memory_order_relaxed)) % n;
         for (size_t i = 0; i < n; ++i) {
             auto& queue = *tier.queues[(first + i) % n];
+            if (queue.size.load(std::memory_order_acquire) == 0) continue;
             auto lock = std::lock_guard(queue.mutex);
             if (queue.jobs.empty()) continue;
             auto job = std::move(queue.jobs.front());
             queue.jobs.pop_front();
+            queue.size.fetch_sub(1, std::memory_order_release);
             tier.queued.fetch_sub(1, std::memory_order_relaxed);
             return job;
         }
@@ -272,13 +317,39 @@ private:
             auto& queue = *tier.queues[index];
             auto lock = std::lock_guard(queue.mutex);
             queue.jobs.push_back(state);
+            queue.size.fetch_add(1, std::memory_order_release);
         }
         const auto queued = tier.queued.fetch_add(1, std::memory_order_relaxed) + 1;
         for (auto peak = tier.queued_peak.load(std::memory_order_relaxed);
              queued > peak && !tier.queued_peak.compare_exchange_weak(peak, queued, std::memory_order_relaxed);) {
         }
         tier.epoch.fetch_add(1, std::memory_order_seq_cst);
-        if (tier.sleeping.load(std::memory_order_seq_cst) > 0) tier.epoch.notify_one();
+        wake(tier);
+    }
+
+    // Wakes one sleeping worker by claiming its bit, so each sleeper is signalled at most once. The
+    // epoch was bumped before this reads `sleepers`, and a worker sets its bit before reading the epoch
+    // again, so a worker whose bit this misses sees the push itself.
+    void wake(Tier& tier) {
+        for (auto sleepers = tier.sleepers.load(std::memory_order_seq_cst); sleepers;) {
+            const auto bit = sleepers & (~sleepers + 1);
+            if (tier.sleepers.compare_exchange_weak(sleepers, sleepers & ~bit, std::memory_order_seq_cst)) {
+                signal(*tier.queues[size_t(std::countr_zero(bit))]);
+                return;
+            }
+        }
+    }
+    static void signal(Queue& queue) {
+        {
+            auto lock = std::lock_guard(queue.park_mutex);
+            queue.signalled = true;
+        }
+        queue.park.notify_one();
+    }
+    static void park(Queue& queue) {
+        auto lock = std::unique_lock(queue.park_mutex);
+        queue.park.wait(lock, [&] { return queue.signalled; });
+        queue.signalled = false;
     }
 
     void release(const std::shared_ptr<JobState>& state) {
