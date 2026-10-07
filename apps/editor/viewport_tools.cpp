@@ -251,7 +251,8 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     ImGui::SameLine(0.0f, 8.0f);
     if (tool(icon::cube_transparent, m_collider_editing, "Edit collider   C")) set_collider_editing(!m_collider_editing);
     m_layout.controls.push_back({"tool.collider", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
-    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.debug_view != DebugView::none, "Debug views"))
+    if (tool(icon::eye, m_preferences.physics_debug.any() || m_preferences.debug_view != DebugView::none || m_preferences.skeletons,
+             "Debug views"))
         ImGui::OpenPopup("physics-debug");
     m_layout.controls.push_back({"tool.physics-debug", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
     ImGui::PopStyleVar(3);
@@ -332,8 +333,8 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
 }
 
 
-// The physics debug views menu: a check for each category and for each collision group, saved as
-// preferences as they change.
+// The debug menu: the debug views, then what is drawn over them (skeletons, and a check for each physics
+// category and collision group), saved as preferences as they change.
 void EditorShell::draw_physics_debug_menu() {
     if (!ImGui::BeginPopup("physics-debug")) return;
     auto options = m_preferences.physics_debug;
@@ -355,6 +356,12 @@ void EditorShell::draw_physics_debug_menu() {
         }
         ImGui::Dummy({0.0f, 4.0f});
     };
+    // Two columns, so the menu fits a small window: the views, then what is drawn over them.
+    if (!ImGui::BeginTable("debug.columns", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::EndPopup();
+        return;
+    }
+    ImGui::TableNextColumn();
     row("IMAGE", {{DebugView::none, "Lit", "The lit, tone-mapped image."}});
     row("MATERIAL", {{DebugView::base_color, "Base color", "Base color as authored: factor, map, and vertex color."},
                      {DebugView::normals, "Normals", "The surface's own normal in world space, as 0.5 + 0.5 n: +X red, +Y green, +Z blue."},
@@ -371,6 +378,12 @@ void EditorShell::draw_physics_debug_menu() {
     row("EXPOSURE", {{DebugView::luminance, "Luminance", "Exposed luminance in grey by stops from middle grey: black at -8, white at +8."},
                      {DebugView::false_color, "False color", "A color per band of stops from middle grey: blues under, grey within half a stop, "
                                                              "yellow to red over, pink past +6."}});
+    ImGui::TableNextColumn();
+    theme::caption(m_fonts, "ANIMATION");
+    if (auto on = m_preferences.skeletons; ImGui::Checkbox("Skeletons", &on)) set_skeletons(on);
+    remember("debug.skeletons");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Skinned meshes' joints and bones, with each joint's axes: X red, Y green, Z blue.");
+    ImGui::Dummy({0.0f, 4.0f});
     theme::caption(m_fonts, "PHYSICS DEBUG");
     const auto category = [&](PhysicsDebugCategory value, const char* label, const char* key, const char* tip) {
         auto on = options.has(value);
@@ -404,6 +417,7 @@ void EditorShell::draw_physics_debug_menu() {
         }
         ImGui::EndTable();
     }
+    ImGui::EndTable();
     set_physics_debug(options);
     ImGui::EndPopup();
 }

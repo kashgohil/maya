@@ -182,12 +182,20 @@ PropertyValue to_property(lua_State* L, int index, const PropertyDescriptor& pro
         if (number < 0 || number > UINT32_MAX) throw ScriptError(std::string(property.name) + " is out of range");
         return uint32_t(number);
     }
+    case PropertyType::animation_ref: { // an asset ID as scripts read it, or nil for none
+        if (lua_isnil(L, index)) return AssetRef<AnimationAsset>{};
+        if (lua_type(L, index) != LUA_TSTRING) throw wrong("an asset ID or nil");
+        const auto id = parse_id(lua_tostring(L, index));
+        if (!id) throw ScriptError(std::string(property.name) + " needs an asset ID such as an animation's clip reads as");
+        return AssetRef<AnimationAsset>{AssetId{id->high, id->low}};
+    }
     case PropertyType::mesh_ref:
     case PropertyType::material_ref:
     case PropertyType::script_ref:
     case PropertyType::script_values:
     case PropertyType::texture_ref:
-    case PropertyType::environment_ref: break;
+    case PropertyType::environment_ref:
+    case PropertyType::skin_ref: break;
     }
     throw ScriptError(std::string(property.name) + " cannot be set by scripts yet");
 }

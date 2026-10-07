@@ -72,6 +72,17 @@ AssetLoadResult<TextureAsset> FileAssetProvider::load_imported_texture(const std
     });
 }
 
+AssetLoadResult<SkinAsset> FileAssetProvider::load_imported_skin(const std::filesystem::path& source, std::string_view part) {
+    auto cooked = m_cooker->imported_skin(source, part);
+    if (!cooked) return {nullptr, std::move(cooked.diagnostic)};
+    return {std::make_shared<const SkinAsset>(std::move(*cooked.value)), {}};
+}
+AssetLoadResult<AnimationAsset> FileAssetProvider::load_imported_animation(const std::filesystem::path& source, std::string_view part) {
+    auto cooked = m_cooker->imported_animation(source, part);
+    if (!cooked) return {nullptr, std::move(cooked.diagnostic)};
+    return {std::make_shared<const AnimationAsset>(std::move(*cooked.value)), {}};
+}
+
 std::span<const std::byte> placeholder_texture_pixels() noexcept {
     static const auto pixels = [] {
         auto texels = std::array<std::byte, placeholder_texture_size * placeholder_texture_size * 4>{};

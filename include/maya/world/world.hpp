@@ -36,6 +36,10 @@ public:
     World& operator=(World&&) = delete;
 
     uint64_t token() const noexcept { return m_token; }
+    /// Counts commits that created, destroyed, or reparented entities, or added, replaced, or removed a
+    /// NameComponent: what entities' name paths depend on (name_path.hpp). Caches of them, such as
+    /// animation's joint bindings, stay valid while it is unchanged.
+    uint64_t names_revision() const noexcept { return m_names_revision; }
     size_t size() const noexcept { return m_live.size(); }
     bool alive(EntityHandle entity) const noexcept;
     std::optional<EntityId> persistent_id(EntityHandle entity) const noexcept;
@@ -159,6 +163,7 @@ private:
     void dirty_subtree(uint32_t slot) noexcept;
 
     const uint64_t m_token;
+    uint64_t m_names_revision = 0;
     mutable size_t m_borrows = 0;
     bool m_committing = false;
     uint32_t m_free = invalid_entity_slot;

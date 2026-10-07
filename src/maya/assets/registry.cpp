@@ -45,6 +45,8 @@ const char* asset_kind_name(AssetKind kind) noexcept {
     case AssetKind::material: return "material";
     case AssetKind::texture: return "texture";
     case AssetKind::environment: return "environment";
+    case AssetKind::skin: return "skin";
+    case AssetKind::animation: return "animation";
     case AssetKind::script: break;
     }
     return "script";
@@ -52,6 +54,19 @@ const char* asset_kind_name(AssetKind kind) noexcept {
 
 AssetLoadResult<TextureAsset> AssetProvider::load_texture(const std::filesystem::path& path) {
     return {nullptr, {AssetError::load_failed, "This asset provider does not load textures: " + path.string()}};
+}
+
+AssetLoadResult<SkinAsset> AssetProvider::load_imported_skin(const std::filesystem::path& source, std::string_view part) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load skins: " + source.string() + "#" + std::string(part)}};
+}
+AssetLoadResult<AnimationAsset> AssetProvider::load_imported_animation(const std::filesystem::path& source, std::string_view part) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load animations: " + source.string() + "#" + std::string(part)}};
+}
+AssetLoadResult<SkinAsset> AssetProvider::load_skin(const std::filesystem::path& path) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load skins: " + path.string()}};
+}
+AssetLoadResult<AnimationAsset> AssetProvider::load_animation(const std::filesystem::path& path) {
+    return {nullptr, {AssetError::load_failed, "This asset provider does not load animations: " + path.string()}};
 }
 
 AssetLoadResult<EnvironmentAsset> AssetProvider::load_environment(const std::filesystem::path& path) {
@@ -90,12 +105,14 @@ AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
     if (m_loading) return {AssetError::busy,"Cannot change the asset catalog during a provider load"};
     if (!record.id.valid()) return {AssetError::invalid_id,"Asset ID must be nonzero"};
     if (record.kind != AssetKind::mesh && record.kind != AssetKind::material && record.kind != AssetKind::script &&
-        record.kind != AssetKind::texture && record.kind != AssetKind::environment)
+        record.kind != AssetKind::texture && record.kind != AssetKind::environment && record.kind != AssetKind::skin &&
+        record.kind != AssetKind::animation)
         return {AssetError::wrong_type,"Unsupported asset kind"};
     if (m_ids.contains(record.id)) return {AssetError::duplicate_id,"Duplicate asset ID " + id_text(record.id)};
     const auto source = split_asset_path(record.path);
-    if (!source.part.empty() && record.kind != AssetKind::mesh && record.kind != AssetKind::texture)
-        return {AssetError::invalid_path,"Only meshes and textures can be parts of an imported file: " + record.path.string()};
+    if (!source.part.empty() && record.kind != AssetKind::mesh && record.kind != AssetKind::texture && record.kind != AssetKind::skin &&
+        record.kind != AssetKind::animation)
+        return {AssetError::invalid_path,"Only meshes, textures, skins, and animations can be parts of an imported file: " + record.path.string()};
     const auto full = resolve_path(source.file);
     if (!full) return {AssetError::invalid_path,"Asset path must stay inside the project: " + record.path.string()};
     const auto path_key = full->generic_string() + (source.part.empty() ? "" : "#" + source.part);
@@ -142,6 +159,10 @@ AssetResidency AssetRegistry::residency() const noexcept {
             } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const EnvironmentAsset>) {
                 ++result.environments;
                 result.environment_gpu_bytes += value->gpu_bytes();
+            } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const SkinAsset>) {
+                ++result.skins;
+            } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const AnimationAsset>) {
+                ++result.animations;
             } else {
                 ++result.scripts;
             }
@@ -206,6 +227,12 @@ AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind,
     try {
         if (!source.part.empty() && kind == AssetKind::mesh) {
             auto result = m_provider->load_imported_mesh(*path, source.part);
+            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+        } else if (kind == AssetKind::skin) {
+            auto result = source.part.empty() ? m_provider->load_skin(*path) : m_provider->load_imported_skin(*path, source.part);
+            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+        } else if (kind == AssetKind::animation) {
+            auto result = source.part.empty() ? m_provider->load_animation(*path) : m_provider->load_imported_animation(*path, source.part);
             candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
         } else if (!source.part.empty()) {
             auto result = m_provider->load_imported_texture(*path, source.part);
@@ -287,12 +314,14 @@ AssetCatalogResult read_asset_catalog(std::istream& input) {
     };
     while (input >> kind) {
         AssetId id;
-        if ((kind != "mesh" && kind != "material" && kind != "script" && kind != "texture" && kind != "environment") ||
+        if ((kind != "mesh" && kind != "material" && kind != "script" && kind != "texture" && kind != "environment" && kind != "skin" &&
+             kind != "animation") ||
             !(input >> high >> low >> std::quoted(path)) ||
             !parse_word(high,id.high) || !parse_word(low,id.low) || !id.valid())
             return {{},{AssetError::invalid_data,"Invalid catalog entry " + std::to_string(records.size()+1)}};
         records.push_back({id,kind == "mesh" ? AssetKind::mesh : kind == "material" ? AssetKind::material :
                               kind == "script" ? AssetKind::script : kind == "texture" ? AssetKind::texture :
+                              kind == "skin" ? AssetKind::skin : kind == "animation" ? AssetKind::animation :
                               AssetKind::environment,path});
     }
     if (input.bad() || !input.eof()) return {{},{AssetError::invalid_data,"I/O failure reading catalog"}};

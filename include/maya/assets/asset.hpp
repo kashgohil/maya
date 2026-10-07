@@ -1,4 +1,5 @@
 #pragma once
+#include "maya/assets/animation.hpp"
 #include "maya/assets/asset_ref.hpp"
 #include "maya/assets/material.hpp"
 #include "maya/assets/texture_data.hpp"
@@ -14,8 +15,8 @@
 #include <string_view>
 
 namespace maya {
-enum class AssetKind { mesh, material, script, texture, environment };
-/// "mesh", "material", "script", "texture", or "environment".
+enum class AssetKind { mesh, material, script, texture, environment, skin, animation };
+/// "mesh", "material", "script", "texture", "environment", "skin", or "animation".
 const char* asset_kind_name(AssetKind kind) noexcept;
 enum class AssetState { unloaded, loading, ready, failed };
 enum class AssetError {
@@ -92,10 +93,12 @@ private:
     double m_cook_milliseconds;
 };
 template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset> || std::same_as<T,ScriptAsset> ||
-                                  std::same_as<T,TextureAsset> || std::same_as<T,EnvironmentAsset>;
+                                  std::same_as<T,TextureAsset> || std::same_as<T,EnvironmentAsset> || std::same_as<T,SkinAsset> ||
+                                  std::same_as<T,AnimationAsset>;
 template<Asset T> inline constexpr AssetKind asset_kind =
     std::same_as<T,MeshAsset> ? AssetKind::mesh : std::same_as<T,MaterialAsset> ? AssetKind::material :
-    std::same_as<T,ScriptAsset> ? AssetKind::script : std::same_as<T,TextureAsset> ? AssetKind::texture : AssetKind::environment;
+    std::same_as<T,ScriptAsset> ? AssetKind::script : std::same_as<T,TextureAsset> ? AssetKind::texture :
+    std::same_as<T,SkinAsset> ? AssetKind::skin : std::same_as<T,AnimationAsset> ? AssetKind::animation : AssetKind::environment;
 
 template<Asset T> struct AssetHandle {
     uint64_t registry = 0;
@@ -165,6 +168,12 @@ public:
     /// in its catalog path. The defaults refuse.
     virtual AssetLoadResult<MeshAsset> load_imported_mesh(const std::filesystem::path& source, std::string_view part);
     virtual AssetLoadResult<TextureAsset> load_imported_texture(const std::filesystem::path& source, std::string_view part);
+    /// Skins and clips (#1038): parts of an imported file ("skin/<s>", "animation/<a>"), or a package's
+    /// cooked files. The defaults refuse.
+    virtual AssetLoadResult<SkinAsset> load_imported_skin(const std::filesystem::path& source, std::string_view part);
+    virtual AssetLoadResult<AnimationAsset> load_imported_animation(const std::filesystem::path& source, std::string_view part);
+    virtual AssetLoadResult<SkinAsset> load_skin(const std::filesystem::path& absolute_path);
+    virtual AssetLoadResult<AnimationAsset> load_animation(const std::filesystem::path& absolute_path);
 };
 class GltfFile;
 class CookCache;
@@ -187,6 +196,8 @@ public:
     /// its meshes and textures one after another parses it once.
     AssetLoadResult<MeshAsset> load_imported_mesh(const std::filesystem::path& source, std::string_view part) override;
     AssetLoadResult<TextureAsset> load_imported_texture(const std::filesystem::path& source, std::string_view part) override;
+    AssetLoadResult<SkinAsset> load_imported_skin(const std::filesystem::path& source, std::string_view part) override;
+    AssetLoadResult<AnimationAsset> load_imported_animation(const std::filesystem::path& source, std::string_view part) override;
 private:
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;

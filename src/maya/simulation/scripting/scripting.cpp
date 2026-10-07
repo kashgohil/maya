@@ -194,9 +194,10 @@ std::unique_ptr<SimulationSystem> script_system(ScriptSources sources, ScriptSet
     return scripting::make_script_system(std::move(sources), settings);
 }
 
-std::vector<std::unique_ptr<SimulationSystem>> play_systems(ScriptSources sources, ScriptSettings settings) {
+std::vector<std::unique_ptr<SimulationSystem>> play_systems(ScriptSources sources, AnimationClips clips, ScriptSettings settings) {
     auto systems = builtin_systems();
     systems.push_back(script_system(std::move(sources), settings));
+    systems.push_back(animation_system(std::move(clips)));
     return systems;
 }
 

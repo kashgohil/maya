@@ -4,6 +4,7 @@
 // into a package, whose player reads only them (PackageAssetProvider). Both cook alike, through the same
 // cook cache, so a package holds exactly what the editor draws.
 
+#include "maya/assets/animation.hpp"
 #include "maya/assets/asset.hpp"
 #include "maya/assets/environment_cook.hpp"
 #include "maya/assets/texture_data.hpp"
@@ -26,10 +27,12 @@ struct CookLimits {
     uint32_t max_texture_dimension = 16384;
 };
 
-/// A mesh's welded vertices (with tangents) and triangle indices.
+/// A mesh's welded vertices (with tangents) and triangle indices, and for a skinned mesh each vertex's
+/// joints and weights.
 struct CookedMesh {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<SkinVertex> skin; // empty, or one per vertex
 };
 /// A texture's mip chain in its GPU format, how it is sampled, and its role.
 struct CookedTexture {
@@ -63,6 +66,9 @@ public:
     /// last file opened stays open while it is unchanged on disk, so its parts parse it once.
     CookResult<CookedMesh> imported_mesh(const std::filesystem::path& source, std::string_view part);
     CookResult<CookedTexture> imported_texture(const std::filesystem::path& source, std::string_view part);
+    /// "skin/<skin>" and "animation/<animation>" (#1038): joints and clips named by node path.
+    CookResult<SkinAsset> imported_skin(const std::filesystem::path& source, std::string_view part);
+    CookResult<AnimationAsset> imported_animation(const std::filesystem::path& source, std::string_view part);
 
 private:
     struct OpenGltf;

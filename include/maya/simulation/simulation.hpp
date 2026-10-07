@@ -127,6 +127,9 @@ struct TickContext {
     /// late_fixed_update only: the session is stopping, the events end every contact still in
     /// progress, and nothing the systems do is kept.
     bool stopping = false;
+    /// Entities whose pose jumps in this tick, as a teleport's does: they and their descendants are shown
+    /// at their new pose rather than between the two (PlaySession::presentation). None when null.
+    std::vector<EntityHandle>* jumps = nullptr;
 };
 
 /// What a system sees once per host frame, after the frame's ticks: read-only.

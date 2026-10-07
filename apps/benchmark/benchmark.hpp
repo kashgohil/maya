@@ -24,6 +24,7 @@ enum class Workload {
     play_cycles, // L1: start and stop play sessions from one authored scene; repeatedly
     physics, // P1: the physics stress scene, ticked back to back with no views
     import, // glTF files imported into a new project, then loaded cold (cooking) and warm (cook cache)
+    animation, // A1: copies of an imported skinned model playing their clips, with every system of play
 };
 
 /// A versioned benchmark description (docs/performance.md#manifests). Paths are relative to the
@@ -61,6 +62,9 @@ struct Manifest {
     // Import: glTF files (with the files they name) under `content`, e.g. the R1 content.
     std::filesystem::path content; // resolved
     std::vector<std::filesystem::path> models; // relative to `content`
+    // Animation (A1): `count` copies of the first model, `spacing` apart; without skinning, their meshes are
+    // drawn as authored, for skinning's cost by difference.
+    bool skinning = true;
 };
 struct ManifestResult {
     Manifest manifest;
@@ -75,6 +79,9 @@ struct RunSamples {
     bool instrumented = true;
     std::vector<double> frame, simulation, wait, extract, encode, submit;
     std::vector<std::optional<double>> gpu; // per sampled frame; nullopt when the GPU did not report it
+    /// Instrumented runs: each play system's time in the frame's one tick (fixed_update and
+    /// late_fixed_update), by its name, per sampled frame.
+    std::map<std::string, std::vector<double>> systems;
     /// Per pass label, per sampled frame: the GPU time of that frame's passes with the label, summed;
     /// nullopt when the frame had none or was not timed.
     std::map<std::string, std::vector<std::optional<double>>> gpu_passes;
@@ -120,6 +127,8 @@ struct Counters {
     size_t unique_meshes = 0, unique_materials = 0; // resident asset versions
     size_t local_lights = 0, dropped_lights = 0, unshadowed_lights = 0; // the last view's (docs/renderer.md#lights)
     double shadow_maps = 0.0, shadow_draws = 0.0; // per view, over the whole run
+    size_t animated = 0, skinned = 0; // entities playing a clip; instances drawn skinned
+    size_t joints = 0; // skin matrices uploaded per view
 };
 
 /// P1: one run's per-tick samples (milliseconds and counts) and what it ended with.

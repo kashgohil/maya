@@ -19,7 +19,7 @@ struct GltfImportChange {
 };
 struct GltfImportResult {
     std::filesystem::path scene; // content-relative: the import's scene file
-    std::vector<AssetRecord> records; // the import's catalog entries: meshes, then textures, then materials
+    std::vector<AssetRecord> records; // the import's catalog entries: meshes, textures, materials, skins, then clips
     size_t entities = 0; // in the scene, its root included
     std::vector<std::filesystem::path> written; // content-relative files written, the catalog last
     std::vector<std::filesystem::path> kept; // edited material and scene files left as they were
@@ -33,7 +33,8 @@ struct GltfImportResult {
 
 /// Imports a .gltf or .glb file inside the project's content root (a content-relative or absolute path).
 /// Beside `models/helmet.glb` it writes `models/helmet.scene`, `models/helmet/materials/*.material`, and
-/// `models/helmet.glb.import`, then the project's catalog. Importing a file again reuses the IDs in its
+/// `models/helmet.glb.import`, then the project's catalog. Skins and clips are catalog parts of the source;
+/// skinned meshes' entities get a maya.skin, and the root a maya.animation playing the first clip. Importing a file again reuses the IDs in its
 /// import file; a material or scene file edited since the import wrote it is kept, and listed in `kept`.
 /// Nothing is loaded: meshes and textures are read from the source when the registry loads them.
 GltfImportResult import_gltf(const Project& project, const std::filesystem::path& source);

@@ -188,7 +188,7 @@ public:
                                                    : read_component(*m_world, *handle, component);
         if (!base) throw ScriptError("entity " + id_text(entity) + " has no " + std::string(component_schema(component)->name));
         const auto change = std::array{PropertyEdit{property, std::move(value)}};
-        if (const auto result = edit_properties(*base, change); !result)
+        if (const auto result = edit_properties(*base, change, m_settings.assets); !result)
             throw ScriptError(std::string(component_schema(component)->name) + "." +
                               std::string(property_schema(component, property)->name) + ": " + std::string(result.message));
         if (found == m_pending_index.end()) {

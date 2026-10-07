@@ -17,6 +17,17 @@ inline ScriptSources registry_script_sources(AssetRegistry& registry) {
     };
 }
 
+/// Animation clips from a project's asset registry. The registry must outlive the play session.
+inline AnimationClips registry_animation_clips(AssetRegistry& registry) {
+    return [&registry](AssetId id) -> AnimationClipResult {
+        auto loaded = registry.acquire(AssetRef<AnimationAsset>{id});
+        if (!loaded) return {nullptr, loaded.diagnostic.message};
+        // The clip stays loaded while the session holds it.
+        const auto lease = std::make_shared<AssetLease<AnimationAsset>>(std::move(loaded.lease));
+        return {std::shared_ptr<const AnimationAsset>(lease, &lease->value()), {}};
+    };
+}
+
 /// Script settings for a project's play sessions: the limits its file sets, and the defaults otherwise.
 inline ScriptSettings project_script_settings(const ProjectSettings& project) {
     auto settings = ScriptSettings{};

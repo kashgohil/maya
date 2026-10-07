@@ -50,7 +50,7 @@ ImportFileResult read_import_file(std::istream& input) {
         const auto path = std::filesystem::path(text).lexically_normal();
         return !text.empty() && !path.is_absolute() && !path.has_root_name() && *path.begin() != "..";
     };
-    auto ids = std::array<std::set<std::pair<uint64_t, uint64_t>>, 4>{};
+    auto ids = std::array<std::set<std::pair<uint64_t, uint64_t>>, 6>{};
     for (size_t line = 2; std::getline(input, text); ++line) {
         auto stream = std::istringstream(text);
         auto key = std::string{};
@@ -104,7 +104,8 @@ ImportFileResult read_import_file(std::istream& input) {
             file.files.push_back(std::filesystem::path(name).lexically_normal());
             continue;
         }
-        const auto kind = key == "mesh" ? 0 : key == "texture" ? 1 : key == "material" ? 2 : key == "entity" ? 3 : -1;
+        const auto kind = key == "mesh" ? 0 : key == "texture" ? 1 : key == "material" ? 2 : key == "entity" ? 3
+                        : key == "skin" ? 4 : key == "animation" ? 5 : -1;
         if (kind < 0) return fail(line, "Unknown key '" + key + "'");
         entries = true;
         auto high_word = std::string{}, low_word = std::string{}, first = std::string{}, identity = std::string{};
@@ -125,8 +126,9 @@ ImportFileResult read_import_file(std::istream& input) {
         } else {
             if (!(stream >> std::quoted(first) >> std::quoted(identity)) || stream >> extra)
                 return fail(line, "'" + key + "' needs an ID, a quoted part, and a quoted identity");
-            if (!first.starts_with(kind == 0 ? "mesh/" : "texture/")) return fail(line, "a " + key + "'s part starts with '" + key + "/'");
-            (kind == 0 ? file.meshes : file.textures).push_back({AssetId{high, low}, first, identity});
+            if (!first.starts_with(key + "/")) return fail(line, "a " + key + "'s part starts with '" + key + "/'");
+            auto& list = kind == 0 ? file.meshes : kind == 1 ? file.textures : kind == 4 ? file.skins : file.animations;
+            list.push_back({AssetId{high, low}, first, identity});
         }
     }
     if (input.bad()) return fail(0, "I/O failure while reading the import file");
@@ -149,6 +151,9 @@ std::string write_import_file(const ImportFile& file) {
     for (const auto& material : file.materials)
         text += "material " + id(material.id) + ' ' + quoted(material.file.generic_string()) + ' ' + quoted(material.identity) + ' ' +
                 hex(material.written) + '\n';
+    for (const auto& skin : file.skins) text += "skin " + id(skin.id) + ' ' + quoted(skin.part) + ' ' + quoted(skin.identity) + '\n';
+    for (const auto& clip : file.animations)
+        text += "animation " + id(clip.id) + ' ' + quoted(clip.part) + ' ' + quoted(clip.identity) + '\n';
     for (const auto& entity : file.entities) text += "entity " + id(entity.id) + ' ' + quoted(entity.identity) + '\n';
     for (const auto& named : file.files) text += "file " + quoted(named.generic_string()) + '\n';
     return text;

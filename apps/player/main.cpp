@@ -5,7 +5,7 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-    // The player's own options (--record <file>, --replay <file>, --debug-physics, and --debug-view <name>) are taken out
+    // The player's own options (--record <file>, --replay <file>, --debug-physics, --debug-skeletons, and --debug-view <name>) are taken out
     // first; the rest are a project file or folder, then a scene inside its content folder, and the
     // host's options.
     auto options = maya::player::PlayerOptions{};
@@ -14,6 +14,10 @@ int main(int argc, char** argv) {
         const auto argument = std::string_view(argv[i]);
         if (argument == "--debug-physics") {
             options.debug_physics = true;
+            continue;
+        }
+        if (argument == "--debug-skeletons") {
+            options.debug_skeletons = true;
             continue;
         }
         if (argument == "--debug-view") {
@@ -51,5 +55,5 @@ int main(int argc, char** argv) {
     if (arguments.positional.size() > 1) options.scene = arguments.positional[1];
     return maya::run_desktop(arguments.host_count(), arguments.host.data(),
         maya::player::create_player_application(std::move(options)),
-        {.title = "Maya Player", .capture_cursor = true, .usage = "[project [scene]] [--record file | --replay file] [--debug-physics] [--debug-view name]"});
+        {.title = "Maya Player", .capture_cursor = true, .usage = "[project [scene]] [--record file | --replay file] [--debug-physics] [--debug-skeletons] [--debug-view name]"});
 }

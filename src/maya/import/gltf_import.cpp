@@ -1,5 +1,6 @@
 #include "maya/import/gltf_import.hpp"
 #include "maya/assets/material_file.hpp"
+#include "maya/assets/property_context.hpp"
 #include "maya/core/file_replace.hpp"
 #include "maya/scene/scene_io.hpp"
 #include <algorithm>
@@ -124,6 +125,7 @@ struct Importer {
     std::vector<std::vector<std::optional<AssetId>>> meshes; // by mesh, then primitive
     std::vector<AssetId> materials; // by glTF material, then the default material when it is used
     std::optional<AssetId> default_material;
+    std::vector<AssetId> skins, animations; // by glTF skin and animation
     struct PendingFile {
         fs::path path; // content-relative
         std::string text;
@@ -191,6 +193,37 @@ struct Importer {
             result.records.push_back({*item.id, AssetKind::texture, part_path(part)});
         }
         ids.finish();
+    }
+    /// Skins and clips (#1038): one catalog part each, by name where the file has one.
+    void assign_parts(AssetKind kind, size_t count, const auto& name_of, const std::vector<ImportedAsset>& before,
+                      std::vector<ImportedAsset>& after, std::vector<AssetId>& assigned) {
+        const auto what = std::string(asset_kind_name(kind));
+        auto ids = Identities<AssetId>(before, catalog_set(), what, result);
+        auto taken = std::set<std::string>{};
+        auto identities = std::vector<std::string>{};
+        auto found = std::vector<std::optional<AssetId>>{};
+        for (size_t i = 0; i < count; ++i) {
+            const auto& name = name_of(i);
+            identities.push_back(unique(name.empty() ? "#" + std::to_string(i) : name, taken));
+        }
+        for (const auto& identity : identities) found.push_back(ids.reuse(identity));
+        for (size_t i = 0; i < count; ++i) {
+            const auto part = what + "/" + std::to_string(i);
+            const auto id = found[i] ? *found[i] : ids.assign(identities[i], catalog_id(part_path(part)));
+            assigned.push_back(id);
+            after.push_back({id, part, identities[i]});
+            result.records.push_back({id, kind, part_path(part)});
+        }
+        ids.finish();
+    }
+    void assign_skins() {
+        assign_parts(AssetKind::skin, document.skins.size(), [&](size_t i) -> const std::string& { return document.skins[i].name; },
+                     previous.skins, next.skins, skins);
+    }
+    void assign_animations() {
+        assign_parts(AssetKind::animation, document.animations.size(),
+                     [&](size_t i) -> const std::string& { return document.animations[i].name; }, previous.animations, next.animations,
+                     animations);
     }
     std::optional<AssetId> texture_id(const std::optional<GltfTextureUse>& map, GltfMap slot) const {
         if (!map) return std::nullopt;
@@ -306,26 +339,30 @@ struct Importer {
         auto root_transform = TransformComponent{};
         root_transform.scale = math::Vec3{next.settings.scale};
         if (next.settings.up == ImportUp::z) root_transform.rotation = math::Quat::from_axis_angle({1, 0, 0}, -math::PI / 2);
-        const auto root = add("/", std::nullopt, {NameComponent{absolute.stem().string()}, root_transform});
+        auto root_components = std::vector<ComponentValue>{NameComponent{absolute.stem().string()}, root_transform};
+        // The file's first clip plays on the whole import; the others are in the catalog to choose from.
+        if (!animations.empty()) root_components.push_back(AnimationComponent{{animations.front()}});
+        const auto root = add("/", std::nullopt, std::move(root_components));
         const auto renderer = [&](uint32_t mesh, uint32_t primitive) {
             const auto& source = document.meshes[mesh].primitives[primitive];
             const auto material = source.material ? materials[*source.material] : *default_material;
             return MeshRendererComponent{{*meshes[mesh][primitive]}, {material}, true};
         };
+        const auto names = gltf_node_names(document); // as skins and clips name joints (#1038)
         const auto visit = [&](auto&& self, uint32_t index, size_t parent, const std::string& parent_identity, std::set<std::string>& siblings) -> void {
             const auto& node = document.nodes[index];
             const auto segment = [](std::string name) { std::ranges::replace(name, '/', '_'); return name; };
             const auto identity = (parent_identity == "/" ? "" : parent_identity) + "/" +
                                   unique(segment(node.name.empty() ? "node " + std::to_string(index) : node.name), siblings);
-            auto name = node.name;
-            if (name.empty() && node.mesh) name = document.meshes[*node.mesh].name;
-            if (name.empty()) name = "Node " + std::to_string(index);
-            auto components = std::vector<ComponentValue>{NameComponent{name}, node.transform};
+            auto components = std::vector<ComponentValue>{NameComponent{names[index]}, node.transform};
             auto drawn = std::vector<uint32_t>{};
             if (node.mesh)
                 for (uint32_t p = 0; p < document.meshes[*node.mesh].primitives.size(); ++p)
                     if (document.meshes[*node.mesh].primitives[p].drawable) drawn.push_back(p);
+            // A skinned mesh's entities name its skin; its joints are entities of the import too.
+            const auto skin = node.skin ? std::optional(SkinComponent{{skins[*node.skin]}}) : std::nullopt;
             if (drawn.size() == 1) components.push_back(renderer(*node.mesh, drawn[0]));
+            if (drawn.size() == 1 && skin) components.push_back(*skin);
             if (node.camera && next.settings.cameras) components.push_back(document.cameras[*node.camera].camera);
             if (node.light && next.settings.lights) components.push_back(document.lights[*node.light].light);
             const auto self_index = add(identity, parent, std::move(components));
@@ -336,8 +373,9 @@ struct Importer {
                     const auto& primitive = document.meshes[*node.mesh].primitives[p];
                     const auto label = primitive.material && !document.materials[*primitive.material].name.empty()
                                      ? document.materials[*primitive.material].name : "Primitive " + std::to_string(p);
-                    add(identity + "/" + unique("primitive " + std::to_string(p), children), self_index,
-                        {NameComponent{label}, TransformComponent{}, renderer(*node.mesh, p)});
+                    auto parts = std::vector<ComponentValue>{NameComponent{label}, TransformComponent{}, renderer(*node.mesh, p)};
+                    if (skin) parts.push_back(*skin);
+                    add(identity + "/" + unique("primitive " + std::to_string(p), children), self_index, std::move(parts));
                 }
             for (const auto child : node.children) self(self, child, self_index, identity, children);
         };
@@ -409,6 +447,8 @@ GltfImportResult import_gltf(const Project& project, const fs::path& given) {
     importer.assign_meshes();
     importer.assign_textures();
     importer.assign_materials();
+    importer.assign_skins();
+    importer.assign_animations();
     auto scene = importer.scene();
 
     // The new catalog: this source's parts are replaced by the import's, and its materials added or kept.
@@ -429,10 +469,7 @@ GltfImportResult import_gltf(const Project& project, const fs::path& given) {
     const auto kinds = [&](AssetId id, ReferenceKind kind) {
         const auto found = std::ranges::find(catalog, id, &AssetRecord::id);
         if (found == catalog.end()) return ReferenceStatus::missing;
-        const auto expected = kind == ReferenceKind::mesh ? AssetKind::mesh : kind == ReferenceKind::material ? AssetKind::material
-                            : kind == ReferenceKind::texture ? AssetKind::texture : kind == ReferenceKind::script ? AssetKind::script
-                            : AssetKind::environment;
-        return found->kind == expected ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
+        return found->kind == reference_asset_kind(kind) ? ReferenceStatus::valid : ReferenceStatus::wrong_type;
     };
     auto scene_text = std::ostringstream{};
     if (const auto problems = write_scene(scene_text, std::move(scene), PropertyValidationContext{kinds}); !problems.empty())

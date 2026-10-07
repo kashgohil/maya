@@ -58,6 +58,8 @@ void remove_command(WorldCommands& commands, EntityTarget target, ComponentId id
     case ComponentId::physics_settings: commands.remove<PhysicsSettingsComponent>(target); break;
     case ComponentId::script: commands.remove<ScriptComponent>(target); break;
     case ComponentId::environment: commands.remove<EnvironmentComponent>(target); break;
+    case ComponentId::skin: commands.remove<SkinComponent>(target); break;
+    case ComponentId::animation: commands.remove<AnimationComponent>(target); break;
     }
 }
 

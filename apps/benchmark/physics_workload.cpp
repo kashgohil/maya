@@ -160,7 +160,7 @@ PhysicsRun run_once(const Manifest& manifest, const SceneDocument& document, siz
         for (auto& system : play_systems([](AssetId script) -> ScriptSourceResult {
                  if (script != physics_script_id) return {std::nullopt, "not the benchmark's script"};
                  return {ScriptSource{"p1.luau", physics_script_source()}, {}};
-             }))
+             }, {}))
             systems.push_back(std::move(system));
         const auto accept = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
         auto clock = std::chrono::steady_clock::now();

@@ -83,10 +83,10 @@ bool Renderer::session_changed() noexcept {
     return true;
 }
 
-RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug) {
+RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug, bool skinned) {
     session_changed();
     const auto found = std::ranges::find_if(m_pipelines, [&](const CachedPipeline& cached) {
-        return cached.format == format && cached.kind == kind && cached.debug == debug;
+        return cached.format == format && cached.kind == kind && cached.debug == debug && cached.skinned == skinned;
     });
     if (found != m_pipelines.end()) {
         out = found->handle;
@@ -99,12 +99,12 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
     if (kind == PipelineKind::shadow || kind == PipelineKind::shadow_masked) {
         // Depth alone; masked materials cut themselves out. Both faces cast, so thin and open surfaces do.
         desc.color_formats.clear();
-        desc.vertex_entry = "shadowVertex";
+        desc.vertex_entry = skinned ? "shadowSkinnedVertex" : "shadowVertex";
         desc.fragment_entry = kind == PipelineKind::shadow_masked ? "shadowMaskFragment" : "";
         desc.depth_format = Format::depth32_float;
         desc.depth = {true, true, CompareFunction::less};
         desc.cull = CullMode::none;
-        desc.label = kind == PipelineKind::shadow_masked ? "masked shadow caster" : "shadow caster";
+        desc.label = std::string(kind == PipelineKind::shadow_masked ? "masked shadow caster" : "shadow caster") + (skinned ? " (skinned)" : "");
     } else if (kind == PipelineKind::present) {
         desc.vertex_entry = "presentVertex";
         desc.fragment_entry = "presentFragment";
@@ -135,7 +135,7 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
     } else {
         const auto blend = kind == PipelineKind::lit_blend || kind == PipelineKind::lit_blend_double_sided;
         const auto double_sided = kind == PipelineKind::lit_double_sided || kind == PipelineKind::lit_blend_double_sided;
-        desc.vertex_entry = "litVertex";
+        desc.vertex_entry = skinned ? "litSkinnedVertex" : "litVertex";
         desc.fragment_entry = "litFragment";
         desc.depth_format = Format::depth32_float;
         // Blended surfaces are tested against the opaque ones but do not hide what is drawn after them.
@@ -143,12 +143,12 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
         desc.blend = blend ? BlendMode::alpha : BlendMode::opaque;
         desc.cull = double_sided ? CullMode::none : CullMode::back; // positive-scale transforms never flip winding
         desc.front_face = Winding::counter_clockwise;
-        desc.label = std::string(blend ? "blended" : "lit") + (double_sided ? " double-sided" : "") + " mesh" + (debug ? " (debug view)" : "");
+        desc.label = std::string(blend ? "blended" : "lit") + (double_sided ? " double-sided" : "") + " mesh" + (skinned ? " (skinned)" : "") + (debug ? " (debug view)" : "");
     }
     auto created = m_device.create_pipeline(desc);
     // A lost session is not cached, so the next session tries again.
     if (!created && created.diagnostic.code == RhiError::device_unavailable) return created.diagnostic;
-    m_pipelines.push_back({format, kind, debug, created.handle, created.diagnostic});
+    m_pipelines.push_back({format, kind, debug, skinned, created.handle, created.diagnostic});
     out = created.handle;
     return std::move(created.diagnostic);
 }
@@ -183,14 +183,23 @@ RhiDiagnostic Renderer::prepare_shadows(const LightPlan& plan) {
 
 RhiDiagnostic Renderer::bind_instances() {
     if (auto error = m_device.set_uniform_buffer(1, m_instances)) return error;
+    if (m_palette.size > 0)
+        if (auto error = m_device.set_uniform_buffer(6, m_palette)) return error;
     return m_device.set_uniform_buffer(4, m_order);
 }
 
 RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
                                             const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches) {
-    auto opaque = PipelineHandle{}, masked = PipelineHandle{};
-    if (auto error = pipeline(Format::depth32_float, PipelineKind::shadow, opaque)) return error;
-    if (auto error = pipeline(Format::depth32_float, PipelineKind::shadow_masked, masked)) return error;
+    // Opaque and masked casters, each unskinned and skinned; skinned ones only when a skinned mesh casts.
+    auto casters = std::array<std::array<PipelineHandle, 2>, 2>{};
+    for (const auto& list : batches)
+        for (const auto& batch : list) {
+            const auto skinned = snapshot.meshes[batch.mesh].value().mesh().skinned();
+            const auto mask = snapshot.materials[batch.material].alpha_mode == AlphaMode::mask;
+            if (!casters[skinned][mask].valid())
+                if (auto error = pipeline(Format::depth32_float, mask ? PipelineKind::shadow_masked : PipelineKind::shadow,
+                                          casters[skinned][mask], false, skinned)) return error;
+        }
     auto pass = RenderPassDesc{};
     pass.depth = DepthAttachment{atlas.handle(), LoadAction::clear, StoreAction::store, 1.0};
     pass.label = label;
@@ -211,7 +220,8 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
             for (const auto& batch : batches[map]) { // opaque casters by mesh, then masked ones by material and mesh
                 const auto& material = snapshot.materials[batch.material];
                 const auto mask = material.alpha_mode == AlphaMode::mask;
-                if (const auto wanted = mask ? masked : opaque; wanted != bound) {
+                const auto skinned = snapshot.meshes[batch.mesh].value().mesh().skinned();
+                if (const auto wanted = casters[skinned][mask]; wanted != bound) {
                     if (auto error = m_device.set_pipeline(wanted)) return error;
                     if (auto error = m_device.set_uniform_buffer(2, uploaded.slice)) return error;
                     bound = wanted;
@@ -250,6 +260,9 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             return {RhiError::invalid_usage, "Render snapshot instance refers to a mesh it does not hold"};
         if (instance.material >= snapshot.materials.size())
             return {RhiError::invalid_usage, "Render snapshot instance refers to a material it does not hold"};
+        if (instance.joint_count > 0 && (instance.first_joint > snapshot.joints.size() ||
+                                         instance.joint_count > snapshot.joints.size() - instance.first_joint))
+            return {RhiError::invalid_usage, "Render snapshot instance refers to joints it does not hold"};
     }
     for (const auto& material : snapshot.materials)
         for (const auto texture : material.textures)
@@ -263,14 +276,24 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             return material.double_sided ? PipelineKind::lit_blend_double_sided : PipelineKind::lit_blend;
         return material.double_sided ? PipelineKind::lit_double_sided : PipelineKind::lit;
     };
-    auto lit = std::array<PipelineHandle, 4>{}; // lit, double-sided, blend, blend double-sided
+    // By skinning (docs/animation.md#skinning), then lit, double-sided, blend, blend double-sided.
+    auto lit = std::array<std::array<PipelineHandle, 4>, 2>{};
     const auto lit_index = [](PipelineKind kind) {
         return kind == PipelineKind::lit ? 0 : kind == PipelineKind::lit_double_sided ? 1 : kind == PipelineKind::lit_blend ? 2 : 3;
     };
+    // Which meshes are skinned, once each rather than per instance.
+    m_skinned_meshes.assign(snapshot.meshes.size(), false);
+    auto skinning = false;
+    for (size_t m = 0; m < snapshot.meshes.size(); ++m) {
+        const auto skinned = snapshot.meshes[m].value().mesh().skinned();
+        m_skinned_meshes[m] = skinned;
+        skinning |= skinned;
+    }
     for (const auto& instance : snapshot.instances) {
         const auto kind = lit_kind(snapshot.materials[instance.material]);
-        if (!lit[lit_index(kind)].valid())
-            if (auto error = pipeline(target.scene_format(), kind, lit[lit_index(kind)], debugging)) return error;
+        const auto skinned = bool(m_skinned_meshes[instance.mesh]);
+        if (auto& slot = lit[skinned][lit_index(kind)]; !slot.valid())
+            if (auto error = pipeline(target.scene_format(), kind, slot, debugging, skinned)) return error;
     }
     auto tone_map = PipelineHandle{};
     if (auto error = pipeline(target.color_format(), PipelineKind::tone_map, tone_map)) return error;
@@ -336,6 +359,8 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             auto& draw = m_instance_data[i];
             draw.model = instance.world;
             for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
+            draw.skin[0] = instance.first_joint;
+            draw.skin[1] = instance.joint_count;
         }
         const auto instances = m_device.upload_transient(m_instance_data.data(), m_instance_data.size() * sizeof(DrawConstants));
         if (!instances) return instances.diagnostic;
@@ -343,6 +368,16 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         if (!order) return order.diagnostic;
         m_instances = instances.slice;
         m_order = order.slice;
+    }
+    // Skinned meshes' joints, uploaded once and read by every pass; one unused matrix when none bound.
+    m_palette = {};
+    if (skinning && !m_draws.order.empty()) {
+        static const auto unused = math::Mat4::identity();
+        const auto* data = snapshot.joints.empty() ? &unused : snapshot.joints.data();
+        const auto palette = m_device.upload_transient(data, std::max<size_t>(snapshot.joints.size(), 1) * sizeof(math::Mat4));
+        if (!palette) return palette.diagnostic;
+        m_palette = palette.slice;
+        m_stats.joints += snapshot.joints.size();
     }
     if (plan.sun)
         if (auto error = encode_shadow_atlas(*m_sun_atlas, snapshot, "sun shadows", sun_maps, sun_batches)) return error;
@@ -432,7 +467,8 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         };
         const auto draw = [&](const DrawBatch& batch) -> RhiDiagnostic {
             const auto& material = snapshot.materials[batch.material];
-            if (const auto pipeline = lit[lit_index(lit_kind(material))]; pipeline != bound_pipeline) {
+            const auto skinned = snapshot.meshes[batch.mesh].value().mesh().skinned();
+            if (const auto pipeline = lit[skinned][lit_index(lit_kind(material))]; pipeline != bound_pipeline) {
                 if (auto error = m_device.set_pipeline(pipeline)) return error;
                 bound_pipeline = pipeline;
             }
@@ -517,13 +553,14 @@ RhiDiagnostic Renderer::encode_debug(const DebugDraw& debug, const RenderView& v
         uint32_t count = 0;
         uint32_t vertices = 0; // per instance
         TransientSlice data{};
+        bool xray = false; // as bright behind the scene as in front
     };
-    auto batches = std::array<Batch, 8>{}; // lines, boxes, and spheres and capsules at three levels of detail
+    auto batches = std::array<Batch, 9>{}; // lines, x-ray lines, boxes, and spheres and capsules at three levels of detail
     auto used = size_t{0};
-    const auto upload = [&](uint32_t kind, uint32_t segments, uint32_t count, uint32_t vertices) -> RhiDiagnostic {
+    const auto upload = [&](uint32_t kind, uint32_t segments, uint32_t count, uint32_t vertices, bool xray = false) -> RhiDiagnostic {
         const auto uploaded = m_device.upload_transient(m_debug_data.data(), m_debug_data.size() * sizeof(float), 16);
         if (!uploaded) return uploaded.diagnostic;
-        batches[used++] = {kind, segments, count, vertices, uploaded.slice};
+        batches[used++] = {kind, segments, count, vertices, uploaded.slice, xray};
         return {};
     };
     // How many pixels a world length at a distance covers: the projection's vertical scale.
@@ -540,16 +577,17 @@ RhiDiagnostic Renderer::encode_debug(const DebugDraw& debug, const RenderView& v
     };
     const auto push = [&](const math::Vec3& v, float w) { m_debug_data.insert(m_debug_data.end(), {v.x, v.y, v.z, w}); };
     const auto push_color = [&](const DebugColor& c) { m_debug_data.insert(m_debug_data.end(), {c.x, c.y, c.z, c.w}); };
-    if (!debug.lines.empty()) {
+    for (const auto* lines : {&debug.lines, &debug.xray_lines}) {
+        if (lines->empty()) continue;
         m_debug_data.clear();
-        m_debug_data.reserve(debug.lines.size() * debug_line_floats);
-        for (const auto& line : debug.lines) {
+        m_debug_data.reserve(lines->size() * debug_line_floats);
+        for (const auto& line : *lines) {
             push(line.from, 1.0f);
             push(line.to, 1.0f);
             push_color(line.color);
         }
-        if (auto error = upload(0, 0, 1, uint32_t(debug.lines.size()) * 6)) return error;
-        m_stats.debug_lines += debug.lines.size();
+        if (auto error = upload(0, 0, 1, uint32_t(lines->size()) * 6, lines == &debug.xray_lines)) return error;
+        m_stats.debug_lines += lines->size();
     }
     // Shapes by kind, and spheres and capsules also by how many segments their size on screen needs.
     m_debug_segments.resize(debug.shapes.size());
@@ -578,7 +616,7 @@ RhiDiagnostic Renderer::encode_debug(const DebugDraw& debug, const RenderView& v
         for (size_t i = 0; i < used; ++i) {
             const auto& batch = batches[i];
             auto constants = DebugConstants{};
-            constants.viewport = {float(view.width), float(view.height), view.debug_line_width, opacity};
+            constants.viewport = {float(view.width), float(view.height), view.debug_line_width, batch.xray ? 1.0f : opacity};
             constants.kind[0] = batch.kind;
             constants.kind[1] = batch.segments;
             const auto uploaded = m_device.upload_transient(&constants, sizeof(constants));

@@ -24,6 +24,8 @@ inline constexpr const char* package_manifest_name = "package.maya";
 inline constexpr const char* cooked_mesh_extension = ".cooked-mesh";
 inline constexpr const char* cooked_texture_extension = ".cooked-texture";
 inline constexpr const char* cooked_environment_extension = ".cooked-environment";
+inline constexpr const char* cooked_skin_extension = ".cooked-skin";
+inline constexpr const char* cooked_animation_extension = ".cooked-animation";
 
 struct PackageFile {
     std::filesystem::path path; // relative to Contents/Resources, generic form
@@ -63,6 +65,8 @@ public:
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override;
     AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override;
     AssetLoadResult<EnvironmentAsset> load_environment(const std::filesystem::path& path) override;
+    AssetLoadResult<SkinAsset> load_skin(const std::filesystem::path& path) override;
+    AssetLoadResult<AnimationAsset> load_animation(const std::filesystem::path& path) override;
 private:
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;

@@ -8,6 +8,8 @@ struct MaterialAsset;
 struct ScriptAsset;
 class TextureAsset;
 class EnvironmentAsset;
+struct SkinAsset;
+struct AnimationAsset;
 
 /// A serializable reference, not a residency lease. AssetRegistry issues explicit residency leases.
 template<class Asset>

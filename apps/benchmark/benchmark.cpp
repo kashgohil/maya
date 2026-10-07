@@ -4,6 +4,7 @@
 #include "maya/assets/property_context.hpp"
 #include "maya/renderer/renderer.hpp"
 #include "maya/simulation/play_session.hpp"
+#include "maya/simulation/script_assets.hpp"
 #include "maya/world/spatial.hpp"
 #include <algorithm>
 #include <charconv>
@@ -21,10 +22,10 @@
 namespace maya::benchmark {
 namespace fs = std::filesystem;
 namespace {
-
-constexpr auto camera_id = EntityId{0x62656e63, 1}; // "benc"
-constexpr auto light_id = EntityId{0x62656e63, 2};
-constexpr uint64_t first_instance = 0x100;
+using detail::camera_id;
+using detail::first_instance;
+using detail::light_id;
+using detail::looking;
 
 const char* workload_name(Workload workload) {
     switch (workload) {
@@ -34,12 +35,13 @@ const char* workload_name(Workload workload) {
     case Workload::play_cycles: return "play_cycles";
     case Workload::physics: return "physics";
     case Workload::import: return "import";
+    case Workload::animation: return "animation";
     }
     return "?";
 }
 /// Workloads that generate a scene of one mesh and material.
 bool generated(Workload workload) {
-    return workload != Workload::scene && workload != Workload::physics && workload != Workload::import;
+    return workload != Workload::scene && workload != Workload::physics && workload != Workload::import && workload != Workload::animation;
 }
 
 // Manifests -------------------------------------------------------------------------------------------
@@ -76,17 +78,6 @@ bool asset_id(std::istringstream& in, AssetId& id) {
 // Scene generation ------------------------------------------------------------------------------------
 
 using detail::mix;
-
-math::Quat looking(const math::Vec3& from, const math::Vec3& to) {
-    auto forward = to - from;
-    const auto length = forward.length();
-    forward = length > 1e-6f ? forward * (1.0f / length) : math::Vec3{0.0f, 0.0f, -1.0f};
-    const auto yaw = std::atan2(-forward.x, -forward.z);
-    const auto pitch = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
-    auto rotation = math::Quat::from_axis_angle({0.0f, 1.0f, 0.0f}, yaw) * math::Quat::from_axis_angle({1.0f, 0.0f, 0.0f}, pitch);
-    rotation.normalize();
-    return rotation;
-}
 
 /// I1: `count` entities on a square grid, sharing one mesh and material; exactly
 /// round(rotating × count) of them, chosen by seed, spin. A camera and a directional light.
@@ -143,11 +134,18 @@ struct Stage {
     bool present = false; // also into the device's surface
     const std::function<void()>* poll = nullptr; // between frames, untimed
     DebugView debug_view = DebugView::none;
+    SkinBindingCache& skins; // skins' joints between frames, as the player keeps them
 };
 
 struct FrameSample {
     double frame = 0.0, simulation = 0.0, wait = 0.0, extract = 0.0, encode = 0.0, submit = 0.0;
 };
+/// The systems each workload plays: A1 every system of play, so its clips play; the others the built-in ones.
+std::vector<std::unique_ptr<SimulationSystem>> systems_for(const Manifest& manifest, AssetRegistry& registry) {
+    if (manifest.workload != Workload::animation) return builtin_systems();
+    return play_systems([](AssetId) -> ScriptSourceResult { return {std::nullopt, "the benchmark has no scripts"}; },
+                        registry_animation_clips(registry));
+}
 
 /// One frame of a fixed-workload run: exactly one simulation tick, then extraction, encoding, and
 /// submission of an offscreen view, presented into the surface when the stage presents.
@@ -172,7 +170,9 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     auto view = extract_render_view(world, *handle, stage.width, stage.height);
     if (!view) throw std::runtime_error("The camera has no valid view");
     view->debug_view = stage.debug_view;
-    const auto snapshot = extract_render_snapshot(world, stage.registry);
+    auto options = RenderExtractOptions{};
+    options.skins = &stage.skins;
+    const auto snapshot = extract_render_snapshot(world, stage.registry, options);
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
     lap(sample.extract);
     if (auto error = stage.renderer.render(snapshot, *view, stage.target)) throw std::runtime_error(error.message);
@@ -196,7 +196,7 @@ MemorySample memory(GraphicsDevice& device, const AssetRegistry& registry, size_
 RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocument& document,
                    const PropertyValidationContext& context, EntityId camera, bool instrumented, Result& result,
                    bool record_resident) {
-    auto started = PlaySession::start(document, context, builtin_systems());
+    auto started = PlaySession::start(document, context, systems_for(manifest, stage.registry));
     if (!started) throw std::runtime_error(started.error.empty() ? started.diagnostics.front().message : started.error);
     auto& session = *started.session;
     for (uint32_t i = 0; i < manifest.warmup; ++i) run_frame(stage, session, camera, instrumented);
@@ -234,6 +234,8 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         samples.frame.push_back(frame.frame);
         samples.sampled_seconds += frame.frame / 1000.0;
         if (instrumented) {
+            for (const auto& timing : session.system_timings())
+                samples.systems[std::string(timing.name)].push_back(timing.fixed_update_ms + timing.late_fixed_update_ms);
             samples.simulation.push_back(frame.simulation);
             samples.wait.push_back(frame.wait);
             samples.extract.push_back(frame.extract);
@@ -276,7 +278,11 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         if (rendered.views > 0) {
             counters.shadow_maps = double(rendered.shadow_maps) / double(rendered.views);
             counters.shadow_draws = double(rendered.shadow_draws) / double(rendered.views);
+            counters.joints = size_t(rendered.joints / rendered.views);
         }
+        counters.animated = world.component_count<AnimationComponent>();
+        const auto last = extract_render_snapshot(world, stage.registry);
+        counters.skinned = size_t(std::ranges::count_if(last.instances, [](const RenderInstance& instance) { return instance.joint_count > 0; }));
     }
     return samples;
 }
@@ -428,6 +434,11 @@ void write_run(Json& json, const RunSamples& run, std::optional<double> refresh_
         write_summary(json, "extract", run.extract);
         write_summary(json, "encode", run.encode);
         write_summary(json, "submit", run.submit);
+        // Each play system's time in the frame's tick (A1's animation among them).
+        json.key("systems");
+        json.open('{');
+        for (const auto& [name, values] : run.systems) write_summary(json, name, values);
+        json.close('}');
         json.close('}');
     }
     auto gpu = std::vector<double>{};
@@ -638,7 +649,8 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             else if (text == "play_cycles") manifest.workload = Workload::play_cycles;
             else if (text == "physics") manifest.workload = Workload::physics;
             else if (text == "import") manifest.workload = Workload::import;
-            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, physics, or import");
+            else if (text == "animation") manifest.workload = Workload::animation;
+            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, physics, import, or animation");
         } else if (key == "content") {
             ok = bool(in >> std::quoted(text)) && !text.empty();
             manifest.content = (folder / text).lexically_normal();
@@ -694,6 +706,9 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         } else if (key == "present") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.present = text == "on";
+        } else if (key == "skinning") {
+            ok = bool(in >> text) && (text == "on" || text == "off");
+            manifest.skinning = text == "on";
         } else if (key == "debug_view") {
             const auto view = bool(in >> text) ? debug_view_named(text) : std::nullopt;
             ok = view.has_value();
@@ -705,9 +720,11 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
     if (!header) return fail(number_of_line, "expected a maya-benchmark header");
     for (const auto* required : {"name", "workload"})
         if (std::ranges::find(seen, required) == seen.end()) return {{}, std::string("missing '") + required + "'"};
-    if (manifest.workload == Workload::import) {
+    if (manifest.workload == Workload::import || manifest.workload == Workload::animation) {
         for (const auto* required : {"content", "models"})
-            if (std::ranges::find(seen, required) == seen.end()) return {{}, std::string("the import workload needs '") + required + "'"};
+            if (std::ranges::find(seen, required) == seen.end())
+                return {{}, std::string("the ") + workload_name(manifest.workload) + " workload needs '" + required + "'"};
+        if (manifest.workload == Workload::animation && manifest.models.size() != 1) return {{}, "the animation workload plays one model"};
     } else if (manifest.workload != Workload::physics && std::ranges::find(seen, "project") == seen.end()) {
         return {{}, "missing 'project'"};
     }
@@ -772,7 +789,15 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
     }
     auto temporary = fs::path{};
     try {
-        auto opened = open_project(manifest.project);
+        // A1 imports its model into a new project first, which it then plays from like any other.
+        auto project_path = manifest.project;
+        auto animated_scene_path = fs::path{};
+        if (manifest.workload == Workload::animation) {
+            temporary = fs::temp_directory_path() / ("maya-benchmark-animation-" + std::to_string(::getpid()));
+            animated_scene_path = detail::prepare_animation(manifest, temporary);
+            project_path = temporary;
+        }
+        auto opened = open_project(project_path);
         if (!opened) throw std::runtime_error(opened.error);
         auto assets = open_project_assets(opened.project, std::make_unique<FileAssetProvider>(device));
         if (!assets) throw std::runtime_error(assets.error);
@@ -790,6 +815,16 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
             auto probe = PlaySession::start(document, context, {});
             if (!probe || !probe.session->camera()) throw std::runtime_error("the scene has no camera");
             camera = *probe.session->camera();
+        } else if (manifest.workload == Workload::animation) {
+            auto loaded = load_scene_file(animated_scene_path, context);
+            if (!loaded) throw std::runtime_error(loaded.diagnostics.front().message);
+            auto duration = 0.0f;
+            for (const auto& record : registry.records())
+                if (record.kind == AssetKind::animation)
+                    if (const auto clip = registry.acquire(AssetRef<AnimationAsset>{record.id})) duration = std::max(duration, clip.lease.value().duration);
+            document = detail::animated_scene(manifest, loaded.document, duration);
+            if (auto problems = validate_scene(document, context); !problems.empty())
+                throw std::runtime_error("the animated scene is invalid: " + problems.front().message);
         } else {
             document = generate(manifest);
             if (auto problems = validate_scene(document, context); !problems.empty())
@@ -801,7 +836,8 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (auto error = target.resize(manifest.width, manifest.height)) throw std::runtime_error(error.message);
         if (manifest.present && device.surface_format() == Format::undefined)
             throw std::runtime_error("'present on' needs a window; this device has no surface");
-        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view};
+        auto skins = SkinBindingCache{};
+        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view, skins};
         // The warmed empty session: the device, the project's catalog, the view target, and what the
         // renderer keeps (its texture placeholder), with no content.
         if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
@@ -810,7 +846,7 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (warmed) throw std::runtime_error(warmed.message);
         result.baseline = memory(device, registry, 0);
 
-        if (manifest.workload == Workload::instances || manifest.workload == Workload::scene) {
+        if (manifest.workload == Workload::instances || manifest.workload == Workload::scene || manifest.workload == Workload::animation) {
             for (uint32_t i = 0; i < manifest.runs; ++i)
                 result.runs.push_back(measure(manifest, stage, document, context, camera, true, result, i == 0));
             if (manifest.overhead) { // without CPU scopes or GPU pass timing
@@ -933,6 +969,10 @@ std::string to_json(const Result& r) {
     json.field("ticks", m.ticks);
     json.field("present", m.present);
     json.field("debug_view", debug_view_name(m.debug_view));
+    if (m.workload == Workload::animation) {
+        json.field("model", (m.content / m.models.front()).string());
+        json.field("skinning", m.skinning);
+    }
     json.close('}');
     json.key("environment");
     json.open('{');
@@ -970,7 +1010,7 @@ std::string to_json(const Result& r) {
     json.field("antialiasing", "none");
     json.field("textures", "none (materials are factors)");
     json.field("lighting", "the scene's: up to 4 directional lights and 16 point and spot lights per view");
-    json.field("shadows", m.workload == Workload::scene
+    json.field("shadows", m.workload == Workload::scene || m.workload == Workload::animation
         ? "the scene's: 4 cascades of 2048 texels for the first shadowed directional light, 1024 texels for each of up to 4 spot lights"
         : "none (the generated sun casts none)");
     json.field("presentation", m.present ? "presented to a window every frame, synchronized with the display" : "offscreen, never presented");
@@ -995,6 +1035,9 @@ std::string to_json(const Result& r) {
     json.field("unshadowed_lights", c.unshadowed_lights);
     json.field("shadow_maps_per_view", c.shadow_maps);
     json.field("shadow_draws_per_view", c.shadow_draws);
+    json.field("animated", c.animated);
+    json.field("skinned_instances", c.skinned);
+    json.field("joints_per_view", c.joints);
     json.close('}');
     write_memory(json, "baseline_memory", r.baseline);
     write_memory(json, "resident_memory", r.resident);
@@ -1183,6 +1226,14 @@ std::string to_text(const Result& r) {
             if (r.runs[i].gpu_pass_mismatches) out << " " << r.runs[i].gpu_pass_mismatches << " OUTSIDE THEIR FRAME;";
             out << "\n";
         }
+        if (r.manifest.workload == Workload::animation && !r.runs[i].systems.empty()) {
+            out << "    per tick:";
+            for (const auto& [name, values] : r.runs[i].systems) {
+                const auto summary = summarize(values);
+                out << " " << name << " " << summary.mean << " ms (P99 " << summary.p99 << ");";
+            }
+            out << "\n";
+        }
         if (!r.runs[i].presented.empty()) {
             const auto paced = pacing(r.runs[i], r.refresh_hz);
             const auto interval = summarize(paced.intervals);
@@ -1203,6 +1254,9 @@ std::string to_text(const Result& r) {
         out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
             << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "
             << r.counters.shadow_draws << " shadow draws per view\n";
+    if (!r.runs.empty() && r.manifest.workload == Workload::animation)
+        out << "  " << r.counters.animated << " playing clips, " << r.counters.skinned << " drawn skinned, " << r.counters.joints
+            << " joints per view\n";
     if (!r.cycles.empty()) {
         auto load = std::vector<double>{};
         for (const auto& cycle : r.cycles) load.push_back(cycle.load);

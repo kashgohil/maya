@@ -117,6 +117,26 @@ struct EnvironmentComponent {
     bool background = true; // drawn where no surface is, in place of the view's clear color
 };
 
+// Skeletal animation (docs/animation.md).
+
+/// Deforms the entity's mesh with the joints its skin names. They are entities below one of this
+/// entity's ancestors, named by their path from it: the nearest ancestor where every joint resolves.
+/// A mesh without joint weights, or a skin whose joints do not resolve, is drawn unskinned.
+struct SkinComponent {
+    AssetRef<SkinAsset> skin{};
+};
+
+/// Plays a clip on the entities below this one, each channel's target named by its path from here.
+/// While playing, the clip writes those entities' transforms every tick; Stop returns them to their
+/// authored poses with the rest of the scene.
+struct AnimationComponent {
+    AssetRef<AnimationAsset> clip{};
+    bool playing = true;
+    bool loop = true; // from the end back to the start; otherwise held at the last pose
+    float speed = 1.0f; // clip seconds per second; negative plays backwards
+    float start = 0.0f; // seconds into the clip where play begins, and begins again when the clip changes
+};
+
 // Scripting (docs/scripting.md).
 
 enum class ScriptValueType { number, integer, boolean, string, vector, color, entity };

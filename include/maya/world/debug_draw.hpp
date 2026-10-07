@@ -34,14 +34,17 @@ struct DebugLine {
 /// views, tools) that extraction copies into a render snapshot. Nothing here refers to a World.
 struct DebugDraw {
     std::vector<DebugShape> shapes;
-    std::vector<DebugLine> lines;
+    std::vector<DebugLine> lines; // bright in front of the scene, faint where it hides them
+    std::vector<DebugLine> xray_lines; // as bright where the scene hides them: what is inside things, such as skeletons
 
-    bool empty() const noexcept { return shapes.empty() && lines.empty(); }
+    bool empty() const noexcept { return shapes.empty() && lines.empty() && xray_lines.empty(); }
     void clear() noexcept {
         shapes.clear();
         lines.clear();
+        xray_lines.clear();
     }
     void line(const math::Vec3& from, const math::Vec3& to, const DebugColor& color) { lines.push_back({from, to, color}); }
+    void xray_line(const math::Vec3& from, const math::Vec3& to, const DebugColor& color) { xray_lines.push_back({from, to, color}); }
     /// Three short axis-aligned lines through `at`, `size` long.
     void cross(const math::Vec3& at, float size, const DebugColor& color) {
         const auto h = size * 0.5f;

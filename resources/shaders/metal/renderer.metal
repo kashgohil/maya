@@ -51,6 +51,13 @@ struct ViewConstants {
 struct DrawConstants { // per instance, for the vertex stage: an array indexed through the pass's order
     float4x4 model;
     float4 normal_matrix[3];
+    uint4 skin; // x the first joint in the palette, y the skin's joints (0: not skinned)
+};
+
+// Skinned meshes' second vertex stream (#1038): four joints, as indices into the skin, and their weights.
+struct SkinVertex {
+    ushort4 joints;
+    packed_float4 weights; // sum to 1
 };
 
 struct MaterialConstants { // per material, for the fragment stage
@@ -75,21 +82,11 @@ struct LitOut {
     float2 uv;
 };
 
-// Instanced draws (#1025): each instance number indexes the pass's order, which picks the instance's
-// transform from the view's instances. Both are uploaded once per view and bound for every pass.
-vertex LitOut litVertex(uint id [[vertex_id]], uint instance [[instance_id]],
-                        constant Vertex* vertices [[buffer(0)]],
-                        const device DrawConstants* instances [[buffer(1)]],
-                        constant ViewConstants& view [[buffer(2)]],
-                        const device uint* order [[buffer(4)]]) {
-    const Vertex v = vertices[id];
-    const DrawConstants draw = instances[order[instance]];
-    const float4 world = draw.model * float4(v.position, 1.0);
-    // Inverse transpose of the model's linear part keeps normals perpendicular under nonuniform scale;
-    // tangents lie in the surface, so the model matrix itself carries them.
-    const float3x3 normal_matrix = float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
-                                            draw.normal_matrix[2].xyz);
-    const float3x3 linear = float3x3(draw.model[0].xyz, draw.model[1].xyz, draw.model[2].xyz);
+// A vertex placed by `model`, with `normal_matrix` the inverse transpose of its linear part, which keeps
+// normals perpendicular under nonuniform scale; tangents lie in the surface, so the model matrix carries them.
+LitOut lit_vertex(Vertex v, float4x4 model, float3x3 normal_matrix, constant ViewConstants& view) {
+    const float4 world = model * float4(v.position, 1.0);
+    const float3x3 linear = float3x3(model[0].xyz, model[1].xyz, model[2].xyz);
     LitOut out;
     out.position = view.view_projection * world;
     out.world_position = world.xyz;
@@ -98,6 +95,49 @@ vertex LitOut litVertex(uint id [[vertex_id]], uint instance [[instance_id]],
     out.color = v.color;
     out.uv = v.uv;
     return out;
+}
+
+// Instanced draws (#1025): each instance number indexes the pass's order, which picks the instance's
+// transform from the view's instances. Both are uploaded once per view and bound for every pass.
+vertex LitOut litVertex(uint id [[vertex_id]], uint instance [[instance_id]],
+                        constant Vertex* vertices [[buffer(0)]],
+                        const device DrawConstants* instances [[buffer(1)]],
+                        constant ViewConstants& view [[buffer(2)]],
+                        const device uint* order [[buffer(4)]]) {
+    const DrawConstants draw = instances[order[instance]];
+    return lit_vertex(vertices[id], draw.model, float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
+                                                         draw.normal_matrix[2].xyz), view);
+}
+
+// Skinning (#1038, docs/animation.md#skinning): a vertex's world placement is its joints' skin matrices
+// (each joint's world matrix times its inverse bind matrix) blended by its weights. Joint indices beyond
+// the skin are clamped to its last joint, so a mesh and skin that disagree cannot read past the palette.
+// An instance whose skin did not bind (skin.y 0) is placed by its own model matrix instead.
+float4x4 skin_matrix(SkinVertex s, DrawConstants draw, const device float4x4* palette) {
+    if (draw.skin.y == 0) return draw.model;
+    const uint first = draw.skin.x, last = draw.skin.y - 1;
+    const float4 w = float4(s.weights);
+    return w.x * palette[first + min(uint(s.joints.x), last)] + w.y * palette[first + min(uint(s.joints.y), last)] +
+           w.z * palette[first + min(uint(s.joints.z), last)] + w.w * palette[first + min(uint(s.joints.w), last)];
+}
+// The cofactor matrix: the inverse transpose times the determinant, which the fragment stage's
+// normalization removes.
+float3x3 cofactors(float4x4 m) {
+    return float3x3(cross(m[1].xyz, m[2].xyz), cross(m[2].xyz, m[0].xyz), cross(m[0].xyz, m[1].xyz));
+}
+vertex LitOut litSkinnedVertex(uint id [[vertex_id]], uint instance [[instance_id]],
+                               constant Vertex* vertices [[buffer(0)]],
+                               const device DrawConstants* instances [[buffer(1)]],
+                               constant ViewConstants& view [[buffer(2)]],
+                               const device uint* order [[buffer(4)]],
+                               const device SkinVertex* skins [[buffer(5)]],
+                               const device float4x4* palette [[buffer(6)]]) {
+    const DrawConstants draw = instances[order[instance]];
+    const float4x4 model = skin_matrix(skins[id], draw, palette);
+    const float3x3 normal_matrix = draw.skin.y == 0 ? float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
+                                                               draw.normal_matrix[2].xyz)
+                                                    : cofactors(model);
+    return lit_vertex(vertices[id], model, normal_matrix, view);
 }
 
 // glTF's metallic-roughness BRDF (docs/renderer.md#materials), as tests/support/shading.hpp mirrors it.
@@ -173,6 +213,18 @@ vertex ShadowOut shadowVertex(uint id [[vertex_id]], uint instance [[instance_id
     const DrawConstants draw = instances[order[instance]];
     ShadowOut out;
     out.position = shadow.view_projection * (draw.model * float4(v.position, 1.0));
+    out.uv = v.uv;
+    out.alpha = v.color.a;
+    return out;
+}
+vertex ShadowOut shadowSkinnedVertex(uint id [[vertex_id]], uint instance [[instance_id]], constant Vertex* vertices [[buffer(0)]],
+                                     const device DrawConstants* instances [[buffer(1)]], constant ShadowConstants& shadow [[buffer(2)]],
+                                     const device uint* order [[buffer(4)]], const device SkinVertex* skins [[buffer(5)]],
+                                     const device float4x4* palette [[buffer(6)]]) {
+    const Vertex v = vertices[id];
+    const DrawConstants draw = instances[order[instance]];
+    ShadowOut out;
+    out.position = shadow.view_projection * (skin_matrix(skins[id], draw, palette) * float4(v.position, 1.0));
     out.uv = v.uv;
     out.alpha = v.color.a;
     return out;

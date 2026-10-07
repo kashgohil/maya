@@ -28,6 +28,8 @@ const char* component_icon(ComponentId id) {
     case ComponentId::physics_settings: return icon::planet;
     case ComponentId::script: return icon::code;
     case ComponentId::environment: return icon::sun_horizon;
+    case ComponentId::skin: return icon::bone;
+    case ComponentId::animation: return icon::film_strip;
     }
     return icon::circle_dashed;
 }
@@ -296,11 +298,15 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
     case PropertyType::material_ref:
     case PropertyType::script_ref:
     case PropertyType::texture_ref:
-    case PropertyType::environment_ref: {
+    case PropertyType::environment_ref:
+    case PropertyType::skin_ref:
+    case PropertyType::animation_ref: {
         const auto kind = property.type == PropertyType::mesh_ref ? AssetKind::mesh
                         : property.type == PropertyType::material_ref ? AssetKind::material
                         : property.type == PropertyType::script_ref ? AssetKind::script
-                        : property.type == PropertyType::texture_ref ? AssetKind::texture : AssetKind::environment;
+                        : property.type == PropertyType::texture_ref ? AssetKind::texture
+                        : property.type == PropertyType::skin_ref ? AssetKind::skin
+                        : property.type == PropertyType::animation_ref ? AssetKind::animation : AssetKind::environment;
         const auto asset = std::visit([]<class T>(const T& reference) -> AssetId {
             if constexpr (requires { reference.id; }) return reference.id;
             else return {};
@@ -310,6 +316,8 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
             if (kind == AssetKind::material) return AssetRef<MaterialAsset>{chosen};
             if (kind == AssetKind::texture) return AssetRef<TextureAsset>{chosen};
             if (kind == AssetKind::environment) return AssetRef<EnvironmentAsset>{chosen};
+            if (kind == AssetKind::skin) return AssetRef<SkinAsset>{chosen};
+            if (kind == AssetKind::animation) return AssetRef<AnimationAsset>{chosen};
             return AssetRef<ScriptAsset>{chosen};
         };
         auto preview = std::string("None");

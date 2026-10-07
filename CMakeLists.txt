@@ -42,6 +42,8 @@ add_library(MayaWorld STATIC
     src/maya/core/sha256.cpp
     src/maya/world/world.cpp
     src/maya/world/spatial.cpp
+    src/maya/world/name_path.cpp
+    src/maya/assets/animation.cpp
     src/maya/properties/schema.cpp)
 add_library(Maya::World ALIAS MayaWorld)
 target_include_directories(MayaWorld PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -231,6 +233,7 @@ add_library(MayaSimulation STATIC
     src/maya/simulation/play_session.cpp
     src/maya/simulation/recording.cpp
     src/maya/simulation/physics_debug.cpp
+    src/maya/simulation/animation.cpp
     src/maya/simulation/scripting/script_host.cpp
     src/maya/simulation/scripting/script_api.cpp
     src/maya/simulation/scripting/scripting.cpp)
@@ -311,7 +314,8 @@ endif()
 
 if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
-    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp apps/benchmark/import_workload.cpp)
+    add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp apps/benchmark/import_workload.cpp
+        apps/benchmark/animation_workload.cpp)
     target_include_directories(MayaBenchmark PUBLIC apps/benchmark)
     target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaImport MayaBuildInfo)
     maya_target_options(MayaBenchmark)

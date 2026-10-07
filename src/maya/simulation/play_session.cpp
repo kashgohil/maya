@@ -142,7 +142,9 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     const auto interval = float(m_clock.interval());
     auto commands = m_world->commands();
     auto bodies = BodyCommands(*m_physics, *m_world);
+    auto jumps = std::vector<EntityHandle>{}; // poses systems say jump in this tick
     auto context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, bodies, *m_physics, messages};
+    context.jumps = &jumps;
     const auto since = [](std::chrono::steady_clock::time_point start) {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     };
@@ -187,6 +189,7 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     }
     auto late = std::make_unique<BodyCommands>(*m_physics, *m_world);
     auto late_context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, *late, *m_physics, messages, events};
+    late_context.jumps = &jumps;
     for (size_t i = 0; i < m_systems.size(); ++i) {
         auto& system = m_systems[i];
         const auto first = commands.size();
@@ -203,6 +206,7 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     // Phase 2's pose history, kept as the batch commits: the poses this tick changes, and which reset.
     const BodyCommands* stepped[] = {m_late_bodies ? m_late_bodies.get() : &bodies, &bodies};
     keep_history(commands, stepped);
+    m_resets.insert(m_resets.end(), jumps.begin(), jumps.end());
     // One atomic commit: a rejected batch leaves the World as the previous tick completed it.
     const auto result = m_world->commit(commands);
     if (!result)
@@ -241,7 +245,8 @@ namespace maya {
 
 // Before the commit: each entity's local transform that the batch changes, as it was. Entities the
 // batch creates have none, so they show their first pose as it is. Reparented and teleported
-// entities (teleports that took effect in this tick's step) reset, with their descendants.
+// entities (teleports that took effect in this tick's step) reset, with their descendants, as do the
+// entities systems say jump (TickContext::jumps), which the caller adds.
 void PlaySession::keep_history(const WorldCommands& commands, std::span<const BodyCommands* const> stepped) {
     for (const auto& entry : m_previous) m_history_index[entry.entity.slot] = 0;
     m_previous.clear();

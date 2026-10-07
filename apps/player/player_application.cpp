@@ -55,6 +55,7 @@ public:
 
         const auto context = asset_property_context(*m_assets);
         auto scripts = project_script_settings(project.settings);
+        scripts.assets = context; // scripts set clips by asset ID, checked against the catalog
         auto document = SceneDocument{};
         auto scene_name = std::string{};
         if (m_options.replay) {
@@ -84,7 +85,7 @@ public:
         }
         if (m_options.record)
             m_recording = begin_recording(scene_name, document, recorded_assets(*m_assets, document), scripts.seed, {}, {});
-        auto started = PlaySession::start(document, context, play_systems(registry_script_sources(*m_assets), scripts));
+        auto started = PlaySession::start(document, context, play_systems(registry_script_sources(*m_assets), registry_animation_clips(*m_assets), scripts));
         if (!started) return started.diagnostics.empty() ? fail(started.error) : fail(std::filesystem::path(scene_name), started.diagnostics);
         m_session = std::move(started.session);
         if (!m_session->camera()) return fail(std::filesystem::path(scene_name).filename().string() + " has no camera to show; add one in the editor");
@@ -93,6 +94,7 @@ public:
             m_session->set_physics_debug_capture(true);
             std::cerr << "[Player] drawing the physics debug views\n";
         }
+        if (m_options.debug_skeletons) std::cerr << "[Player] drawing skeletons\n";
         if (m_options.debug_view != DebugView::none)
             std::cerr << "[Player] showing the " << debug_view_name(m_options.debug_view) << " debug view\n";
         if (m_options.replay) {
@@ -146,11 +148,11 @@ public:
         view->debug_view = m_options.debug_view; // none unless asked for
         auto options = RenderExtractOptions{};
         options.poses = &poses;
-        if (m_options.debug_physics) { // never drawn otherwise
-            m_debug.clear();
-            play_physics_debug(world, m_session->physics(), {all_physics_debug, all_collision_groups}, &poses, m_debug);
-            options.debug = &m_debug;
-        }
+        options.skins = &m_skins;
+        m_debug.clear(); // debug views are never drawn unless asked for
+        if (m_options.debug_physics) play_physics_debug(world, m_session->physics(), {all_physics_debug, all_collision_groups}, &poses, m_debug);
+        if (m_options.debug_skeletons) skeleton_debug(world, *m_assets, &poses, m_debug, &m_skins);
+        if (!m_debug.empty()) options.debug = &m_debug;
         const auto snapshot = extract_render_snapshot(world, *m_assets, options);
         if (snapshot.diagnostics.size() != m_reported) { // report changes, not every frame
             for (const auto& problem : snapshot.diagnostics) std::cerr << "[Player] " << problem.message << '\n';
@@ -198,7 +200,8 @@ private:
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<RenderTarget> m_view;
     size_t m_reported = 0;
-    DebugDraw m_debug; // --debug-physics: this frame's, reused
+    DebugDraw m_debug; // --debug-physics and --debug-skeletons: this frame's, reused
+    SkinBindingCache m_skins; // the session's skins' joints, between frames (#1038)
     PlayRecording m_recording; // being made (--record), or being replayed (--replay)
     bool m_replay_done = false;
 };

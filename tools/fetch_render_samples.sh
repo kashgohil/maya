@@ -1,13 +1,13 @@
 #!/bin/sh
-# Fetches the glTF sample models #1030's prototypes read, from KhronosGroup/glTF-Sample-Assets at a
-# pinned commit, and one Poly Haven HDRI by its hash, into a folder outside the repository (default:
-# build/render-samples). The models keep their own licenses (each folder's README and LICENSE.md);
-# none of them is committed here.
+# Fetches the glTF sample models #1030's prototypes and #1038's skinning tests read, from
+# KhronosGroup/glTF-Sample-Assets at a pinned commit, and one Poly Haven HDRI by its hash, into a folder
+# outside the repository (default: build/render-samples). The models keep their own licenses (each
+# folder's README and LICENSE.md); none of them is committed here.
 # Usage: tools/fetch_render_samples.sh [folder]
 set -eu
 folder=${1:-build/render-samples}
 commit=f36bfdabd1031c3cf6689a50570b8cdf3678b49c
-models="Sponza DamagedHelmet FlightHelmet CesiumMan MetalRoughSpheres TextureTransformTest NormalTangentMirrorTest BoxTextured ABeautifulGame Fox"
+models="Sponza DamagedHelmet FlightHelmet CesiumMan MetalRoughSpheres TextureTransformTest NormalTangentMirrorTest BoxTextured ABeautifulGame Fox SimpleSkin RiggedSimple RiggedFigure RecursiveSkeletons InterpolationTest"
 if [ ! -d "$folder/.git" ]; then
     git clone --quiet --filter=blob:none --no-checkout https://github.com/KhronosGroup/glTF-Sample-Assets.git "$folder"
 fi

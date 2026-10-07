@@ -1,0 +1,17 @@
+maya-benchmark 1
+# A1 without skinning (#1038): a1_animation.benchmark's 100 walking CesiumMen, their joints still posed
+# every tick, but their meshes drawn as authored rather than skinned. The difference per GPU pass from
+# a1_animation is skinning's cost.
+name "a1-unskinned"
+workload animation
+content "../build/render-samples"
+models "Models/CesiumMan/glTF-Binary/CesiumMan.glb"
+count 100
+spacing 1.2
+seed 990
+camera 0 7 13 0 0.6 0
+resolution 1920 1080
+warmup 300
+samples 3000
+runs 3
+skinning off

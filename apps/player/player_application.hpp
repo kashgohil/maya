@@ -19,6 +19,8 @@ struct PlayerOptions {
     std::optional<std::filesystem::path> replay;
     /// Draws every physics debug view over the game (docs/physics.md#debug-views), for debugging.
     bool debug_physics = false;
+    /// Draws skinned meshes' skeletons over the game (docs/animation.md#debug-view), for debugging.
+    bool debug_skeletons = false;
     /// Shows a debug view instead of the lit image (docs/renderer.md#debug-views), for debugging.
     DebugView debug_view = DebugView::none;
 };

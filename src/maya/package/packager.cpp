@@ -1,6 +1,7 @@
 #include "maya/package/packager.hpp"
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/project.hpp"
+#include "maya/assets/property_context.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/core/build_info.hpp"
 #include "maya/metrics/metrics.hpp"
@@ -34,16 +35,6 @@ bool write_file(const fs::path& path, std::span<const std::byte> bytes) {
 }
 bool write_text(const fs::path& path, const std::string& text) {
     return write_file(path, std::as_bytes(std::span(text.data(), text.size())));
-}
-AssetKind kind_of(ReferenceKind kind) {
-    switch (kind) {
-    case ReferenceKind::mesh: return AssetKind::mesh;
-    case ReferenceKind::material: return AssetKind::material;
-    case ReferenceKind::script: return AssetKind::script;
-    case ReferenceKind::texture: return AssetKind::texture;
-    case ReferenceKind::environment: return AssetKind::environment;
-    }
-    return AssetKind::mesh;
 }
 std::string id_name(AssetId id) {
     char text[40];
@@ -127,13 +118,13 @@ PackageReport package_project(const PackageOptions& options) {
     }
 
     // Everything the scenes reach, through the same references validation follows: their meshes,
-    // materials, scripts, and environments, and the materials' textures.
+    // materials, scripts, environments, skins, and clips, and the materials' textures.
     auto needed = std::set<AssetId>{};
     auto missing = std::string{};
     const auto context = PropertyValidationContext{[&](AssetId id, ReferenceKind kind) {
         const auto found = records.find(id);
         if (found == records.end()) return ReferenceStatus::missing;
-        if (found->second.kind != kind_of(kind)) return ReferenceStatus::wrong_type;
+        if (found->second.kind != reference_asset_kind(kind)) return ReferenceStatus::wrong_type;
         needed.insert(id);
         return ReferenceStatus::valid;
     }};
@@ -199,6 +190,22 @@ PackageReport package_project(const PackageOptions& options) {
             else payload = write_cooked_environment(*cooked.value);
             path = cooked_path(cooked_environment_extension);
             ++report.environments;
+            break;
+        }
+        case AssetKind::skin: {
+            auto cooked = cooker.imported_skin(source, part);
+            if (!cooked) problem = cooked.diagnostic;
+            else payload = write_skin(*cooked.value);
+            path = cooked_path(cooked_skin_extension);
+            ++report.skins;
+            break;
+        }
+        case AssetKind::animation: {
+            auto cooked = cooker.imported_animation(source, part);
+            if (!cooked) problem = cooked.diagnostic;
+            else payload = write_animation(*cooked.value);
+            path = cooked_path(cooked_animation_extension);
+            ++report.animations;
             break;
         }
         case AssetKind::material:

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "maya/math/vector.hpp"
+#include <array>
+#include <cstdint>
 
 namespace maya {
 
@@ -24,5 +26,13 @@ struct Vertex {
 };
 
 static_assert(sizeof(Vertex) == 80, "Vertex must match the Metal vertex layout");
+
+/// A skinned mesh's second vertex stream (#1038, docs/animation.md#skinning): up to four joints, as
+/// indices into its skin's joints, and their weights, which sum to 1. Static meshes have none.
+struct SkinVertex {
+    std::array<uint16_t, 4> joints{};
+    std::array<float, 4> weights{};
+};
+static_assert(sizeof(SkinVertex) == 24, "SkinVertex must match the Metal skin vertex layout");
 
 } // namespace maya

@@ -69,13 +69,14 @@ bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording*
     auto scripts = m_project ? project_script_settings(m_project->settings) : ScriptSettings{};
     scripts.reloads = std::make_shared<ScriptReloads>(scripts.limits);
     if (replay) scripts.seed = replay->seed;
+    scripts.assets = asset_property_context(*m_assets);
     const auto sources = [this](AssetId script) -> ScriptSourceResult {
         const auto& version = script_version(script);
         if (version.good) return {*version.good, {}};
         // Never compiled: the session gets the file as it is and reports why, under the script's name.
         return m_assets ? registry_script_sources(*m_assets)(script) : ScriptSourceResult{std::nullopt, version.error};
     };
-    auto started = PlaySession::start(document, asset_property_context(*m_assets), play_systems(sources, scripts));
+    auto started = PlaySession::start(document, asset_property_context(*m_assets), play_systems(sources, registry_animation_clips(*m_assets), scripts));
     if (!started) {
         auto reason = started.error;
         for (const auto& problem : started.diagnostics) {
@@ -162,10 +163,13 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
         m_shown_physics = m_play->physics().stats();
         m_physics_age = 0.0f;
     }
-    // Scripts report without stopping play: logs to Diagnostics; a failed instance also as a notice.
+    // Systems report without stopping play: logs to Diagnostics, scripts' as scripts', the others' (such as
+    // animation's) as play's under the system's name; a failed script instance also as a notice.
     for (const auto& message : frame.messages) {
-        m_log.add(DiagnosticSource::script, message.text, m_frame);
-        if (message.level == SimulationMessage::Level::error) notice("A script stopped", message.text);
+        const auto script = message.source == "Scripts";
+        m_log.add(script ? DiagnosticSource::script : DiagnosticSource::play, script ? message.text : message.source + ": " + message.text,
+                  m_frame);
+        if (script && message.level == SimulationMessage::Level::error) notice("A script stopped", message.text);
     }
     if (!frame.error.empty()) {
         m_log.add(DiagnosticSource::play, frame.error, m_frame);
@@ -220,7 +224,8 @@ void EditorShell::draw_view_toggle() {
                "Through the editor camera; hold the right button to fly"))
         set_game_view(false);
     ImGui::SameLine(0.0f, 8.0f);
-    if (option(icon::eye, "tool.physics-debug", m_preferences.physics_debug.any(), "Physics debug views")) ImGui::OpenPopup("physics-debug");
+    const auto debugging = m_preferences.physics_debug.any() || m_preferences.debug_view != DebugView::none || m_preferences.skeletons;
+    if (option(icon::eye, "tool.physics-debug", debugging, "Debug views")) ImGui::OpenPopup("physics-debug");
     ImGui::PopStyleVar(3);
     ImGui::NewLine();
     draw_physics_debug_menu();

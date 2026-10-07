@@ -20,8 +20,10 @@ struct Project;
 /// bytes must raise its version, so entries cooked before are not read.
 inline constexpr uint32_t texture_cook_version = 1;
 inline constexpr uint32_t environment_cook_version = 1;
-inline constexpr uint32_t imported_mesh_cook_version = 1;
+inline constexpr uint32_t imported_mesh_cook_version = 2; // 2: with joints and weights (#1038)
 inline constexpr uint32_t imported_texture_cook_version = 1;
+inline constexpr uint32_t skin_cook_version = 1;
+inline constexpr uint32_t animation_cook_version = 1;
 
 /// What an entry is cooked from: its kind and version, the source's digest, and the settings that change
 /// the result, written as text (e.g. "role color\ncompression astc\nmips on\nastc on\n").

@@ -1,5 +1,9 @@
 #include "maya/renderer/render_snapshot.hpp"
+#include "maya/assets/animation.hpp"
+#include "maya/world/name_path.hpp"
 #include <algorithm>
+#include <map>
+#include <set>
 #include <cmath>
 #include <sstream>
 #include <unordered_map>
@@ -147,6 +151,23 @@ public:
         return value ? *value : shared(m_fallback, fallback_material(), entity);
     }
 
+    /// A skin, acquired once per extraction; null, with the reason, when it cannot be.
+    const AssetLease<SkinAsset>* skin(AssetRef<SkinAsset> ref, std::string& problem) {
+        auto found = m_skins.find(ref.id);
+        if (found == m_skins.end()) {
+            auto acquired = m_assets.acquire(ref);
+            auto entry = SkinEntry{};
+            if (acquired) entry.lease = std::move(acquired.lease);
+            else entry.problem = acquired.diagnostic.message;
+            found = m_skins.emplace(ref.id, std::move(entry)).first;
+        }
+        if (!found->second.lease) {
+            problem = found->second.problem;
+            return nullptr;
+        }
+        return &found->second.lease;
+    }
+
 private:
     uint32_t add(const RenderMaterial& material) {
         m_out.materials.push_back(material);
@@ -170,7 +191,117 @@ private:
         std::string problem; // why it could not
     };
     std::unordered_map<AssetId, TextureEntry, PersistentIdHash> m_textures;
+    struct SkinEntry {
+        AssetLease<SkinAsset> lease;
+        std::string problem;
+    };
+    std::unordered_map<AssetId, SkinEntry, PersistentIdHash> m_skins;
 };
+
+/// Finds skins' joints below entities' ancestors, through a cache kept between extractions while the
+/// World's names and hierarchy stay the same (SkinBindingCache), or one of its own for this extraction.
+class SkinResolver {
+public:
+    SkinResolver(const World& world, SkinBindingCache* cache) : m_world(world), m_cache(cache ? *cache : m_own) {
+        if (m_cache.world != world.token() || m_cache.names_revision != world.names_revision()) {
+            m_cache.bindings.clear();
+            m_cache.world = world.token();
+            m_cache.names_revision = world.names_revision();
+        }
+    }
+    /// The joints of `skin` below the nearest of `entity` and its ancestors that has them all, or why not:
+    /// the first joint the farthest ancestor lacks.
+    const SkinBindingCache::Binding& resolve(EntityHandle entity, const AssetLease<SkinAsset>& skin) {
+        const auto key = std::tuple(entity, skin.handle());
+        if (const auto found = m_cache.bindings.find(key); found != m_cache.bindings.end()) return found->second;
+        auto binding = SkinBindingCache::Binding{};
+        const auto& joints = skin.value().joints;
+        for (auto at = std::optional<EntityHandle>{entity}; at; at = m_world.parent(*at)) {
+            const auto found = resolve_name_paths(m_world, *at, joints);
+            if (const auto gap = std::ranges::find_if(found, [](const auto& joint) { return !joint; }); gap != found.end()) {
+                binding.missing = "'" + joints[size_t(gap - found.begin())] + "' is not below it or its ancestors (renamed or removed?)";
+                continue;
+            }
+            binding.root = *at;
+            for (const auto& joint : found) binding.joints.push_back(*joint);
+            binding.missing.clear();
+            break;
+        }
+        return m_cache.bindings.emplace(key, std::move(binding)).first->second;
+    }
+
+private:
+    const World& m_world;
+    SkinBindingCache m_own;
+    SkinBindingCache& m_cache;
+};
+
+/// Skin matrices in the snapshot's joints: once per skin and the ancestor its joints are below, which an
+/// imported mesh's primitives share.
+class SkinPalettes {
+public:
+    SkinPalettes(SkinResolver& resolver, RenderSnapshot& out, std::function<std::optional<math::Mat4>(EntityHandle)> world_matrix)
+        : m_resolver(resolver), m_out(out), m_world_matrix(std::move(world_matrix)) {}
+
+    /// The skin's first joint in the snapshot's joints, or nullopt with why not.
+    std::optional<uint32_t> bind(EntityHandle entity, const AssetLease<SkinAsset>& lease, std::string& missing) {
+        const auto& binding = m_resolver.resolve(entity, lease);
+        if (!binding.root) {
+            missing = binding.missing;
+            return std::nullopt;
+        }
+        const auto key = std::tuple(*binding.root, lease.handle());
+        auto found = m_palettes.find(key);
+        if (found == m_palettes.end()) {
+            // Each joint's shown pose times its inverse bind matrix; an unrepresentable pose unbinds the skin.
+            const auto& skin = lease.value();
+            const auto start = m_out.joints.size();
+            auto palette = Palette{uint32_t(start), {}};
+            for (size_t j = 0; j < binding.joints.size(); ++j) {
+                const auto pose = m_world_matrix(binding.joints[j]);
+                if (!pose) {
+                    m_out.joints.resize(start);
+                    palette = {std::nullopt, "'" + skin.joints[j] + "' has an unrepresentable pose"};
+                    break;
+                }
+                m_out.joints.push_back(*pose * skin.inverse_bind[j]);
+            }
+            found = m_palettes.emplace(key, std::move(palette)).first;
+        }
+        if (!found->second.first) missing = found->second.missing;
+        return found->second.first;
+    }
+
+private:
+    struct Palette {
+        std::optional<uint32_t> first;
+        std::string missing;
+    };
+    SkinResolver& m_resolver;
+    RenderSnapshot& m_out;
+    std::function<std::optional<math::Mat4>(EntityHandle)> m_world_matrix;
+    std::map<std::tuple<EntityHandle, AssetHandle<SkinAsset>>, Palette> m_palettes; // by root and skin version
+};
+
+/// A sphere around a mesh's bounds carried by each of its joints' skin matrices, which encloses every
+/// skinned vertex: each is a weighted average of its joints' placements.
+void skinned_bounds(RenderInstance& instance, const MeshGeometry& geometry, std::span<const math::Mat4> joints) {
+    const auto local = (geometry.min + geometry.max) * 0.5f;
+    const auto half = (geometry.max - geometry.min).length() * 0.5f;
+    auto low = math::Vec3{std::numeric_limits<float>::infinity()}, high = math::Vec3{-std::numeric_limits<float>::infinity()};
+    for (const auto& m : joints) {
+        const auto center = math::Vec3{m.at(0, 0) * local.x + m.at(0, 1) * local.y + m.at(0, 2) * local.z + m.at(0, 3),
+                                       m.at(1, 0) * local.x + m.at(1, 1) * local.y + m.at(1, 2) * local.z + m.at(1, 3),
+                                       m.at(2, 0) * local.x + m.at(2, 1) * local.y + m.at(2, 2) * local.z + m.at(2, 3)};
+        const auto column = [&](int c) { return math::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}.length(); };
+        const auto radius = half * std::max({column(0), column(1), column(2)});
+        low = {std::min(low.x, center.x - radius), std::min(low.y, center.y - radius), std::min(low.z, center.z - radius)};
+        high = {std::max(high.x, center.x + radius), std::max(high.y, center.y + radius), std::max(high.z, center.z + radius)};
+    }
+    instance.bounds_center = (low + high) * 0.5f;
+    instance.bounds_radius = (high - low).length() * 0.5f;
+    if (!std::isfinite(instance.bounds_radius)) instance.bounds_radius = std::numeric_limits<float>::infinity();
+}
 } // namespace
 
 RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets,
@@ -183,6 +314,14 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
         return options.poses ? options.poses->world_matrix(world, entity) : world.world_matrix(entity);
     };
 
+    auto resolver = SkinResolver(world, options.skins);
+    auto skins = SkinPalettes(resolver, snapshot, world_matrix);
+    // Skins by entity slot, gathered once: a scene without them pays nothing per instance.
+    auto skin_of = std::vector<AssetId>{};
+    world.for_each<SkinComponent>([&](EntityHandle entity, const SkinComponent& component) {
+        if (entity.slot >= skin_of.size()) skin_of.resize(size_t(entity.slot) + 1);
+        skin_of[entity.slot] = component.skin.id;
+    });
     world.for_each<MeshRendererComponent>([&](EntityHandle entity, const MeshRendererComponent& renderer) {
         ++snapshot.stats.mesh_renderers;
         if (!renderer.visible || !renderer.mesh.valid()) {
@@ -215,6 +354,27 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
                                       m.at(2, 0) * local.x + m.at(2, 1) * local.y + m.at(2, 2) * local.z + m.at(2, 3)};
             const auto column = [&](int c) { return math::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}.length(); };
             instance.bounds_radius = (geometry.max - geometry.min).length() * 0.5f * std::max({column(0), column(1), column(2)});
+        }
+        // A skinned mesh (#1038) with its skin's joints found is placed by them; otherwise it is drawn as authored.
+        const auto skin = AssetRef<SkinAsset>{entity.slot < skin_of.size() ? skin_of[entity.slot] : AssetId{}};
+        if (skin.valid() && snapshot.meshes[*mesh].value().mesh().skinned()) {
+            auto problem = std::string{};
+            if (const auto asset = extraction.skin(skin, problem)) {
+                if (const auto first = skins.bind(entity, *asset, problem)) {
+                    instance.first_joint = *first;
+                    instance.joint_count = uint32_t(asset->value().joints.size());
+                    if (const auto& geometry = snapshot.meshes[*mesh].value().geometry(); !geometry.empty())
+                        skinned_bounds(instance, geometry, std::span(snapshot.joints).subspan(*first, instance.joint_count));
+                    else
+                        instance.bounds_radius = std::numeric_limits<float>::infinity();
+                } else {
+                    extraction.report(RenderIssue::unbound_skin, id, skin.id, "Entity " + id_text(id) + " is drawn unskinned: its skin's joint " +
+                        problem);
+                }
+            } else {
+                extraction.report(RenderIssue::unbound_skin, id, skin.id, "Entity " + id_text(id) + " is drawn unskinned: skin " +
+                    id_text(skin.id) + " is unavailable: " + problem);
+            }
         }
         snapshot.instances.push_back(std::move(instance));
     });
@@ -288,6 +448,47 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
     }
     if (options.debug) snapshot.debug = *options.debug;
     return snapshot;
+}
+
+void skeleton_debug(const World& world, AssetRegistry& assets, const PresentationPoses* poses, DebugDraw& out, SkinBindingCache* cache) {
+    auto resolver = SkinResolver(world, cache);
+    auto drawn = std::set<std::pair<uint32_t, AssetId>>{}; // by ancestor slot and skin: once each
+    world.for_each<SkinComponent>([&](EntityHandle entity, const SkinComponent& component) {
+        if (!component.skin.valid()) return;
+        const auto acquired = assets.acquire(component.skin);
+        if (!acquired) return;
+        const auto& binding = resolver.resolve(entity, acquired.lease);
+        if (!binding.root || !drawn.insert({binding.root->slot, component.skin.id}).second) return;
+        const auto& joints = binding.joints;
+        auto index = std::unordered_map<uint32_t, size_t>{}; // joints by entity slot
+        auto pose = std::vector<std::optional<math::Mat4>>(joints.size());
+        for (size_t j = 0; j < joints.size(); ++j) {
+            index.emplace(joints[j].slot, j);
+            pose[j] = poses ? poses->world_matrix(world, joints[j]) : world.world_matrix(joints[j]);
+        }
+        const auto origin = [&](size_t j) { return math::Vec3{pose[j]->at(0, 3), pose[j]->at(1, 3), pose[j]->at(2, 3)}; };
+        auto total = 0.0f;
+        auto bones = 0;
+        for (size_t j = 0; j < joints.size(); ++j) {
+            const auto parent = world.parent(joints[j]);
+            const auto found = parent ? index.find(parent->slot) : index.end();
+            if (found == index.end() || !pose[j] || !pose[found->second]) continue;
+            out.xray_line(origin(found->second), origin(j), skeleton_bone_color);
+            total += (origin(j) - origin(found->second)).length();
+            ++bones;
+        }
+        const auto axis = bones > 0 ? total / float(bones) / 3.0f : 0.0f;
+        if (axis > 0.0f)
+            for (size_t j = 0; j < joints.size(); ++j) {
+                if (!pose[j]) continue;
+                const auto& m = *pose[j];
+                for (int c = 0; c < 3; ++c) {
+                    const auto direction = math::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}.normalized();
+                    const auto color = DebugColor{c == 0 ? 0.95f : 0.25f, c == 1 ? 0.85f : 0.25f, c == 2 ? 1.0f : 0.25f, 1.0f};
+                    out.xray_line(origin(j), origin(j) + direction * axis, color);
+                }
+            }
+    });
 }
 
 float exposure_scale(float ev100) noexcept { return 1.0f / (1.2f * std::exp2(ev100)); }

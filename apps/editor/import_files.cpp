@@ -69,6 +69,12 @@ void EditorShell::read_part_labels() {
         for (const auto& mesh : imported.file.meshes) m_part_labels.insert_or_assign(mesh.id, identity_label(mesh.identity, AssetKind::mesh));
         for (const auto& texture : imported.file.textures)
             m_part_labels.insert_or_assign(texture.id, identity_label(texture.identity, AssetKind::texture));
+        // Skins and clips by the file's names; unnamed ones ("#2") by the file and their kind.
+        const auto named = [&](const ImportedAsset& part, const char* kind) {
+            return part.identity.starts_with('#') ? split.file.stem().string() + " " + kind + " " + part.identity.substr(1) : part.identity;
+        };
+        for (const auto& skin : imported.file.skins) m_part_labels.insert_or_assign(skin.id, named(skin, "skin"));
+        for (const auto& clip : imported.file.animations) m_part_labels.insert_or_assign(clip.id, named(clip, "clip"));
     }
 }
 
@@ -84,9 +90,11 @@ GltfImportResult EditorShell::import_model(const std::filesystem::path& path, bo
         return result;
     }
     const auto count = [&](AssetKind kind) { return std::ranges::count(result.records, kind, &AssetRecord::kind); };
+    const auto animated = count(AssetKind::skin) + count(AssetKind::animation) > 0
+        ? std::to_string(count(AssetKind::skin)) + " skins, " + std::to_string(count(AssetKind::animation)) + " clips, " : std::string{};
     m_log.add(DiagnosticSource::asset, "Imported " + shown + ": " + std::to_string(count(AssetKind::mesh)) + " meshes, " +
-        std::to_string(count(AssetKind::texture)) + " textures, " + std::to_string(count(AssetKind::material)) + " materials, scene " +
-        result.scene.generic_string(), m_frame);
+        std::to_string(count(AssetKind::texture)) + " textures, " + std::to_string(count(AssetKind::material)) + " materials, " + animated +
+        "scene " + result.scene.generic_string(), m_frame);
     for (const auto& warning : result.warnings) m_log.add(DiagnosticSource::asset, shown + ": " + gltf_problem_text(warning), m_frame);
     for (const auto& kept : result.kept)
         m_log.add(DiagnosticSource::asset, "Kept " + kept.generic_string() + ", which was edited since it was imported", m_frame);

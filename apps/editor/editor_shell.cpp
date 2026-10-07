@@ -1009,6 +1009,12 @@ void EditorShell::set_debug_view(DebugView view) {
     save_preferences();
 }
 
+void EditorShell::set_skeletons(bool on) {
+    if (on == m_preferences.skeletons) return;
+    m_preferences.skeletons = on;
+    save_preferences();
+}
+
 void EditorShell::set_collider_editing(bool on) {
     if (!on && m_collider_drag) {
         m_scene->end_group(); // a drag in progress keeps what it did
@@ -1055,6 +1061,7 @@ void EditorShell::render_viewport() {
     auto clock = Stopwatch{};
     auto options = RenderExtractOptions{};
     options.poses = &poses;
+    options.skins = &m_skin_bindings;
     // Physics debug views: from the play session's physics world while playing, else from the collider
     // components. Contacts and queries are captured only while they are shown.
     m_debug_draw.clear();
@@ -1076,6 +1083,7 @@ void EditorShell::render_viewport() {
                 debug_collider(m_debug_draw, *matrix, ColliderDesc{shape, collider.offset, collider.rotation}, selection_debug_color);
             });
     }
+    if (m_preferences.skeletons && m_assets) skeleton_debug(world, *m_assets, &poses, m_debug_draw, &m_skin_bindings);
     if (!m_debug_draw.empty()) options.debug = &m_debug_draw;
     view->debug_line_width = 1.5f * std::max(m_font_scale, 1.0f);
     view->debug_view = m_preferences.debug_view;

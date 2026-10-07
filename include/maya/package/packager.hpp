@@ -25,7 +25,7 @@ struct PackageReport {
     PackageManifest manifest;
     uint64_t bytes = 0; // the whole bundle's
     double milliseconds = 0;
-    size_t meshes = 0, textures = 0, environments = 0, materials = 0, scripts = 0;
+    size_t meshes = 0, textures = 0, environments = 0, materials = 0, scripts = 0, skins = 0, animations = 0;
     explicit operator bool() const noexcept { return error.empty(); }
 };
 

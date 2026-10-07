@@ -651,6 +651,29 @@ EditResult EditorShell::assign_asset(EntityId entity, AssetId asset) {
         }
         return m_scene->set_component(entity, script);
     }
+    if (info->record.kind == AssetKind::animation) {
+        // A clip names what it moves from the entity that plays it: the nearest one at or above this one
+        // that already plays a clip (an imported model's root, when this is its mesh), which keeps how it
+        // plays; else this one.
+        auto player = entity;
+        for (auto at = std::optional<EntityId>{entity}; at;) {
+            const auto* above = m_scene->record(*at);
+            if (!above) break;
+            if (has_component(*above, ComponentId::animation)) {
+                player = *at;
+                break;
+            }
+            at = above->parent;
+        }
+        const auto* target = m_scene->record(player);
+        auto animation = AnimationComponent{};
+        const auto existing = std::ranges::find(target->components, ComponentId::animation,
+                                                [](const ComponentValue& value) { return component_id(value); });
+        if (existing != target->components.end()) animation = std::get<AnimationComponent>(*existing);
+        animation.clip = {asset};
+        return m_scene->set_component(player, animation);
+    }
+    if (info->record.kind == AssetKind::skin) return m_scene->set_component(entity, SkinComponent{{asset}});
     auto renderer = MeshRendererComponent{};
     const auto existing = std::ranges::find(record->components, ComponentId::mesh_renderer,
                                             [](const ComponentValue& value) { return component_id(value); });
@@ -802,6 +825,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto script = record.kind == AssetKind::script;
     const auto texture = record.kind == AssetKind::texture;
     const auto environment = record.kind == AssetKind::environment;
+    const auto skin = record.kind == AssetKind::skin, clip = record.kind == AssetKind::animation;
     // Textures load for their thumbnails (or show the placeholder's), before their state is read.
     const auto thumbnail = texture ? texture_thumbnail(record.id, false) : ImTextureID{0};
     const auto info = m_assets->info(record.id);
@@ -822,7 +846,8 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         }
     const auto state = info ? info->state : AssetState::unloaded;
     const auto failed = version ? !missing && !problem.empty() : state == AssetState::failed || (info && info->diagnostic);
-    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : environment ? icon::sun_horizon : icon::circle_half;
+    const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : environment ? icon::sun_horizon
+                       : skin ? icon::bone : clip ? icon::film_strip : icon::circle_half;
     ImGui::PushID(static_cast<int>(record.id.low ^ (record.id.high << 7)));
     const auto selected = m_selected_asset == record.id;
     if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()})) {
@@ -849,7 +874,8 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
         ImGui::TextUnformatted(mesh ? "Drop in the viewport to place it" : script ? "Drop on an object to attach it"
                                : texture ? "Drop on a material's map in the Inspector"
-                               : environment ? "Drop in the viewport to light the scene with it" : "Drop on an object to assign it");
+                               : environment ? "Drop in the viewport to light the scene with it"
+                               : clip ? "Drop on a model to play it" : "Drop on an object to assign it");
         ImGui::PopStyleColor();
         ImGui::EndDragDropSource();
     }
@@ -997,14 +1023,14 @@ void EditorShell::draw_assets() {
                 const auto kind = m_asset_rows[i].record.kind;
                 if (passes(m_asset_rows[i].search))
                     m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : kind == AssetKind::script ? 3
-                                 : kind == AssetKind::texture ? 4 : 5].push_back(i);
+                                 : kind == AssetKind::texture ? 4 : kind == AssetKind::environment ? 5 : 6].push_back(i);
             }
             m_shown_filter = std::move(filter);
             m_shown_stale = false;
         }
         constexpr auto table_flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
         m_texture_loads = 0;
-        if (ImGui::BeginTable("asset_columns", 6, table_flags, ImGui::GetContentRegionAvail())) {
+        if (ImGui::BeginTable("asset_columns", 7, table_flags, ImGui::GetContentRegionAvail())) {
             // Each column scrolls on its own and draws only its visible rows.
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {
                 ImGui::TableNextColumn();
@@ -1057,6 +1083,7 @@ void EditorShell::draw_assets() {
             column("scripts", "SCRIPTS", m_shown_rows[3], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("textures", "TEXTURES", m_shown_rows[4], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("environments", "ENVIRONMENTS", m_shown_rows[5], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
+            column("animation", "ANIMATION", m_shown_rows[6], [&](size_t index) { draw_asset_row(m_asset_rows[index]); }); // skins and clips
             ImGui::EndTable();
         }
         if (std::exchange(m_rescan, false)) scan_project();

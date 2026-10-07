@@ -188,4 +188,22 @@ AssetLoadResult<EnvironmentAsset> PackageAssetProvider::load_environment(const s
     return upload_environment(m_device, *environment, path.stem().string());
 }
 
+AssetLoadResult<SkinAsset> PackageAssetProvider::load_skin(const std::filesystem::path& path) {
+    auto failure = AssetLoadResult<SkinAsset>{};
+    const auto payload = cooked_payload(path, cooked_skin_extension, failure);
+    if (!payload) return failure;
+    auto skin = read_skin(*payload);
+    if (!skin) return {nullptr, {AssetError::invalid_data, path.string() + ": not a cooked skin"}};
+    return {std::make_shared<const SkinAsset>(std::move(*skin)), {}};
+}
+
+AssetLoadResult<AnimationAsset> PackageAssetProvider::load_animation(const std::filesystem::path& path) {
+    auto failure = AssetLoadResult<AnimationAsset>{};
+    const auto payload = cooked_payload(path, cooked_animation_extension, failure);
+    if (!payload) return failure;
+    auto clip = read_animation(*payload);
+    if (!clip) return {nullptr, {AssetError::invalid_data, path.string() + ": not a cooked animation"}};
+    return {std::make_shared<const AnimationAsset>(std::move(*clip)), {}};
+}
+
 } // namespace maya

@@ -9,7 +9,8 @@
 
 namespace maya {
 // GPU layouts shared with resources/shaders/metal/renderer.metal. Buffer indices: 0 vertices,
-// 1 per-draw constants, 2 per-view constants (or a shadow map's ShadowConstants), 3 material constants.
+// 1 per-draw constants, 2 per-view constants (or a shadow map's ShadowConstants), 3 material constants,
+// 4 the pass's draw order, 5 a skinned mesh's SkinVertex stream, 6 the frame's joint palette.
 // Texture slots: 0-4 a material's maps, 5 the environment's specular cube, 6 its background, 7 the
 // split-sum table, 8 the sun's shadow atlas, 9 the spot lights'; sampler slots 0-4 the maps', 5 the
 // environment's, 7 the table's, 8 the shadow maps' comparison sampler.
@@ -58,6 +59,7 @@ struct ShadowConstants {
 struct DrawConstants {
     math::Mat4 model;
     math::Vec4 normal_matrix[3]; // columns; w unused
+    uint32_t skin[4]; // x the first joint in the palette, y the skin's joints (0: not skinned); the rest is padding
 };
 /// Uploaded when a draw's material differs from the previous draw's; read by the fragment stage only, so
 /// per-draw constants do not make Metal re-emit the fragment stage's maps with every draw.
@@ -104,7 +106,7 @@ static_assert(offsetof(ViewConstants, camera_position) == 64 &&
 static_assert(offsetof(ViewConstants, local_count) == 480 && offsetof(ViewConstants, local_lights) == 496 &&
               offsetof(ViewConstants, shadows) == 496 + 64 * max_local_lights && sizeof(GpuShadows) == 592 &&
               sizeof(ViewConstants) == 496 + 64 * max_local_lights + 592, "ViewConstants' lights and shadows must match renderer.metal");
-static_assert(sizeof(DrawConstants) == 112 && offsetof(DrawConstants, normal_matrix) == 64,
+static_assert(sizeof(DrawConstants) == 128 && offsetof(DrawConstants, normal_matrix) == 64 && offsetof(DrawConstants, skin) == 112,
               "DrawConstants must match renderer.metal");
 static_assert(sizeof(MaterialConstants) == 96 && offsetof(MaterialConstants, factors) == 16 &&
               offsetof(MaterialConstants, emissive) == 32 && offsetof(MaterialConstants, flags) == 48 &&

@@ -1,0 +1,18 @@
+maya-benchmark 1
+# A1 skeletal animation (#1038): 100 copies of Khronos's CesiumMan (19 joints, 4 weights a vertex), from
+# tools/fetch_render_samples.sh, each walking from its own time in the clip, on a 1.2 m grid under a sun
+# whose four cascades they all cast into. Every system of play runs; the animation system's time per tick
+# is recorded with each system's, and the GPU times each pass. a1_unskinned.benchmark is the same scene
+# drawn without skins: the difference per pass is skinning's cost.
+name "a1-animation"
+workload animation
+content "../build/render-samples"
+models "Models/CesiumMan/glTF-Binary/CesiumMan.glb"
+count 100
+spacing 1.2
+seed 990
+camera 0 7 13 0 0.6 0
+resolution 1920 1080
+warmup 300
+samples 3000
+runs 3

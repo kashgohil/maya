@@ -26,10 +26,10 @@ struct ImportSettings {
     ImportUp up = ImportUp::y; // z: turned so the file's +Z is up (+Y), as glTF's exporters convert
     bool lights = true, cameras = true; // import KHR_lights_punctual lights and cameras
 };
-/// A mesh or texture inside the source: its catalog part (after '#') and what it was made from.
+/// A mesh, texture, skin, or clip inside the source: its catalog part (after '#') and what it was made from.
 struct ImportedAsset {
     AssetId id;
-    std::string part; // "mesh/0/1" or "texture/2/color"
+    std::string part; // "mesh/0/1", "texture/2/color", "skin/0", or "animation/1"
     std::string identity; // e.g. "Helmet/1" or "Albedo/color": names where the file has them, else indices
 };
 /// A material file the import wrote, and a hash of the text it wrote: a file whose text no longer
@@ -52,6 +52,7 @@ struct ImportFile {
     std::filesystem::path scene;
     uint64_t scene_written = 0;
     std::vector<ImportedAsset> meshes, textures;
+    std::vector<ImportedAsset> skins, animations; // #1038
     std::vector<ImportedMaterial> materials;
     std::vector<ImportedEntity> entities;
     /// The files beside the source that it names (buffers, images), relative to the import file's
@@ -76,6 +77,8 @@ struct ImportFileResult {
 ///     mesh 6d617961 1a2b "mesh/0/0" "Helmet/0"
 ///     texture 6d617961 1a2c "texture/2/color" "Albedo/color"
 ///     material 6d617961 1a2d "helmet/materials/Metal.material" "Metal" 9f3c2b1a00ffe1d2
+///     skin 6d617961 1a2f "skin/0" "Armature"
+///     animation 6d617961 1a30 "animation/0" "Walk"
 ///     entity 6d617961 1a2e "/Helmet"
 ///     file "textures/normal.png"
 ///

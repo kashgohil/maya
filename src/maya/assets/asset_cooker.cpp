@@ -100,7 +100,7 @@ CookResult<CookedMesh> AssetCooker::mesh(const std::filesystem::path& path) {
     if (path.extension() != ".obj") return failure<CookedMesh>(AssetError::invalid_data, "Initial mesh provider expects a triangulated .obj: " + path.string());
     auto parsed = ModelLoader::parse_obj(path.string());
     if (!parsed) return failure<CookedMesh>(AssetError::load_failed, std::move(parsed.diagnostic));
-    return {CookedMesh{std::move(parsed.vertices), std::move(parsed.indices)}, {}};
+    return {CookedMesh{std::move(parsed.vertices), std::move(parsed.indices), {}}, {}};
 }
 
 CookResult<CookedTexture> AssetCooker::texture(const std::filesystem::path& path) {
@@ -244,7 +244,7 @@ CookResult<CookedMesh> AssetCooker::imported_mesh(const std::filesystem::path& s
     if (!file) return failed(AssetError::invalid_data, error);
     auto geometry = file->primitive(mesh, primitive);
     if (!geometry) return failed(AssetError::invalid_data, geometry.error);
-    auto cooked = CookedMesh{std::move(geometry.vertices), std::move(geometry.indices)};
+    auto cooked = CookedMesh{std::move(geometry.vertices), std::move(geometry.indices), std::move(geometry.skin)};
     if (m_cache && key.source != Sha256Digest{}) m_cache->write(key, write_cooked_mesh(cooked));
     return {std::move(cooked), {}};
 }
@@ -306,12 +306,69 @@ CookResult<CookedTexture> AssetCooker::imported_texture(const std::filesystem::p
     return {CookedTexture{std::move(cooked.image), settings.sampler, settings.role}, {}};
 }
 
+CookResult<SkinAsset> AssetCooker::imported_skin(const std::filesystem::path& source, std::string_view part) {
+    const auto failed = [&](AssetError code, const std::string& message) { return failure<SkinAsset>(code, part_name(source, part) + ": " + message); };
+    uint32_t index = 0;
+    if (!part.starts_with("skin/") || std::from_chars(part.data() + 5, part.data() + part.size(), index).ptr != part.data() + part.size())
+        return failed(AssetError::invalid_path, "a skin part is 'skin/<skin>'");
+    auto key = CookKey{"skin", skin_cook_version, {}, "part " + std::string(part) + "\n"};
+    if (m_cache)
+        if (const auto digest = imported_digest(source)) {
+            key.source = *digest;
+            if (const auto entry = m_cache->read(key))
+                if (auto cached = read_skin(*entry)) return {std::move(cached), {}};
+        }
+    auto error = std::string{};
+    const auto file = open_gltf(source, error);
+    if (!file) return failed(AssetError::invalid_data, error);
+    const auto& document = file->document();
+    if (index >= document.skins.size()) return failed(AssetError::invalid_data, "there is no skin " + std::to_string(index));
+    const auto paths = gltf_node_paths(document);
+    const auto& skin = document.skins[index];
+    auto cooked = SkinAsset{};
+    for (const auto joint : skin.joints) {
+        if (paths[joint].empty()) return failed(AssetError::invalid_data, "joint node " + std::to_string(joint) + " is not in the file's scene");
+        cooked.joints.push_back(paths[joint]);
+    }
+    cooked.inverse_bind = skin.inverse_bind;
+    if (m_cache && key.source != Sha256Digest{}) m_cache->write(key, write_skin(cooked));
+    return {std::move(cooked), {}};
+}
+
+CookResult<AnimationAsset> AssetCooker::imported_animation(const std::filesystem::path& source, std::string_view part) {
+    const auto failed = [&](AssetError code, const std::string& message) { return failure<AnimationAsset>(code, part_name(source, part) + ": " + message); };
+    uint32_t index = 0;
+    if (!part.starts_with("animation/") || std::from_chars(part.data() + 10, part.data() + part.size(), index).ptr != part.data() + part.size())
+        return failed(AssetError::invalid_path, "an animation part is 'animation/<animation>'");
+    auto key = CookKey{"animation", animation_cook_version, {}, "part " + std::string(part) + "\n"};
+    if (m_cache)
+        if (const auto digest = imported_digest(source)) {
+            key.source = *digest;
+            if (const auto entry = m_cache->read(key))
+                if (auto cached = read_animation(*entry)) return {std::move(cached), {}};
+        }
+    auto error = std::string{};
+    const auto file = open_gltf(source, error);
+    if (!file) return failed(AssetError::invalid_data, error);
+    const auto& document = file->document();
+    if (index >= document.animations.size()) return failed(AssetError::invalid_data, "there is no animation " + std::to_string(index));
+    const auto paths = gltf_node_paths(document);
+    const auto& animation = document.animations[index];
+    auto cooked = AnimationAsset{animation.name, animation.duration, {}};
+    for (const auto& channel : animation.channels) {
+        if (paths[channel.node].empty()) continue; // a node outside the scene: nothing it moves is drawn
+        cooked.channels.push_back({paths[channel.node], channel.path, channel.interpolation, channel.times, channel.values});
+    }
+    if (m_cache && key.source != Sha256Digest{}) m_cache->write(key, write_animation(cooked));
+    return {std::move(cooked), {}};
+}
+
 CookLimits cook_limits(const GraphicsDevice& device) noexcept {
     return {device.limits().astc, device.limits().max_texture_dimension};
 }
 
 AssetLoadResult<MeshAsset> upload_mesh(GraphicsDevice& device, const CookedMesh& mesh) {
-    auto loaded = std::make_unique<Mesh>(device, mesh.vertices, mesh.indices);
+    auto loaded = std::make_unique<Mesh>(device, mesh.vertices, mesh.indices, mesh.skin);
     if (!loaded->valid()) return {nullptr, {AssetError::load_failed, "GPU mesh allocation failed or the device session is unavailable"}};
     return {std::make_shared<const MeshAsset>(std::move(loaded), MeshGeometry::from(mesh.vertices, mesh.indices)), {}};
 }
@@ -348,17 +405,25 @@ std::vector<std::byte> write_cooked_mesh(const CookedMesh& mesh) {
     const auto* indices = reinterpret_cast<const std::byte*>(mesh.indices.data());
     out.insert(out.end(), vertices, vertices + mesh.vertices.size() * sizeof(Vertex));
     out.insert(out.end(), indices, indices + mesh.indices.size() * sizeof(uint32_t));
+    put(out, uint64_t(mesh.skin.size()));
+    const auto* skin = reinterpret_cast<const std::byte*>(mesh.skin.data());
+    out.insert(out.end(), skin, skin + mesh.skin.size() * sizeof(SkinVertex));
     return out;
 }
 std::optional<CookedMesh> read_cooked_mesh(std::span<const std::byte> in) {
-    uint64_t vertices = 0, indices = 0;
+    uint64_t vertices = 0, indices = 0, skinned = 0;
     if (!take(in, vertices) || !take(in, indices) || vertices == 0 || indices == 0 || indices % 3 != 0) return std::nullopt;
-    if (vertices > in.size() / sizeof(Vertex) || in.size() != vertices * sizeof(Vertex) + indices * sizeof(uint32_t)) return std::nullopt;
+    if (vertices > in.size() / sizeof(Vertex) || indices > in.size() / sizeof(uint32_t) ||
+        in.size() < vertices * sizeof(Vertex) + indices * sizeof(uint32_t) + sizeof(uint64_t)) return std::nullopt;
     auto mesh = CookedMesh{};
     mesh.vertices.resize(vertices, Vertex{{}, {}, {}});
     mesh.indices.resize(indices);
     std::memcpy(mesh.vertices.data(), in.data(), vertices * sizeof(Vertex));
     std::memcpy(mesh.indices.data(), in.data() + vertices * sizeof(Vertex), indices * sizeof(uint32_t));
+    in = in.subspan(vertices * sizeof(Vertex) + indices * sizeof(uint32_t));
+    if (!take(in, skinned) || (skinned != 0 && skinned != vertices) || in.size() != skinned * sizeof(SkinVertex)) return std::nullopt;
+    mesh.skin.resize(skinned);
+    if (skinned) std::memcpy(mesh.skin.data(), in.data(), skinned * sizeof(SkinVertex));
     if (std::ranges::any_of(mesh.indices, [&](uint32_t i) { return i >= vertices; })) return std::nullopt;
     return mesh;
 }

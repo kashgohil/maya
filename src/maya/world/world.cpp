@@ -382,9 +382,12 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     m_ids.merge(new_ids);
     m_pools.merge(new_pools);
     m_free = next_free;
+    auto renamed = false; // names or hierarchy changed: names_revision()
     for (size_t index = 0; index < commands.m_commands.size(); ++index) {
         auto& command = commands.m_commands[index];
         const auto slot = resolved[index];
+        renamed |= command.kind == Kind::create || command.kind == Kind::destroy || command.kind == Kind::reparent ||
+                   (command.kind != Kind::set_transform && command.type == typeid(NameComponent));
         switch (command.kind) {
         case Kind::create:
             m_slots[slot].id = command.id;
@@ -413,6 +416,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     }
     for (const auto& [slot, value] : spatial) m_spatial[slot] = value.node;
     for (const auto slot : changed) dirty_subtree(slot);
+    if (renamed) ++m_names_revision;
     result.command_index = commands.m_commands.size();
     commands.m_commands.clear();
     commands.m_world = 0;

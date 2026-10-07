@@ -23,6 +23,7 @@ void write_preferences(std::ostream& output, const EditorPreferences& preference
         if (preferences.physics_debug.has(category)) out << ' ' << name;
     out << "\nphysics-debug-groups " << std::hex << preferences.physics_debug.groups << std::dec << '\n';
     out << "debug-view " << debug_view_name(preferences.debug_view) << '\n';
+    out << "skeletons " << (preferences.skeletons ? "on" : "off") << '\n';
     output << out.str();
 }
 
@@ -50,6 +51,11 @@ PreferencesReadResult read_preferences(std::istream& input) {
             const auto parsed = std::from_chars(text.data(), text.data() + text.size(), groups, 16);
             if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) result.preferences.physics_debug.groups = groups;
             else result.error = "physics-debug-groups needs a hexadecimal mask";
+        } else if (key == "skeletons") {
+            auto value = std::string{};
+            words >> value;
+            if (value == "on" || value == "off") result.preferences.skeletons = value == "on";
+            else result.error = "skeletons needs on or off";
         } else if (key == "debug-view" || key == "exposure-view" || key == "shadow-view") {
             // One view at a time (#1037); files from #1032 and #1034 kept exposure and shadow views apart.
             auto name = std::string{};

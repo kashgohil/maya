@@ -6,7 +6,12 @@
 #include "maya/assets/gltf.hpp"
 #include "maya/core/tangents.hpp"
 #include "maya/properties/schema.hpp"
+#include "maya/world/name_path.hpp"
 #include <algorithm>
+#include <set>
+#include <span>
+#include <unordered_map>
+#include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -28,6 +33,7 @@ std::string gltf_problem_text(const GltfProblem& problem) {
 namespace {
 std::string text(const char* value) { return value ? value : ""; }
 std::string at(std::string_view array, size_t index) { return std::string(array) + "[" + std::to_string(index) + "]"; }
+std::vector<float> unpack(const cgltf_accessor* accessor);
 
 const char* result_text(cgltf_result result) {
     switch (result) {
@@ -349,7 +355,7 @@ struct Converter {
     void nodes() {
         for (size_t i = 0; i < data.nodes_count; ++i) {
             const auto& node = data.nodes[i];
-            auto converted = GltfNode{text(node.name), std::nullopt, {}, node_transform(node, at("nodes", i), document.warnings), {}, {}, {}};
+            auto converted = GltfNode{text(node.name), std::nullopt, {}, node_transform(node, at("nodes", i), document.warnings), {}, {}, {}, {}};
             if (node.parent) converted.parent = uint32_t(cgltf_node_index(&data, node.parent));
             for (size_t c = 0; c < node.children_count; ++c) converted.children.push_back(uint32_t(cgltf_node_index(&data, node.children[c])));
             if (node.mesh) converted.mesh = uint32_t(cgltf_mesh_index(&data, node.mesh));
@@ -365,8 +371,73 @@ struct Converter {
             for (size_t i = 0; i < data.nodes_count; ++i)
                 if (!data.nodes[i].parent) document.roots.push_back(uint32_t(i));
         }
-        if (data.skins_count > 0) warn("skins", std::to_string(data.skins_count) + " skin(s) are not imported; skinned meshes keep their bind pose");
-        if (data.animations_count > 0) warn("animations", std::to_string(data.animations_count) + " animation(s) are not imported");
+    }
+
+    void skins() {
+        for (size_t i = 0; i < data.skins_count; ++i) {
+            const auto& skin = data.skins[i];
+            const auto path = at("skins", i);
+            auto converted = GltfSkin{text(skin.name), {}, {}};
+            for (size_t j = 0; j < skin.joints_count; ++j) converted.joints.push_back(uint32_t(cgltf_node_index(&data, skin.joints[j])));
+            if (converted.joints.empty() || converted.joints.size() > 65536) {
+                fail(path, "has " + std::to_string(converted.joints.size()) + " joints; Maya draws skins of 1 to 65,536");
+                continue;
+            }
+            converted.inverse_bind.assign(converted.joints.size(), math::Mat4::identity());
+            if (const auto* matrices = skin.inverse_bind_matrices) {
+                if (matrices->count < converted.joints.size() || matrices->type != cgltf_type_mat4) {
+                    fail(path + ".inverseBindMatrices", "needs a 4x4 matrix for each of its " + std::to_string(converted.joints.size()) + " joints");
+                    continue;
+                }
+                const auto floats = unpack(matrices);
+                for (size_t j = 0; j < converted.joints.size(); ++j) {
+                    std::memcpy(converted.inverse_bind[j].elements, floats.data() + 16 * j, 16 * sizeof(float)); // both column-major
+                    if (!std::all_of(floats.begin() + std::ptrdiff_t(16 * j), floats.begin() + std::ptrdiff_t(16 * j + 16), [](float v) { return std::isfinite(v); }))
+                        fail(path + ".inverseBindMatrices", "matrix " + std::to_string(j) + " is not finite");
+                }
+            }
+            document.skins.push_back(std::move(converted));
+        }
+        for (size_t i = 0; i < data.nodes_count; ++i)
+            if (data.nodes[i].skin) {
+                if (!data.nodes[i].mesh) warn(at("nodes", i), "has a skin but no mesh; the skin is left out");
+                else document.nodes[i].skin = uint32_t(cgltf_skin_index(&data, data.nodes[i].skin));
+            }
+    }
+
+    void animations() {
+        for (size_t i = 0; i < data.animations_count; ++i) {
+            const auto& animation = data.animations[i];
+            auto converted = GltfAnimation{text(animation.name), 0, {}};
+            for (size_t c = 0; c < animation.channels_count; ++c) {
+                const auto& channel = animation.channels[c];
+                const auto path = at(at("animations", i) + ".channels", c);
+                if (!channel.target_node || !channel.sampler) continue; // no target: nothing to animate (glTF allows it)
+                auto out = GltfChannel{};
+                out.node = uint32_t(cgltf_node_index(&data, channel.target_node));
+                if (channel.target_path == cgltf_animation_path_type_translation) out.path = ChannelPath::translation;
+                else if (channel.target_path == cgltf_animation_path_type_rotation) out.path = ChannelPath::rotation;
+                else if (channel.target_path == cgltf_animation_path_type_scale) out.path = ChannelPath::scale;
+                else {
+                    warn(path, "animates morph target weights, which Maya does not draw; it is left out");
+                    continue;
+                }
+                const auto& sampler = *channel.sampler;
+                out.interpolation = sampler.interpolation == cgltf_interpolation_type_step ? Interpolation::step
+                                    : sampler.interpolation == cgltf_interpolation_type_cubic_spline ? Interpolation::cubic_spline
+                                                                                                     : Interpolation::linear;
+                out.times = unpack(sampler.input);
+                out.values = unpack(sampler.output);
+                auto check = AnimationChannel{{}, out.path, out.interpolation, out.times, out.values};
+                if (const auto problem = check_channel(check); !problem.empty()) {
+                    fail(path, problem);
+                    continue;
+                }
+                converted.duration = std::max(converted.duration, out.times.back());
+                converted.channels.push_back(std::move(out));
+            }
+            document.animations.push_back(std::move(converted));
+        }
     }
 };
 
@@ -386,6 +457,37 @@ std::vector<float> unpack(const cgltf_accessor* accessor) {
     return values;
 }
 } // namespace
+
+std::vector<std::string> gltf_node_names(const GltfDocument& document) {
+    auto names = std::vector<std::string>(document.nodes.size());
+    const auto name_siblings = [&](std::span<const uint32_t> siblings) {
+        auto taken = std::set<std::string>{};
+        for (const auto index : siblings) {
+            const auto& node = document.nodes[index];
+            auto name = node.name;
+            if (name.empty() && node.mesh) name = document.meshes[*node.mesh].name;
+            if (name.empty()) name = "Node " + std::to_string(index);
+            auto unique = name;
+            for (int n = 2; taken.contains(unique); ++n) unique = name + " " + std::to_string(n);
+            taken.insert(unique);
+            names[index] = unique;
+        }
+    };
+    name_siblings(document.roots);
+    for (const auto& node : document.nodes) name_siblings(node.children);
+    return names;
+}
+
+std::vector<std::string> gltf_node_paths(const GltfDocument& document) {
+    const auto names = gltf_node_names(document);
+    auto paths = std::vector<std::string>(document.nodes.size());
+    const auto walk = [&](auto&& self, uint32_t index, const std::string& above) -> void {
+        paths[index] = append_name_path(above, names[index]);
+        for (const auto child : document.nodes[index].children) self(self, child, paths[index]);
+    };
+    for (const auto root : document.roots) walk(walk, root, "");
+    return paths;
+}
 
 GltfFile::OpenResult GltfFile::open(const std::filesystem::path& file) {
     auto result = OpenResult{};
@@ -421,6 +523,8 @@ GltfFile::OpenResult GltfFile::open(const std::filesystem::path& file) {
     converter.cameras();
     converter.lights();
     converter.nodes();
+    converter.skins();
+    converter.animations();
     if (!converter.errors.empty()) {
         result.errors = std::move(converter.errors);
         return result;
@@ -456,6 +560,14 @@ GltfGeometry GltfFile::primitive(uint32_t mesh_index, uint32_t primitive_index) 
     const auto colors = unpack(color_accessor);
     const auto color_width = color_accessor ? cgltf_num_components(color_accessor->type) : 4;
     const auto count = positions.size() / 3;
+    const auto* joints_accessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_joints, 0);
+    const auto* weights_accessor = cgltf_find_accessor(&primitive, cgltf_attribute_type_weights, 0);
+    const auto skinned = joints_accessor && weights_accessor;
+    const auto joints = skinned ? unpack(joints_accessor) : std::vector<float>{};
+    const auto weights = skinned ? unpack(weights_accessor) : std::vector<float>{};
+    if (skinned && (joints.size() < count * 4 || weights.size() < count * 4 || cgltf_num_components(joints_accessor->type) != 4 ||
+                    cgltf_num_components(weights_accessor->type) != 4))
+        return fail("attributes.JOINTS_0 and WEIGHTS_0 need four values for each vertex");
 
     // The stored order, then whole triangles in glTF's winding.
     auto order = std::vector<size_t>{};
@@ -483,6 +595,8 @@ GltfGeometry GltfFile::primitive(uint32_t mesh_index, uint32_t primitive_index) 
 
     auto vertices = std::vector<Vertex>{};
     vertices.reserve(corners.size());
+    auto skin = std::vector<SkinVertex>{};
+    if (skinned) skin.reserve(corners.size());
     for (const auto i : corners) {
         const auto position = math::Vec3{positions[3 * i], positions[3 * i + 1], positions[3 * i + 2]};
         if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
@@ -496,6 +610,22 @@ GltfGeometry GltfFile::primitive(uint32_t mesh_index, uint32_t primitive_index) 
         const auto tangent = tangents.empty() ? math::Vec4{1, 0, 0, 1}
                                               : math::Vec4{tangents[4 * i], tangents[4 * i + 1], tangents[4 * i + 2], tangents[4 * i + 3] < 0 ? -1.0f : 1.0f};
         vertices.emplace_back(position, normal, color, uv, tangent);
+        if (skinned) {
+            // Weights scaled to sum to 1, as glTF requires; a vertex with none follows its first joint.
+            auto bound = SkinVertex{};
+            auto sum = 0.0f;
+            for (size_t k = 0; k < 4; ++k) {
+                const auto joint = joints[4 * i + k], weight = weights[4 * i + k];
+                if (!(joint >= 0 && joint < 65536) || !std::isfinite(weight) || weight < 0)
+                    return fail("attributes.JOINTS_0 or WEIGHTS_0: vertex " + std::to_string(i) + " is out of range");
+                bound.joints[k] = uint16_t(joint);
+                bound.weights[k] = weight;
+                sum += weight;
+            }
+            if (sum > 0) for (auto& weight : bound.weights) weight /= sum;
+            else bound.weights = {1, 0, 0, 0};
+            skin.push_back(bound);
+        }
     }
     // Without normals, each triangle is flat (glTF's rule), and its tangents come from MikkTSpace, as
     // they do for any primitive without them: glTF ignores tangents given without normals.
@@ -506,9 +636,29 @@ GltfGeometry GltfFile::primitive(uint32_t mesh_index, uint32_t primitive_index) 
             for (size_t c = 0; c < 3; ++c) vertices[t + c].normal = normal;
         }
     if ((normals.empty() || tangents.empty()) && !generate_tangents(vertices)) return fail("generating its tangents failed");
-    auto welded = weld_vertices(vertices);
-    result.vertices = std::move(welded.vertices);
-    result.indices = std::move(welded.indices);
+    if (!skinned) {
+        auto welded = weld_vertices(vertices);
+        result.vertices = std::move(welded.vertices);
+        result.indices = std::move(welded.indices);
+        return result;
+    }
+    // Corners are shared only where their joints and weights agree too.
+    auto records = std::string(vertices.size() * (sizeof(Vertex) + sizeof(SkinVertex)), '\0');
+    for (size_t c = 0; c < vertices.size(); ++c) {
+        std::memcpy(records.data() + c * (sizeof(Vertex) + sizeof(SkinVertex)), &vertices[c], sizeof(Vertex));
+        std::memcpy(records.data() + c * (sizeof(Vertex) + sizeof(SkinVertex)) + sizeof(Vertex), &skin[c], sizeof(SkinVertex));
+    }
+    auto seen = std::unordered_map<std::string_view, uint32_t>{};
+    seen.reserve(vertices.size());
+    for (size_t c = 0; c < vertices.size(); ++c) {
+        const auto key = std::string_view(records).substr(c * (sizeof(Vertex) + sizeof(SkinVertex)), sizeof(Vertex) + sizeof(SkinVertex));
+        const auto [found, added] = seen.try_emplace(key, uint32_t(result.vertices.size()));
+        if (added) {
+            result.vertices.push_back(vertices[c]);
+            result.skin.push_back(skin[c]);
+        }
+        result.indices.push_back(found->second);
+    }
     return result;
 }
 

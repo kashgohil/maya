@@ -1,5 +1,7 @@
 #pragma once
 
+#include "maya/properties/schema.hpp"
+#include "maya/simulation/animation.hpp"
 #include "maya/simulation/simulation.hpp"
 #include <functional>
 #include <memory>
@@ -38,6 +40,9 @@ struct ScriptSettings {
     uint64_t seed = 0x6d617961;
     /// New script versions from the host while the session plays; none when empty.
     std::shared_ptr<ScriptReloads> reloads;
+    /// Checks the asset references scripts set (an animation's clip) against the project's catalog. Without
+    /// it, scripts can only clear them.
+    PropertyValidationContext assets;
 };
 
 /// A property a script declares in its `properties` table.
@@ -111,7 +116,9 @@ size_t script_memory_in_use() noexcept;
 /// is reported (TickContext::messages) and disabled; the session keeps running.
 std::unique_ptr<SimulationSystem> script_system(ScriptSources sources, ScriptSettings settings = {});
 
-/// The built-in behaviors followed by the script system: what the player and the editor play.
-std::vector<std::unique_ptr<SimulationSystem>> play_systems(ScriptSources sources, ScriptSettings settings = {});
+/// The built-in behaviors, the script system, then the animation system (animation.hpp): what the player
+/// and the editor play.
+std::vector<std::unique_ptr<SimulationSystem>> play_systems(ScriptSources sources, AnimationClips clips,
+                                                            ScriptSettings settings = {});
 
 } // namespace maya

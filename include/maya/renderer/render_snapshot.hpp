@@ -6,9 +6,11 @@
 #include "maya/world/world.hpp"
 #include <array>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace maya {
@@ -28,6 +30,7 @@ enum class RenderIssue {
     missing_environment, // the environment is missing or failed to load: the uniform ambient light is used
     environment_limit, // more than one environment component: the one with the lowest EntityId is used
     shadow_limit, // a directional light casts shadows after another one already does: it is drawn unshadowed
+    unbound_skin, // a skin is missing, or its joints are not below the entity's ancestors: the mesh is drawn unskinned
 };
 struct RenderDiagnostic {
     RenderIssue code = RenderIssue::none;
@@ -68,9 +71,13 @@ struct RenderInstance {
     std::array<math::Vec3, 3> normal_matrix{math::Vec3{1, 0, 0}, math::Vec3{0, 1, 0}, math::Vec3{0, 0, 1}};
     uint32_t material = 0; // index into RenderSnapshot::materials, which instances share (#1025)
     /// A world-space sphere around the mesh, for culling views and shadow casters; infinite when the mesh
-    /// has no CPU geometry.
+    /// has no CPU geometry. A skinned mesh's encloses its bounds carried by every joint's skin matrix.
     math::Vec3 bounds_center{0.0f};
     float bounds_radius = std::numeric_limits<float>::infinity();
+    /// A skinned mesh's joints (docs/animation.md#skinning): RenderSnapshot::joints from first_joint. Its
+    /// vertices are placed by them in world space, and `world` is not applied. None when joint_count is 0.
+    uint32_t first_joint = 0;
+    uint32_t joint_count = 0;
 };
 /// A light's shadow settings (LightComponent's), in shadow-map texels.
 struct RenderShadow {
@@ -105,6 +112,21 @@ struct RenderEnvironment {
     float rotation = 0.0f; // radians about +Y
     bool background = true;
 };
+/// Skins' joints as extraction found them below each skinned entity's ancestors (docs/animation.md#binding),
+/// kept between extractions while the World's names and hierarchy stay the same (World::names_revision), so
+/// steady frames compute joint matrices without searching for joints. Keep one for each World a view draws
+/// and pass it in RenderExtractOptions::skins; with another World, or after a rename or reparent, it starts
+/// again. Extraction alone fills and reads it.
+struct SkinBindingCache {
+    struct Binding {
+        std::optional<EntityHandle> root; // the ancestor the joints are below, when every one is there
+        std::vector<EntityHandle> joints;
+        std::string missing; // otherwise, why not
+    };
+    uint64_t world = 0, names_revision = 0;
+    std::map<std::tuple<EntityHandle, AssetHandle<SkinAsset>>, Binding> bindings; // by skinned entity and skin version
+};
+
 struct RenderExtractOptions {
     /// Linear RGB light from every direction, used when the scene has no usable environment.
     math::Vec3 ambient{0.06f, 0.07f, 0.09f};
@@ -112,6 +134,9 @@ struct RenderExtractOptions {
     const PresentationPoses* poses = nullptr;
     /// Debug lines and outlines drawn over the scene (docs/renderer.md#debug-lines); none when null.
     const DebugDraw* debug = nullptr;
+    /// Skins' joints from earlier extractions of the same World (#1038); without it, every extraction
+    /// searches for them again.
+    SkinBindingCache* skins = nullptr;
 };
 struct RenderSnapshotStats {
     size_t mesh_renderers = 0;
@@ -130,6 +155,9 @@ struct RenderSnapshot {
     std::vector<AssetLease<TextureAsset>> textures; // one per distinct texture the materials use
     std::vector<RenderMaterial> materials; // copied once each, and shared by the instances that use them
     std::vector<RenderInstance> instances;
+    /// Skin matrices of skinned instances' joints: each joint's shown world matrix times its inverse bind
+    /// matrix. Instances of one skin under one ancestor share theirs.
+    std::vector<math::Mat4> joints;
     std::vector<RenderDirectionalLight> lights; // enabled directional lights in EntityId order
     std::vector<RenderLocalLight> local_lights; // enabled point and spot lights in EntityId order
     math::Vec3 ambient{0.0f};
@@ -147,6 +175,13 @@ struct RenderSnapshot {
 /// environment leaves the ambient light, and is reported.
 RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets,
                                        const RenderExtractOptions& options = {});
+
+inline constexpr DebugColor skeleton_bone_color{1.0f, 0.78f, 0.25f, 1.0f};
+/// The skeleton debug view (docs/animation.md#debug-view): for every skin that binds, as extraction binds
+/// it, a line from each joint to its parent where the parent is a joint of the skin too, and each joint's
+/// axes (X red, Y green, Z blue) a third of its skin's mean bone long. Joints are at their shown poses.
+void skeleton_debug(const World& world, AssetRegistry& assets, const PresentationPoses* poses, DebugDraw& out,
+                    SkinBindingCache* cache = nullptr);
 
 /// What a view shows instead of its lit image (docs/renderer.md#debug-views), one at a time. Material
 /// views show the shading's inputs as they are, without exposure or tone mapping; lighting and shadow

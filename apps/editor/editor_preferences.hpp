@@ -13,6 +13,7 @@ namespace maya::editor {
 struct EditorPreferences {
     PhysicsDebugOptions physics_debug{}; // the viewport's physics debug views
     DebugView debug_view = DebugView::none; // the viewport's debug view (docs/renderer.md#debug-views)
+    bool skeletons = false; // draws skinned meshes' skeletons (docs/animation.md#debug-view)
     bool operator==(const EditorPreferences&) const = default;
 };
 

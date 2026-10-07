@@ -34,6 +34,7 @@ struct RendererStats {
     uint64_t shadow_maps = 0; // cascades and spot light maps rendered
     uint64_t shadow_draws = 0; // instanced draws into them, one per batch
     uint64_t shadow_instances = 0; // instances drawn into them
+    uint64_t joints = 0; // skin matrices uploaded, once per view (docs/animation.md#skinning)
 };
 /// What the last view drew (docs/renderer.md#culling-and-batching).
 struct RenderViewReport {
@@ -88,16 +89,17 @@ private:
         Format format = Format::undefined;
         PipelineKind kind = PipelineKind::lit;
         bool debug = false; // compiled with the debug views (docs/renderer.md#debug-views)
+        bool skinned = false; // lit and shadow pipelines for skinned meshes (docs/animation.md#skinning)
         PipelineHandle handle;
         RhiDiagnostic error; // a failed compile is not retried every frame
     };
-    RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug = false);
+    RhiDiagnostic pipeline(Format format, PipelineKind kind, PipelineHandle& out, bool debug = false, bool skinned = false);
     RhiDiagnostic encode_debug(const DebugDraw& debug, const RenderView& view, const TransientSlice& view_constants,
                                PipelineHandle front, PipelineHandle behind);
     /// Renders one atlas of 2 x 2 shadow maps: each from its view-projection, drawing its batches.
     RhiDiagnostic encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
                                       const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches);
-    /// Binds the frame's instances and draw order (buffers 1 and 4) in the open pass.
+    /// Binds the frame's instances, draw order, and joint palette (buffers 1, 4, and 6) in the open pass.
     RhiDiagnostic bind_instances();
     RhiDiagnostic prepare_shadows(const LightPlan& plan);
     bool session_changed() noexcept;
@@ -122,7 +124,8 @@ private:
     std::vector<DrawConstants> m_instance_data;
     DrawList m_draws;
     BatchScratch m_batch_scratch;
-    TransientSlice m_instances, m_order;
+    TransientSlice m_instances, m_order, m_palette;
+    std::vector<uint8_t> m_skinned_meshes; // per snapshot mesh: whether it draws with the skinned pipelines
     RenderLightReport m_lights;
     RenderViewReport m_view_report;
     RendererStats m_stats{};

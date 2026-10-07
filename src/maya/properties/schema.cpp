@@ -39,6 +39,8 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, std::vector<ScriptValue>>) return PropertyType::script_values;
     else if constexpr (std::same_as<T, AssetRef<TextureAsset>>) return PropertyType::texture_ref;
     else if constexpr (std::same_as<T, AssetRef<EnvironmentAsset>>) return PropertyType::environment_ref;
+    else if constexpr (std::same_as<T, AssetRef<SkinAsset>>) return PropertyType::skin_ref;
+    else if constexpr (std::same_as<T, AssetRef<AnimationAsset>>) return PropertyType::animation_ref;
     else { static_assert(std::same_as<T, AssetRef<MaterialAsset>>); return PropertyType::material_ref; }
 }
 /// Enumerations are held in PropertyValue as ChoiceValue; everything else as itself.
@@ -54,7 +56,8 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
     using V = typename MemberTraits<decltype(Member)>::Value;
     constexpr auto type = property_type<V>();
     constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::script_ref ||
-                              type == PropertyType::texture_ref || type == PropertyType::environment_ref
+                              type == PropertyType::texture_ref || type == PropertyType::environment_ref ||
+                              type == PropertyType::skin_ref || type == PropertyType::animation_ref
         ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
     return {{id, name, label, type, property_value(C{}.*Member), range, units, presentation, encoding, choices, description},
         [](const ComponentValue& value) -> PropertyValue { return property_value(std::get<C>(value).*Member); },
@@ -222,6 +225,28 @@ const auto& environment_bindings() {
             "Turns the environment about the vertical axis."),
         bind<&EnvironmentComponent::background>(4, "background", "Sky", Hint::toggle, {}, {},
             "Draws the environment behind the scene, in place of the clear color.")};
+    return values;
+}
+
+const auto& skin_bindings() {
+    static const auto values = std::array{
+        bind<&SkinComponent::skin>(1, "skin", "Skin", Hint::asset, {}, {},
+            "A skin asset: the joints that deform this entity's mesh, by their paths below an ancestor.")};
+    return values;
+}
+constexpr auto animation_speed = NumericRange{-100.0f, 100.0f, true, true};
+const auto& animation_bindings() {
+    static const auto values = std::array{
+        bind<&AnimationComponent::clip>(1, "clip", "Clip", Hint::asset, {}, {},
+            "An animation clip that moves the entities below this one, by their paths from it."),
+        bind<&AnimationComponent::playing>(2, "playing", "Playing", Hint::toggle, {}, {},
+            "Advances the clip each tick; otherwise its current pose is held."),
+        bind<&AnimationComponent::loop>(3, "loop", "Loop", Hint::toggle, {}, {},
+            "Starts the clip again from its other end; otherwise it holds its last pose."),
+        bind<&AnimationComponent::speed>(4, "speed", "Speed", Hint::number, animation_speed, {},
+            "Clip seconds per second of play; negative plays backwards."),
+        bind<&AnimationComponent::start>(5, "start", "Start", Hint::number, nonnegative, "s",
+            "Seconds into the clip where play begins, and begins again when the clip changes.")};
     return values;
 }
 
@@ -396,6 +421,8 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::physics_settings: return physics_settings_bindings();
     case ComponentId::script: return script_bindings();
     case ComponentId::environment: return environment_bindings();
+    case ComponentId::skin: return skin_bindings();
+    case ComponentId::animation: return animation_bindings();
     }
     return {};
 }
@@ -437,6 +464,8 @@ std::optional<PropertyResult> check(const PropertyDescriptor& d, const PropertyV
             else if constexpr (std::same_as<T, AssetRef<ScriptAsset>>) return {reference.id, ReferenceKind::script};
             else if constexpr (std::same_as<T, AssetRef<TextureAsset>>) return {reference.id, ReferenceKind::texture};
             else if constexpr (std::same_as<T, AssetRef<EnvironmentAsset>>) return {reference.id, ReferenceKind::environment};
+            else if constexpr (std::same_as<T, AssetRef<SkinAsset>>) return {reference.id, ReferenceKind::skin};
+            else if constexpr (std::same_as<T, AssetRef<AnimationAsset>>) return {reference.id, ReferenceKind::animation};
             else return {AssetId{}, ReferenceKind::mesh};
         }, input);
         if (!asset.valid()) return std::nullopt;
@@ -489,6 +518,8 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto physics = descriptors(physics_settings_bindings());
     static const auto scripts = descriptors(script_bindings());
     static const auto environments = descriptors(environment_bindings());
+    static const auto skins = descriptors(skin_bindings());
+    static const auto animations = descriptors(animation_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
@@ -501,7 +532,9 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::rigid_body, "maya.rigid_body", "Rigid body", 1, bodies},
         ComponentDescriptor{ComponentId::physics_settings, "maya.physics_settings", "Physics settings", 1, physics},
         ComponentDescriptor{ComponentId::script, "maya.script", "Script", 1, scripts},
-        ComponentDescriptor{ComponentId::environment, "maya.environment", "Environment", 1, environments}}; // #1035
+        ComponentDescriptor{ComponentId::environment, "maya.environment", "Environment", 1, environments}, // #1035
+        ComponentDescriptor{ComponentId::skin, "maya.skin", "Skin", 1, skins}, // #1038
+        ComponentDescriptor{ComponentId::animation, "maya.animation", "Animation", 1, animations}};
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -535,7 +568,9 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, RigidBodyComponent>) return ComponentId::rigid_body;
         else if constexpr (std::same_as<T, PhysicsSettingsComponent>) return ComponentId::physics_settings;
         else if constexpr (std::same_as<T, ScriptComponent>) return ComponentId::script;
-        else { static_assert(std::same_as<T, EnvironmentComponent>); return ComponentId::environment; }
+        else if constexpr (std::same_as<T, EnvironmentComponent>) return ComponentId::environment;
+        else if constexpr (std::same_as<T, SkinComponent>) return ComponentId::skin;
+        else { static_assert(std::same_as<T, AnimationComponent>); return ComponentId::animation; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -552,6 +587,8 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::physics_settings: return PhysicsSettingsComponent{};
     case ComponentId::script: return ScriptComponent{};
     case ComponentId::environment: return EnvironmentComponent{};
+    case ComponentId::skin: return SkinComponent{};
+    case ComponentId::animation: return AnimationComponent{};
     }
     return std::nullopt;
 }

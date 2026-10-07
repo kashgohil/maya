@@ -322,6 +322,8 @@ public:
     /// The viewport's exposure view: the image, or its luminance or false-color exposure. Saved as a preference.
     DebugView debug_view() const noexcept { return m_preferences.debug_view; }
     void set_debug_view(DebugView view);
+    bool skeletons() const noexcept { return m_preferences.skeletons; }
+    void set_skeletons(bool on);
     /// While on, the primary selection's collider shows size and offset handles in place of the
     /// transform gizmo. Each drag is one undoable edit, validated as the Inspector's are.
     bool collider_editing() const noexcept { return m_collider_editing; }
@@ -506,6 +508,7 @@ private:
     EditorPreferences m_preferences;
     std::filesystem::path m_preferences_file;
     DebugDraw m_debug_draw; // this frame's, reused
+    SkinBindingCache m_skin_bindings; // the shown World's skins' joints, between frames (#1038)
     std::optional<PhysicsStats> m_shown_physics;
     float m_physics_age = 0.0f; // seconds since m_shown_physics was taken
     std::optional<RenderSnapshot> m_snapshot; // the last rendered frame, for picking and outlines
@@ -533,7 +536,7 @@ private:
     std::vector<std::string> m_dropped_files; // dropped on the window this frame
     std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
     std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
-    std::array<std::vector<size_t>, 6> m_shown_rows; // scenes, meshes, materials, scripts, textures, and environments passing the filter
+    std::array<std::vector<size_t>, 7> m_shown_rows; // scenes, meshes, materials, scripts, textures, environments, and skins and clips passing the filter
     std::string m_shown_filter;
     bool m_shown_stale = true; // the rows or scene files changed
     bool m_rescan = false; // recheck the rows once they are drawn
