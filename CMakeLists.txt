@@ -513,6 +513,15 @@ if(BUILD_TESTING)
     add_test(NAME maya_simulation COMMAND maya_simulation_tests)
     set_tests_properties(maya_simulation PROPERTIES LABELS "cpu;simulation" TIMEOUT 60)
 
+    # The job system (docs/jobs.md). The timing case runs alone: it measures every core.
+    add_executable(maya_jobs_tests tests/jobs_tests.cpp)
+    target_link_libraries(maya_jobs_tests PRIVATE MayaJobs MayaMetrics Catch2::Catch2WithMain)
+    maya_target_options(maya_jobs_tests)
+    add_test(NAME maya_jobs COMMAND maya_jobs_tests "~[timing]")
+    set_tests_properties(maya_jobs PROPERTIES LABELS "cpu;jobs" TIMEOUT 120)
+    add_test(NAME maya_jobs_timing COMMAND maya_jobs_tests "[timing]")
+    set_tests_properties(maya_jobs_timing PROPERTIES LABELS "cpu;jobs" TIMEOUT 60 RUN_SERIAL TRUE)
+
     add_executable(maya_physics_tests tests/physics_tests.cpp)
     target_link_libraries(maya_physics_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_physics_tests)

@@ -1,3 +1,4 @@
+#include "maya/jobs/jobs.hpp"
 #include "maya/simulation/play_session.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -977,6 +978,23 @@ TEST_CASE("The nearest raycast hit is exactly the first of every hit, ties going
         if (!same(pile->physics().raycast_nearest(origin, toward, 30.0f), pile->physics().raycast(origin, toward, 30.0f))) ++mismatches;
     }
     CHECK(mismatches == 0);
+}
+
+TEST_CASE("Physics steps on the job system's frame tier, within its worker count", "[physics][jobs]") {
+    // #1061: Jolt's jobs run as frame-tier jobs; zero workers keeps every job on the stepping thread.
+    const auto frame_jobs = [] { return job_system().stats().frame.submitted; };
+    auto before = frame_jobs();
+    const auto pooled = record_drops(4, 60);
+    CHECK(frame_jobs() > before);
+    before = frame_jobs();
+    const auto alone = record_drops(0, 60);
+    CHECK(frame_jobs() == before);
+    CHECK(pooled == alone);
+    {
+        const auto workers = Workers(64);
+        CHECK(physics_worker_threads() == std::min(64, job_system().workers(JobTier::frame)));
+    }
+    CHECK(physics_worker_threads() == std::min(7, job_system().workers(JobTier::frame)));
 }
 
 TEST_CASE("Contacts and triggers begin and end once per pair, in the same order for any worker count", "[physics][events]") {
