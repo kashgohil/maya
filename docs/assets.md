@@ -126,7 +126,7 @@ A PNG or JPEG source is cooked when its texture loads and the [cook cache](#cook
 
 1. **Decode** with stb_image (PNG and JPEG only, from memory) to straight-alpha RGBA8, exactly the stored values: no color management or premultiplication. Images above the device's largest texture are refused before their pixels are decoded. stb_image is not hardened against hostile files; it cooks the project's own content, and [packages](projects.md#packages) hold only cooked content (#1039).
 2. **Mips** with stb_image_resize2, each level halved from the one before: sRGB-correct with alpha-weighted color for color, every channel independent for data, and renormalized for normals (a straight-up normal where a texel holds no direction).
-3. **Compress** with astcenc 5.7.0 at medium quality on every core, or keep RGBA8. A device that cannot sample ASTC gets RGBA8. The same source, settings, and device always give the same bytes, whatever the thread count.
+3. **Compress** with astcenc 5.7.0 at medium quality on the [job system](jobs.md#cooking)'s frame tier and the calling thread, or keep RGBA8. A device that cannot sample ASTC gets RGBA8. The same source, settings, and device always give the same bytes, whatever the thread count.
 
 On the reference machine (M4 Pro, Release), ABeautifulGame's 33 maps of 2048×2048 decode in 1.1 s on one thread and take 5.0 s to build mips and compress (40–540 ms each; noisy normal and ORM maps take longest), for 108 MiB of ASTC. A `.ktx2` source skips all of this.
 
@@ -166,7 +166,7 @@ samples 256
 - `specular_size`: texels per side of the prefiltered cube's first level, a power of two from 16 to 512 (default 128).
 - `samples`: importance samples per prefiltered texel, 16 to 4,096 (default 256).
 
-Each key appears at most once; anything else is refused with its line. **Loading** decodes the source with stb_image (negative or nonfinite values read as 0), then `cook_environment` builds, on every core and deterministically whatever the thread count:
+Each key appears at most once; anything else is refused with its line. **Loading** decodes the source with stb_image (negative or nonfinite values read as 0), then `cook_environment` builds, on the [job system](jobs.md#cooking)'s frame tier and the calling thread, and deterministically whatever the thread count:
 
 - **the background:** the source and its full mip chain (2 × 2 box filtered), RGBA16F, for the sky;
 - **irradiance:** nine spherical-harmonic coefficients, projected from every texel by its solid angle and convolved with the cosine lobe;

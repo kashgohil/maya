@@ -159,7 +159,7 @@ A Jolt contact listener runs on the worker threads during the step. It only appe
 
 Jolt's setup is global:
 - **Once per process.** The allocator hooks, trace and assert hooks, factory, and type registry are installed before the first physics world and kept until exit.
-- **The job pool.** One pool serves every world. `set_physics_worker_threads(n)` sets its size: −1 is the default, one less than the hardware threads and at most 7. The calling thread also runs jobs, and results do not depend on the count.
+- **The job pool.** Since #1061, Jolt runs on the process's [job system](jobs.md#physics), on its frame tier, rather than a pool of its own. `set_physics_worker_threads(n)` limits how many frame workers a step uses at once: −1 is the default (the frame tier's workers, at most 7), 0 runs every job on the stepping thread, and larger counts are capped at the frame tier. The calling thread also runs jobs, and results do not depend on the count.
 - **Memory.** `physics_memory()` reports the bytes Jolt has allocated through the hooks, with the peak and the number of allocations.
 
 `PhysicsSettings`, passed to `PlaySession::start`, sets each world's limits:
@@ -172,7 +172,7 @@ Jolt's setup is global:
 | `collision_steps` | 1 | — |
 | `temp_allocator_bytes` | 4 MiB | Per-step scratch memory; a larger step falls back to malloc. |
 
-An empty world reserves 20.6 MiB through the hooks for these limits, but it is created in about 0.02–0.09 ms and adds almost nothing to the process footprint until bodies use it. After a session, its Jolt memory is back to what it was before. Only the job pool and the type registry stay for the process.
+An empty world reserves 20.6 MiB through the hooks for these limits, but it is created in about 0.02–0.09 ms and adds almost nothing to the process footprint until bodies use it. After a session, its Jolt memory is back to what it was before. Only the job system and the type registry stay for the process.
 
 `PhysicsStats` counts:
 - bodies by motion type, and awake bodies;

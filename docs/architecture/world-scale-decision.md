@@ -49,6 +49,7 @@ The visibility prototype reads models from [fetch_render_samples.sh](../../tools
 Contracts for [#1061](https://work.rezee.app/kash/issues/1061) and the scheduling contract:
 - One job system per process. The frame tier has a worker for each core but one, at `QOS_CLASS_USER_INTERACTIVE`; it runs physics, animation, extraction, and parallel-fors. The background tier has as many workers at `QOS_CLASS_UTILITY`; it runs file reads, decoding, cooking, and generation. On other platforms the tiers become thread priorities.
 - Background jobs stay short (a few milliseconds) and check their cancellation token before each step, so cancellation is prompt.
+- **Measured in #1061:** a cook that a caller waits for runs on the frame tier. On the background tier the R1 import's cold load took 80% longer, as macOS keeps utility threads mostly on efficiency cores; raising the background tier to user-initiated restored cooking speed but slowed frame work 2.5–4× under background load, so the tier stays at utility ([jobs](../jobs.md#cooking)).
 - Jobs never touch the World, never mutate the asset registry, and never encode GPU commands. Their results return through an owner-thread completion queue, drained in the finalize phase under a per-frame budget. Completions carry the owner's lifetime token and a request generation; stale ones are discarded.
 - Shutdown cancels both tiers and joins them before the registry, the World, or the device is destroyed.
 - Jolt uses a `JPH::JobSystemWithBarrier` adapter on the frame tier (1.32 ms a step against 1.27 ms on its own pool).
