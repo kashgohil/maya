@@ -53,6 +53,7 @@ struct Manifest {
     uint32_t slope_from = 11; // cycle workloads: the first cycle of the footprint slope's fit
     bool overhead = true; // also a matched run without CPU scopes or GPU pass timing, to measure their cost
     bool present = false; // present every frame to a window and record display pacing (#1026)
+    bool stream_load = false; // scene: load by streaming frames, not behind a loading screen (#1062)
     DebugView debug_view = DebugView::none; // what the view shows (#1037): to measure a debug view's cost
     // Physics (P1): `count` is the dynamic bodies; warmup and samples are ticks.
     uint32_t obstacles = 500;
@@ -123,6 +124,9 @@ struct RejectedCase {
 struct Counters {
     size_t entities = 0, mesh_renderers = 0, spinning = 0;
     size_t centers_in_view = 0; // instances the last view drew: inside its frustum by their bounds (#1025)
+    // The most in any sampled frame (#1062): instances not drawn because they cannot be, or are still
+    // loading, and textures drawn as their materials' factors while they load. 0 behind a loading screen.
+    size_t skipped = 0, pending = 0, pending_textures = 0;
     uint64_t draws = 0, instances = 0, triangles = 0; // per frame, as submitted
     uint32_t passes = 0;
     size_t unique_meshes = 0, unique_materials = 0; // resident asset versions
@@ -137,6 +141,13 @@ struct SceneLoad {
     double scene_ms = 0.0; // read and validate the scene file
     double start_ms = 0.0; // build its World and start its play session
     double first_frame_ms = 0.0; // the first frame, which loads what it draws (through the project's cook cache)
+    // With `stream_load on` (#1062), frames stream from the start instead, until what the view draws is resident.
+    bool streamed = false;
+    size_t frames = 0; // frames until then
+    double resident_ms = 0.0; // from the first frame's start until then
+    double longest_frame_ms = 0.0;
+    double longest_finalize_ms = 0.0; // the longest of those frames' finalize steps (AssetRegistry::update)
+    size_t over_budget = 0; // frames whose finalize took longer than the budget: one load larger than it can
 };
 
 /// P1: one run's per-tick samples (milliseconds and counts) and what it ended with.
@@ -204,6 +215,7 @@ struct Result {
     std::string thread_qos; // the measuring thread's quality-of-service class
     std::optional<SceneLoad> load; // scene workload: loading it before the runs
     JobsRecord jobs;
+    std::optional<AssetLoadStats> loading; // the registry's asynchronous loading, when the workload kept a registry
 };
 
 /// P1's scene, version 1, as scene data (docs/architecture/performance-baseline.md#p1-physics-stress),

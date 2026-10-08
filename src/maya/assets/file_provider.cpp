@@ -19,6 +19,73 @@ AssetLoadResult<Asset> loaded(CookResult<Cooked> cooked, Upload&& upload) {
 }
 } // namespace
 
+namespace {
+/// The finalize step for a cooked result: upload on the owner thread, unless the device session ended.
+template<class Asset, class Cooked, class Upload>
+PreparedAsset upload_later(CookResult<Cooked> cooked, size_t bytes, std::weak_ptr<const GraphicsResourceLifetime> lifetime, Upload upload) {
+    if (!cooked) return {std::move(cooked.diagnostic), 0, {}};
+    auto value = std::make_shared<Cooked>(std::move(*cooked.value));
+    return {{}, bytes, [value, lifetime, upload = std::move(upload)]() -> std::pair<AssetValue, AssetDiagnostic> {
+        if (lifetime.expired()) return {std::shared_ptr<const Asset>{}, {AssetError::device_unavailable, "the graphics session has ended"}};
+        auto result = upload(*value);
+        return {std::move(result.value), std::move(result.diagnostic)};
+    }};
+}
+template<class Asset> PreparedAsset ready_now(AssetLoadResult<Asset> loaded) {
+    if (loaded.diagnostic) return {std::move(loaded.diagnostic), 0, {}};
+    return {{}, 0, [value = std::move(loaded.value)]() -> std::pair<AssetValue, AssetDiagnostic> { return {value, {}}; }};
+}
+size_t cooked_bytes(const CookedMesh& mesh) {
+    return mesh.vertices.size() * sizeof(Vertex) + mesh.indices.size() * sizeof(uint32_t) + mesh.skin.size() * sizeof(SkinVertex);
+}
+} // namespace
+
+PreparedAsset FileAssetProvider::prepare(const AssetLoadRequest& request) {
+    if (m_lifetime.expired()) return {{AssetError::device_unavailable, "The asset provider's graphics session has ended"}, 0, {}};
+    const auto lock = std::lock_guard(m_cook_mutex);
+    m_cooker->set_limits(cook_limits(m_device));
+    m_cooker->set_tier(request.tier);
+    const auto& path = request.path;
+    const auto label = request.part.empty() ? path.string() : path.string() + "#" + request.part;
+    const auto name = request.part.empty() ? path.stem().string() : path.stem().string() + " " + request.part;
+    if (request.stopped()) return {{AssetError::cancelled, label + ": the load was cancelled"}, 0, {}}; // while waiting its turn
+    auto& device = m_device;
+    const auto mesh = [&](CookResult<CookedMesh> cooked) {
+        const auto bytes = cooked ? cooked_bytes(*cooked.value) : 0;
+        return upload_later<MeshAsset>(std::move(cooked), bytes, m_lifetime, [&device, label](const CookedMesh& value) {
+            auto result = upload_mesh(device, value);
+            if (result.diagnostic) result.diagnostic.message = label + ": " + result.diagnostic.message;
+            return result;
+        });
+    };
+    const auto texture = [&](CookResult<CookedTexture> cooked) {
+        const auto bytes = cooked ? cooked.value->image.data.size() : 0;
+        return upload_later<TextureAsset>(std::move(cooked), bytes, m_lifetime, [&device, label, name](const CookedTexture& value) {
+            auto result = upload_texture(device, value, name);
+            if (result.diagnostic) result.diagnostic.message = label + ": " + result.diagnostic.message;
+            return result;
+        });
+    };
+    switch (request.kind) {
+    case AssetKind::mesh: return mesh(request.part.empty() ? m_cooker->mesh(path) : m_cooker->imported_mesh(path, request.part));
+    case AssetKind::texture: return texture(request.part.empty() ? m_cooker->texture(path) : m_cooker->imported_texture(path, request.part));
+    case AssetKind::environment: {
+        auto cooked = m_cooker->environment(path);
+        const auto bytes = cooked ? cooked.value->background.size() + cooked.value->specular.size() : 0;
+        return upload_later<EnvironmentAsset>(std::move(cooked), bytes, m_lifetime, [&device, label, name](const CookedEnvironment& value) {
+            auto result = upload_environment(device, value, name);
+            if (result.diagnostic) result.diagnostic.message = label + ": " + result.diagnostic.message;
+            return result;
+        });
+    }
+    case AssetKind::material: return ready_now(load_material(path));
+    case AssetKind::script: return ready_now(load_script(path));
+    case AssetKind::skin: return ready_now(request.part.empty() ? load_skin(path) : load_imported_skin(path, request.part));
+    case AssetKind::animation: return ready_now(request.part.empty() ? load_animation(path) : load_imported_animation(path, request.part));
+    }
+    return {{AssetError::wrong_type, "Unsupported asset kind"}, 0, {}};
+}
+
 AssetLoadResult<MeshAsset> FileAssetProvider::load_mesh(const std::filesystem::path& path) {
     if (m_lifetime.expired()) return {{},{AssetError::device_unavailable,"Mesh provider's graphics session has ended"}};
     m_cooker->set_limits(cook_limits(m_device));

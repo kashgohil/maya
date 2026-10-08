@@ -27,6 +27,7 @@ void EditorShell::read_script(AssetId script, ScriptVersion& version) {
     version.present = file && std::filesystem::is_regular_file(*file, error);
     version.stamp = version.present ? std::filesystem::last_write_time(*file, error) : std::filesystem::file_time_type{};
     version.size = version.present ? std::filesystem::file_size(*file, error) : 0;
+    const auto wait = AssetRegistry::ExplicitWait(*m_assets); // a play session needs the script's text now
     if (!info || info->record.kind != AssetKind::script) {
         version.error = path + " is not a script in the project's catalog";
     } else if (!version.present) {

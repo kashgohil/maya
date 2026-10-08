@@ -7,9 +7,11 @@
 namespace maya {
 
 /// Script sources from a project's asset registry, named by their catalog paths. The registry must
-/// outlive the play session.
+/// outlive the play session. They are explicit waits: a script must be loaded at the tick it starts, or
+/// replays would not match (docs/assets.md#asynchronous-loading).
 inline ScriptSources registry_script_sources(AssetRegistry& registry) {
     return [&registry](AssetId id) -> ScriptSourceResult {
+        const auto wait = AssetRegistry::ExplicitWait(registry);
         const auto loaded = registry.acquire(AssetRef<ScriptAsset>{id});
         if (!loaded) return {std::nullopt, loaded.diagnostic.message};
         const auto info = registry.info(id);
@@ -17,9 +19,11 @@ inline ScriptSources registry_script_sources(AssetRegistry& registry) {
     };
 }
 
-/// Animation clips from a project's asset registry. The registry must outlive the play session.
+/// Animation clips from a project's asset registry. The registry must outlive the play session. Like
+/// scripts, they are explicit waits: a clip is sampled at the tick it starts.
 inline AnimationClips registry_animation_clips(AssetRegistry& registry) {
     return [&registry](AssetId id) -> AnimationClipResult {
+        const auto wait = AssetRegistry::ExplicitWait(registry);
         auto loaded = registry.acquire(AssetRef<AnimationAsset>{id});
         if (!loaded) return {nullptr, loaded.diagnostic.message};
         // The clip stays loaded while the session holds it.

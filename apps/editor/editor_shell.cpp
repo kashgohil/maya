@@ -249,6 +249,13 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
         ImGui::SetCurrentContext(previous);
         return;
     }
+    // Loading first (docs/assets.md#asynchronous-loading): prepared assets are finalized within the
+    // budget, then the frame is marked so that a synchronous load in it is caught.
+    if (m_assets) {
+        m_load_stats = m_assets->update();
+        m_assets->begin_frame();
+    }
+    finish_reloads();
     if (m_minimized) {
         m_minimized = false;
         m_log.add(DiagnosticSource::viewport, "Window restored: viewport resumed", m_frame);
@@ -837,8 +844,12 @@ void EditorShell::draw_diagnostics() {
             row("Viewport", m_viewport_request.empty() ? std::string("hidden")
                 : format("%u \xC3\x97 %u px   %.0f\xC3\x97   %llu alloc%s", m_viewport_request.width, m_viewport_request.height,
                          scale, static_cast<unsigned long long>(m_viewport.allocations()), m_viewport_error ? "   error" : ""));
-            row("Scene", format("%zu drawn   %zu hidden   %zu skipped", m_extraction.mesh_renderers -
-                                m_extraction.hidden - m_extraction.skipped, m_extraction.hidden, m_extraction.skipped));
+            row("Scene", format("%zu drawn   %zu hidden   %zu skipped   %zu loading", m_extraction.mesh_renderers -
+                                m_extraction.hidden - m_extraction.skipped - m_extraction.pending, m_extraction.hidden,
+                                m_extraction.skipped, m_extraction.pending));
+            row("Loading", format("%zu in flight   %zu ready   %.2f ms   %.1f MiB   %llu waits in frames", m_load_stats.in_flight,
+                                  m_load_stats.prepared, m_load_stats.last_ms, double(m_load_stats.last_bytes) / (1024.0 * 1024.0),
+                                  static_cast<unsigned long long>(m_load_stats.waited_in_frames)));
             row("Frames", format("%llu submitted   %llu waits", static_cast<unsigned long long>(stats.submitted_frames),
                                  static_cast<unsigned long long>(stats.frame_waits)));
             row("Upload", format("%zu / %zu KiB   %llu failed", stats.transient_high_water / 1024,
@@ -1060,6 +1071,7 @@ void EditorShell::render_viewport() {
     }
     auto clock = Stopwatch{};
     auto options = RenderExtractOptions{};
+    options.loading = AssetLoading::stream; // frames never wait for assets
     options.poses = &poses;
     options.skins = &m_skin_bindings;
     // Physics debug views: from the play session's physics world while playing, else from the collider
@@ -1130,6 +1142,10 @@ RhiDiagnostic EditorShell::render(TextureHandle destination) {
         m_performance.untimed_passes += timing.untimed_passes;
     }
     m_performance.gpu_dropped += dropped;
+    struct EndFrame {
+        AssetRegistry* assets;
+        ~EndFrame() { if (assets) assets->end_frame(); }
+    } end_frame{m_assets.get()};
     if (!m_frame_ready) return {};
     auto* previous = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(m_context);

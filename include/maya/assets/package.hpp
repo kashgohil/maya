@@ -61,6 +61,8 @@ std::string verify_package(const std::filesystem::path& resources);
 class PackageAssetProvider final : public AssetProvider {
 public:
     explicit PackageAssetProvider(GraphicsDevice& device);
+    /// Reads and checks the cooked file in prepare, and uploads it in finalize.
+    PreparedAsset prepare(const AssetLoadRequest& request) override;
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override;
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override;
     AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override;

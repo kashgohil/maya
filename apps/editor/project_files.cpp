@@ -162,7 +162,9 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     auto registry = std::unique_ptr<AssetRegistry>{};
     if (auto error = read_catalog(opened.project, registry); !error.empty()) return fail(error);
     m_project = std::move(opened.project);
-    m_thumbnails.clear(); // their versions belong to the old registry
+    m_thumbnails.clear(); // their versions and loads belong to the old registry
+    m_texture_loads.clear();
+    m_reloads.clear();
     m_assets = std::move(registry);
     m_selected_asset.reset();
     scan_project();
@@ -341,7 +343,9 @@ void EditorShell::refresh_project() {
         m_log.add(DiagnosticSource::project, error, m_frame);
         notice("Couldn't reload the catalog", error + "\nThe previous catalog stays in use.");
     } else {
-        m_thumbnails.clear(); // their versions belong to the old registry
+        m_thumbnails.clear(); // their versions and loads belong to the old registry
+        m_texture_loads.clear();
+        m_reloads.clear();
         m_assets = std::move(registry); // loaded versions are reloaded from their files on next use
         if (m_scene) // edits not yet saved stay shown
             for (const auto id : m_scene->dirty_materials()) m_assets->publish(AssetRef<MaterialAsset>{id}, *m_scene->material(id));
@@ -381,6 +385,7 @@ std::string EditorShell::save_materials() {
 
 void EditorShell::discard_material_edits() {
     if (!m_scene || !m_assets) return;
+    const auto wait = AssetRegistry::ExplicitWait(*m_assets); // the user asked: their files' values now
     for (const auto id : m_scene->dirty_materials()) {
         m_assets->reload(AssetRef<MaterialAsset>{id});
         note_watched_file(id);
@@ -707,7 +712,7 @@ std::optional<math::Vec3> EditorShell::drop_point(ImVec2 point, AssetId mesh) co
     auto position = ray->origin + ray->direction * *distance;
     // Rest the mesh on the surface: lift it by how far its geometry reaches below its origin.
     if (mesh.valid() && m_assets)
-        if (const auto loaded = m_assets->acquire(AssetRef<MeshAsset>{mesh}))
+        if (const auto wait = AssetRegistry::ExplicitWait(*m_assets); const auto loaded = m_assets->acquire(AssetRef<MeshAsset>{mesh})) // a drop: the user waits for it
             if (const auto& geometry = loaded.lease.value().geometry(); !geometry.positions.empty()) position.y -= geometry.min.y;
     return position;
 }
@@ -804,18 +809,18 @@ void EditorShell::accept_viewport_drop() {
 // Asset browser -------------------------------------------------------------------------------------
 
 ImTextureID EditorShell::texture_thumbnail(AssetId texture, bool preview) {
-    // Cooking a texture can take tens of milliseconds, so the panel loads one a frame.
-    constexpr size_t loads_per_frame = 1;
+    // Textures load in the background, showing nothing meanwhile (the placeholder means one that cannot
+    // load); a failure is reported once, when its load ends.
     const auto info = m_assets->info(texture);
     if (!info) return 0;
-    const auto unloaded = info->state == AssetState::unloaded;
-    if (unloaded && m_texture_loads >= loads_per_frame) return 0;
-    if (unloaded) ++m_texture_loads;
-    const auto loaded = m_assets->acquire(AssetRef<TextureAsset>{texture});
-    if (!loaded) {
-        if (unloaded) m_log.add(DiagnosticSource::asset, loaded.diagnostic.message, m_frame);
-        return m_thumbnails.placeholder(preview);
+    if (info->state == AssetState::unloaded) m_texture_loads.try_emplace(texture, m_assets->request(AssetRef<TextureAsset>{texture}));
+    if (const auto it = m_texture_loads.find(texture); it != m_texture_loads.end()) {
+        if (!it->second.done()) return 0;
+        if (const auto diagnostic = it->second.diagnostic()) m_log.add(DiagnosticSource::asset, diagnostic.message, m_frame);
+        m_texture_loads.erase(it);
     }
+    const auto loaded = m_assets->try_acquire(AssetRef<TextureAsset>{texture});
+    if (!loaded) return loaded.diagnostic.code == AssetError::loading ? 0 : m_thumbnails.placeholder(preview);
     return preview ? m_thumbnails.preview(texture, loaded.lease) : m_thumbnails.row(texture, loaded.lease);
 }
 
@@ -833,11 +838,11 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto* version = script ? &script_version(record.id) : nullptr;
     const auto missing = version ? !version->present : row.missing;
     const auto problem = version ? version->error : info && info->diagnostic ? info->diagnostic.message : std::string{};
-    // Materials are small CPU data, so they load for their swatch (or the reason they cannot); meshes
-    // load when first drawn.
+    // Materials load for their swatch (or the reason they cannot), in the background; meshes load when
+    // first drawn.
     auto swatch = std::optional<ImU32>{};
     if (record.kind == AssetKind::material)
-        if (const auto material = m_assets->acquire(AssetRef<MaterialAsset>{record.id})) {
+        if (const auto material = m_assets->try_acquire(AssetRef<MaterialAsset>{record.id})) {
             const auto& color = material.lease.value().base_color;
             const auto channel = [](float linear) { // linear to display (sRGB-like) 8-bit
                 return int(std::pow(std::clamp(linear, 0.0f, 1.0f), 1.0f / 2.2f) * 255.0f + 0.5f);
@@ -896,6 +901,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         if (reload && script) {
             reload_script(record.id);
         } else if (reload) {
+            const auto wait = AssetRegistry::ExplicitWait(*m_assets); // the user asked: the new version now
             auto diagnostic = AssetDiagnostic{};
             if (mesh) diagnostic = m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic;
             else if (texture) diagnostic = m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic;
@@ -921,7 +927,7 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             const auto scale = std::max(ImGui::GetIO().DisplayFramebufferScale.x, 1.0f);
             const auto side = float(TextureThumbnails::preview_size) / scale;
             if (const auto image = texture_thumbnail(record.id, true)) ImGui::Image(image, {side, side});
-            if (const auto loaded = state == AssetState::ready ? m_assets->acquire(AssetRef<TextureAsset>{record.id}) : AssetResult<TextureAsset>{}) {
+            if (const auto loaded = state == AssetState::ready ? m_assets->try_acquire(AssetRef<TextureAsset>{record.id}) : AssetResult<TextureAsset>{}) {
                 const auto& value = loaded.lease.value();
                 const auto& desc = value.texture().desc();
                 const auto& sampler = value.sampler().desc();
@@ -974,7 +980,8 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
         draw->AddText({min.x + 5.0f, text_y}, theme::color::muted, glyph);
     }
     const auto tone = failed ? theme::color::danger : missing ? theme::color::warning : theme::color::text;
-    const auto status = missing ? "missing" : failed ? (script ? "error" : "failed") : state == AssetState::ready ? "" : mesh || texture ? "not loaded" : "";
+    const auto status = missing ? "missing" : failed ? (script ? "error" : "failed") : state == AssetState::ready ? ""
+                      : state == AssetState::loading ? "loading" : mesh || texture ? "not loaded" : "";
     const auto status_width = ImGui::CalcTextSize(status).x;
     draw->PushClipRect(min, {max.x - status_width - 12.0f, max.y}, true);
     draw->AddText({min.x + 26.0f, text_y}, tone, asset_label(record).c_str());
@@ -1029,7 +1036,6 @@ void EditorShell::draw_assets() {
             m_shown_stale = false;
         }
         constexpr auto table_flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
-        m_texture_loads = 0;
         if (ImGui::BeginTable("asset_columns", 7, table_flags, ImGui::GetContentRegionAvail())) {
             // Each column scrolls on its own and draws only its visible rows.
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {

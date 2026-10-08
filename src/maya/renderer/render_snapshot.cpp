@@ -7,6 +7,7 @@
 #include <cmath>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace maya {
 namespace {
@@ -49,7 +50,25 @@ std::optional<std::array<math::Vec3, 3>> normal_matrix(const math::Mat4& m) noex
 
 class Extraction {
 public:
-    Extraction(AssetRegistry& assets, RenderSnapshot& out) : m_assets(assets), m_out(out) {}
+    Extraction(AssetRegistry& assets, RenderSnapshot& out, bool stream) : m_assets(assets), m_out(out), m_stream(stream) {}
+
+    /// Streaming, the resident version or a request for it; otherwise, the asset loaded now.
+    template<Asset T> AssetResult<T> get(AssetRef<T> ref) { return m_stream ? m_assets.try_acquire(ref) : m_assets.acquire(ref); }
+    static bool loading(const AssetDiagnostic& diagnostic) noexcept { return diagnostic.code == AssetError::loading; }
+    bool pending(AssetId id) const { return m_pending.contains(id); }
+    /// Streaming, starts the loads an instance waiting for its mesh will need next (its material, the
+    /// material's maps, its skin), so they load together rather than one after another.
+    void prefetch(AssetRef<MaterialAsset> material, AssetRef<SkinAsset> skin) {
+        if (!m_stream) return;
+        if (material.valid() && m_prefetched.insert(material.id).second)
+            if (const auto acquired = m_assets.try_acquire(material)) {
+                const auto& value = acquired.lease.value();
+                for (const auto texture : {value.base_color_texture, value.metallic_roughness_texture, value.normal_texture,
+                                           value.occlusion_texture, value.emissive_texture})
+                    if (texture.valid()) (void)m_assets.try_acquire(texture);
+            }
+        if (skin.valid() && m_prefetched.insert(skin.id).second) (void)m_assets.try_acquire(skin);
+    }
 
     void report(RenderIssue code, EntityId entity, AssetId asset, std::string message) {
         if (m_out.diagnostics.size() < max_render_diagnostics)
@@ -57,15 +76,17 @@ public:
     }
     std::optional<uint32_t> mesh(AssetRef<MeshAsset> ref, EntityId entity) {
         if (const auto found = m_meshes.find(ref.id); found != m_meshes.end()) {
-            if (!found->second) report(RenderIssue::missing_mesh, entity, ref.id,
+            if (!found->second && !pending(ref.id)) report(RenderIssue::missing_mesh, entity, ref.id,
                 "Entity " + id_text(entity) + " skipped: mesh " + id_text(ref.id) + " is unavailable");
             return found->second;
         }
-        auto acquired = m_assets.acquire(ref);
+        auto acquired = get(ref);
         auto index = std::optional<uint32_t>{};
         if (acquired && acquired.lease.value().mesh().valid()) {
             index = static_cast<uint32_t>(m_out.meshes.size());
             m_out.meshes.push_back(std::move(acquired.lease));
+        } else if (loading(acquired.diagnostic)) {
+            m_pending.insert(ref.id);
         } else {
             const auto why = acquired.diagnostic ? acquired.diagnostic.message : "its GPU buffers are gone";
             report(RenderIssue::missing_mesh, entity, ref.id,
@@ -82,9 +103,12 @@ public:
         const auto name = slot_names[size_t(slot)];
         auto found = m_textures.find(ref.id);
         if (found == m_textures.end()) {
-            auto acquired = m_assets.acquire(ref);
+            auto acquired = get(ref);
             auto entry = TextureEntry{};
-            if (acquired && acquired.lease.value().valid()) {
+            if (loading(acquired.diagnostic)) {
+                entry.pending = true;
+                ++m_out.stats.pending_textures;
+            } else if (acquired && acquired.lease.value().valid()) {
                 entry.index = uint32_t(m_out.textures.size());
                 entry.role = acquired.lease.value().role();
                 m_out.textures.push_back(std::move(acquired.lease));
@@ -94,6 +118,7 @@ public:
             found = m_textures.emplace(ref.id, std::move(entry)).first;
         }
         const auto& entry = found->second;
+        if (entry.pending) return no_texture; // the factor alone until the texture is resident
         if (!entry.index) {
             report(RenderIssue::missing_texture, entity, ref.id, "Material " + id_text(material) + "'s " + name + " " +
                 id_text(ref.id) + " is unavailable, so the placeholder is drawn: " + entry.problem);
@@ -134,15 +159,20 @@ public:
         slot(MaterialSlot::emissive, value.emissive_texture);
         return material;
     }
-    /// The material's index in the snapshot's materials, each copied once (#1025).
-    uint32_t material(AssetRef<MaterialAsset> ref, EntityId entity) {
+    /// The material's index in the snapshot's materials, each copied once (#1025); nullopt while it loads.
+    std::optional<uint32_t> material(AssetRef<MaterialAsset> ref, EntityId entity) {
         if (!ref.valid()) return shared(m_default, MaterialAsset{}, entity);
+        if (pending(ref.id)) return std::nullopt;
         if (const auto found = m_materials.find(ref.id); found != m_materials.end()) {
             if (!found->second) report(RenderIssue::missing_material, entity, ref.id,
                 "Entity " + id_text(entity) + " uses the fallback material: " + id_text(ref.id) + " is unavailable");
             return found->second ? *found->second : shared(m_fallback, fallback_material(), entity);
         }
-        const auto acquired = m_assets.acquire(ref);
+        const auto acquired = get(ref);
+        if (loading(acquired.diagnostic)) {
+            m_pending.insert(ref.id);
+            return std::nullopt;
+        }
         auto value = std::optional<uint32_t>{};
         if (acquired) value = add(copy(acquired.lease.value(), ref.id, entity));
         else report(RenderIssue::missing_material, entity, ref.id, "Entity " + id_text(entity) +
@@ -155,8 +185,9 @@ public:
     const AssetLease<SkinAsset>* skin(AssetRef<SkinAsset> ref, std::string& problem) {
         auto found = m_skins.find(ref.id);
         if (found == m_skins.end()) {
-            auto acquired = m_assets.acquire(ref);
+            auto acquired = get(ref);
             auto entry = SkinEntry{};
+            if (loading(acquired.diagnostic)) m_pending.insert(ref.id);
             if (acquired) entry.lease = std::move(acquired.lease);
             else entry.problem = acquired.diagnostic.message;
             found = m_skins.emplace(ref.id, std::move(entry)).first;
@@ -181,12 +212,16 @@ private:
 
     AssetRegistry& m_assets;
     RenderSnapshot& m_out;
+    bool m_stream;
+    std::unordered_set<AssetId, PersistentIdHash> m_pending; // meshes, materials, and skins still loading
+    std::unordered_set<AssetId, PersistentIdHash> m_prefetched;
     std::optional<uint32_t> m_default, m_fallback;
     // Each asset is acquired once per extraction, so every instance draws the same version.
     std::unordered_map<AssetId, std::optional<uint32_t>, PersistentIdHash> m_meshes;
     std::unordered_map<AssetId, std::optional<uint32_t>, PersistentIdHash> m_materials; // index into the snapshot's
     struct TextureEntry {
         std::optional<uint32_t> index; // into the snapshot's textures, when it could be acquired
+        bool pending = false; // still loading: drawn as the factor alone
         TextureRole role = TextureRole::color;
         std::string problem; // why it could not
     };
@@ -309,7 +344,7 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
     auto snapshot = RenderSnapshot{};
     snapshot.world = world.token();
     snapshot.ambient = options.ambient;
-    auto extraction = Extraction(assets, snapshot);
+    auto extraction = Extraction(assets, snapshot, options.loading == AssetLoading::stream);
     const auto world_matrix = [&](EntityHandle entity) {
         return options.poses ? options.poses->world_matrix(world, entity) : world.world_matrix(entity);
     };
@@ -341,10 +376,20 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
             return skip(RenderIssue::invalid_transform, "Entity " + id_text(id) + " skipped: its world transform is degenerate or unrepresentable");
         const auto mesh = extraction.mesh(renderer.mesh, id);
         if (!mesh) {
-            ++snapshot.stats.skipped;
+            if (!extraction.pending(renderer.mesh.id)) {
+                ++snapshot.stats.skipped;
+                return;
+            }
+            ++snapshot.stats.pending;
+            extraction.prefetch(renderer.material, AssetRef<SkinAsset>{entity.slot < skin_of.size() ? skin_of[entity.slot] : AssetId{}});
             return;
         }
-        auto instance = RenderInstance{id, *mesh, *matrix, *normals, extraction.material(renderer.material, id)};
+        const auto material = extraction.material(renderer.material, id);
+        if (!material) {
+            ++snapshot.stats.pending;
+            return;
+        }
+        auto instance = RenderInstance{id, *mesh, *matrix, *normals, *material};
         // A sphere around the mesh's local bounds, carried into the world (radius times the largest scale).
         if (const auto& geometry = snapshot.meshes[*mesh].value().geometry(); !geometry.empty()) {
             const auto local = (geometry.min + geometry.max) * 0.5f;
@@ -359,7 +404,12 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
         const auto skin = AssetRef<SkinAsset>{entity.slot < skin_of.size() ? skin_of[entity.slot] : AssetId{}};
         if (skin.valid() && snapshot.meshes[*mesh].value().mesh().skinned()) {
             auto problem = std::string{};
-            if (const auto asset = extraction.skin(skin, problem)) {
+            const auto asset = extraction.skin(skin, problem);
+            if (!asset && extraction.pending(skin.id)) {
+                ++snapshot.stats.pending; // drawn once its skin is resident, never unskinned meanwhile
+                return;
+            }
+            if (asset) {
                 if (const auto first = skins.bind(entity, *asset, problem)) {
                     instance.first_joint = *first;
                     instance.joint_count = uint32_t(asset->value().joints.size());
@@ -439,7 +489,10 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
             " ignored: a scene uses one environment, " + id_text(environments.front().first) + "'s");
     if (!environments.empty() && environments.front().second.environment.valid()) {
         const auto& [id, component] = environments.front();
-        if (auto acquired = assets.acquire(component.environment); acquired && acquired.lease.value().valid())
+        auto acquired = options.loading == AssetLoading::stream ? assets.try_acquire(component.environment) : assets.acquire(component.environment);
+        if (acquired.diagnostic.code == AssetError::loading)
+            snapshot.stats.environment_pending = true;
+        else if (acquired && acquired.lease.value().valid())
             snapshot.environment = RenderEnvironment{id, std::move(acquired.lease), component.intensity, component.rotation, component.background};
         else
             extraction.report(RenderIssue::missing_environment, id, component.environment.id, "Environment " +
@@ -450,12 +503,20 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
     return snapshot;
 }
 
+size_t preload_render_assets(const World& world, AssetRegistry& assets) {
+    const auto before = assets.residency().ready;
+    const auto wait = AssetRegistry::ExplicitWait(assets);
+    extract_render_snapshot(world, assets, {}); // waits for each asset it draws
+    const auto after = assets.residency().ready;
+    return after > before ? after - before : 0;
+}
+
 void skeleton_debug(const World& world, AssetRegistry& assets, const PresentationPoses* poses, DebugDraw& out, SkinBindingCache* cache) {
     auto resolver = SkinResolver(world, cache);
     auto drawn = std::set<std::pair<uint32_t, AssetId>>{}; // by ancestor slot and skin: once each
     world.for_each<SkinComponent>([&](EntityHandle entity, const SkinComponent& component) {
         if (!component.skin.valid()) return;
-        const auto acquired = assets.acquire(component.skin);
+        const auto acquired = assets.try_acquire(component.skin); // a debug view: never waits
         if (!acquired) return;
         const auto& binding = resolver.resolve(entity, acquired.lease);
         if (!binding.root || !drawn.insert({binding.root->slot, component.skin.id}).second) return;

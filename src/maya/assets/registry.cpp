@@ -1,5 +1,7 @@
 #include "maya/assets/registry.hpp"
 #include <algorithm>
+#include <cmath>
+#include <functional>
 #include <cctype>
 #include <fstream>
 #include <charconv>
@@ -24,6 +26,11 @@ std::string id_text(AssetId id) {
 AssetRegistry::AssetRegistry(std::filesystem::path root, std::unique_ptr<AssetProvider> provider)
     : m_token(detail::next_lifetime_token()), m_root(project_root(root)), m_provider(std::move(provider)) {
     if (!m_provider) throw std::invalid_argument("AssetRegistry requires a provider");
+}
+AssetRegistry::~AssetRegistry() {
+    // Jobs first: cancelled, and waited for, before the provider and the entries they were preparing go.
+    m_jobs.cancel();
+    m_jobs.wait();
 }
 
 std::optional<std::filesystem::path> AssetRegistry::resolve_path(const std::filesystem::path& path) const {
@@ -81,6 +88,25 @@ AssetLoadResult<TextureAsset> AssetProvider::load_imported_texture(const std::fi
     return {nullptr, {AssetError::load_failed, "This asset provider does not load imported textures: " + source.string() + "#" + std::string(part)}};
 }
 
+std::pair<AssetValue, AssetDiagnostic> AssetProvider::load_now(const AssetLoadRequest& request) {
+    const auto& path = request.path;
+    const auto& part = request.part;
+    const auto take = [](auto result) -> std::pair<AssetValue, AssetDiagnostic> { return {std::move(result.value), std::move(result.diagnostic)}; };
+    switch (request.kind) {
+    case AssetKind::mesh: return take(part.empty() ? load_mesh(path) : load_imported_mesh(path, part));
+    case AssetKind::texture: return take(part.empty() ? load_texture(path) : load_imported_texture(path, part));
+    case AssetKind::skin: return take(part.empty() ? load_skin(path) : load_imported_skin(path, part));
+    case AssetKind::animation: return take(part.empty() ? load_animation(path) : load_imported_animation(path, part));
+    case AssetKind::material: return take(load_material(path));
+    case AssetKind::environment: return take(load_environment(path));
+    case AssetKind::script: return take(load_script(path));
+    }
+    return {std::shared_ptr<const MeshAsset>{}, {AssetError::wrong_type, "Unsupported asset kind"}};
+}
+PreparedAsset AssetProvider::prepare(const AssetLoadRequest& request) {
+    return {{}, 0, [this, request] { return load_now(request); }};
+}
+
 AssetSourcePath split_asset_path(const std::filesystem::path& path) {
     const auto text = path.generic_string();
     const auto mark = text.rfind('#');
@@ -121,7 +147,9 @@ AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
     record.path = record.path.lexically_normal();
     const auto id = record.id;
     const auto slot = static_cast<uint32_t>(m_entries.size());
-    m_entries.push_back(Entry{std::move(record)});
+    auto added = Entry{};
+    added.record = std::move(record);
+    m_entries.push_back(std::move(added));
     try {
         m_ids.emplace(id,slot);
         try { m_paths.emplace(path_key,id); }
@@ -141,6 +169,7 @@ AssetResidency AssetRegistry::residency() const noexcept {
     result.entries = m_entries.size();
     for (const auto& entry : m_entries) {
         if (entry.state == AssetState::unloaded) ++result.unloaded;
+        else if (entry.state == AssetState::loading) ++result.loading;
         else if (entry.state == AssetState::ready) ++result.ready;
         else if (entry.state == AssetState::failed) ++result.failed;
         std::visit([&](const auto& value) {
@@ -190,86 +219,363 @@ bool AssetRegistry::usable(const Payload& payload) noexcept {
     },payload);
 }
 
-AssetRegistry::LoadOutcome AssetRegistry::load_entry(AssetId id, AssetKind kind, bool reload) {
+namespace detail {
+struct AssetRequestState {
+    AssetId id;
+    AssetState state = AssetState::loading; // this asset's own load: loading, ready, or failed
+    AssetDiagnostic diagnostic;
+    bool cancelled = false;
+    std::vector<AssetRequest> children; // a material's textures
+};
+} // namespace detail
+
+AssetId AssetRequest::id() const noexcept { return m_state ? m_state->id : AssetId{}; }
+AssetState AssetRequest::state() const noexcept {
+    if (!m_state || m_state->cancelled || m_state->state == AssetState::failed) return AssetState::failed;
+    auto loading = m_state->state == AssetState::loading;
+    for (const auto& child : m_state->children) {
+        const auto state = child.state();
+        if (state == AssetState::failed) return AssetState::failed;
+        loading = loading || state == AssetState::loading;
+    }
+    return loading ? AssetState::loading : AssetState::ready;
+}
+AssetDiagnostic AssetRequest::diagnostic() const {
+    if (!m_state) return {AssetError::not_registered, "No asset was requested"};
+    if (m_state->cancelled) return {AssetError::cancelled, "The request was cancelled"};
+    if (m_state->diagnostic) return m_state->diagnostic;
+    for (const auto& child : m_state->children)
+        if (auto diagnostic = child.diagnostic()) return diagnostic;
+    return {};
+}
+void AssetRequest::cancel() const noexcept {
+    if (!m_state) return;
+    m_state->cancelled = true;
+    for (const auto& child : m_state->children) child.cancel();
+}
+
+std::pair<uint32_t, AssetDiagnostic> AssetRegistry::find(AssetId id, AssetKind kind) const {
     const auto it = m_ids.find(id);
-    if (it == m_ids.end()) return {0,{AssetError::not_registered,"Asset " + id_text(id) + " is not in the project catalog"}};
-    auto& entry = m_entries[it->second];
-    const auto fail = [&](AssetDiagnostic diagnostic) -> LoadOutcome {
-        entry.diagnostic = std::move(diagnostic);
+    if (it == m_ids.end()) return {0, {AssetError::not_registered, "Asset " + id_text(id) + " is not in the project catalog"}};
+    const auto& entry = m_entries[it->second];
+    if (entry.record.kind != kind) return {it->second, {AssetError::wrong_type, "Asset type mismatch: " + entry.record.path.string()}};
+    if (m_loading) return {it->second, {AssetError::busy, "Nested asset loads are not supported; stage dependencies before publication"}};
+    return {it->second, {}};
+}
+
+namespace {
+bool wanted(const std::vector<std::weak_ptr<detail::AssetRequestState>>& requests) {
+    return std::ranges::any_of(requests, [](const auto& weak) {
+        const auto request = weak.lock();
+        return request && !request->cancelled;
+    });
+}
+} // namespace
+
+AssetRequest AssetRegistry::request_entry(AssetId id, AssetKind kind, JobTier tier, bool reload) {
+    auto request = std::make_shared<detail::AssetRequestState>();
+    request->id = id;
+    const auto [slot, problem] = find(id, kind);
+    if (problem) {
+        request->state = AssetState::failed;
+        request->diagnostic = problem;
+        return AssetRequest(request);
+    }
+    auto& entry = m_entries[slot];
+    if (!reload && !entry.pending) {
+        if (usable(entry.payload)) {
+            request->state = AssetState::ready;
+            attach(entry, request, tier);
+            return AssetRequest(request);
+        }
+        if (entry.state == AssetState::failed) {
+            request->state = AssetState::failed;
+            request->diagnostic = entry.diagnostic;
+            return AssetRequest(request);
+        }
+    }
+    if (auto diagnostic = start_load(slot, reload, false, tier)) {
+        request->state = AssetState::failed;
+        request->diagnostic = std::move(diagnostic);
+        return AssetRequest(request);
+    }
+    m_entries[slot].pending->requests.push_back(request);
+    return AssetRequest(request);
+}
+
+// A ready material's request includes its textures' requests: the tree loads, fails, and is cancelled as one.
+void AssetRegistry::attach(Entry& entry, const std::shared_ptr<detail::AssetRequestState>& request, JobTier tier) {
+    if (entry.record.kind != AssetKind::material || !usable(entry.payload)) return;
+    const auto& material = *std::get<std::shared_ptr<const MaterialAsset>>(entry.payload);
+    for (const auto texture : {material.base_color_texture, material.metallic_roughness_texture, material.normal_texture,
+                               material.occlusion_texture, material.emissive_texture})
+        if (texture.valid()) request->children.push_back(request_entry(texture.id, AssetKind::texture, tier, false));
+}
+
+AssetDiagnostic AssetRegistry::start_held(uint32_t slot, JobTier tier) {
+    auto& entry = m_entries[slot];
+    if (entry.pending) {
+        if (!entry.pending->held) ++m_stats.merged; // joined once; later frames find it held
+        entry.pending->held = true;
+        return {};
+    }
+    if (entry.state == AssetState::failed) return entry.diagnostic;
+    return start_load(slot, false, true, tier);
+}
+
+AssetDiagnostic AssetRegistry::start_load(uint32_t slot, bool reload, bool held, JobTier tier) {
+    auto& entry = m_entries[slot];
+    auto requests = std::vector<std::weak_ptr<detail::AssetRequestState>>{};
+    auto previous = entry.state;
+    if (entry.pending) {
+        if (!reload || entry.pending->reload) {
+            entry.pending->held = entry.pending->held || held;
+            ++m_stats.merged;
+            return {};
+        }
+        // A reload supersedes a plain load in flight, whose source may have changed since it began; the
+        // old load's completion will be discarded, and its requests follow the new one.
+        entry.pending->job.cancel();
+        requests = std::move(entry.pending->requests);
+        held = held || entry.pending->held;
+        previous = entry.pending->previous;
+        entry.pending.reset();
+        std::erase(m_in_flight, slot);
+    }
+    const auto fail = [&](AssetDiagnostic diagnostic) {
+        entry.diagnostic = diagnostic;
         entry.state = usable(entry.payload) ? AssetState::ready : AssetState::failed;
-        return {it->second,entry.diagnostic};
+        for (const auto& weak : requests)
+            if (const auto request = weak.lock()) {
+                request->state = AssetState::failed;
+                request->diagnostic = diagnostic;
+            }
+        return diagnostic;
     };
-    if (entry.record.kind != kind) return {it->second,{AssetError::wrong_type,"Asset type mismatch: " + entry.record.path.string()}};
-    if (entry.state == AssetState::loading || m_loading)
-        return {it->second,{AssetError::busy,"Nested asset loads are not supported; stage dependencies before publication"}};
-    if (!reload && usable(entry.payload)) return {it->second,{}};
-    if (!reload && entry.state == AssetState::failed) return {it->second,entry.diagnostic};
-    if (entry.generation == std::numeric_limits<uint64_t>::max())
-        return fail({AssetError::load_failed,"Asset version counter exhausted"});
+    if (entry.generation == std::numeric_limits<uint64_t>::max()) return fail({AssetError::load_failed, "Asset version counter exhausted"});
     const auto source = split_asset_path(entry.record.path);
     const auto path = resolve_path(source.file); // recheck symlinks on every load
-    if (!path) return fail({AssetError::invalid_path,"Asset path escaped the project or cannot be resolved: " + entry.record.path.string()});
+    if (!path) return fail({AssetError::invalid_path, "Asset path escaped the project or cannot be resolved: " + entry.record.path.string()});
     std::error_code error;
-    if (!std::filesystem::is_regular_file(*path,error) || error)
-        return fail({AssetError::missing_file,"Missing/unreadable asset '" + entry.record.path.string() + "'; restore the source or fix its catalog path"});
+    if (!std::filesystem::is_regular_file(*path, error) || error)
+        return fail({AssetError::missing_file, "Missing/unreadable asset '" + entry.record.path.string() + "'; restore the source or fix its catalog path"});
 
-    struct LoadGuard {
-        Entry& entry;
-        bool& loading;
-        AssetState previous;
-        bool published = false;
-        ~LoadGuard() { loading = false; if (!published) entry.state = previous; }
-    } guard{entry,m_loading,entry.state};
-    m_loading = true;
-    entry.state = AssetState::loading;
-    auto candidate = Payload{};
-    auto diagnostic = AssetDiagnostic{};
-    try {
-        if (!source.part.empty() && kind == AssetKind::mesh) {
-            auto result = m_provider->load_imported_mesh(*path, source.part);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (kind == AssetKind::skin) {
-            auto result = source.part.empty() ? m_provider->load_skin(*path) : m_provider->load_imported_skin(*path, source.part);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (kind == AssetKind::animation) {
-            auto result = source.part.empty() ? m_provider->load_animation(*path) : m_provider->load_imported_animation(*path, source.part);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (!source.part.empty()) {
-            auto result = m_provider->load_imported_texture(*path, source.part);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (kind == AssetKind::mesh) {
-            auto result = m_provider->load_mesh(*path);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (kind == AssetKind::material) {
-            auto result = m_provider->load_material(*path);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (kind == AssetKind::environment) {
-            auto result = m_provider->load_environment(*path);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else if (kind == AssetKind::texture) {
-            auto result = m_provider->load_texture(*path);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
-        } else {
-            auto result = m_provider->load_script(*path);
-            candidate = std::move(result.value); diagnostic = std::move(result.diagnostic);
+    auto load = PendingLoad{};
+    load.generation = ++m_next_generation;
+    load.reload = reload;
+    load.held = held;
+    load.tier = tier;
+    load.previous = previous;
+    load.start = std::chrono::steady_clock::now();
+    load.requests = std::move(requests);
+    const auto generation = load.generation;
+    const auto label = entry.record.path.string();
+    load.job = m_jobs.submit(tier, [this, provider = m_provider.get(), sink = m_completions.sink(), request = AssetLoadRequest{entry.record.kind, *path, source.part, tier, {}},
+                                    slot, generation, label](JobContext& context) {
+        if (context.cancelled()) return;
+        auto step = request;
+        step.cancelled = [&context] { return context.cancelled(); };
+        auto prepared = std::make_shared<PreparedAsset>();
+        try {
+            *prepared = provider->prepare(step);
+        } catch (const std::exception& exception) {
+            *prepared = {{AssetError::load_failed, label + ": " + exception.what()}, 0, {}};
+        } catch (...) {
+            *prepared = {{AssetError::load_failed, label + ": an exception that is not a std::exception"}, 0, {}};
         }
-    } catch (const std::bad_alloc&) { throw; }
-    catch (const std::exception& exception) {
-        diagnostic = {AssetError::load_failed,entry.record.path.string() + ": " + exception.what()};
+        if (context.cancelled()) return;
+        // Applied on the owner thread by update or a wait, if this load is still the entry's.
+        sink.post(slot, generation, [this, slot, prepared] {
+            auto& entry = m_entries[slot];
+            entry.pending->prepared = prepared;
+            m_prepared.push_back(slot);
+        });
+    });
+    if (!usable(entry.payload)) entry.state = AssetState::loading;
+    entry.pending = std::move(load);
+    m_in_flight.push_back(slot);
+    ++m_stats.started;
+    return {};
+}
+
+void AssetRegistry::apply_completions() {
+    m_completions.drain(std::chrono::hours(1), [this](uint64_t slot, uint64_t generation) {
+        const auto current = slot < m_entries.size() && m_entries[slot].pending && m_entries[slot].pending->generation == generation &&
+                             !m_entries[slot].pending->prepared;
+        if (!current) ++m_stats.discarded;
+        return current;
+    });
+}
+
+void AssetRegistry::cancel_load(uint32_t slot) {
+    auto& entry = m_entries[slot];
+    entry.pending->job.cancel();
+    for (const auto& weak : entry.pending->requests)
+        if (const auto request = weak.lock()) {
+            request->state = AssetState::failed;
+            request->diagnostic = {AssetError::cancelled, "The load of " + entry.record.path.string() + " was cancelled"};
+        }
+    entry.state = usable(entry.payload) ? AssetState::ready : entry.pending->previous == AssetState::failed ? AssetState::failed : AssetState::unloaded;
+    entry.pending.reset();
+    std::erase(m_in_flight, slot);
+    ++m_stats.cancelled;
+}
+
+void AssetRegistry::finalize(uint32_t slot) {
+    auto& entry = m_entries[slot];
+    auto load = std::move(*entry.pending);
+    entry.pending.reset();
+    std::erase(m_in_flight, slot);
+    const auto& prepared = *load.prepared;
+    auto value = Payload{};
+    auto diagnostic = prepared.diagnostic;
+    if (!diagnostic && !prepared.finalize) diagnostic = {AssetError::load_failed, "The provider prepared nothing to finalize for " + entry.record.path.string()};
+    if (!diagnostic) {
+        m_loading = true;
+        try {
+            auto [finalized, problem] = prepared.finalize();
+            value = std::move(finalized);
+            diagnostic = std::move(problem);
+        } catch (const std::bad_alloc&) {
+            m_loading = false;
+            entry.state = usable(entry.payload) ? AssetState::ready : load.previous; // as if the load never began
+            throw;
+        } catch (const std::exception& exception) {
+            diagnostic = {AssetError::load_failed, entry.record.path.string() + ": " + exception.what()};
+        }
+        m_loading = false;
     }
-    if (!diagnostic && !usable(candidate))
-        diagnostic = {AssetError::load_failed,"Provider returned no usable asset for " + entry.record.path.string()};
+    if (!diagnostic && !usable(value)) diagnostic = {AssetError::load_failed, "Provider returned no usable asset for " + entry.record.path.string()};
     if (diagnostic) {
-        auto result = fail(std::move(diagnostic));
-        guard.published = true;
-        return result;
+        // A failed reload keeps the version in use.
+        entry.diagnostic = diagnostic;
+        entry.state = usable(entry.payload) ? AssetState::ready : AssetState::failed;
+        ++m_stats.failed;
+    } else {
+        entry.payload = std::move(value);
+        ++entry.generation;
+        entry.diagnostic = {};
+        entry.state = AssetState::ready;
+        ++m_stats.finalized;
+        m_stats.bytes_finalized += prepared.upload_bytes;
+        const auto latency = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - load.start).count();
+        if (m_latencies.size() < 256) m_latencies.push_back(latency);
+        else m_latencies[m_latency_next++ % 256] = latency;
     }
-    entry.payload = std::move(candidate);
-    ++entry.generation;
-    entry.diagnostic = {};
-    entry.state = AssetState::ready;
-    guard.published = true;
-    return {it->second,{}};
+    for (const auto& weak : load.requests)
+        if (const auto request = weak.lock()) {
+            request->state = diagnostic ? AssetState::failed : AssetState::ready;
+            request->diagnostic = diagnostic;
+            if (!diagnostic && !request->cancelled) attach(entry, request, load.tier);
+        }
+    // A material kept by the registry starts its maps' loads now, not when it is next drawn, on its own
+    // tier: an explicit wait's maps are about to be waited for too.
+    if (!diagnostic && load.held && entry.record.kind == AssetKind::material) {
+        const auto material = std::get<std::shared_ptr<const MaterialAsset>>(entry.payload);
+        for (const auto texture : {material->base_color_texture, material->metallic_roughness_texture, material->normal_texture,
+                                   material->occlusion_texture, material->emissive_texture})
+            if (const auto [child, problem] = find(texture.id, AssetKind::texture); !problem)
+                if (!m_entries[child].pending && !usable(m_entries[child].payload) && m_entries[child].state != AssetState::failed)
+                    (void)start_held(child, load.tier);
+    }
+}
+
+AssetLoadStats AssetRegistry::update(AssetLoadBudget budget) {
+    const auto start = std::chrono::steady_clock::now();
+    apply_completions();
+    // Loads no one wants any more: not kept by the registry, and every request gone or cancelled.
+    for (auto i = m_in_flight.size(); i-- > 0;) {
+        const auto slot = m_in_flight[i];
+        const auto& load = *m_entries[slot].pending;
+        if (!load.held && !wanted(load.requests)) cancel_load(slot);
+    }
+    size_t count = 0, bytes = 0;
+    while (!m_prepared.empty()) {
+        const auto slot = m_prepared.front();
+        auto& entry = m_entries[slot];
+        if (!entry.pending || !entry.pending->prepared) { // finalized by a wait, cancelled, or superseded
+            m_prepared.pop_front();
+            continue;
+        }
+        const auto upload = entry.pending->prepared->upload_bytes;
+        if (count > 0 && (std::chrono::steady_clock::now() - start >= budget.time || bytes + upload > budget.bytes)) break;
+        m_prepared.pop_front();
+        finalize(slot);
+        ++count;
+        bytes += upload;
+    }
+    m_stats.last_finalized = count;
+    m_stats.last_bytes = bytes;
+    m_stats.last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    m_stats.longest_ms = std::max(m_stats.longest_ms, m_stats.last_ms);
+    return load_stats();
+}
+
+AssetLoadStats AssetRegistry::load_stats() const {
+    auto stats = m_stats;
+    stats.in_flight = m_in_flight.size();
+    stats.prepared = size_t(std::ranges::count_if(m_in_flight, [&](uint32_t slot) { return m_entries[slot].pending->prepared != nullptr; }));
+    if (!m_latencies.empty()) {
+        auto sorted = m_latencies;
+        std::ranges::sort(sorted);
+        const auto at = [&](double p) { return sorted[std::min(sorted.size() - 1, size_t(std::ceil(p * double(sorted.size()))) - 1)]; };
+        stats.latency_p50_ms = at(0.5);
+        stats.latency_p95_ms = at(0.95);
+        stats.latency_max_ms = sorted.back();
+    }
+    return stats;
+}
+
+AssetDiagnostic AssetRegistry::load_and_wait(uint32_t slot, bool reload) {
+    auto& entry = m_entries[slot];
+    if (!reload && usable(entry.payload)) return {};
+    if (!reload && !entry.pending && entry.state == AssetState::failed) return entry.diagnostic;
+    if (auto diagnostic = start_load(slot, reload, true, JobTier::frame)) return diagnostic;
+    return wait_slot(slot);
+}
+
+AssetDiagnostic AssetRegistry::wait_slot(uint32_t slot) {
+    auto& entry = m_entries[slot];
+    ++m_stats.waited;
+    if (m_in_frame && m_explicit == 0) ++m_stats.waited_in_frames;
+    while (entry.pending) {
+        if (entry.pending->prepared) {
+            finalize(slot);
+            break;
+        }
+        const auto job = entry.pending->job;
+        job.wait(); // the owner thread blocks here: an explicit wait
+        apply_completions();
+        if (entry.pending && !entry.pending->prepared && job.done()) {
+            // The job ended without a result (it was cancelled): the load cannot finish.
+            cancel_load(slot);
+            return {AssetError::cancelled, "The load of " + entry.record.path.string() + " was cancelled"};
+        }
+    }
+    return entry.diagnostic;
+}
+
+AssetState AssetRegistry::wait(const AssetRequest& request) {
+    if (!request) return AssetState::failed;
+    for (;;) {
+        if (request.done()) return request.state();
+        // Every load still in flight in the tree; children appear when a material is finalized.
+        auto slots = std::vector<uint32_t>{};
+        const std::function<void(const detail::AssetRequestState&)> collect = [&](const detail::AssetRequestState& node) {
+            if (node.cancelled) return;
+            if (node.state == AssetState::loading)
+                if (const auto it = m_ids.find(node.id); it != m_ids.end() && m_entries[it->second].pending) slots.push_back(it->second);
+            for (const auto& child : node.children) collect(*child.m_state);
+        };
+        collect(*request.m_state);
+        if (slots.empty()) return request.state();
+        for (const auto slot : slots)
+            if (m_entries[slot].pending) wait_slot(slot);
+    }
+}
+
+void AssetRegistry::wait_idle() {
+    while (!m_in_flight.empty()) wait_slot(m_in_flight.front());
 }
 
 AssetDiagnostic AssetRegistry::publish(AssetRef<MaterialAsset> ref, MaterialAsset value) {
@@ -277,9 +583,9 @@ AssetDiagnostic AssetRegistry::publish(AssetRef<MaterialAsset> ref, MaterialAsse
     if (it == m_ids.end()) return {AssetError::not_registered,"Asset " + id_text(ref.id) + " is not in the project catalog"};
     auto& entry = m_entries[it->second];
     if (entry.record.kind != AssetKind::material) return {AssetError::wrong_type,"Asset type mismatch: " + entry.record.path.string()};
-    if (entry.state == AssetState::loading || m_loading)
-        return {AssetError::busy,"Nested asset loads are not supported; stage dependencies before publication"};
+    if (m_loading) return {AssetError::busy,"Nested asset loads are not supported; stage dependencies before publication"};
     if (entry.generation == std::numeric_limits<uint64_t>::max()) return {AssetError::load_failed,"Asset version counter exhausted"};
+    if (entry.pending) cancel_load(it->second); // the edit wins over a load of the file in flight
     entry.payload = std::make_shared<const MaterialAsset>(std::move(value));
     ++entry.generation;
     entry.diagnostic = {};
@@ -291,6 +597,7 @@ size_t AssetRegistry::evict_unused() {
     if (m_loading) return 0;
     size_t count = 0;
     for (auto& entry : m_entries) {
+        if (entry.pending) continue;
         const auto unused = std::visit([](const auto& value) { return value && value.use_count() == 1; },entry.payload);
         if (!unused) continue;
         entry.payload = std::shared_ptr<const MeshAsset>{};

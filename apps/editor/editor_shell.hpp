@@ -237,6 +237,8 @@ public:
     const TextureThumbnails& thumbnails() const noexcept { return m_thumbnails; }
     const UiRenderer& ui_renderer() const noexcept { return m_ui; }
     const RenderSnapshotStats& extraction() const noexcept { return m_extraction; }
+    /// The registry's loading as of this frame's update (Diagnostics' Loading row).
+    const AssetLoadStats& loading() const noexcept { return m_load_stats; }
     /// The last viewport frame's lights (Diagnostics' Lights row), and its scene problems, including the
     /// lights that view left out or drew without shadows.
     struct LightCounts {
@@ -425,7 +427,7 @@ private:
     Renderer m_renderer;
     UiRenderer m_ui;
     TextureThumbnails m_thumbnails;
-    size_t m_texture_loads = 0; // textures loaded for thumbnails this frame
+    std::unordered_map<AssetId, AssetRequest, PersistentIdHash> m_texture_loads; // thumbnails loading, reported when done
     RenderTarget m_viewport;
     ImTextureID m_viewport_texture = 0;
     std::unique_ptr<AssetRegistry> m_assets;
@@ -476,6 +478,15 @@ private:
     };
     WatchedFile look_at(const AssetRecord& record) const;
     std::unordered_map<AssetId, WatchedFile, PersistentIdHash> m_watched_files;
+    /// Reloads of changed files in flight, reported when they finish (finish_reloads, every frame).
+    struct PendingReload {
+        AssetRequest request;
+        AssetKind kind;
+        std::string previous_error;
+    };
+    std::unordered_map<AssetId, PendingReload, PersistentIdHash> m_reloads;
+    void finish_reloads();
+    AssetLoadStats m_load_stats;
     /// An imported glTF file (content-relative), and it and the files it names as last seen.
     struct ImportedSource {
         std::filesystem::path source;

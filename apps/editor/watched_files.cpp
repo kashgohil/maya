@@ -76,24 +76,44 @@ void EditorShell::check_asset_files() {
         if (now.file == seen.file && now.source == seen.source) continue;
         const auto previous = seen.error;
         seen = now;
-        const auto path = record.path.generic_string();
-        // A failed reload (a missing file, or one caught half-written) keeps the last good version.
-        auto diagnostic = AssetDiagnostic{};
-        if (record.kind == AssetKind::environment) {
-            diagnostic = m_assets->reload(AssetRef<EnvironmentAsset>{record.id}).diagnostic;
-        } else if (record.kind == AssetKind::texture) {
-            diagnostic = m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic;
-        } else if (const auto loaded = m_assets->reload(AssetRef<MaterialAsset>{record.id}); !loaded) {
-            diagnostic = loaded.diagnostic;
-        } else if (m_scene) { // an edit not yet saved stays, and is shown again
-            m_scene->material_file_changed(record.id, loaded.lease.value());
-        }
-        if (diagnostic) {
-            seen.error = diagnostic.message + "; the last version stays in use";
-            if (seen.error != previous) m_log.add(DiagnosticSource::asset, seen.error, m_frame); // once per problem
+        // Reloaded in the background (docs/assets.md#asynchronous-loading): the current version stays in
+        // use until the new one is ready, and finish_reloads reports it. A newer change supersedes a reload
+        // in flight.
+        auto request = AssetRequest{};
+        if (record.kind == AssetKind::environment) request = m_assets->request_reload(AssetRef<EnvironmentAsset>{record.id});
+        else if (record.kind == AssetKind::texture) request = m_assets->request_reload(AssetRef<TextureAsset>{record.id});
+        else request = m_assets->request_reload(AssetRef<MaterialAsset>{record.id});
+        m_reloads[record.id] = {std::move(request), record.kind, previous};
+    }
+}
+
+void EditorShell::finish_reloads() {
+    if (!m_assets) {
+        m_reloads.clear();
+        return;
+    }
+    for (auto it = m_reloads.begin(); it != m_reloads.end();) {
+        auto& [id, reload] = *it;
+        if (!reload.request.done()) {
+            ++it;
             continue;
         }
-        m_log.add(DiagnosticSource::asset, "Reloaded " + path + (previous.empty() ? "" : ", which loads again"), m_frame);
+        const auto info = m_assets->info(id);
+        const auto path = info ? info->record.path.generic_string() : std::string("an asset");
+        auto& seen = m_watched_files[id];
+        // A failed reload (a missing file, or one caught half-written) keeps the last good version. (A
+        // material's request includes its maps; only the material's own failure counts here.)
+        const auto diagnostic = reload.kind == AssetKind::material && info ? info->diagnostic : reload.request.diagnostic();
+        if (diagnostic) {
+            seen.error = diagnostic.message + "; the last version stays in use";
+            if (seen.error != reload.previous_error) m_log.add(DiagnosticSource::asset, seen.error, m_frame); // once per problem
+        } else {
+            seen.error.clear();
+            if (reload.kind == AssetKind::material && m_scene) // an edit not yet saved stays, and is shown again
+                if (const auto loaded = m_assets->try_acquire(AssetRef<MaterialAsset>{id})) m_scene->material_file_changed(id, loaded.lease.value());
+            m_log.add(DiagnosticSource::asset, "Reloaded " + path + (reload.previous_error.empty() ? "" : ", which loads again"), m_frame);
+        }
+        it = m_reloads.erase(it);
     }
 }
 

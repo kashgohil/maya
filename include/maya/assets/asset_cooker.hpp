@@ -56,6 +56,9 @@ public:
 
     const CookLimits& limits() const noexcept { return m_limits; }
     void set_limits(const CookLimits& limits) noexcept { m_limits = limits; }
+    /// The job tier texture compression and environment prefiltering fan out on (docs/jobs.md#cooking):
+    /// frame while a caller waits, background for asynchronous loads.
+    void set_tier(JobTier tier) noexcept { m_tier = tier; }
     /// A triangulated .obj file.
     CookResult<CookedMesh> mesh(const std::filesystem::path& path);
     /// A texture descriptor (.texture) and the PNG, JPEG, or cooked KTX2 image it names.
@@ -75,6 +78,7 @@ private:
     std::shared_ptr<const GltfFile> open_gltf(const std::filesystem::path& source, std::string& error);
     std::optional<Sha256Digest> imported_digest(const std::filesystem::path& source);
     CookLimits m_limits;
+    JobTier m_tier = JobTier::frame;
     std::shared_ptr<CookCache> m_cache;
     std::unique_ptr<OpenGltf> m_gltf;
 };

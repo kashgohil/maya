@@ -145,7 +145,7 @@ CookResult<CookedTexture> AssetCooker::texture(const std::filesystem::path& path
         if (image.data.empty()) {
             auto decoded = decode_image(*bytes, m_limits.max_texture_dimension);
             if (!decoded) return failed(AssetError::invalid_data, "source '" + settings.source.generic_string() + "': " + decoded.error);
-            auto cooked = cook_texture(decoded.image, settings, {m_limits.astc, 0});
+            auto cooked = cook_texture(decoded.image, settings, {m_limits.astc, 0, m_tier});
             if (!cooked) return failed(AssetError::load_failed, "cooking '" + settings.source.generic_string() + "' failed: " + cooked.error);
             image = std::move(cooked.image);
             if (m_cache) m_cache->write(key, write_ktx2(image));
@@ -181,7 +181,7 @@ CookResult<CookedEnvironment> AssetCooker::environment(const std::filesystem::pa
     if (!cooked) {
         const auto decoded = decode_hdr_image(*bytes, max_dimension);
         if (!decoded) return failed(AssetError::invalid_data, "source '" + settings.source.generic_string() + "': " + decoded.error);
-        cooked = cook_environment(decoded.image, settings);
+        cooked = cook_environment(decoded.image, settings, 0, m_tier);
         if (m_cache) m_cache->write(key, write_cooked_environment(*cooked));
     }
     return {std::move(cooked), {}};
@@ -294,7 +294,7 @@ CookResult<CookedTexture> AssetCooker::imported_texture(const std::filesystem::p
     settings.sampler = texture.sampler;
     settings.sampler.max_anisotropy = settings.sampler.mip_filter == MipFilter::linear && settings.sampler.min_filter == Filter::linear ? 8 : 1;
     if (settings.sampler.mip_filter == MipFilter::none) settings.mips = false;
-    auto cooked = cook_texture(decoded.image, settings, {m_limits.astc, 0});
+    auto cooked = cook_texture(decoded.image, settings, {m_limits.astc, 0, m_tier});
     if (!cooked) return failed(AssetError::load_failed, "cooking failed: " + cooked.error);
     if (m_cache && key.source != Sha256Digest{}) {
         auto entry = std::vector<std::byte>{};

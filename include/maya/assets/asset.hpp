@@ -6,13 +6,17 @@
 #include "maya/core/mesh.hpp"
 #include "maya/core/texture.hpp"
 #include "maya/core/sha256.hpp"
+#include "maya/jobs/jobs.hpp"
 #include <array>
 #include <concepts>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace maya {
 enum class AssetKind { mesh, material, script, texture, environment, skin, animation };
@@ -21,7 +25,9 @@ const char* asset_kind_name(AssetKind kind) noexcept;
 enum class AssetState { unloaded, loading, ready, failed };
 enum class AssetError {
     none, invalid_id, duplicate_id, duplicate_path, invalid_path, not_registered,
-    wrong_type, stale_handle, busy, missing_file, load_failed, invalid_data, device_unavailable
+    wrong_type, stale_handle, busy, missing_file, load_failed, invalid_data, device_unavailable,
+    loading, // not ready yet: a load is in flight (try_acquire, docs/assets.md#asynchronous-loading)
+    cancelled // the load was cancelled before it finished
 };
 struct AssetDiagnostic {
     AssetError code = AssetError::none;
@@ -153,9 +159,41 @@ struct AssetInfo {
     uint64_t generation = 0;
     AssetDiagnostic diagnostic; // failed reload may coexist with a ready previous version
 };
+/// Any loaded version, as the registry keeps it.
+using AssetValue = std::variant<std::shared_ptr<const MeshAsset>, std::shared_ptr<const MaterialAsset>,
+                                std::shared_ptr<const ScriptAsset>, std::shared_ptr<const TextureAsset>,
+                                std::shared_ptr<const EnvironmentAsset>, std::shared_ptr<const SkinAsset>,
+                                std::shared_ptr<const AnimationAsset>>;
+/// One load, as the registry asks a provider for it: the kind, the resolved file, the part inside an
+/// imported file (empty for a whole file), and the job tier its cooking may fan out on.
+struct AssetLoadRequest {
+    AssetKind kind = AssetKind::mesh;
+    std::filesystem::path path;
+    std::string part;
+    JobTier tier = JobTier::background;
+    /// Whether the load is still wanted; providers check it between steps and stop early with
+    /// AssetError::cancelled (the registry's jobs set it; null means always wanted).
+    std::function<bool()> cancelled;
+    bool stopped() const { return cancelled && cancelled(); }
+};
+/// A load in two halves (#1062, docs/assets.md#asynchronous-loading). `prepare` runs on a background job:
+/// it reads, decodes, and cooks, and never touches the device or the registry. `finalize` runs on the
+/// registry's owner thread, within its upload budget: it makes the device resources and returns the version.
+struct PreparedAsset {
+    AssetDiagnostic diagnostic; // a failure while preparing; finalize is then not called
+    size_t upload_bytes = 0; // what finalize will upload, for the byte budget
+    std::function<std::pair<AssetValue, AssetDiagnostic>()> finalize;
+};
+
 class AssetProvider {
 public:
     virtual ~AssetProvider() = default;
+    /// Prepares `request` on a job thread; calls for different assets may run at once. The default does
+    /// nothing there and loads in finalize, on the owner thread, through the load_* functions below: a
+    /// provider that does not override it still works, but its loads cost the owner thread.
+    virtual PreparedAsset prepare(const AssetLoadRequest& request);
+    /// Loads `request` at once through the load_* functions (what the default prepare's finalize does).
+    std::pair<AssetValue, AssetDiagnostic> load_now(const AssetLoadRequest& request);
     virtual AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& absolute_path) = 0;
     virtual AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& absolute_path) = 0;
     /// Reads the file as UTF-8 text; providers need not override it.
@@ -187,6 +225,8 @@ public:
     /// (docs/assets.md#cook-cache).
     explicit FileAssetProvider(GraphicsDevice& device, std::shared_ptr<CookCache> cache = nullptr);
     ~FileAssetProvider() override;
+    /// Cooks (or reads from the cook cache) in prepare, one load at a time, and uploads in finalize.
+    PreparedAsset prepare(const AssetLoadRequest& request) override;
     AssetLoadResult<MeshAsset> load_mesh(const std::filesystem::path& path) override;
     AssetLoadResult<MaterialAsset> load_material(const std::filesystem::path& path) override;
     AssetLoadResult<TextureAsset> load_texture(const std::filesystem::path& path) override;
@@ -202,6 +242,7 @@ private:
     GraphicsDevice& m_device;
     std::weak_ptr<const GraphicsResourceLifetime> m_lifetime;
     std::unique_ptr<AssetCooker> m_cooker; // cooking as the device's limits say, then upload (asset_cooker.hpp)
+    std::mutex m_cook_mutex; // the cooker keeps its last glTF file open: one cook at a time
 };
 /// Explicit fallback: missing meshes skip their draw; failed materials may use this value.
 const MaterialAsset& fallback_material() noexcept;

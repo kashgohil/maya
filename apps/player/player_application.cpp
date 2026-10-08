@@ -103,6 +103,11 @@ public:
                       << m_options.replay->filename().string() << '\n';
         }
 
+        // A loading screen: what the scene draws is resident before the first frame, which then streams
+        // anything later (docs/assets.md#asynchronous-loading).
+        const auto loading = Stopwatch{};
+        const auto loaded = preload_render_assets(m_session->world(), *m_assets);
+        std::cerr << "[Player] loaded " << loaded << " assets in " << int(loading.milliseconds()) << " ms\n";
         m_renderer = std::make_unique<Renderer>(device, std::move(shader));
         m_view = std::make_unique<RenderTarget>(device, RenderTargetDesc{Format::rgba8_unorm, false, "player view"});
         if (package)
@@ -114,6 +119,9 @@ public:
     }
 
     void on_update(float delta_time, bool input_enabled) override {
+        // Loading first: prepared assets are finalized within the budget; then the frame is marked.
+        m_assets->update();
+        m_assets->begin_frame();
         // Every window event belongs to the game in the player.
         if (input_enabled) m_session->input().feed(Input::instance().events());
         const auto frame = m_session->update(delta_time);
@@ -134,6 +142,10 @@ public:
     }
 
     void on_render(GraphicsDevice& device) override {
+        struct EndFrame {
+            AssetRegistry& assets;
+            ~EndFrame() { assets.end_frame(); }
+        } end_frame{*m_assets};
         const auto surface = device.acquire_surface();
         if (!surface) return; // no drawable or zero-sized window: skip the view this frame
         const auto& target = surface.target;
@@ -149,6 +161,7 @@ public:
         auto options = RenderExtractOptions{};
         options.poses = &poses;
         options.skins = &m_skins;
+        options.loading = AssetLoading::stream; // frames never wait for assets
         m_debug.clear(); // debug views are never drawn unless asked for
         if (m_options.debug_physics) play_physics_debug(world, m_session->physics(), {all_physics_debug, all_collision_groups}, &poses, m_debug);
         if (m_options.debug_skeletons) skeleton_debug(world, *m_assets, &poses, m_debug, &m_skins);
@@ -174,6 +187,10 @@ public:
             } catch (const std::exception& error) {
                 std::cerr << "[Player] the recording was not saved: " << error.what() << '\n';
             }
+        }
+        if (m_assets) { // a frame never waits for a load; anything else is a bug (docs/assets.md#asynchronous-loading)
+            const auto loading = m_assets->load_stats();
+            std::cerr << "[Player] loads: " << loading.finalized << " finished, " << loading.waited_in_frames << " waited for inside a frame\n";
         }
         // Device shutdown releases anything still pending after these owners are gone.
         m_renderer.reset();

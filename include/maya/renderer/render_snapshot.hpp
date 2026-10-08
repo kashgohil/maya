@@ -127,6 +127,12 @@ struct SkinBindingCache {
     std::map<std::tuple<EntityHandle, AssetHandle<SkinAsset>>, Binding> bindings; // by skinned entity and skin version
 };
 
+/// How extraction gets assets that are not resident (docs/assets.md#asynchronous-loading).
+enum class AssetLoading : uint8_t {
+    wait, // loads them before it returns: tests, tools, and captures
+    stream, // never blocks: requests them, skips instances whose mesh, material, or skin is still loading, and
+            // draws a texture still loading as its material's factor alone (the editor, the player, the benchmark runner)
+};
 struct RenderExtractOptions {
     /// Linear RGB light from every direction, used when the scene has no usable environment.
     math::Vec3 ambient{0.06f, 0.07f, 0.09f};
@@ -137,11 +143,21 @@ struct RenderExtractOptions {
     /// Skins' joints from earlier extractions of the same World (#1038); without it, every extraction
     /// searches for them again.
     SkinBindingCache* skins = nullptr;
+    AssetLoading loading = AssetLoading::wait;
 };
+/// Loads everything `world` draws now: its meshes, materials and their textures, skins, and environment.
+/// An explicit wait (docs/assets.md#asynchronous-loading), for a loading screen before streaming frames.
+/// Returns the number of assets resident afterwards that were not before.
+size_t preload_render_assets(const World& world, AssetRegistry& assets);
+
 struct RenderSnapshotStats {
     size_t mesh_renderers = 0;
     size_t hidden = 0; // not visible, or no mesh assigned
     size_t skipped = 0; // could not be drawn; see diagnostics
+    // Streaming extraction (AssetLoading::stream): what was still loading.
+    size_t pending = 0; // instances not drawn yet: their mesh, material, or skin is loading
+    size_t pending_textures = 0; // distinct textures drawn as their materials' factors while they load
+    bool environment_pending = false; // the scene's environment is loading: the ambient light is used meanwhile
 };
 
 /// Immutable renderer input extracted from one World. It holds no World handles or pointers into

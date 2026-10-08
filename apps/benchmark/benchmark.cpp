@@ -140,6 +140,9 @@ struct Stage {
 
 struct FrameSample {
     double frame = 0.0, simulation = 0.0, wait = 0.0, extract = 0.0, encode = 0.0, submit = 0.0;
+    double finalize = 0.0; // the registry's update: finalizing loads
+    bool loading = false; // something the view draws was still loading
+    size_t skipped = 0, pending = 0, pending_textures = 0; // the snapshot's
 };
 /// The systems each workload plays: A1 every system of play, so its clips play; the others the built-in ones.
 std::vector<std::unique_ptr<SimulationSystem>> systems_for(const Manifest& manifest, AssetRegistry& registry) {
@@ -162,6 +165,14 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
         into = part.milliseconds();
         part.restart();
     };
+    // Loading first, as the player does: prepared assets are finalized within the budget, and the frame
+    // is marked so that a synchronous load in it is counted (docs/assets.md#asynchronous-loading).
+    sample.finalize = stage.registry.update().last_ms;
+    stage.registry.begin_frame();
+    struct EndFrame {
+        AssetRegistry& assets;
+        ~EndFrame() { assets.end_frame(); }
+    } end_frame{stage.registry};
     if (const auto played = session.update(session.clock().interval()); !played.error.empty())
         throw std::runtime_error(played.error);
     lap(sample.simulation);
@@ -175,8 +186,13 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     view->debug_view = stage.debug_view;
     auto options = RenderExtractOptions{};
     options.skins = &stage.skins;
+    options.loading = AssetLoading::stream; // frames never wait for assets
     const auto snapshot = extract_render_snapshot(world, stage.registry, options);
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
+    sample.loading = snapshot.stats.pending > 0 || snapshot.stats.pending_textures > 0 || snapshot.stats.environment_pending;
+    sample.skipped = snapshot.stats.skipped;
+    sample.pending = snapshot.stats.pending;
+    sample.pending_textures = snapshot.stats.pending_textures;
     lap(sample.extract);
     if (auto error = stage.renderer.render(snapshot, *view, stage.target)) throw std::runtime_error(error.message);
     if (stage.present)
@@ -202,6 +218,7 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
     auto started = PlaySession::start(document, context, systems_for(manifest, stage.registry));
     if (!started) throw std::runtime_error(started.error.empty() ? started.diagnostics.front().message : started.error);
     auto& session = *started.session;
+    preload_render_assets(session.world(), stage.registry); // a loading screen: nothing streams in while measured
     for (uint32_t i = 0; i < manifest.warmup; ++i) run_frame(stage, session, camera, instrumented);
     auto samples = RunSamples{};
     samples.instrumented = instrumented;
@@ -232,8 +249,12 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
                 samples.present_reported[present.frame - first_serial] = true;
             }
     };
+    auto most = FrameSample{};
     for (uint32_t i = 0; i < manifest.samples; ++i) {
         const auto frame = run_frame(stage, session, camera, instrumented);
+        most.skipped = std::max(most.skipped, frame.skipped);
+        most.pending = std::max(most.pending, frame.pending);
+        most.pending_textures = std::max(most.pending_textures, frame.pending_textures);
         samples.frame.push_back(frame.frame);
         samples.sampled_seconds += frame.frame / 1000.0;
         if (instrumented) {
@@ -270,9 +291,13 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         counters.mesh_renderers = world.component_count<MeshRendererComponent>();
         counters.spinning = world.component_count<SpinComponent>();
         result.resident = memory(stage.device, stage.registry, world.size());
+        result.loading = stage.registry.load_stats();
         counters.unique_meshes = result.resident.assets.meshes;
         counters.unique_materials = result.resident.assets.materials;
         counters.centers_in_view = stage.renderer.last_view().drawn; // the view culls by bounds (#1025)
+        counters.skipped = most.skipped;
+        counters.pending = most.pending;
+        counters.pending_textures = most.pending_textures;
         const auto& lights = stage.renderer.last_lights();
         counters.local_lights = lights.local;
         counters.dropped_lights = lights.dropped.size();
@@ -707,7 +732,10 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             }
             ok = !manifest.workers.empty();
         }
-        else if (key == "overhead") {
+        else if (key == "stream_load") {
+            ok = bool(in >> text) && (text == "on" || text == "off");
+            manifest.stream_load = text == "on";
+        } else if (key == "overhead") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.overhead = text == "on";
         } else if (key == "present") {
@@ -854,14 +882,39 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (warmed) throw std::runtime_error(warmed.message);
         result.baseline = memory(device, registry, 0);
         if (manifest.workload == Workload::scene) {
-            // Starting play and the first frame, which loads what the scene draws through the cook cache.
+            // Starting play, then loading what the scene draws through the cook cache (a loading screen),
+            // and the first frame: first_frame_ms is both, as before loading was asynchronous.
             auto clock = Stopwatch{};
             auto probe = PlaySession::start(document, context, systems_for(manifest, registry));
             if (!probe) throw std::runtime_error(probe.error.empty() ? probe.diagnostics.front().message : probe.error);
             if (!probe.session->camera()) throw std::runtime_error("the scene has no camera");
             result.load->start_ms = clock.milliseconds();
             camera = *probe.session->camera();
-            result.load->first_frame_ms = run_frame(stage, *probe.session, camera, false).frame;
+            clock.restart();
+            if (manifest.stream_load) {
+                // Frames from the start, as the editor runs: until nothing the view draws is loading.
+                auto& load = *result.load;
+                load.streamed = true;
+                const auto budget = std::chrono::duration<double, std::milli>(AssetLoadBudget{}.time).count();
+                for (;;) {
+                    const auto sample = run_frame(stage, *probe.session, camera, false);
+                    const auto elapsed = clock.milliseconds();
+                    if (load.frames++ == 0) load.first_frame_ms = elapsed;
+                    load.longest_frame_ms = std::max(load.longest_frame_ms, sample.frame);
+                    load.longest_finalize_ms = std::max(load.longest_finalize_ms, sample.finalize);
+                    if (sample.finalize > budget) ++load.over_budget;
+                    const auto stats = registry.load_stats();
+                    if (!sample.loading && stats.in_flight == 0 && stats.prepared == 0) {
+                        load.resident_ms = elapsed;
+                        break;
+                    }
+                    if (elapsed > 600000.0) throw std::runtime_error("the scene was still loading after 10 minutes");
+                    device.take_gpu_timings();
+                }
+            } else {
+                preload_render_assets(probe.session->world(), registry);
+                result.load->first_frame_ms = clock.milliseconds() + run_frame(stage, *probe.session, camera, false).frame;
+            }
             device.take_gpu_timings();
         }
 
@@ -919,8 +972,11 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
             auto started = PlaySession::start(std::move(source), context, builtin_systems());
             if (!started) throw std::runtime_error(started.error.empty() ? started.diagnostics.front().message : started.error);
             sample.load = clock.milliseconds();
+            clock.restart();
+            preload_render_assets(started.session->world(), registry); // counted in the first frame, as before
+            const auto preload = clock.milliseconds();
             for (uint32_t tick = 0; tick < manifest.ticks; ++tick) {
-                const auto frame = run_frame(stage, *started.session, camera, false).frame;
+                const auto frame = run_frame(stage, *started.session, camera, false).frame + (tick == 0 ? preload : 0.0);
                 if (tick == 0) sample.first_frame = frame;
                 sample.longest_frame = std::max(sample.longest_frame, frame);
             }
@@ -935,6 +991,7 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         }
         result.authored_unchanged = scene_text(capture_scene(*authored_world.world), context) == authored_before;
         result.resident = memory(device, registry, authored_world.world->size());
+        result.loading = registry.load_stats();
     } catch (const std::exception& error) {
         result.failure = error.what();
     }
@@ -1029,6 +1086,7 @@ std::string to_json(const Result& r) {
     json.field("cycles", m.cycles);
     json.field("ticks", m.ticks);
     json.field("present", m.present);
+    json.field("stream_load", m.stream_load);
     json.field("debug_view", debug_view_name(m.debug_view));
     if (m.workload == Workload::animation) {
         json.field("model", (m.content / m.models.front()).string());
@@ -1083,6 +1141,9 @@ std::string to_json(const Result& r) {
     const auto& c = r.counters;
     json.field("entities", c.entities);
     json.field("mesh_renderers", c.mesh_renderers);
+    json.field("skipped", c.skipped);
+    json.field("pending", c.pending);
+    json.field("pending_textures", c.pending_textures);
     json.field("spinning", c.spinning);
     json.field("centers_in_view", c.centers_in_view);
     json.field("draws_per_frame", c.draws);
@@ -1101,12 +1162,41 @@ std::string to_json(const Result& r) {
     json.field("joints_per_view", c.joints);
     json.close('}');
     write_jobs(json, r.jobs);
+    // The registry's loading (docs/assets.md#asynchronous-loading): waited_in_frames must be 0.
+    json.key("asset_loading");
+    if (r.loading) {
+        const auto& l = *r.loading;
+        json.open('{');
+        json.field("started", l.started);
+        json.field("merged", l.merged);
+        json.field("finalized", l.finalized);
+        json.field("failed", l.failed);
+        json.field("cancelled", l.cancelled);
+        json.field("discarded", l.discarded);
+        json.field("waited", l.waited);
+        json.field("waited_in_frames", l.waited_in_frames);
+        json.field("bytes_finalized", l.bytes_finalized);
+        json.field("longest_update_ms", l.longest_ms);
+        json.field("latency_p50_ms", l.latency_p50_ms);
+        json.field("latency_p95_ms", l.latency_p95_ms);
+        json.field("latency_max_ms", l.latency_max_ms);
+        json.close('}');
+    } else {
+        json.null();
+    }
     json.key("load");
     if (r.load) {
         json.open('{');
         json.field("scene_ms", r.load->scene_ms);
         json.field("start_ms", r.load->start_ms);
         json.field("first_frame_ms", r.load->first_frame_ms);
+        if (r.load->streamed) {
+            json.field("frames", r.load->frames);
+            json.field("resident_ms", r.load->resident_ms);
+            json.field("longest_frame_ms", r.load->longest_frame_ms);
+            json.field("longest_finalize_ms", r.load->longest_finalize_ms);
+            json.field("finalize_over_budget", r.load->over_budget);
+        }
         json.close('}');
     } else {
         json.null();
@@ -1326,7 +1416,12 @@ std::string to_text(const Result& r) {
         out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
             << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "
             << r.counters.shadow_draws << " shadow draws per view\n";
-    if (r.load)
+    if (r.load && r.load->streamed)
+        out << "  load: scene " << r.load->scene_ms << " ms, start " << r.load->start_ms << " ms; streamed: first frame " << r.load->first_frame_ms
+            << " ms, resident after " << r.load->resident_ms << " ms and " << r.load->frames << " frames, longest frame "
+            << r.load->longest_frame_ms << " ms, longest finalize " << r.load->longest_finalize_ms << " ms (" << r.load->over_budget
+            << " over budget)\n";
+    else if (r.load)
         out << "  load: scene " << r.load->scene_ms << " ms, start " << r.load->start_ms << " ms, first frame " << r.load->first_frame_ms
             << " ms (through the project's cook cache: cooking first when it is empty)\n";
     if (!r.runs.empty() && r.manifest.workload == Workload::animation)

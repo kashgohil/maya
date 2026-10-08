@@ -475,8 +475,16 @@ void EditorShell::draw_material(AssetId id, bool folded) {
     ImGui::PushFont(m_fonts.strong);
     ImGui::TextUnformatted(name.c_str());
     ImGui::PopFont();
-    if (!m_scene->material(id)) { // opened on first use, at its file's value
-        const auto loaded = m_assets->acquire(AssetRef<MaterialAsset>{id});
+    if (!m_scene->material(id)) { // opened on first use, at its file's value, once it has loaded
+        const auto loaded = m_assets->try_acquire(AssetRef<MaterialAsset>{id});
+        if (loaded.diagnostic.code == AssetError::loading) {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
+            ImGui::TextUnformatted("Loading...");
+            ImGui::PopStyleColor();
+            ImGui::PopID();
+            ImGui::PopID();
+            return;
+        }
         if (!loaded) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::danger);
             ImGui::TextWrapped("%s", loaded.diagnostic.message.c_str());
@@ -518,7 +526,7 @@ void EditorShell::draw_material(AssetId id, bool folded) {
         {material.emissive_texture, TextureRole::color, "emissive_texture"}};
     for (const auto& [map, role, slot] : maps) {
         if (!map.valid()) continue;
-        const auto texture = m_assets->acquire(map);
+        const auto texture = m_assets->try_acquire(map); // said once the map has loaded
         if (!texture || texture.lease.value().role() == role) continue;
         const auto texture_info = m_assets->info(map.id);
         icon_text(icon::warning, theme::color::warning, 6.0f);

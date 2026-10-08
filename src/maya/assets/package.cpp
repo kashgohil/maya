@@ -148,6 +148,67 @@ std::optional<std::vector<std::byte>> cooked_payload(const std::filesystem::path
 }
 } // namespace
 
+PreparedAsset PackageAssetProvider::prepare(const AssetLoadRequest& request) {
+    const auto& path = request.path;
+    const auto fail = [](auto&& failure) { return PreparedAsset{std::move(failure.diagnostic), 0, {}}; };
+    const auto later = [this](size_t bytes, auto upload) {
+        return PreparedAsset{{}, bytes, [lifetime = m_lifetime, upload = std::move(upload)]() -> std::pair<AssetValue, AssetDiagnostic> {
+            if (lifetime.expired()) return {std::shared_ptr<const MeshAsset>{}, {AssetError::device_unavailable, "the graphics session has ended"}};
+            auto result = upload();
+            return {std::move(result.value), std::move(result.diagnostic)};
+        }};
+    };
+    const auto now = [](auto loaded) {
+        if (loaded.diagnostic) return PreparedAsset{std::move(loaded.diagnostic), 0, {}};
+        return PreparedAsset{{}, 0, [value = std::move(loaded.value)]() -> std::pair<AssetValue, AssetDiagnostic> { return {value, {}}; }};
+    };
+    if (m_lifetime.expired() && (request.kind == AssetKind::mesh || request.kind == AssetKind::texture || request.kind == AssetKind::environment))
+        return {{AssetError::device_unavailable, "Package provider's graphics session has ended"}, 0, {}};
+    switch (request.kind) {
+    case AssetKind::mesh: {
+        auto failure = AssetLoadResult<MeshAsset>{};
+        const auto payload = cooked_payload(path, cooked_mesh_extension, failure);
+        if (!payload) return fail(failure);
+        if (request.stopped()) return {{AssetError::cancelled, path.string() + ": the load was cancelled"}, 0, {}};
+        auto mesh = read_cooked_mesh(*payload);
+        if (!mesh) return {{AssetError::invalid_data, path.string() + ": not a cooked mesh"}, 0, {}};
+        const auto bytes = payload->size();
+        return later(bytes, [this, mesh = std::make_shared<CookedMesh>(std::move(*mesh))] { return upload_mesh(m_device, *mesh); });
+    }
+    case AssetKind::texture: {
+        auto failure = AssetLoadResult<TextureAsset>{};
+        const auto payload = cooked_payload(path, cooked_texture_extension, failure);
+        if (!payload) return fail(failure);
+        if (request.stopped()) return {{AssetError::cancelled, path.string() + ": the load was cancelled"}, 0, {}};
+        auto texture = read_cooked_texture(*payload);
+        if (!texture) return {{AssetError::invalid_data, path.string() + ": not a cooked texture"}, 0, {}};
+        if (is_compressed_format(texture->image.format) && !m_device.limits().astc)
+            return {{AssetError::load_failed, path.string() + ": the texture is ASTC, which this device cannot sample"}, 0, {}};
+        const auto bytes = texture->image.data.size();
+        return later(bytes, [this, name = path.stem().string(), texture = std::make_shared<CookedTexture>(std::move(*texture))] {
+            return upload_texture(m_device, *texture, name);
+        });
+    }
+    case AssetKind::environment: {
+        auto failure = AssetLoadResult<EnvironmentAsset>{};
+        const auto payload = cooked_payload(path, cooked_environment_extension, failure);
+        if (!payload) return fail(failure);
+        if (request.stopped()) return {{AssetError::cancelled, path.string() + ": the load was cancelled"}, 0, {}};
+        auto environment = read_cooked_environment(*payload);
+        if (!environment) return {{AssetError::invalid_data, path.string() + ": not a cooked environment"}, 0, {}};
+        const auto bytes = payload->size();
+        return later(bytes, [this, name = path.stem().string(), environment = std::make_shared<CookedEnvironment>(std::move(*environment))] {
+            return upload_environment(m_device, *environment, name);
+        });
+    }
+    case AssetKind::material: return now(load_material(path));
+    case AssetKind::script: return now(load_script(path));
+    case AssetKind::skin: return now(load_skin(path));
+    case AssetKind::animation: return now(load_animation(path));
+    }
+    return {{AssetError::wrong_type, "Unsupported asset kind"}, 0, {}};
+}
+
 AssetLoadResult<MeshAsset> PackageAssetProvider::load_mesh(const std::filesystem::path& path) {
     if (m_lifetime.expired()) return {nullptr, {AssetError::device_unavailable, "Package provider's graphics session has ended"}};
     auto failure = AssetLoadResult<MeshAsset>{};
