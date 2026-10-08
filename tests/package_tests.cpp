@@ -360,6 +360,7 @@ void launch_elsewhere(const fs::path& bundle, const fs::path& folder, const std:
     CHECK(output.find("[Player] package ") != std::string::npos);
     CHECK(output.find(expect) != std::string::npos);
     CHECK(output.find("smoke: completed 30/30 frames") != std::string::npos);
+    CHECK(output.find(" 0 waited for inside a frame") != std::string::npos);
 }
 } // namespace
 

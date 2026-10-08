@@ -78,8 +78,20 @@ struct Harness {
         REQUIRE(created);
         window = created.handle;
     }
+    /// Before each frame, the harness loads what the scene (or play) draws and finishes every load in
+    /// flight, outside the frame, like the player's loading screen (docs/assets.md#asynchronous-loading):
+    /// tests see content as soon as it is placed. Streaming tests turn it off.
+    bool settle_loads = true;
+    void settle() {
+        auto* assets = shell.assets();
+        if (!assets) return;
+        if (const auto* play = shell.play_session()) preload_render_assets(play->world(), *assets);
+        else if (auto* scene = shell.scene()) preload_render_assets(scene->world(), *assets);
+        assets->wait_idle();
+    }
     /// One host frame: route and build the UI, then render it into the window, as the editor does.
     void frame(std::vector<InputEvent> events = {}, float delta_time = 1.0f / 60.0f) {
+        if (settle_loads) settle();
         shell.update(delta_time, events, metrics);
         if (const auto capture = shell.take_capture_request()) captured = *capture;
         REQUIRE_FALSE(device.begin_frame());
@@ -91,6 +103,11 @@ struct Harness {
         REQUIRE_FALSE(device.end_frame());
     }
     void frames(int count) { for (int i = 0; i < count; ++i) frame(); }
+    /// Checks the watched files; the reloads that starts finish and report in the next frame.
+    void check_files() {
+        shell.check_asset_files();
+        frame();
+    }
     ImVec2 viewport_center() const {
         const auto& layout = shell.layout();
         return {(layout.viewport_min.x + layout.viewport_max.x) / 2, (layout.viewport_min.y + layout.viewport_max.y) / 2};

@@ -1049,6 +1049,82 @@ TEST_CASE("Extraction takes the scene's environment, reports a second one or a m
     CHECK(missing.diagnostics[0].asset == gone.id);
 }
 
+TEST_CASE("Streaming extraction never waits: what is loading is left out or drawn without it, then drawn once loaded", "[renderer][loading]") {
+    CapturingDevice device;
+    auto material = MaterialAsset{}; // no maps at first
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {{"m.material", material}},
+                        {{"color.texture", solid_image({255, 0, 0, 255})}}, {{"sky.environment", uniform_environment(1.0f, 32)}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto color = project.add<TextureAsset>(2, "color.texture");
+    const auto sky = project.add<EnvironmentAsset>(3, "sky.environment");
+    const auto ref = project.add<MaterialAsset>(4, "m.material");
+    material.base_color_texture = color; // published later, as an edit would
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        auto entity = commands.create(EntityId{1, 1});
+        commands.add(entity, TransformComponent{});
+        commands.add(entity, MeshRendererComponent{cube, ref, true});
+        commands.add(commands.create(EntityId{1, 2}), EnvironmentComponent{sky});
+    });
+    auto& registry = *project.registry;
+    auto options = RenderExtractOptions{math::Vec3{0.25f}};
+    options.loading = AssetLoading::stream;
+    const auto extract = [&] {
+        registry.update();
+        registry.begin_frame();
+        auto snapshot = extract_render_snapshot(world, registry, options);
+        registry.end_frame();
+        return snapshot;
+    };
+
+    // Nothing loaded: the cube is left out, the ambient light stands in, and nothing is reported missing.
+    const auto first = extract();
+    CHECK(first.instances.empty());
+    CHECK(first.stats.pending == 1);
+    CHECK(first.stats.environment_pending);
+    CHECK_FALSE(first.environment);
+    CHECK(first.ambient.x == 0.25f);
+    CHECK(first.diagnostics.empty());
+    CHECK(registry.load_stats().in_flight > 0);
+    CHECK(registry.load_stats().waited_in_frames == 0);
+
+    // Loaded: drawn as usual, with nothing pending.
+    registry.wait_idle();
+    const auto loaded = extract();
+    REQUIRE(loaded.instances.size() == 1);
+    CHECK(loaded.stats.pending == 0);
+    CHECK_FALSE(loaded.stats.environment_pending);
+    CHECK(loaded.environment);
+    CHECK(loaded.materials[loaded.instances[0].material].textures[size_t(MaterialSlot::base_color)] == no_texture);
+
+    // A material whose map is still loading draws with its factors meanwhile, and with the map after.
+    REQUIRE_FALSE(registry.publish(ref, material));
+    const auto waiting = extract();
+    REQUIRE(waiting.instances.size() == 1);
+    CHECK(waiting.stats.pending_textures == 1);
+    CHECK(waiting.textures.empty());
+    CHECK(waiting.materials[waiting.instances[0].material].textures[size_t(MaterialSlot::base_color)] == no_texture);
+    CHECK(waiting.diagnostics.empty());
+    registry.wait_idle();
+    const auto mapped = extract();
+    CHECK(mapped.stats.pending_textures == 0);
+    REQUIRE(mapped.textures.size() == 1);
+    CHECK(mapped.materials[mapped.instances[0].material].textures[size_t(MaterialSlot::base_color)] == 0);
+    CHECK(registry.load_stats().waited_in_frames == 0);
+
+    // Waiting (the default) loads everything before it returns, as before.
+    auto fresh = TestProject(device, {{"cube.mesh", unit_cube()}}, {{"m.material", {}}});
+    const auto fresh_cube = fresh.add<MeshAsset>(1, "cube.mesh");
+    const auto fresh_material = fresh.add<MaterialAsset>(4, "m.material");
+    World other;
+    build_world(other, [&](WorldCommands& commands) {
+        auto entity = commands.create(EntityId{1, 1});
+        commands.add(entity, TransformComponent{});
+        commands.add(entity, MeshRendererComponent{fresh_cube, fresh_material, true});
+    });
+    CHECK(extract_render_snapshot(other, *fresh.registry).instances.size() == 1);
+}
+
 TEST_CASE("The environment reaches the view constants and its slots, and the sky draws after opaque surfaces and before blended ones", "[renderer][environments]") {
     CapturingDevice device;
     auto glass = MaterialAsset{{1, 1, 1, 0.5f}};

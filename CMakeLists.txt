@@ -550,7 +550,7 @@ if(BUILD_TESTING)
     set(MAYA_RENDER_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/render-samples" CACHE PATH
         "Khronos sample content, from tools/fetch_render_samples.sh")
     add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp tests/material_tests.cpp
-        tests/environment_tests.cpp tests/gltf_tests.cpp tests/import_tests.cpp tests/cook_cache_tests.cpp)
+        tests/environment_tests.cpp tests/gltf_tests.cpp tests/import_tests.cpp tests/cook_cache_tests.cpp tests/asset_loading_tests.cpp)
     # The system zlib writes test PNGs (tests/support/png.hpp).
     target_link_libraries(maya_asset_tests PRIVATE MayaImport Catch2::Catch2WithMain z)
     target_include_directories(maya_asset_tests PRIVATE tests)

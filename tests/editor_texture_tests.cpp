@@ -1,5 +1,6 @@
 #include "editor_harness.hpp"
 #include <chrono>
+#include <thread>
 
 using namespace maya;
 using namespace maya::editor;
@@ -33,27 +34,35 @@ std::vector<std::string>& watch_textures(Harness& harness) {
 }
 } // namespace
 
-TEST_CASE("The Assets panel lists textures, loads them a frame at a time, and draws each thumbnail once", "[editor][textures]") {
+TEST_CASE("The Assets panel lists textures, loads them in the background, and draws each thumbnail once", "[editor][textures]") {
     Harness harness;
     auto& labels = watch_textures(harness);
     harness.frames(1);
     REQUIRE(harness.shell.layout().control("asset.textures/grid.texture"));
     REQUIRE(harness.shell.layout().control("asset.textures/grid_normal.texture"));
-    // Cooking can take tens of milliseconds, so one texture loads a frame.
-    CHECK(int(state(harness, grid) == AssetState::ready) + int(state(harness, grid_normal) == AssetState::ready) == 1);
+    // Cooking can take tens of milliseconds, so both load in the background while the frame goes on.
+    CHECK(state(harness, grid) == AssetState::loading);
+    CHECK(state(harness, grid_normal) == AssetState::loading);
+    CHECK(harness.shell.thumbnails().cached() == 0);
     harness.frames(1);
     CHECK(state(harness, grid) == AssetState::ready);
     CHECK(state(harness, grid_normal) == AssetState::ready);
-    CHECK(harness.shell.thumbnails().cached() == 2);
+    // Every texture row shown loads at once (the panel shows all of them).
+    auto shown = std::vector<AssetId>{};
+    for (const auto& record : harness.shell.assets()->records())
+        if (record.kind == AssetKind::texture && harness.shell.layout().control("asset." + record.path.generic_string())) shown.push_back(record.id);
+    REQUIRE(shown.size() >= 2);
+    for (const auto texture : shown) CHECK(state(harness, texture) == AssetState::ready);
+    CHECK(harness.shell.thumbnails().cached() == shown.size());
     CHECK(count(labels, "thumbnail grid") == 1);
     CHECK(count(labels, "thumbnail grid_normal") == 1);
     CHECK(std::ranges::any_of(harness.device.pipelines, [](const PipelineDesc& desc) {
         return desc.fragment_entry == "thumbnailFragment" && desc.color_formats == std::vector{Format::rgba8_unorm};
     }));
     const auto residency = harness.shell.assets()->residency();
-    CHECK(residency.textures == 2);
+    CHECK(residency.textures == shown.size());
     auto bytes = size_t{0};
-    for (const auto texture : {grid, grid_normal}) bytes += harness.shell.assets()->acquire(AssetRef<TextureAsset>{texture}).lease.value().gpu_bytes();
+    for (const auto texture : shown) bytes += harness.shell.assets()->acquire(AssetRef<TextureAsset>{texture}).lease.value().gpu_bytes();
     CHECK(residency.texture_gpu_bytes == bytes);
     CHECK(bytes > 0);
 
@@ -127,7 +136,7 @@ TEST_CASE("A texture whose file or source image changes outside the editor reloa
     REQUIRE(harness.shell.open_project(copy.folder));
     harness.frames(3); // the thumbnails load the textures, a frame each
     REQUIRE(state(harness, grid) == AssetState::ready);
-    harness.shell.check_asset_files(); // as loaded
+    harness.check_files(); // as loaded
     const auto generation = [&] { return harness.shell.assets()->info(grid)->generation; };
     const auto before = generation();
     const auto touch = [&](const char* path, int seconds) {
@@ -136,17 +145,17 @@ TEST_CASE("A texture whose file or source image changes outside the editor reloa
     // The source image replaced by another program: cooked again.
     fs::copy_file(copy.content / "textures/grid_normal.png", copy.content / "textures/grid.png", fs::copy_options::overwrite_existing);
     touch("textures/grid.png", 5);
-    harness.shell.check_asset_files();
+    harness.check_files();
     CHECK(generation() == before + 1);
     CHECK(reports(harness, "Reloaded textures/grid.texture") == 1);
-    harness.shell.check_asset_files(); // unchanged since
+    harness.check_files(); // unchanged since
     CHECK(generation() == before + 1);
     // Its texture file changed: read again, with the new settings.
     auto text = copy.read("textures/grid.texture");
     text.replace(text.find("filter linear linear"), 20, "filter nearest nearest");
     copy.write("textures/grid.texture", text);
     touch("textures/grid.texture", 9);
-    harness.shell.check_asset_files();
+    harness.check_files();
     CHECK(generation() == before + 2);
     CHECK(harness.shell.assets()->acquire(AssetRef<TextureAsset>{grid}).lease.value().sampler().desc().mag_filter == Filter::nearest);
     // Reload from the menu reads both now, so the watcher does not read them again.
@@ -155,6 +164,40 @@ TEST_CASE("A texture whose file or source image changes outside the editor reloa
     press(harness, control(harness, "asset.reload"));
     harness.frames(1);
     const auto reloaded = generation();
-    harness.shell.check_asset_files();
+    harness.check_files();
     CHECK(generation() == reloaded);
+}
+
+TEST_CASE("The editor never waits for a load inside a frame: thumbnails and changed files load in the background", "[editor][textures][loading]") {
+    const auto copy = ProjectCopy();
+    Harness harness(false);
+    harness.settle_loads = false; // as the editor runs: nothing loads between frames but what its updates finish
+    REQUIRE(harness.shell.open_project(copy.folder));
+    const auto frames_until = [&](auto done) {
+        for (int i = 0; i < 1000 && !done(); ++i) {
+            harness.frame();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return done();
+    };
+    REQUIRE(frames_until([&] { return state(harness, grid) == AssetState::ready && state(harness, grid_normal) == AssetState::ready; }));
+    CHECK(harness.shell.thumbnails().cached() >= 2);
+    // A changed file starts a reload and returns; the version in use stays until the new one is ready.
+    const auto generation = [&] { return harness.shell.assets()->info(grid)->generation; };
+    const auto before = generation();
+    harness.shell.check_asset_files(); // as loaded
+    auto text = copy.read("textures/grid.texture");
+    text.replace(text.find("filter linear linear"), 20, "filter nearest nearest");
+    copy.write("textures/grid.texture", text);
+    fs::last_write_time(copy.content / "textures/grid.texture", fs::file_time_type::clock::now() + std::chrono::seconds(5));
+    harness.shell.check_asset_files();
+    CHECK(generation() == before);
+    CHECK(state(harness, grid) == AssetState::ready);
+    CHECK(reports(harness, "Reloaded textures/grid.texture") == 0);
+    REQUIRE(frames_until([&] { return reports(harness, "Reloaded textures/grid.texture") == 1; }));
+    CHECK(generation() == before + 1);
+    const auto stats = harness.shell.assets()->load_stats();
+    CHECK(stats.waited_in_frames == 0);
+    CHECK(stats.finalized >= 3);
+    CHECK(harness.shell.loading().waited_in_frames == 0);
 }

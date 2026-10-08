@@ -134,6 +134,9 @@ TEST_CASE("R1 shows the same image in the editor's Play as in the player, along 
         play->clock().step();
         frame();
     }
+    // Everything the Game view draws is loaded, as behind a loading screen, so both images are complete.
+    preload_render_assets(play->world(), *shell.assets());
+    shell.assets()->wait_idle();
     frame(); // shown paused, at the tick
     REQUIRE(shell.showing_game());
     auto pixels = std::vector<std::byte>{};

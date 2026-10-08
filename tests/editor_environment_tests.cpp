@@ -82,11 +82,11 @@ TEST_CASE("The material scene is lit by its environment, and a changed environme
     REQUIRE(harness.shell.scene_path() == copy.content / "materials.scene");
     REQUIRE(harness.shell.assets()->info(sky)->state == AssetState::ready);
     const auto before = harness.shell.assets()->info(sky)->generation;
-    harness.shell.check_asset_files(); // the loaded environment's file, as it was loaded
+    harness.check_files(); // the loaded environment's file, as it was loaded
     // A smaller cube written by another program: reloaded, a new version, and logged.
     copy.write("environments/sky.environment", "maya-environment 1\nsource \"kloofendal_48d_partly_cloudy_puresky_1k.hdr\"\nspecular_size 32\n");
     fs::last_write_time(copy.content / "environments/sky.environment", fs::file_time_type::clock::now() + std::chrono::seconds(5));
-    harness.shell.check_asset_files();
+    harness.check_files();
     CHECK(harness.shell.assets()->info(sky)->generation == before + 1);
     CHECK(harness.shell.assets()->acquire(AssetRef<EnvironmentAsset>{sky}).lease.value().specular().desc().width == 32);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::asset, "Reloaded environments/sky.environment"));
@@ -96,14 +96,14 @@ TEST_CASE("The material scene is lit by its environment, and a changed environme
     fs::last_write_time(copy.content / "environments/kloofendal_48d_partly_cloudy_puresky_1k.hdr",
                         fs::file_time_type::clock::now() + std::chrono::seconds(7));
     const auto sky_before = harness.shell.assets()->acquire(AssetRef<EnvironmentAsset>{sky}).lease.value().irradiance()[0];
-    harness.shell.check_asset_files();
+    harness.check_files();
     CHECK(harness.shell.assets()->info(sky)->generation == before + 2);
     const auto sky_after = harness.shell.assets()->acquire(AssetRef<EnvironmentAsset>{sky}).lease.value().irradiance()[0];
     CHECK((sky_after - sky_before).length() > 0.01f); // the workshop's light, not the sky's
     // A broken file keeps the last good version.
     copy.write("environments/sky.environment", "maya-environment 1\n");
     fs::last_write_time(copy.content / "environments/sky.environment", fs::file_time_type::clock::now() + std::chrono::seconds(9));
-    harness.shell.check_asset_files();
+    harness.check_files();
     CHECK(harness.shell.assets()->info(sky)->generation == before + 2);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::asset, "names no source; the last version stays in use"));
     harness.frames(2);

@@ -70,6 +70,7 @@ cycles 5
 ticks 6
 overhead off
 present on
+stream_load on
 )");
     REQUIRE(full);
     const auto& m = full.manifest;
@@ -93,6 +94,7 @@ present on
     CHECK(m.ticks == 6);
     CHECK_FALSE(m.overhead);
     CHECK(m.present);
+    CHECK(m.stream_load);
     // Defaults follow the measurement protocol: 300 warmup frames, 3,000 samples, three runs.
     const auto defaults = parse(minimal);
     REQUIRE(defaults);
@@ -237,6 +239,11 @@ TEST_CASE("Results are complete JSON with raw samples, summaries, and what was u
     INFO(result.failure);
     REQUIRE(result.failure.empty());
     CHECK(result.counters.mesh_renderers == 4); // the sample scene
+    CHECK(result.counters.skipped == 0);
+    CHECK(result.counters.pending == 0); // loaded behind a loading screen before the runs
+    REQUIRE(result.loading);
+    CHECK(result.loading->finalized > 0);
+    CHECK(result.loading->waited_in_frames == 0); // measured frames never wait for a load
     const auto json = to_json(result);
     for (const auto* key : {"\"format\":\"maya-benchmark-result\"", "\"succeeded\":true", "\"environment\":{", "\"model\":",
                             "\"build\":{", "\"revision\":", "\"quality\":{", "\"width\":64", "\"counters\":{",
@@ -244,7 +251,8 @@ TEST_CASE("Results are complete JSON with raw samples, summaries, and what was u
                             "\"gpu_allocated_bytes\":null", "\"runs\":[{", "\"frame_ms\":{\"count\":6", "\"p95\":",
                             "\"samples\":{\"frame_ms\":[", "\"gpu_ms\":[null,null", "\"gpu_samples_missing\":6",
                             "\"overhead\":{", "\"unavailable\":{", "\"gpu_frame_time\":",
-                            "\"resident_textures\":0", "\"texture_gpu_bytes\":0"}) { // nothing in the scene uses a texture
+                            "\"resident_textures\":0", "\"texture_gpu_bytes\":0", "\"asset_loading\":{", "\"waited_in_frames\":0", "\"skipped\":0", "\"pending\":0",
+                            "\"pending_textures\":0"}) { // nothing in the scene uses a texture
         INFO(key);
         CHECK(has(json, key));
     }
@@ -259,6 +267,24 @@ TEST_CASE("Results are complete JSON with raw samples, summaries, and what was u
     CHECK_FALSE(has(json, ",]"));
     CHECK_FALSE(has(json, "[,"));
     CHECK(has(to_text(result), "run 2: frame"));
+
+    // Streaming the load instead: frames from the start until what the view draws is resident, none waiting.
+    manifest.stream_load = true;
+    const auto streamed = run(manifest, device, "renderer");
+    INFO(streamed.failure);
+    REQUIRE(streamed.failure.empty());
+    REQUIRE(streamed.load);
+    CHECK(streamed.load->streamed);
+    CHECK(streamed.load->frames >= 1);
+    CHECK(streamed.load->resident_ms >= streamed.load->first_frame_ms);
+    CHECK(streamed.load->longest_frame_ms > 0.0);
+    REQUIRE(streamed.loading);
+    CHECK(streamed.loading->waited_in_frames == 0);
+    for (const auto* key : {"\"stream_load\":true", "\"resident_ms\":", "\"longest_finalize_ms\":", "\"finalize_over_budget\":"}) {
+        INFO(key);
+        CHECK(has(to_json(streamed), key));
+    }
+    CHECK(has(to_text(streamed), "resident after"));
 }
 
 TEST_CASE("Cycle footprints are fitted from slope_from, and physics manifests name their counts", "[benchmark]") {
