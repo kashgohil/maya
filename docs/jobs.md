@@ -1,6 +1,6 @@
 # Jobs
 
-[#1061](https://work.rezee.app/kash/issues/1061) adds the process's job system, `MayaJobs` ([jobs.hpp](../include/maya/jobs/jobs.hpp)), as [#1060 decided](architecture/world-scale-decision.md#jobs-a-two-tier-pool). Physics, texture cooking, and environment cooking run on it. Asynchronous loading ([#1062](https://work.rezee.app/kash/issues/1062)) and generation build on it.
+[#1061](https://work.rezee.app/kash/issues/1061) adds the process's job system, `MayaJobs` ([jobs.hpp](../include/maya/jobs/jobs.hpp)), as [#1060 decided](architecture/world-scale-decision.md#jobs-a-two-tier-pool). Physics, texture cooking, and environment cooking run on it. [Asynchronous loading](assets.md#asynchronous-loading) ([#1062](https://work.rezee.app/kash/issues/1062)) prepares assets on it, and generation will build on it.
 
 ## Two tiers
 
@@ -45,7 +45,7 @@ Jolt's jobs run on the frame tier through a `JPH::JobSystemWithBarrier` adapter 
 
 ASTC compression and environment prefiltering run as parallel-fors on the job system, with the calling thread taking part. astcenc's threads claim blocks as they arrive, so its thread indices run on however many pool threads are free. A `threads` of 1 cooks on the calling thread alone. The cooked bytes are the same whatever the tier or thread count (the R1 import's cache digests matched the code before #1061 exactly).
 
-**A cook someone waits for runs on the frame tier**, the default for `TextureCookOptions::tier` and `cook_environment`'s `tier`. Every cook today is synchronous: the owner thread waits for it, so it is frame work. On the background tier the R1 import's cold load took 80% longer (ABeautifulGame 15.0 s against 8.3 s), because macOS runs utility threads mostly on efficiency cores even on an idle machine. Background workers at a higher quality of service (user-initiated) would cook at full speed, but then frame work slowed 2.5–4× under background load in the [timing test](#tests), the property the tiers exist for. So the background tier stays at utility, and asynchronous loading ([#1062](https://work.rezee.app/kash/issues/1062)) runs its cooks there, where nothing waits for them.
+**A cook someone waits for runs on the frame tier**, the default for `TextureCookOptions::tier` and `cook_environment`'s `tier`: an explicit wait (`acquire`, `reload`, a loading screen) blocks the owner thread, so its cooks are frame work. On the background tier the R1 import's cold load took 80% longer (ABeautifulGame 15.0 s against 8.3 s), because macOS runs utility threads mostly on efficiency cores even on an idle machine. Background workers at a higher quality of service (user-initiated) would cook at full speed, but then frame work slowed 2.5–4× under background load in the [timing test](#tests), the property the tiers exist for. So the background tier stays at utility, and since [#1062](https://work.rezee.app/kash/issues/1062) the loads frames start (`request`, `try_acquire`) cook there, where nothing waits for them (`AssetCooker::set_tier`).
 
 ## Instruments
 

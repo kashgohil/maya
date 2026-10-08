@@ -51,7 +51,12 @@ The [player](../apps/player/player_application.cpp) uses exactly this path: it r
 
 A snapshot holds no World handles and no pointers into component storage. Its entity IDs are for picking and diagnostics; resolve them in a World again before use. The snapshot owns leases on the exact mesh and texture versions it draws. Deleting entities, evicting or reloading assets, or destroying the registry or the World after extraction does not change the snapshot. Those changes appear in the next extraction. Release the snapshot once its frames are encoded. The graphics device keeps the native buffers until the GPU completes those frames ([deferred retirement](rhi.md)). Materials are copied by value, once each, so the snapshot does not keep material leases.
 
-Extraction acquires assets through the registry. Assets that are not resident load synchronously at that point, so a scene's first extraction pays for its loads. Each asset is acquired once per extraction, so every instance draws the same version. Failed assets are not retried on later extractions; call `AssetRegistry::reload` after fixing the source.
+Extraction acquires assets through the registry, in one of two ways (`RenderExtractOptions::loading`, #1062):
+
+- **`wait`** (the default, for tests, tools, and captures): assets that are not resident load at that point, so a scene's first extraction pays for its loads.
+- **`stream`** (frames in the editor, the player, and the benchmark runner): extraction never waits ([asynchronous loading](assets.md#asynchronous-loading)). What is not resident starts loading and is left out meanwhile: an instance whose mesh, material, or skin is loading is not drawn (`stats.pending`), a map still loading leaves its slot empty so the material's factor alone is drawn (`stats.pending_textures`), and an environment still loading leaves the ambient light (`stats.environment_pending`). Nothing still loading is reported as missing. `preload_render_assets` waits for everything a World draws, as a loading screen.
+
+Each asset is acquired once per extraction, so every instance draws the same version. Failed assets are not retried on later extractions; call `AssetRegistry::reload` after fixing the source.
 
 | Situation | Result |
 | --- | --- |

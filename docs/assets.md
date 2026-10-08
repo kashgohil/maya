@@ -206,16 +206,60 @@ A package's cooked files are `write_cooked_mesh`, `write_cooked_texture` (the ro
 
 | State | Behavior |
 | --- | --- |
-| `unloaded` | Catalog entry exists without a resident version. First acquire loads synchronously. |
-| `loading` | Provider is preparing a candidate. Read-only info queries can observe this state. Nested loads/catalog mutation are rejected as busy; eviction does nothing. |
-| `ready` | Registry owns a cache lease. Repeated acquire returns the same immutable version. |
-| `failed` | Initial load failed. Acquires return its saved diagnostic without retrying every frame; use explicit reload to retry. |
+| `unloaded` | Catalog entry exists without a resident version. A request, `try_acquire`, or `acquire` starts a load. |
+| `loading` | A load is in flight: preparing on a job, or prepared and waiting for an update. Info queries observe it; eviction skips the entry. While the registry finalizes, nested loads and catalog changes are refused as busy. |
+| `ready` | Registry owns a cache lease. Repeated acquire returns the same immutable version. A reload in flight keeps the entry ready, on its current version. |
+| `failed` | Initial load failed. Acquires and requests return its saved diagnostic without retrying every frame; a reload retries. |
 
 `info(id)` returns a copy of metadata/state/generation/diagnostics. A failed reload leaves a previously ready version and its generation available, with the failure recorded separately. The provider's candidate is private until validation succeeds; incomplete/failed candidates release their resources. Allocation failure restores the previous loading state and propagates; ordinary provider exceptions become diagnostics. Generation exhaustion refuses further publication rather than wrapping.
 
 `AssetProvider` is replaceable and returns owned candidates plus diagnostics. The initial `FileAssetProvider` calls the existing OBJ loader through a checked entry point, validates material files, and uploads one vertex/index buffer pair per loaded mesh version. OBJ support is deliberately limited to positive indices and triangular faces with optional UVs/normals. Malformed numbers, missing coordinates, invalid indices, unsupported polygons, and empty geometry report file/line diagnostics before upload. Absent UVs/normals retain the legacy zero defaults; authored normals are needed for useful lighting. Since #1033 the loader generates [MikkTSpace tangents](renderer.md#materials) per triangle corner and then shares the corners that agree (`generate_tangents`, `weld_vertices`), so a vertex on a UV seam may be split where it was not before. The legacy `ModelLoader::load_obj` adapter retains application search-root resolution.
 
-Loading is **synchronous** and registry/device access, including final mesh-lease release and cache eviction, belongs to one owner thread. Call it at a controlled scene/asset boundary, not accidentally in a per-draw path. The separation between persistent identity, immutable candidate publication, provider, and residency leaves room for asynchronous CPU import and dependency bundles. Worker scheduling, cancellation/request tokens, retries, and load budgets are not implemented; glTF files are [imported](import.md) and their parts load through the same provider, and cooked results are [cached](#cook-cache). An async extension must tag completions by registry/request generation, reject stale results, and keep GPU upload/publication on the owning thread. Future composite assets must retain dependency leases for the complete lifetime of their loaded version; a plain dependency AssetRef does not pin it.
+Registry and device access, including final mesh-lease release and cache eviction, belongs to one owner thread. glTF files are [imported](import.md) and their parts load through the same provider, and cooked results are [cached](#cook-cache). Future composite assets must retain dependency leases for the complete lifetime of their loaded version; a plain dependency AssetRef does not pin it.
+
+### Asynchronous loading
+
+Since [#1062](https://work.rezee.app/kash/issues/1062), loads run on the [job system](jobs.md) in two halves (`AssetProvider::prepare`, [asset.hpp](../include/maya/assets/asset.hpp)):
+
+1. **Prepare**, on a job: the provider reads, decodes, and cooks (or reads the cook cache), and returns a `PreparedAsset`: the plain data, the bytes it will upload, and a finalize step. It never touches the device or the registry. `FileAssetProvider` prepares one load at a time (its cooker keeps the last glTF file open); `PackageAssetProvider` reads and checks cooked files. A provider that does not override `prepare` loads in finalize instead, on the owner thread, through its `load_*` functions.
+2. **Finalize**, on the owner thread, in `update(budget)`: the finalize step makes the device resources, and the registry publishes the version, as a load always has (a new generation; a failed reload keeps the version in use).
+
+The job's result returns through the registry's [completion queue](jobs.md#completions-on-the-owner-thread), tagged with the entry's slot and the load's generation. A completion for a load that was cancelled or superseded is discarded unapplied (`AssetLoadStats::discarded`).
+
+| Call | What it does |
+| --- | --- |
+| `request(ref, tier)` | Starts the load if the asset is neither resident nor loading, joins it if it is loading, and returns an `AssetRequest`: interest in it. Never blocks. |
+| `request_reload(ref, tier)` | Loads the asset again; the current version stays in use meanwhile. It supersedes a plain load in flight, whose source may have changed. |
+| `try_acquire(ref)` | The resident version; otherwise starts a load the registry itself keeps alive and reports `AssetError::loading` (or the asset's failure). Never blocks: what frames use. |
+| `update(budget)` | Once a frame: applies finished preparations, cancels loads nobody wants, and finalizes prepared loads in arrival order until `AssetLoadBudget` is spent (2 ms and 64 MiB by default), always at least one. |
+| `acquire(ref)`, `reload(ref)` | Explicit waits: start (or join) the load on the frame tier and block the owner thread until it is finalized. |
+| `wait(request)`, `wait_idle()` | Explicit waits for a request's tree, or every load in flight. |
+
+- **Merging.** Requests for an asset already loading join its load; there is one preparation, and every request settles together.
+- **Cancellation.** A load nobody wants is cancelled at the next update: one with no live, uncancelled request that the registry does not keep. A load cancelled before its job starts never runs. A load cancelled while it prepares posts nothing; one whose completion was already posted is discarded when the completion is drained. Either way, partly prepared data is freed, and nothing becomes resident. `AssetRequest::cancel()` gives up interest at once.
+- **Trees.** A ready material's request includes requests for its textures. The tree is `loading` until every part is done, `failed` if any part failed (the material may still be usable), and `cancel()` cancels every part. A material that `try_acquire` loads starts its textures' loads when it is finalized, so they do not wait until it is next drawn.
+- **Failure.** A missing or unresolvable file fails at once; a failed preparation or finalization fails the load with its diagnostic, which every request reports.
+- **Tiers.** Requests and `try_acquire` prepare on the background tier, which never slows frame work; explicit waits prepare on the frame tier, since the owner thread is waiting (see [jobs](jobs.md#cooking)).
+- **Frames never wait.** `begin_frame()` and `end_frame()` mark the owner thread's frame. A wait inside one, with no `ExplicitWait` declared, is counted in `AssetLoadStats::waited_in_frames`, which the editor, player, and benchmark tests require to stay 0. Declared waits: an editor tool the user asked for (Reload, dropping a mesh, discarding material edits), and a play session's scripts and clips, which must be resident at the tick that uses them, or replays would not match.
+- **Shutdown.** The registry's destructor cancels its loads and waits for their jobs before the provider and the entries go.
+
+Frames use streaming extraction (`RenderExtractOptions::loading = AssetLoading::stream`, [renderer](renderer.md#render-snapshots)): an instance whose mesh, material, or skin is loading is not drawn yet (`RenderSnapshotStats::pending`), a texture still loading is drawn as its material's factor alone (`pending_textures`), and an environment still loading leaves the ambient light (`environment_pending`). While an instance's mesh loads, extraction also starts the loads of its material, the material's textures, and its skin, so they load together rather than one after another. Extraction otherwise defaults to `wait`, for tests, tools, and captures. `preload_render_assets(world, registry)` is the loading screen: an explicit wait for everything a World draws. The player preloads its scene before its first frame, as the benchmark runner does before each run, and reports its loads when it stops. The editor streams: a texture's thumbnail is blank until it loads (the placeholder means a texture that cannot load), and a changed file's reload is reported when it finishes.
+
+`load_stats()` reports loads in flight and prepared; loads started, merged, finalized, failed, cancelled, and discarded; waits, and waits in frames; the last update's finalized count, bytes, and time, and the longest update; bytes finalized; and the latency from request to ready (median, P95, and maximum over the last 256). The editor's Diagnostics show them in a Loading row, and the benchmark runner records them as `asset_loading`.
+
+**Measurements** (Release, M4 Pro, thermal state nominal; [R1](acceptance.md#r1) with ASTC textures at 1920×1080, against a Release build of the code before #1062, run back to back):
+
+| R1 load | Before #1062 | Loading screen (`preload_render_assets`, the player and benchmark) | Streaming (`stream_load on`, as the editor runs) |
+| --- | --- | --- | --- |
+| Warm cook cache: first frame | 1.59–1.66 s | 1.56–1.61 s | 3.5–4.2 ms |
+| Warm: time until everything drawn is resident | the first frame | the first frame | 1.66–1.71 s, over 4,500–6,900 frames |
+| Warm: longest frame while loading | 1.59–1.66 s | — | 4.2–4.8 ms |
+| Cold (empty cook cache): first frame | 12.8–13.2 s | 13.4–13.6 s | 18–22 ms |
+| Cold: time until resident | the first frame | the first frame | 80–107 s |
+| Cold: longest frame while loading | 12.8–13.2 s | — | 18–22 ms (the first) |
+| Longest finalize step | — | — | 1.7–2.4 ms; at most one frame in a load over the 2 ms budget (a single large texture) |
+
+Milestone 3 recorded a warm first frame of 1.66–1.67 s and a cold one of 12.8 s. A loading screen's cold load is 3–5% slower than before because its cooks run on a frame-tier job, which the waiting owner thread does not join. A streaming load never stalls a frame. A cold streaming load is 6–8× slower to become resident than a loading screen, because its cooks run on the background tier, at utility quality of service, mostly on the efficiency cores ([jobs](jobs.md#cooking)). That tier is [#1060's decision](architecture/world-scale-decision.md#jobs-a-two-tier-pool), so frames stay smooth. Cold cooking happens only when the cook cache is empty (in the editor, after an import): packaged games never cook, and the player loads behind a loading screen. Faster cold background cooking is follow-up work ([#1073](https://work.rezee.app/kash/issues/1073)).
 
 ## Release and GPU retirement
 

@@ -173,7 +173,7 @@ To support this, the RHI gained three general features (see [the graphics device
 
 ## Watched files
 
-The editor watches the files of loaded materials (#1033), textures, and environments (#1035), and the source images textures and environments name, as it watches scripts ([reload](scripting.md#reload)). Four times a second, `check_asset_files` ([watched_files.cpp](../apps/editor/watched_files.cpp)) compares each one's presence, modification time, and size with what it last read; for a texture or an environment, it reads the file's `source` and compares that image too. An asset whose file or source changed outside the editor is reloaded into the registry, cooked again if it is a texture or an environment, so every view shows it at the next frame, and Diagnostics logs "Reloaded".
+The editor watches the files of loaded materials (#1033), textures, and environments (#1035), and the source images textures and environments name, as it watches scripts ([reload](scripting.md#reload)). Four times a second, `check_asset_files` ([watched_files.cpp](../apps/editor/watched_files.cpp)) compares each one's presence, modification time, and size with what it last read; for a texture or an environment, it reads the file's `source` and compares that image too. An asset whose file or source changed outside the editor is reloaded into the registry in the background (#1062), cooked again if it is a texture or an environment. The last version stays in use until the reload finishes; then every view shows the new one, and Diagnostics logs "Reloaded". A newer change supersedes a reload in flight.
 
 - **Not an outside change:** the editor's own saves, discards, and Reloads note the file as they leave it (`note_watched_file`), so the watcher does not read it again.
 - **A file that cannot be read**, such as one caught half-written by another program or deleted, keeps the last good version in use. Diagnostics reports it once per problem, and the asset reloads when the file is whole again.
@@ -197,6 +197,7 @@ The Diagnostics panel shows the current state:
 - drawn, hidden, and skipped mesh renderers;
 - frames, waits, and upload-memory high water against capacity;
 - live resources and pending retirements;
+- **Loading** ([asynchronous loading](assets.md#asynchronous-loading)): loads in flight, loads prepared and waiting to finalize, the last update's finalize time and bytes, and waits for a load inside a frame, which must stay 0;
 - the view's point and spot lights: drawn, left out, and drawn without shadows, and whether the sun's shadows are on ([lights](#lights));
 - while playing, the tick, the wall time the clock refused, and the ticks it dropped, and the script VM's memory and reload count;
 - while playing, a **Physics** section (#1022), refreshed four times a second: bodies by motion type, active and sleeping, contacts and overlaps touching now, queries and events this session, the last step's time and its other phases, and error counters (steps where Jolt ran out of room, by kind, contact changes dropped, and event recipients skipped), shown in the warning color when any is nonzero;
