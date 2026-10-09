@@ -1,6 +1,7 @@
 #include "maya/world/world.hpp"
 #include "maya/world/components.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -457,4 +458,149 @@ TEST_CASE("The names revision counts commits that change names or the hierarchy,
     rejected.replace(b, NameComponent{"gone"});
     CHECK_FALSE(world.commit(rejected));
     CHECK(revision() == before);
+}
+
+TEST_CASE("Staged entities are committed but invisible until their group is published at once", "[world][stages]") {
+    World world;
+    const auto visible = create(world, EntityId{0x77, 1});
+    // A cell's content arrives in two batches, staged under group 7.
+    auto first = world.commands();
+    const auto root = first.create_staged(EntityId{0x77, 10}, 7);
+    first.add(root, TransformComponent{{100.0, 0.0, 0.0}});
+    first.add(root, Counter{1});
+    auto committed = world.commit(first);
+    REQUIRE(committed);
+    const auto root_handle = committed.created[root.index];
+    // Nothing that reads the World sees it yet.
+    CHECK_FALSE(world.find(EntityId{0x77, 10}));
+    CHECK_FALSE(world.alive(root_handle));
+    CHECK_FALSE(world.has<Counter>(root_handle));
+    CHECK_FALSE(world.world_matrix(root_handle));
+    CHECK(world.size() == 1);
+    CHECK(world.staged_count() == 1);
+    auto counted = 0;
+    world.for_each<Counter>([&](EntityHandle, Counter&) { ++counted; });
+    CHECK(counted == 0);
+    world.for_each_entity([&](EntityHandle entity) { CHECK(entity == visible); });
+    // A later batch of the same activation targets it: a child in the same group.
+    auto second = world.commands();
+    const auto child = second.create_staged(EntityId{0x77, 11}, 7);
+    second.add(child, TransformComponent{{0.0, 1.0, 0.0}});
+    second.add(child, Counter{2});
+    second.reparent(child, root_handle, ReparentPolicy::keep_local);
+    REQUIRE(world.commit(second));
+    // Its ID is taken: no other entity can claim it meanwhile.
+    auto clash = world.commands();
+    clash.create(EntityId{0x77, 11});
+    CHECK(world.commit(clash).error == WorldError::duplicate_id);
+    // Hierarchies stay inside a group.
+    auto across = world.commands();
+    across.add(visible, TransformComponent{});
+    across.reparent(visible, root_handle, ReparentPolicy::keep_local);
+    CHECK(world.commit(across).error == WorldError::stage_mismatch);
+    REQUIRE(world.staged(7).size() == 2);
+    // Published, both appear together, with their hierarchy and poses.
+    const auto published = world.publish(7);
+    CHECK(published.size() == 2);
+    CHECK(world.staged_count() == 0);
+    CHECK(world.size() == 3);
+    const auto found = world.find(EntityId{0x77, 11});
+    REQUIRE(found);
+    CHECK(world.parent(*found) == root_handle);
+    CHECK(world.world_matrix(*found)->translation == math::DVec3{100.0, 1.0, 0.0});
+    counted = 0;
+    world.for_each<Counter>([&](EntityHandle, Counter&) { ++counted; });
+    CHECK(counted == 2);
+}
+
+TEST_CASE("A discarded stage group leaves nothing behind, and its IDs can be used again", "[world][stages]") {
+    World world;
+    auto commands = world.commands();
+    const auto a = commands.create_staged(EntityId{0x78, 1}, 3);
+    commands.add(a, TransformComponent{});
+    const auto b = commands.create_staged(EntityId{0x78, 2}, 3);
+    commands.add(b, Counter{5});
+    const auto other = commands.create_staged(EntityId{0x78, 3}, 4);
+    REQUIRE(world.commit(commands));
+    world.discard(3);
+    CHECK(world.staged_count() == 1);
+    CHECK(world.staged(3).empty());
+    CHECK(world.component_count<Counter>() == 0);
+    // The same IDs come back, as when a cancelled cell loads again.
+    auto again = world.commands();
+    again.create_staged(EntityId{0x78, 1}, 3);
+    REQUIRE(world.commit(again));
+    world.publish(3);
+    CHECK(world.find(EntityId{0x78, 1}));
+    CHECK_FALSE(world.find(EntityId{0x78, 3})); // group 4 is still staged
+    (void)other;
+}
+
+TEST_CASE("Commits list what they destroyed, and the transform journal what moved", "[world][stages]") {
+    World world;
+    world.record_transform_changes(true);
+    auto commands = world.commands();
+    const auto parent = commands.create(EntityId{0x79, 1});
+    commands.add(parent, TransformComponent{});
+    const auto child = commands.create(EntityId{0x79, 2});
+    commands.add(child, TransformComponent{});
+    commands.reparent(child, parent, ReparentPolicy::keep_local);
+    auto created = world.commit(commands);
+    REQUIRE(created);
+    CHECK(world.take_transform_changes().size() >= 2);
+    CHECK(world.take_transform_changes().empty());
+    auto move = world.commands();
+    move.set_transform(created.created[parent.index], TransformComponent{{1, 0, 0}});
+    REQUIRE(world.commit(move));
+    const auto moved = world.take_transform_changes();
+    REQUIRE(moved.size() == 1);
+    CHECK(moved.front() == created.created[parent.index]); // its descendants moved with it
+    auto remove = world.commands();
+    remove.destroy(created.created[parent.index]);
+    const auto removed = world.commit(remove);
+    REQUIRE(removed);
+    REQUIRE(removed.destroyed.size() == 2); // the subtree
+    CHECK(std::ranges::count(removed.destroyed, created.created[child.index]) == 1);
+    world.record_transform_changes(false);
+}
+
+TEST_CASE("Staging refuses a split hierarchy and changes nothing; edits name the group an entity came from", "[world][stages]") {
+    World world;
+    world.reserve(64); // room ahead: commits that follow do not grow the tables
+    auto commands = world.commands();
+    const auto parent = commands.create_staged(EntityId{0x7a, 1}, 5);
+    commands.add(parent, TransformComponent{});
+    const auto child = commands.create_staged(EntityId{0x7a, 2}, 5);
+    commands.add(child, TransformComponent{{0, 1, 0}});
+    commands.reparent(child, parent, ReparentPolicy::keep_local);
+    const auto loose = commands.create(EntityId{0x7a, 3});
+    commands.add(loose, Counter{1});
+    const auto created = world.commit(commands);
+    REQUIRE(created);
+    world.publish(5);
+    const auto p = created.created[parent.index], c = created.created[child.index], l = created.created[loose.index];
+    // The child alone would leave its parent's hierarchy split: refused, and nothing is hidden.
+    const auto alone = std::vector<EntityHandle>{c};
+    CHECK(world.stage(alone, 9) == WorldError::stage_mismatch);
+    CHECK(world.alive(c));
+    CHECK(world.staged_count() == 0);
+    CHECK(world.staged(9).empty());
+    // Edits name the group an entity was published from; entities created visible are not recorded.
+    world.record_edits(true);
+    auto edit = world.commands();
+    edit.set_transform(c, TransformComponent{{0, 2, 0}});
+    edit.replace(l, Counter{2});
+    REQUIRE(world.commit(edit));
+    const auto edits = world.take_edits();
+    REQUIRE(edits.size() == 1);
+    CHECK(edits.front().id == EntityId{0x7a, 2});
+    CHECK(edits.front().origin == 5);
+    // The whole hierarchy, listed twice, stages; its destruction while staged is not an edit.
+    const auto whole = std::vector<EntityHandle>{c, p, c};
+    REQUIRE(world.stage(whole, 9) == WorldError::none);
+    CHECK(world.staged(9).size() == 2);
+    CHECK(world.size() == 1);
+    CHECK(world.discard(9) == 0);
+    CHECK(world.take_edits().empty());
+    world.record_edits(false);
 }

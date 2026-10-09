@@ -1,0 +1,10 @@
+maya-benchmark 1
+# The stream workload, small (#1064): it must complete, every load must succeed, and cells must come and go.
+name "stream-smoke"
+workload stream
+grid 6
+count 200
+speed 200
+radii 300 150 32
+cycles 2
+runs 1

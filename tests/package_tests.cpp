@@ -13,6 +13,8 @@
 #include "r1.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "maya/scene/scene_io.hpp"
+#include "maya/scene/world_io.hpp"
+#include "maya/streaming/world_streamer.hpp"
 #include "maya/simulation/script_assets.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "support/gltf.hpp"
@@ -25,6 +27,7 @@
 #include <fstream>
 #include <iterator>
 #include <set>
+#include <sstream>
 #include <unistd.h>
 
 using namespace maya;
@@ -540,4 +543,95 @@ TEST_CASE("The content workflow's scene runs from a standalone package outside t
         CHECK(std::ranges::count(from_sources.rgb, from_sources.rgb.front()) < std::ptrdiff_t(from_sources.rgb.size() / 2));
     }
     launch_elsewhere(bundle, scratch.root / "elsewhere", "Content Game / levels/lit.scene", scene.generic_string());
+}
+
+namespace {
+/// The sample's basic scene with copies of its meshes in cells far out, saved as a world (#1064).
+fs::path save_sample_world(const fs::path& project) {
+    auto opened = open_project(project);
+    REQUIRE(opened);
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    auto assets = open_project_assets(opened.project, std::make_unique<FileAssetProvider>(device));
+    REQUIRE(assets);
+    const auto context = asset_property_context(*assets.registry);
+    auto loaded = load_scene_file(opened.project.content_root / "basic.scene", context);
+    REQUIRE(loaded);
+    auto scene = loaded.document;
+    auto low = uint64_t{1};
+    for (const auto& entity : loaded.document.entities) {
+        if (entity.parent || !std::ranges::any_of(entity.components, [](const ComponentValue& v) {
+                return std::holds_alternative<MeshRendererComponent>(v);
+            }))
+            continue;
+        for (const auto x : {200.0, 330.0, -150.0}) {
+            auto copy = SceneEntity{EntityId{0x5800, low++}, std::nullopt, entity.components};
+            for (auto& value : copy.components)
+                if (auto* transform = std::get_if<TransformComponent>(&value)) transform->translation += math::DVec3{x, 0.0, 20.0};
+            scene.entities.push_back(std::move(copy));
+        }
+    }
+    const auto path = opened.project.content_root / "levels/sample.world";
+    auto saved = save_world(path, scene, context);
+    INFO((saved.empty() ? std::string() : saved.front().message));
+    REQUIRE(saved.empty());
+    assets.registry.reset();
+    device.shutdown();
+    return path;
+}
+} // namespace
+
+TEST_CASE("A world packages with its cells cooked, and streams from the package as from the project", "[package][streaming]") {
+    const Scratch scratch;
+    const auto project = copy_sample(scratch);
+    const auto world = save_sample_world(project);
+    const auto bundle = scratch.root / "World Game.app";
+    const auto report = package_project(options_for(project, bundle, {"levels/sample.world"}));
+    INFO(report.error);
+    REQUIRE(report);
+    const auto content = bundle / "Contents/Resources/project/content";
+    const auto files = files_in(content / "levels");
+    CHECK(std::ranges::count(files, "sample.world") == 1);
+    CHECK(std::ranges::count(files, "sample/persistent.scene") == 1);
+    CHECK(std::ranges::count_if(files, [](const std::string& file) { return file.ends_with(".cell"); }) >= 3);
+    CHECK(std::ranges::none_of(files, [](const std::string& file) { return file.starts_with("sample/cells/") && file.ends_with(".scene"); }));
+    // From the package (cooked cells) and from the project (scene text, cooked through the cache): the same World.
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    {
+        const auto stream = [&](AssetRegistry& registry, const fs::path& file, std::shared_ptr<CookCache> cache) {
+            const auto context = asset_property_context(registry);
+            auto input = std::ifstream(file);
+            auto read = read_world(std::string(std::istreambuf_iterator<char>(input), {}));
+            REQUIRE(read);
+            auto persistent = load_scene_file(file.parent_path() / read.document->persistent, context);
+            REQUIRE(persistent);
+            auto started = PlaySession::start(std::move(persistent.document), context, builtin_systems());
+            REQUIRE(started);
+            auto streamer = WorldStreamer(*read.document, cooked_cell_loader(file.parent_path(), cache, context));
+            streamer.set_sources({{100.0, 0.0, 0.0}});
+            const auto& stats = streamer.settle(started.session->world(), &started.session->physics());
+            INFO(stats.last_error);
+            CHECK(stats.cells[size_t(CellState::active)] >= 2);
+            auto text = std::ostringstream{};
+            REQUIRE(write_scene(text, capture_scene(started.session->world()), context).empty());
+            return text.str();
+        };
+        const auto sources = source_registry(device, project);
+        const auto packaged = package_registry(device, bundle);
+        const auto from_project = stream(*sources, world, std::make_shared<CookCache>(scratch.root / "cache"));
+        CHECK(stream(*packaged, content / "levels/sample.world", nullptr) == from_project);
+    }
+    device.shutdown();
+}
+
+TEST_CASE("The packaged player streams a world around its camera", "[package][streaming][gpu]") {
+    const Scratch scratch;
+    const auto project = copy_sample(scratch);
+    save_sample_world(project);
+    const auto bundle = scratch.root / "World Game.app";
+    const auto report = package_project(options_for(project, bundle, {"levels/sample.world"}));
+    INFO(report.error);
+    REQUIRE(report);
+    launch_elsewhere(bundle, scratch.root / "elsewhere", "[Player] streamed", "levels/sample.world");
 }

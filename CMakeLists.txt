@@ -539,6 +539,12 @@ if(BUILD_TESTING)
     add_test(NAME maya_physics COMMAND maya_physics_tests)
     set_tests_properties(maya_physics PROPERTIES LABELS "cpu;physics" TIMEOUT 120)
 
+    add_executable(maya_streaming_tests tests/streaming_tests.cpp)
+    target_link_libraries(maya_streaming_tests PRIVATE MayaStreaming Catch2::Catch2WithMain)
+    maya_target_options(maya_streaming_tests)
+    add_test(NAME maya_streaming COMMAND maya_streaming_tests)
+    set_tests_properties(maya_streaming PROPERTIES LABELS "cpu;streaming" TIMEOUT 120)
+
     add_executable(maya_scripting_tests tests/scripting_tests.cpp tests/precision_tests.cpp)
     target_link_libraries(maya_scripting_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_scripting_tests)
@@ -648,7 +654,7 @@ if(BUILD_TESTING)
             MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}" MAYA_R1_PROJECT="${MAYA_R1_PROJECT}")
         maya_target_options(maya_editor_tests)
         add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]~[r1]")
-        set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 60)
+        set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 120)
         add_test(NAME maya_editor_gpu COMMAND maya_editor_tests "[gpu]~[acceptance]~[visual]")
         set_tests_properties(maya_editor_gpu PROPERTIES LABELS "gpu;editor" TIMEOUT 60
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
@@ -793,7 +799,7 @@ if(BUILD_TESTING)
     # Packages (#1039): packaging on the CPU, and packaged players on Metal, run from outside the checkout.
     if(TARGET maya_package)
         add_executable(maya_package_tests tests/package_tests.cpp)
-        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaRuntime MayaR1 Catch2::Catch2WithMain z)
+        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaRuntime MayaR1 MayaStreaming Catch2::Catch2WithMain z)
         target_include_directories(maya_package_tests PRIVATE tests)
         target_compile_definitions(maya_package_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
             MAYA_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}"
@@ -847,6 +853,11 @@ if(BUILD_TESTING)
             -DEXIT_CODE=0 "-DEXPECT=every run ended in the same state" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
         set_tests_properties(maya_benchmark_smoke_p1_small PROPERTIES LABELS "gpu;smoke;benchmark" TIMEOUT 300
             RUN_SERIAL TRUE ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # The stream workload, small (#1064): cells must stream in and out, every load succeeding.
+        add_test(NAME maya_benchmark_smoke_stream COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/stream.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-stream.json"
+            -DEXIT_CODE=0 "-DEXPECT=crossings" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+        set_tests_properties(maya_benchmark_smoke_stream PROPERTIES LABELS "cpu;smoke;benchmark;streaming" TIMEOUT 300)
         add_test(NAME maya_benchmark_bad_manifest COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
             -DEXIT_CODE=2 "-DEXPECT=expected a maya-benchmark header" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)

@@ -562,3 +562,40 @@ TEST_CASE("On Metal every sampled frame gets its own GPU time, and warmup frames
     CHECK(result.uninstrumented->gpu_passes.empty());
     device.shutdown();
 }
+
+TEST_CASE("The stream workload crosses a generated world while its cells come and go, and records each crossing", "[benchmark][streaming]") {
+    auto parsed = parse(R"(maya-benchmark 1
+name "stream-test"
+workload stream
+grid 4
+count 100
+speed 300
+radii 200 100 16
+cycles 2
+runs 1
+)");
+    INFO(parsed.error);
+    REQUIRE(parsed);
+    CHECK(parsed.manifest.grid == 4);
+    CHECK(parsed.manifest.speed == 300.0);
+    CHECK(parsed.manifest.activate_radius == 100.0);
+    auto device = Device{};
+    const auto result = run(parsed.manifest, device, "renderer");
+    INFO(result.failure);
+    REQUIRE(result.failure.empty());
+    REQUIRE(result.stream_runs.size() == 1);
+    const auto& stream = result.stream_runs.front();
+    CHECK(stream.cells == 16);
+    CHECK(stream.crossings.size() == 2);
+    CHECK(stream.activations > 0);
+    CHECK(stream.deactivations > 0);
+    CHECK(stream.failed == 0);
+    CHECK(stream.frame.size() == stream.streaming.size());
+    const auto json = to_json(result);
+    for (const auto* key : {"\"streaming\":[", "\"crossings\":[", "\"streaming_ms\":{", "\"activations\":"}) {
+        INFO(key);
+        CHECK(has(json, key));
+    }
+    CHECK(has(to_text(result), "crossing 2:"));
+    CHECK_FALSE(parse("maya-benchmark 1\nname \"x\"\nworkload stream\nradii 100 200 0\n")); // activation beyond loading
+}
