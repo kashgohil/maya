@@ -230,6 +230,7 @@ void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesys
     scene->set_validation_context({[this](AssetId id, ReferenceKind kind) {
         return m_assets ? asset_property_context(*m_assets).resolve_asset(id, kind) : ReferenceStatus::missing;
     }});
+    m_visibility.reset(); // before the World it indexes goes
     m_scene = std::move(scene);
     m_scene_path = std::move(path);
     m_renaming.reset();

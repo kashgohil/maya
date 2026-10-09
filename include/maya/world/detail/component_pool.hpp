@@ -2,6 +2,7 @@
 
 #include "maya/world/entity.hpp"
 #include <algorithm>
+#include <atomic>
 #include <concepts>
 #include <span>
 #include <stdexcept>
@@ -18,6 +19,18 @@ concept Component = std::same_as<T, std::remove_cvref_t<T>> && std::is_object_v<
     std::is_nothrow_destructible_v<T>;
 
 namespace detail {
+/// A dense number per component type, given on first use: the World finds a type's pool by it without
+/// hashing the type (#1066: hashing std::type_index was most of a per-entity lookup's cost).
+inline uint32_t next_component_index() noexcept {
+    static std::atomic<uint32_t> next{0};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+template<class T>
+uint32_t component_index() noexcept {
+    static const uint32_t index = next_component_index();
+    return index;
+}
+
 template<class T>
 void reserve_for(std::vector<T>& values, size_t required) {
     if (required <= values.capacity()) return;
@@ -30,6 +43,7 @@ void reserve_for(std::vector<T>& values, size_t required) {
 class ComponentPoolBase {
 public:
     virtual ~ComponentPoolBase() = default;
+    virtual uint32_t index() const noexcept = 0; // component_index of its type
     virtual void prepare(size_t slot_count, size_t additions) = 0;
     virtual void remove(uint32_t slot) noexcept = 0;
     /// Room for slots up to `slot_count` and for `values` components, without growing later.
@@ -47,6 +61,7 @@ protected:
 template<Component T>
 class ComponentPool final : public ComponentPoolBase {
 public:
+    uint32_t index() const noexcept override { return component_index<T>(); }
     void prepare(size_t slot_count, size_t additions) override {
         // All allocations occur before a transaction publishes any changes.
         m_sparse.resize(slot_count, invalid_entity_slot);

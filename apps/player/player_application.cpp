@@ -9,6 +9,7 @@
 #include "maya/core/system_info.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
+#include "maya/renderer/visibility_index.hpp"
 #include "maya/simulation/physics_debug.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "maya/streaming/world_streamer.hpp"
@@ -55,6 +56,8 @@ public:
         if (!assets) return fail(assets.error);
         m_assets = std::move(assets.registry);
         m_assets->set_budgets(project_residency_budgets(project.settings)); // docs/assets.md#residency
+        m_lod_pixels = project_lod_pixels(project.settings);
+        m_cull_pixels = project_cull_pixels(project.settings);
         m_device = &device;
 
         const auto context = asset_property_context(*m_assets);
@@ -195,6 +198,12 @@ public:
         options.skins = &m_skins;
         options.loading = AssetLoading::stream; // frames never wait for assets
         options.origin = view->position; // camera-relative (#1065)
+        // What the view may see, through the session World's visibility index (docs/renderer.md#visibility-and-levels-of-detail).
+        if (!m_visibility || m_visibility->world() != world.token()) m_visibility = std::make_unique<VisibilityIndex>(world);
+        options.view = &*view;
+        options.index = m_visibility.get();
+        options.lod_pixels = m_lod_pixels;
+        options.cull_pixels = m_cull_pixels;
         m_debug.clear(); // debug views are never drawn unless asked for
         m_debug.origin = view->position;
         if (m_options.debug_physics) play_physics_debug(world, m_session->physics(), {all_physics_debug, all_collision_groups}, &poses, m_debug);
@@ -236,6 +245,7 @@ public:
             }
         }
         m_streamer.reset(); // its loads end before the session and the assets they use
+        m_visibility.reset(); // before the World it indexes
         // Device shutdown releases anything still pending after these owners are gone.
         m_renderer.reset();
         m_view.reset();
@@ -262,6 +272,8 @@ private:
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<RenderTarget> m_view;
     std::unique_ptr<WorldStreamer> m_streamer; // when the scene is a world: its cells around the camera
+    std::unique_ptr<VisibilityIndex> m_visibility; // of the session's World: declared after it, so it goes first
+    float m_lod_pixels = 1.0f, m_cull_pixels = 2.0f; // the project's (docs/renderer.md#visibility-and-levels-of-detail)
     math::DVec3 camera_position() const {
         const auto camera = m_session->world().find(*m_session->camera());
         const auto pose = camera ? m_session->world().world_matrix(*camera) : std::nullopt;

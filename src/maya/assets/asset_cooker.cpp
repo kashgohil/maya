@@ -4,9 +4,12 @@
 #include "maya/assets/import_file.hpp"
 #include "maya/assets/texture_cook.hpp"
 #include "maya/core/model_loader.hpp"
+#include <meshoptimizer.h>
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
+#include <limits>
 #include <cstring>
 #include <fstream>
 
@@ -174,7 +177,9 @@ CookResult<CookedMesh> AssetCooker::mesh(const std::filesystem::path& path) {
     if (path.extension() != ".obj") return failure<CookedMesh>(AssetError::invalid_data, "Initial mesh provider expects a triangulated .obj: " + path.string());
     auto parsed = ModelLoader::parse_obj(path.string());
     if (!parsed) return failure<CookedMesh>(AssetError::load_failed, std::move(parsed.diagnostic));
-    return {CookedMesh{std::move(parsed.vertices), std::move(parsed.indices), {}}, {}};
+    auto cooked = CookedMesh{std::move(parsed.vertices), std::move(parsed.indices), {}, {}};
+    build_mesh_lods(cooked);
+    return {std::move(cooked), {}};
 }
 
 CookResult<CookedTexture> AssetCooker::texture(const std::filesystem::path& path) {
@@ -317,7 +322,8 @@ CookResult<CookedMesh> AssetCooker::imported_mesh(const std::filesystem::path& s
     if (!file) return failed(AssetError::invalid_data, error);
     auto geometry = file->primitive(mesh, primitive);
     if (!geometry) return failed(AssetError::invalid_data, geometry.error);
-    auto cooked = CookedMesh{std::move(geometry.vertices), std::move(geometry.indices), std::move(geometry.skin)};
+    auto cooked = CookedMesh{std::move(geometry.vertices), std::move(geometry.indices), std::move(geometry.skin), {}};
+    build_mesh_lods(cooked);
     if (m_cache && key.source != Sha256Digest{}) m_cache->write(key, write_cooked_mesh(cooked));
     return {std::move(cooked), {}};
 }
@@ -432,9 +438,50 @@ CookLimits cook_limits(const GraphicsDevice& device) noexcept {
 }
 
 AssetLoadResult<MeshAsset> upload_mesh(GraphicsDevice& device, const CookedMesh& mesh) {
-    auto loaded = std::make_unique<Mesh>(device, mesh.vertices, mesh.indices, mesh.skin);
+    auto loaded = std::make_unique<Mesh>(device, mesh.vertices, mesh.indices, mesh.skin, mesh.levels);
     if (!loaded->valid()) return {nullptr, {AssetError::load_failed, "GPU mesh allocation failed or the device session is unavailable"}};
-    return {std::make_shared<const MeshAsset>(std::move(loaded), MeshGeometry::from(mesh.vertices, mesh.indices)), {}};
+    // Picking and bounds keep the full mesh's triangles only.
+    const auto full = loaded->levels().front();
+    return {std::make_shared<const MeshAsset>(std::move(loaded),
+                                              MeshGeometry::from(mesh.vertices, std::span(mesh.indices).subspan(full.first_index, full.index_count))),
+            {}};
+}
+
+void build_mesh_lods(CookedMesh& mesh) {
+    mesh.levels.clear();
+    if (mesh.indices.empty() || mesh.vertices.empty()) return;
+    const auto vertex_count = mesh.vertices.size();
+    // Normals and texture coordinates, side by side, for the attribute-aware simplifier.
+    auto attributes = std::vector<float>(vertex_count * 5);
+    for (size_t i = 0; i < vertex_count; ++i) {
+        const auto& v = mesh.vertices[i];
+        std::ranges::copy(std::array{v.normal.x, v.normal.y, v.normal.z, v.uv.x, v.uv.y}, attributes.begin() + ptrdiff_t(i * 5));
+    }
+    constexpr float weights[5] = {0.5f, 0.5f, 0.5f, 1.0f, 1.0f};
+    const auto* positions = &mesh.vertices.front().position.x;
+    // meshoptimizer's errors are relative to the mesh's extent: this turns them into the mesh's units.
+    const auto scale = meshopt_simplifyScale(positions, vertex_count, sizeof(Vertex));
+    auto levels = std::vector<MeshLevel>{{0, uint32_t(mesh.indices.size()), 0.0f}};
+    auto previous = std::vector<uint32_t>(mesh.indices);
+    auto error = 0.0f;
+    auto simplified = std::vector<uint32_t>(previous.size());
+    while (levels.size() < max_mesh_levels) {
+        const auto target = previous.size() / 6 * 3; // about half the triangles
+        if (target < 8 * 3) break;
+        auto level_error = 0.0f;
+        simplified.resize(previous.size());
+        const auto count = meshopt_simplifyWithAttributes(simplified.data(), previous.data(), previous.size(), positions, vertex_count, sizeof(Vertex),
+                                                          attributes.data(), 5 * sizeof(float), weights, 5, nullptr, target, std::numeric_limits<float>::max(),
+                                                          meshopt_SimplifyPermissive | meshopt_SimplifyPrune, &level_error);
+        if (count < 8 * 3 || count > previous.size() * 9 / 10) break; // too small, or it no longer shrinks
+        // Each level is simplified from the one before, so its error is at most the sum of theirs.
+        error += level_error * scale;
+        simplified.resize(count);
+        levels.push_back({uint32_t(mesh.indices.size()), uint32_t(count), error});
+        mesh.indices.insert(mesh.indices.end(), simplified.begin(), simplified.end());
+        previous = simplified;
+    }
+    if (levels.size() > 1) mesh.levels = std::move(levels);
 }
 AssetLoadResult<TextureAsset> upload_texture(GraphicsDevice& device, const CookedTexture& cooked, const std::string& label) {
     auto texture = std::make_unique<Texture>(device, cooked.image.desc(label), cooked.image.data);
@@ -472,6 +519,12 @@ std::vector<std::byte> write_cooked_mesh(const CookedMesh& mesh) {
     put(out, uint64_t(mesh.skin.size()));
     const auto* skin = reinterpret_cast<const std::byte*>(mesh.skin.data());
     out.insert(out.end(), skin, skin + mesh.skin.size() * sizeof(SkinVertex));
+    put(out, uint64_t(mesh.levels.size())); // levels of detail (#1066): first index, index count, error
+    for (const auto& level : mesh.levels) {
+        put(out, level.first_index);
+        put(out, level.index_count);
+        put(out, level.error);
+    }
     return out;
 }
 std::optional<CookedMesh> read_cooked_mesh(std::span<const std::byte> in) {
@@ -485,9 +538,21 @@ std::optional<CookedMesh> read_cooked_mesh(std::span<const std::byte> in) {
     std::memcpy(mesh.vertices.data(), in.data(), vertices * sizeof(Vertex));
     std::memcpy(mesh.indices.data(), in.data() + vertices * sizeof(Vertex), indices * sizeof(uint32_t));
     in = in.subspan(vertices * sizeof(Vertex) + indices * sizeof(uint32_t));
-    if (!take(in, skinned) || (skinned != 0 && skinned != vertices) || in.size() != skinned * sizeof(SkinVertex)) return std::nullopt;
+    if (!take(in, skinned) || (skinned != 0 && skinned != vertices) || in.size() < skinned * sizeof(SkinVertex)) return std::nullopt;
     mesh.skin.resize(skinned);
     if (skinned) std::memcpy(mesh.skin.data(), in.data(), skinned * sizeof(SkinVertex));
+    in = in.subspan(skinned * sizeof(SkinVertex));
+    uint64_t levels = 0;
+    constexpr auto level_bytes = 2 * sizeof(uint32_t) + sizeof(float);
+    if (!take(in, levels) || levels > max_mesh_levels || in.size() != levels * level_bytes) return std::nullopt;
+    for (uint64_t i = 0; i < levels; ++i) {
+        auto level = MeshLevel{};
+        if (!take(in, level.first_index) || !take(in, level.index_count) || !take(in, level.error)) return std::nullopt;
+        if (level.index_count == 0 || level.index_count % 3 != 0 || uint64_t(level.first_index) + level.index_count > indices ||
+            !std::isfinite(level.error) || level.error < 0.0f)
+            return std::nullopt;
+        mesh.levels.push_back(level);
+    }
     if (std::ranges::any_of(mesh.indices, [&](uint32_t i) { return i >= vertices; })) return std::nullopt;
     return mesh;
 }

@@ -32,9 +32,15 @@ struct CookLimits {
 /// joints and weights.
 struct CookedMesh {
     std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+    std::vector<uint32_t> indices; // every level's triangles, level 0 (the full mesh) first
     std::vector<SkinVertex> skin; // empty, or one per vertex
+    std::vector<MeshLevel> levels; // ranges of `indices`; empty: one level, all of them
 };
+/// Simplifies `mesh`'s triangles into levels of detail (#1066, docs/assets.md#mesh-lod): up to five more
+/// levels after the full mesh, each about half the one before, with meshoptimizer (normals weighted 0.5 and
+/// texture coordinates 1; permissive, pruning), each recording its error in metres. Stops early when a
+/// level would not shrink or would have fewer than 8 triangles. Deterministic: the same mesh, the same levels.
+void build_mesh_lods(CookedMesh& mesh);
 /// A texture's mip chain in its GPU format, how it is sampled, and its role.
 struct CookedTexture {
     TextureImage image;

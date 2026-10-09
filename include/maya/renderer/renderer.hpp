@@ -41,6 +41,8 @@ struct RenderViewReport {
     size_t drawn = 0; // instances inside the view
     size_t culled = 0; // instances outside it
     size_t batches = 0; // the view pass's instanced draws
+    std::array<size_t, max_mesh_levels> levels{}; // instances drawn in the view by level of detail (#1066)
+    size_t shadow_passes = 0, shadow_casters = 0; // shadow maps drawn, and the instances drawn into them in all
 };
 /// What lit the last view (docs/renderer.md#lights): lights beyond the limits are reported here, never
 /// silently dropped. The editor shows it in Diagnostics.

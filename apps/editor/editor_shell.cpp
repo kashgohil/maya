@@ -853,9 +853,18 @@ void EditorShell::draw_diagnostics() {
             row("Viewport", m_viewport_request.empty() ? std::string("hidden")
                 : format("%u \xC3\x97 %u px   %.0f\xC3\x97   %llu alloc%s", m_viewport_request.width, m_viewport_request.height,
                          scale, static_cast<unsigned long long>(m_viewport.allocations()), m_viewport_error ? "   error" : ""));
-            row("Scene", format("%zu drawn   %zu hidden   %zu skipped   %zu loading", m_extraction.mesh_renderers -
-                                m_extraction.hidden - m_extraction.skipped - m_extraction.pending, m_extraction.hidden,
-                                m_extraction.skipped, m_extraction.pending));
+            row("Scene", format("%zu objects   %zu hidden   %zu skipped   %zu loading", m_extraction.mesh_renderers,
+                                m_extraction.hidden, m_extraction.skipped, m_extraction.pending));
+            // What the visibility index left out, what extraction culled by distance and size, and what the view drew
+            // (docs/renderer.md#visibility-and-levels-of-detail).
+            const auto& seen = m_view_report;
+            row("Visibility", format("%zu visited   %zu outside   %zu far   %zu small   %zu in view", m_extraction.visited,
+                                     m_extraction.index_culled, m_extraction.culled_distance, m_extraction.culled_small, seen.drawn));
+            auto detail = std::string{};
+            for (size_t level = 0; level < seen.levels.size(); ++level)
+                detail += format("%sL%zu %zu", level ? "   " : "", level, seen.levels[level]);
+            row("Detail", detail);
+            row("Shadows", format("%zu casters   %zu maps", seen.shadow_casters, seen.shadow_passes));
             row("Loading", format("%zu in flight   %zu ready   %.2f ms   %.1f MiB   %llu waits in frames", m_load_stats.in_flight,
                                   m_load_stats.prepared, m_load_stats.last_ms, double(m_load_stats.last_bytes) / (1024.0 * 1024.0),
                                   static_cast<unsigned long long>(m_load_stats.waited_in_frames)));
@@ -1084,6 +1093,14 @@ void EditorShell::render_viewport() {
     options.poses = &poses;
     options.skins = &m_skin_bindings;
     options.origin = view->position; // camera-relative (#1065): what is near the camera is precise
+    // What the view may see, through the drawn World's visibility index (docs/renderer.md#visibility-and-levels-of-detail).
+    if (!m_visibility || m_visibility->world() != world.token()) m_visibility = std::make_unique<VisibilityIndex>(world);
+    options.view = &*view;
+    options.index = m_visibility.get();
+    if (m_project) {
+        options.lod_pixels = project_lod_pixels(m_project->settings);
+        options.cull_pixels = project_cull_pixels(m_project->settings);
+    }
     // Physics debug views: from the play session's physics world while playing, else from the collider
     // components. Contacts and queries are captured only while they are shown.
     m_debug_draw.clear();
@@ -1126,6 +1143,7 @@ void EditorShell::render_viewport() {
         m_frame_problems.push_back({RenderIssue::shadow_limit, id, {}, "'" + m_scene->display_name(id) + "' is drawn without shadows in this view: at most " +
                                     std::to_string(max_shadowed_spot_lights) + " spot lights cast them"});
     m_lights = {lights.local, lights.dropped.size(), lights.unshadowed.size(), lights.sun.has_value()};
+    m_view_report = m_renderer.last_view();
     if (auto error = rendered) {
         m_viewport_error = true;
         m_log.add(DiagnosticSource::renderer, error.message, m_frame);

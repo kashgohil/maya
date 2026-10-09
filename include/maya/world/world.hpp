@@ -4,6 +4,7 @@
 #include "maya/world/spatial.hpp"
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <tuple>
@@ -25,6 +26,12 @@ const char* error_name(WorldError error) noexcept;
 struct WorldEdit {
     EntityId id;
     StageGroup origin = 0;
+};
+
+/// What a change log collected (World::take_changes): the entities touched, or `all` when it overflowed.
+struct WorldChanges {
+    std::vector<EntityHandle> entities;
+    bool all = false;
 };
 
 struct WorldCommitResult {
@@ -93,6 +100,20 @@ public:
         if (!on) m_edits.clear();
     }
     std::vector<WorldEdit> take_edits() { return std::exchange(m_edits, {}); }
+    // Change logs (#1066): an owner that mirrors entities (a spatial index) learns which ones commits,
+    // publish, and stage touched (created, destroyed, a component added, replaced, or removed, moved, or
+    // reparented; not their descendants, which a move moves too) without scanning the World. Each log is
+    // read by one owner.
+    /// Opens a log that collects from now on, and returns its number.
+    uint32_t open_change_log() const;
+    /// Expires when the World is destroyed: a reader that may outlive it closes its log only while it lives.
+    std::weak_ptr<const bool> lifetime() const noexcept { return m_lifetime; }
+    void close_change_log(uint32_t log) const noexcept;
+    /// What the log collected since the last call (an entity may appear more than once), as handles that
+    /// may be dead or staged by now. A log that would hold more entries than the World has entity slots
+    /// (at least 1,024) stops collecting and reports `all` instead: its reader starts again from the World,
+    /// which costs no more than reading that many changes, and a log no one reads stays bounded.
+    WorldChanges take_changes(uint32_t log) const;
     /// Room for this many entities, visible or staged, before a commit must grow the World's tables:
     /// growing them costs time in proportion to the entities already there.
     void reserve(size_t entities);
@@ -186,15 +207,15 @@ private:
     };
     template<Component T> auto find_pool() {
         using Ref = std::optional<std::reference_wrapper<detail::ComponentPool<T>>>;
-        const auto it = m_pools.find(typeid(T));
-        if (it == m_pools.end()) return Ref{};
-        return Ref{static_cast<detail::ComponentPool<T>&>(*it->second)};
+        const auto index = detail::component_index<T>();
+        if (index >= m_pool_by_index.size() || !m_pool_by_index[index]) return Ref{};
+        return Ref{static_cast<detail::ComponentPool<T>&>(*m_pool_by_index[index])};
     }
     template<Component T> auto find_pool() const {
         using Ref = std::optional<std::reference_wrapper<const detail::ComponentPool<T>>>;
-        const auto it = m_pools.find(typeid(T));
-        if (it == m_pools.end()) return Ref{};
-        return Ref{static_cast<const detail::ComponentPool<T>&>(*it->second)};
+        const auto index = detail::component_index<T>();
+        if (index >= m_pool_by_index.size() || !m_pool_by_index[index]) return Ref{};
+        return Ref{static_cast<const detail::ComponentPool<T>&>(*m_pool_by_index[index])};
     }
     template<Component... Ts, class Self, class F>
     static void each_impl(Self& world, F& callback) {
@@ -236,7 +257,17 @@ private:
     std::vector<EntityHandle> m_journal;
     bool m_edits_on = false;
     std::vector<WorldEdit> m_edits;
+    // Bookkeeping for readers, not the World's state: opening, reading, and closing a log is const.
+    struct ChangeLog {
+        std::vector<EntityHandle> entities;
+        bool all = false; // it overflowed: everything may have changed
+    };
+    mutable std::vector<std::optional<ChangeLog>> m_change_logs; // by number - 1; empty when closed
+    std::shared_ptr<const bool> m_lifetime = std::make_shared<const bool>(true);
+    void note_change(EntityHandle entity) noexcept; // into every open log: capacity reserved beforehand
+    void reserve_changes(size_t incoming); // before noting: room in each log, or it overflows to `all`
     std::unordered_map<EntityId, EntityHandle, PersistentIdHash> m_ids;
     std::unordered_map<std::type_index, std::unique_ptr<detail::ComponentPoolBase>> m_pools;
+    std::vector<detail::ComponentPoolBase*> m_pool_by_index; // m_pools by component_index, for find_pool
 };
 } // namespace maya

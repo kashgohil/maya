@@ -23,11 +23,23 @@ bool Frustum::reaches(const math::Vec3& center, float radius) const noexcept {
     return true;
 }
 
+Containment Frustum::classify(const math::Vec3& low, const math::Vec3& high) const noexcept {
+    auto inside = true;
+    for (const auto& p : planes) {
+        // The box's corner farthest along the plane's normal, and the one farthest against it.
+        const auto far = math::Vec3{p.x >= 0 ? high.x : low.x, p.y >= 0 ? high.y : low.y, p.z >= 0 ? high.z : low.z};
+        const auto near = math::Vec3{p.x >= 0 ? low.x : high.x, p.y >= 0 ? low.y : high.y, p.z >= 0 ? low.z : high.z};
+        if (p.x * far.x + p.y * far.y + p.z * far.z + p.w < 0) return Containment::outside;
+        if (p.x * near.x + p.y * near.y + p.z * near.z + p.w < 0) inside = false;
+    }
+    return inside ? Containment::inside : Containment::intersects;
+}
+
 namespace {
 /// Groups `candidates` by `key`, appending them to the list's order: groups in ascending key order, and
 /// instances within a group in their order in `candidates`. A counting sort, linear in the instances.
 template<class Key>
-std::vector<DrawBatch> group(const RenderSnapshot& snapshot, const std::vector<uint32_t>& candidates, Key&& key,
+std::vector<DrawBatch> group(const RenderSnapshot& snapshot, const std::vector<uint32_t>& candidates, Key&& key, bool shadow,
                              DrawList& list, BatchScratch& scratch) {
     auto& groups = scratch.groups;
     auto& found = scratch.group_list;
@@ -55,7 +67,7 @@ std::vector<DrawBatch> group(const RenderSnapshot& snapshot, const std::vector<u
     auto next = uint32_t(list.order.size());
     for (const auto g : sorted) {
         const auto& instance = snapshot.instances[found[g].representative];
-        batches.push_back({next, found[g].count, instance.mesh, instance.material});
+        batches.push_back({next, found[g].count, instance.mesh, instance.material, shadow ? instance.shadow_level : instance.level});
         found[g].next = next;
         next += found[g].count;
     }
@@ -80,12 +92,14 @@ ViewBatches plan_view_batches(const RenderSnapshot& snapshot, const RenderView& 
             continue;
         }
         (snapshot.materials[instance.material].alpha_mode == AlphaMode::blend ? blended : visible).push_back(i);
+        ++result.levels[std::min<size_t>(instance.level, max_mesh_levels - 1)];
     }
     result.drawn = visible.size() + blended.size();
-    // Single-sided before double-sided (their pipelines differ), then by material, then by mesh.
+    // Single-sided before double-sided (their pipelines differ), then by material, then by mesh and level.
     result.opaque = group(snapshot, visible, [&](const RenderInstance& instance) {
-        return uint64_t(snapshot.materials[instance.material].double_sided) << 63 | uint64_t(instance.material) << 32 | instance.mesh;
-    }, list, scratch);
+        return uint64_t(snapshot.materials[instance.material].double_sided) << 63 | uint64_t(instance.material) << 32 |
+               uint64_t(instance.mesh) << 3 | instance.level;
+    }, false, list, scratch);
     // Blended surfaces back to front by their origins, as before; neighbours of one mesh and material share a draw.
     auto& distance = scratch.distances;
     distance.resize(snapshot.instances.size());
@@ -97,8 +111,9 @@ ViewBatches plan_view_batches(const RenderSnapshot& snapshot, const RenderView& 
     for (const auto i : blended) {
         const auto& instance = snapshot.instances[i];
         auto& batches = result.blended;
-        if (batches.empty() || batches.back().mesh != instance.mesh || batches.back().material != instance.material)
-            batches.push_back({uint32_t(list.order.size()), 0, instance.mesh, instance.material});
+        if (batches.empty() || batches.back().mesh != instance.mesh || batches.back().material != instance.material ||
+            batches.back().level != instance.level)
+            batches.push_back({uint32_t(list.order.size()), 0, instance.mesh, instance.material, instance.level});
         list.order.push_back(i);
         ++batches.back().count;
     }
@@ -115,8 +130,9 @@ std::vector<DrawBatch> plan_shadow_batches(const RenderSnapshot& snapshot, const
     }
     return group(snapshot, casters, [&](const RenderInstance& instance) {
         const auto masked = snapshot.materials[instance.material].alpha_mode == AlphaMode::mask;
-        return masked ? uint64_t(1) << 63 | uint64_t(instance.material) << 32 | instance.mesh : uint64_t(instance.mesh);
-    }, list, scratch);
+        const auto mesh = uint64_t(instance.mesh) << 3 | instance.shadow_level;
+        return masked ? uint64_t(1) << 63 | uint64_t(instance.material) << 32 | mesh : mesh;
+    }, true, list, scratch);
 }
 
 } // namespace maya

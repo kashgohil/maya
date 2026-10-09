@@ -59,7 +59,7 @@ struct ShadowConstants {
 struct DrawConstants {
     math::Mat4 model;
     math::Vec4 normal_matrix[3]; // columns; w unused
-    uint32_t skin[4]; // x the first joint in the palette, y the skin's joints (0: not skinned); the rest is padding
+    uint32_t skin[4]; // x the first joint in the palette, y the skin's joints (0: not skinned), z the level of detail; w padding
 };
 /// Uploaded when a draw's material differs from the previous draw's; read by the fragment stage only, so
 /// per-draw constants do not make Metal re-emit the fragment stage's maps with every draw.

@@ -4,6 +4,7 @@
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/renderer/renderer.hpp"
+#include "maya/renderer/visibility_index.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "maya/simulation/script_assets.hpp"
 #include "maya/world/spatial.hpp"
@@ -138,6 +139,8 @@ struct Stage {
     const std::function<void()>* poll = nullptr; // between frames, untimed
     DebugView debug_view = DebugView::none;
     SkinBindingCache& skins; // skins' joints between frames, as the player keeps them
+    std::unique_ptr<VisibilityIndex>& visibility; // of the World being drawn, as the player keeps one (#1066)
+    float lod_pixels = 1.0f, cull_pixels = 2.0f; // the project's, as the player reads them (docs/projects.md)
 };
 
 struct FrameSample {
@@ -145,6 +148,9 @@ struct FrameSample {
     double finalize = 0.0; // the registry's update: finalizing loads
     bool loading = false; // something the view draws was still loading
     size_t skipped = 0, pending = 0, pending_textures = 0; // the snapshot's
+    // What the visibility index and extraction's culls left out, and the levels drawn (#1066): the snapshot's.
+    size_t visited = 0, index_culled = 0, culled_distance = 0, culled_small = 0;
+    std::array<size_t, max_mesh_levels> levels{};
 };
 /// The systems each workload plays: A1 every system of play, so its clips play; the others the built-in ones.
 std::vector<std::unique_ptr<SimulationSystem>> systems_for(const Manifest& manifest, AssetRegistry& registry) {
@@ -190,12 +196,23 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     options.skins = &stage.skins;
     options.loading = AssetLoading::stream; // frames never wait for assets
     options.origin = view->position; // camera-relative (#1065)
+    // What the view may see, through the World's visibility index (docs/renderer.md#visibility-and-levels-of-detail).
+    if (!stage.visibility || stage.visibility->world() != world.token()) stage.visibility = std::make_unique<VisibilityIndex>(world);
+    options.view = &*view;
+    options.index = stage.visibility.get();
+    options.lod_pixels = stage.lod_pixels;
+    options.cull_pixels = stage.cull_pixels;
     const auto snapshot = extract_render_snapshot(world, stage.registry, options);
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
     sample.loading = snapshot.stats.pending > 0 || snapshot.stats.pending_textures > 0 || snapshot.stats.environment_pending;
     sample.skipped = snapshot.stats.skipped;
     sample.pending = snapshot.stats.pending;
     sample.pending_textures = snapshot.stats.pending_textures;
+    sample.visited = snapshot.stats.visited;
+    sample.index_culled = snapshot.stats.index_culled;
+    sample.culled_distance = snapshot.stats.culled_distance;
+    sample.culled_small = snapshot.stats.culled_small;
+    sample.levels = snapshot.stats.levels;
     lap(sample.extract);
     if (auto error = stage.renderer.render(snapshot, *view, stage.target)) throw std::runtime_error(error.message);
     if (stage.present)
@@ -262,9 +279,10 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
                 samples.present_reported[present.frame - first_serial] = true;
             }
     };
-    auto most = FrameSample{};
+    auto most = FrameSample{}, last = FrameSample{};
     for (uint32_t i = 0; i < manifest.samples; ++i) {
         const auto frame = run_frame(stage, session, camera, instrumented);
+        last = frame;
         most.skipped = std::max(most.skipped, frame.skipped);
         most.pending = std::max(most.pending, frame.pending);
         most.pending_textures = std::max(most.pending_textures, frame.pending_textures);
@@ -311,6 +329,11 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
         counters.skipped = most.skipped;
         counters.pending = most.pending;
         counters.pending_textures = most.pending_textures;
+        counters.visited = last.visited;
+        counters.index_culled = last.index_culled;
+        counters.culled_distance = last.culled_distance;
+        counters.culled_small = last.culled_small;
+        counters.levels = last.levels;
         const auto& lights = stage.renderer.last_lights();
         counters.local_lights = lights.local;
         counters.dropped_lights = lights.dropped.size();
@@ -923,7 +946,9 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         if (manifest.present && device.surface_format() == Format::undefined)
             throw std::runtime_error("'present on' needs a window; this device has no surface");
         auto skins = SkinBindingCache{};
-        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view, skins};
+        auto visibility = std::unique_ptr<VisibilityIndex>{};
+        const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view, skins,
+                                 visibility, project_lod_pixels(opened.project.settings), project_cull_pixels(opened.project.settings)};
         // The warmed empty session: the device, the project's catalog, the view target, and what the
         // renderer keeps (its texture placeholder), with no content.
         if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
@@ -1199,6 +1224,14 @@ std::string to_json(const Result& r) {
     json.field("pending_textures", c.pending_textures);
     json.field("spinning", c.spinning);
     json.field("centers_in_view", c.centers_in_view);
+    json.field("visited", c.visited);
+    json.field("index_culled", c.index_culled);
+    json.field("culled_distance", c.culled_distance);
+    json.field("culled_small", c.culled_small);
+    json.key("levels");
+    json.open('[');
+    for (const auto count : c.levels) json.value(count);
+    json.close(']');
     json.field("draws_per_frame", c.draws);
     json.field("instances_per_frame", c.instances);
     json.field("triangles_per_frame", c.triangles);
@@ -1515,6 +1548,12 @@ std::string to_text(const Result& r) {
     if (!r.runs.empty())
         out << "  " << r.counters.draws << " draws, " << r.counters.triangles << " triangles, " << r.counters.unique_meshes
             << " unique meshes, " << r.counters.centers_in_view << " of " << r.counters.mesh_renderers << " drawn in view\n";
+    if (!r.runs.empty()) {
+        out << "  " << r.counters.visited << " visited, " << r.counters.index_culled << " left out by the index, "
+            << r.counters.culled_distance << " beyond their distance, " << r.counters.culled_small << " too small; by level";
+        for (const auto count : r.counters.levels) out << ' ' << count;
+        out << '\n';
+    }
     if (!r.runs.empty() && (r.counters.local_lights > 0 || r.counters.shadow_maps > 0))
         out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
             << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "

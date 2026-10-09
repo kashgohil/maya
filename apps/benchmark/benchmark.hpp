@@ -131,6 +131,11 @@ struct RejectedCase {
 struct Counters {
     size_t entities = 0, mesh_renderers = 0, spinning = 0;
     size_t centers_in_view = 0; // instances the last view drew: inside its frustum by their bounds (#1025)
+    // The last sampled frame's extraction (#1066, docs/renderer.md#visibility-and-levels-of-detail): mesh renderers the visibility
+    // index returned, those it left out, those culled beyond their max_distance or under cull_pixels, and the
+    // instances extracted at each level of detail.
+    size_t visited = 0, index_culled = 0, culled_distance = 0, culled_small = 0;
+    std::array<size_t, max_mesh_levels> levels{};
     // The most in any sampled frame (#1062): instances not drawn because they cannot be, or are still
     // loading, and textures drawn as their materials' factors while they load. 0 behind a loading screen.
     size_t skipped = 0, pending = 0, pending_textures = 0;

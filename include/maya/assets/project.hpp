@@ -49,7 +49,14 @@ struct ProjectSettings {
     std::array<std::optional<uint32_t>, resident_setting_keys.size()> resident;
     /// The cook cache's size in MiB past which opening the project prunes it; 4 GiB when unset, 0 for never.
     std::optional<uint32_t> cook_cache_limit;
+    /// Visibility (#1066, docs/renderer.md#visibility-and-levels-of-detail): a scale on the error a level of detail may show
+    /// (0.25 to 8; 2 draws coarser levels nearer), and the projected size in pixels below which instances
+    /// are not drawn (0 to 64; 0 draws them all). 1 and 2 when unset.
+    std::optional<float> lod_bias, cull_pixels;
 };
+/// The pixels of error a level of detail may show (1 × lod_bias), and the culled size (cull_pixels).
+float project_lod_pixels(const ProjectSettings& project) noexcept;
+float project_cull_pixels(const ProjectSettings& project) noexcept;
 struct ProjectSettingsResult {
     ProjectSettings settings;
     std::string error; // empty on success

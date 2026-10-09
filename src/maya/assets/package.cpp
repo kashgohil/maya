@@ -43,7 +43,7 @@ Sha256Digest package_content_digest(const std::vector<PackageFile>& files) {
 }
 
 void write_package_manifest(std::ostream& output, const PackageManifest& manifest) {
-    output << "maya-package 1\n"
+    output << "maya-package 2\n" // 2: cooked meshes carry levels of detail (#1066)
            << "name " << std::quoted(manifest.name) << '\n'
            << "build " << std::quoted(manifest.build) << '\n'
            << "project " << std::quoted(manifest.project.generic_string()) << '\n';
@@ -57,7 +57,7 @@ PackageManifestResult read_package_manifest(std::istream& input) {
     auto result = PackageManifestResult{};
     auto& manifest = result.manifest;
     auto line = std::string{};
-    if (!std::getline(input, line) || line != "maya-package 1") {
+    if (!std::getline(input, line) || line != "maya-package 2") {
         result.error = "not a Maya package manifest, or another version";
         return result;
     }

@@ -1,4 +1,7 @@
 #include "maya/renderer/render_snapshot.hpp"
+#include "maya/renderer/draw_batches.hpp"
+#include "maya/renderer/light_plan.hpp"
+#include "maya/renderer/visibility_index.hpp"
 #include "maya/assets/animation.hpp"
 #include "maya/world/name_path.hpp"
 #include <algorithm>
@@ -361,8 +364,74 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
         if (entity.slot >= skin_of.size()) skin_of.resize(size_t(entity.slot) + 1);
         skin_of[entity.slot] = component.skin.id;
     });
-    world.for_each<MeshRendererComponent>([&](EntityHandle entity, const MeshRendererComponent& renderer) {
-        ++snapshot.stats.mesh_renderers;
+    world.for_each<LightComponent>([&](EntityHandle entity, const LightComponent& light) {
+        if (!light.enabled) return;
+        const auto id = *world.persistent_id(entity);
+        const auto matrix = world_matrix(entity);
+        if (!matrix)
+            return extraction.report(RenderIssue::missing_transform, id, {},
+                "Light " + id_text(id) + " ignored: a light needs a valid transform");
+        const auto z = math::Vec3{matrix->at(0, 2), matrix->at(1, 2), matrix->at(2, 2)}.normalized();
+        const auto shadow = RenderShadow{light.cast_shadows, light.shadow_bias, light.shadow_normal_bias};
+        if (light.kind == LightKind::directional) {
+            snapshot.lights.push_back({id, z, light.color * light.intensity, shadow, light.shadow_distance});
+            return;
+        }
+        auto local = RenderLocalLight{id, light.kind, {matrix->at(0, 3), matrix->at(1, 3), matrix->at(2, 3)}, -z,
+                                      light.color * light.intensity, light.range};
+        if (light.kind == LightKind::spot) {
+            local.cos_inner = std::cos(light.inner_cone * 0.5f);
+            local.cos_outer = std::cos(light.outer_cone * 0.5f);
+            local.shadow = shadow;
+        }
+        snapshot.local_lights.push_back(local);
+    });
+    // Deterministic selection when there are more lights than the shader supports.
+    std::ranges::sort(snapshot.lights, {}, &RenderDirectionalLight::entity);
+    std::ranges::sort(snapshot.local_lights, {}, &RenderLocalLight::entity);
+    if (snapshot.local_lights.size() > max_extracted_local_lights) {
+        for (auto it = snapshot.local_lights.begin() + max_extracted_local_lights; it != snapshot.local_lights.end(); ++it)
+            extraction.report(RenderIssue::light_limit, it->entity, {}, "Light " + id_text(it->entity) + " ignored: at most " +
+                std::to_string(max_extracted_local_lights) + " point and spot lights are extracted");
+        snapshot.local_lights.resize(max_extracted_local_lights);
+    }
+    if (snapshot.lights.size() > max_directional_lights) {
+        for (auto it = snapshot.lights.begin() + max_directional_lights; it != snapshot.lights.end(); ++it)
+            extraction.report(RenderIssue::light_limit, it->entity, {}, "Light " + id_text(it->entity) +
+                " ignored: at most " + std::to_string(max_directional_lights) + " directional lights are rendered");
+        snapshot.lights.resize(max_directional_lights);
+    }
+    // The sun: the first directional light that casts shadows gets the cascades; the rest are drawn
+    // without shadows.
+    auto shadowed = false;
+    for (auto& light : snapshot.lights) {
+        if (!light.shadow.cast) continue;
+        if (shadowed) {
+            light.shadow.cast = false;
+            extraction.report(RenderIssue::shadow_limit, light.entity, {}, "Light " + id_text(light.entity) +
+                " is drawn without shadows: only one directional light casts them");
+        }
+        shadowed = true;
+    }
+    // What the view may see (docs/renderer.md#visibility-and-levels-of-detail): with a view, its distance
+    // and size culls and its levels of detail; with an index too, only what the index says the view and its
+    // shadow maps may reach.
+    const auto* view = options.view;
+    auto eye = math::Vec3{0.0f};
+    auto pixels_per_metre = 0.0f; // projected size at one metre (perspective) or anywhere (orthographic)
+    auto perspective = true;
+    if (view) {
+        const auto frame = view_frame(snapshot, *view);
+        eye = frame.eye;
+        const auto& projection = frame.matrices.projection;
+        perspective = projection.at(3, 3) == 0.0f;
+        pixels_per_metre = projection.at(1, 1) * float(view->height) * 0.5f;
+    }
+    // A size in metres at a distance, in pixels on screen.
+    const auto on_screen = [&](float size, float distance) {
+        return perspective ? size * pixels_per_metre / std::max(distance, 1e-3f) : size * pixels_per_metre;
+    };
+    const auto extract = [&](EntityHandle entity, const MeshRendererComponent& renderer) {
         if (!renderer.visible || !renderer.mesh.valid()) {
             ++snapshot.stats.hidden;
             return;
@@ -430,58 +499,87 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
                     id_text(skin.id) + " is unavailable: " + problem);
             }
         }
-        snapshot.instances.push_back(std::move(instance));
-    });
 
-    world.for_each<LightComponent>([&](EntityHandle entity, const LightComponent& light) {
-        if (!light.enabled) return;
-        const auto id = *world.persistent_id(entity);
-        const auto matrix = world_matrix(entity);
-        if (!matrix)
-            return extraction.report(RenderIssue::missing_transform, id, {},
-                "Light " + id_text(id) + " ignored: a light needs a valid transform");
-        const auto z = math::Vec3{matrix->at(0, 2), matrix->at(1, 2), matrix->at(2, 2)}.normalized();
-        const auto shadow = RenderShadow{light.cast_shadows, light.shadow_bias, light.shadow_normal_bias};
-        if (light.kind == LightKind::directional) {
-            snapshot.lights.push_back({id, z, light.color * light.intensity, shadow, light.shadow_distance});
-            return;
+        if (view && std::isfinite(instance.bounds_radius)) {
+            // Distance to the nearest point of its bounds: within them, nothing is culled and the full mesh drawn.
+            const auto distance = (instance.bounds_center - eye).length() - instance.bounds_radius;
+            if (renderer.max_distance > 0.0f && distance > renderer.max_distance) {
+                ++snapshot.stats.culled_distance;
+                return;
+            }
+            if (options.cull_pixels > 0.0f && distance > 0.0f && on_screen(2.0f * instance.bounds_radius, distance) < options.cull_pixels) {
+                ++snapshot.stats.culled_small;
+                return;
+            }
+            // The coarsest level whose error is under lod_pixels; once drawn, finer only above it and coarser
+            // only below three quarters of it, so a view at a threshold does not flicker between levels.
+            const auto levels = snapshot.meshes[*mesh].value().mesh().levels();
+            if (levels.size() > 1 && distance > 0.0f) {
+                const auto& m = *matrix;
+                const auto column = [&](int c) { return math::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}.length(); };
+                const auto scale = std::max({column(0), column(1), column(2)});
+                const auto error = [&](size_t level) { return on_screen(levels[level].error * scale, distance); };
+                auto coarsest = size_t{0};
+                while (coarsest + 1 < levels.size() && error(coarsest + 1) <= options.lod_pixels) ++coarsest;
+                auto level = coarsest;
+                if (const auto previous = options.index ? options.index->level(entity) : std::nullopt) {
+                    level = std::min<size_t>(*previous, levels.size() - 1);
+                    if (error(level) > options.lod_pixels) level = coarsest;
+                    else
+                        while (level + 1 < levels.size() && error(level + 1) < 0.75f * options.lod_pixels) ++level;
+                }
+                instance.level = uint8_t(level);
+                instance.shadow_level = uint8_t(std::min(level + 1, levels.size() - 1));
+            }
         }
-        auto local = RenderLocalLight{id, light.kind, {matrix->at(0, 3), matrix->at(1, 3), matrix->at(2, 3)}, -z,
-                                      light.color * light.intensity, light.range};
-        if (light.kind == LightKind::spot) {
-            local.cos_inner = std::cos(light.inner_cone * 0.5f);
-            local.cos_outer = std::cos(light.outer_cone * 0.5f);
-            local.shadow = shadow;
+        if (options.index) options.index->set_level(entity, instance.level);
+        ++snapshot.stats.levels[instance.level];
+        snapshot.instances.push_back(std::move(instance));
+    };
+    if (options.index && view) {
+        // The index, up to date; then what the view, the sun's cascades, and the shadowed spot lights may
+        // reach, and what is posed between ticks (its index bounds are the World's pose).
+        if (options.index->world() != world.token()) throw std::invalid_argument("extract_render_snapshot: the index is another World's");
+        options.index->update(world, assets);
+        const auto plan = plan_lights(snapshot, *view);
+        auto volumes = std::vector<Frustum>{Frustum::from(view_frame(snapshot, *view).matrices.view_projection)};
+        // A cascade reaches up to the sun: the renderer fits its depth to the highest caster
+        // (docs/renderer.md#shadows), so its plane on the light's side does not bound what casts into it.
+        if (plan.sun)
+            for (const auto& cascade : plan.cascades) {
+                auto volume = Frustum::from(cascade.view_projection);
+                volume.planes[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                volumes.push_back(volume);
+            }
+        for (const auto& spot : plan.spot_shadows) volumes.push_back(Frustum::from(spot.view_projection));
+        auto candidates = std::vector<EntityHandle>{};
+        options.index->query(volumes, snapshot.origin, candidates);
+        // What it returned is alive, visible, and listed once, with its renderer as the update found it.
+        for (const auto entity : candidates) {
+            ++snapshot.stats.visited;
+            extract(entity, options.index->renderer(entity));
         }
-        snapshot.local_lights.push_back(local);
-    });
-    // Deterministic selection when there are more lights than the shader supports.
-    std::ranges::sort(snapshot.lights, {}, &RenderDirectionalLight::entity);
-    std::ranges::sort(snapshot.local_lights, {}, &RenderLocalLight::entity);
-    if (snapshot.local_lights.size() > max_extracted_local_lights) {
-        for (auto it = snapshot.local_lights.begin() + max_extracted_local_lights; it != snapshot.local_lights.end(); ++it)
-            extraction.report(RenderIssue::light_limit, it->entity, {}, "Light " + id_text(it->entity) + " ignored: at most " +
-                std::to_string(max_extracted_local_lights) + " point and spot lights are extracted");
-        snapshot.local_lights.resize(max_extracted_local_lights);
+        if (options.poses)
+            options.poses->for_each([&](EntityHandle entity) {
+                if (options.index->returned(entity) || !world.alive(entity)) return;
+                world.with<MeshRendererComponent>(entity, [&](const MeshRendererComponent& renderer) {
+                    if (!renderer.visible || !renderer.mesh.valid()) return;
+                    ++snapshot.stats.visited;
+                    extract(entity, renderer);
+                });
+            });
+        const auto& indexed = options.index->stats();
+        snapshot.stats.mesh_renderers = indexed.renderers;
+        snapshot.stats.hidden = indexed.hidden;
+        snapshot.stats.index_culled = indexed.renderers - indexed.hidden - std::min(indexed.renderers - indexed.hidden, snapshot.stats.visited);
+    } else {
+        world.for_each<MeshRendererComponent>([&](EntityHandle entity, const MeshRendererComponent& renderer) {
+            ++snapshot.stats.mesh_renderers;
+            if (view) ++snapshot.stats.visited;
+            extract(entity, renderer);
+        });
     }
-    if (snapshot.lights.size() > max_directional_lights) {
-        for (auto it = snapshot.lights.begin() + max_directional_lights; it != snapshot.lights.end(); ++it)
-            extraction.report(RenderIssue::light_limit, it->entity, {}, "Light " + id_text(it->entity) +
-                " ignored: at most " + std::to_string(max_directional_lights) + " directional lights are rendered");
-        snapshot.lights.resize(max_directional_lights);
-    }
-    // The sun: the first directional light that casts shadows gets the cascades; the rest are drawn
-    // without shadows.
-    auto shadowed = false;
-    for (auto& light : snapshot.lights) {
-        if (!light.shadow.cast) continue;
-        if (shadowed) {
-            light.shadow.cast = false;
-            extraction.report(RenderIssue::shadow_limit, light.entity, {}, "Light " + id_text(light.entity) +
-                " is drawn without shadows: only one directional light casts them");
-        }
-        shadowed = true;
-    }
+
     // At most one environment: the lowest EntityId's. An unassigned one lights nothing and says nothing.
     auto environments = std::vector<std::pair<EntityId, EnvironmentComponent>>{};
     world.for_each<EnvironmentComponent>([&](EntityHandle entity, const EnvironmentComponent& environment) {
@@ -561,9 +659,9 @@ void skeleton_debug(const World& world, AssetRegistry& assets, const Presentatio
 float exposure_scale(float ev100) noexcept { return 1.0f / (1.2f * std::exp2(ev100)); }
 
 namespace {
-constexpr std::array<std::string_view, 15> debug_view_names = {
+constexpr std::array<std::string_view, 16> debug_view_names = {
     "none", "luminance", "false-color", "base-color", "normals", "shading-normals", "metallic", "roughness", "occlusion",
-    "emissive", "direct-light", "environment-light", "lighting", "cascades", "texels"};
+    "emissive", "direct-light", "environment-light", "lighting", "cascades", "texels", "lod"};
 } // namespace
 std::string_view debug_view_name(DebugView view) noexcept {
     return size_t(view) < debug_view_names.size() ? debug_view_names[size_t(view)] : std::string_view{};

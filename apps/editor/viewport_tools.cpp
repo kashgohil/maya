@@ -378,6 +378,8 @@ void EditorShell::draw_physics_debug_menu() {
                      {DebugView::lighting, "Lighting only", "All light on white, fully rough, nonmetallic surfaces: lighting without albedo."}});
     row("SHADOWS", {{DebugView::cascades, "Cascades", "Tints each of the sun's four shadow cascades: red, green, blue, yellow, nearest first."},
                     {DebugView::texels, "Texels", "Checkers the sun's shadow-map texels where they land: big squares mean blocky shadows there."}});
+    row("DETAIL", {{DebugView::lod, "Levels of detail", "Tints each mesh by the level drawn: green the finest, then yellow, orange, red, "
+                                                        "magenta, and blue the coarsest."}});
     row("EXPOSURE", {{DebugView::luminance, "Luminance", "Exposed luminance in grey by stops from middle grey: black at -8, white at +8."},
                      {DebugView::false_color, "False color", "A color per band of stops from middle grey: blues under, grey within half a stop, "
                                                              "yellow to red over, pink past +6."}});

@@ -115,6 +115,12 @@ FetchContent_Declare(cgltf GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
     SOURCE_SUBDIR not-a-cmake-project)
 FetchContent_MakeAvailable(cgltf)
 
+# meshoptimizer (MIT), v1.3: mesh LOD chains, simplified at cook time (#1060's choice, #1066). Only MayaAssets
+# uses it (asset_cooker.cpp); its types never appear in Maya's headers.
+FetchContent_Declare(meshoptimizer GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git GIT_TAG v1.3 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(meshoptimizer)
+maya_system_headers(meshoptimizer)
+
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
     src/maya/assets/residency.cpp
@@ -130,7 +136,7 @@ add_library(MayaAssets STATIC
     src/maya/assets/import_file.cpp
     src/maya/assets/cook_cache.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
-target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures PRIVATE MayaMikkTSpace)
+target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures PRIVATE MayaMikkTSpace meshoptimizer)
 target_include_directories(MayaAssets SYSTEM PRIVATE ${cgltf_SOURCE_DIR})
 maya_target_options(MayaAssets)
 
@@ -156,6 +162,7 @@ add_library(MayaRenderer STATIC
     src/maya/renderer/render_snapshot.cpp
     src/maya/renderer/light_plan.cpp
     src/maya/renderer/draw_batches.cpp
+    src/maya/renderer/visibility_index.cpp
     src/maya/renderer/render_target.cpp
     src/maya/renderer/renderer.cpp)
 add_library(Maya::Renderer ALIAS MayaRenderer)
@@ -424,16 +431,15 @@ if(MAYA_BUILD_PROTOTYPES)
     # enkiTS (zlib) and Taskflow (MIT): job system candidates beside a Maya-owned pool and GCD.
     FetchContent_Declare(enkits GIT_REPOSITORY https://github.com/dougbinks/enkiTS.git GIT_TAG v1.12 GIT_SHALLOW TRUE)
     FetchContent_Declare(taskflow GIT_REPOSITORY https://github.com/taskflow/taskflow.git GIT_TAG v4.1.0 GIT_SHALLOW TRUE)
-    # meshoptimizer (MIT): LOD simplification at cook time.
-    FetchContent_Declare(meshoptimizer GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git GIT_TAG v1.3 GIT_SHALLOW TRUE)
+    # meshoptimizer is the engine's (above).
     set(ENKITS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(ENKITS_BUILD_C_INTERFACE OFF CACHE BOOL "" FORCE)
     set(ENKITS_INSTALL OFF CACHE BOOL "" FORCE)
     set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(TF_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(enkits meshoptimizer taskflow)
-    foreach(library enkiTS meshoptimizer)
+    FetchContent_MakeAvailable(enkits taskflow)
+    foreach(library enkiTS)
         maya_system_headers(${library})
     endforeach()
 

@@ -24,6 +24,10 @@ public:
         return world.world_matrix(entity);
     }
     void reserve(size_t count) { m_poses.reserve(count); }
+    /// Every entity it poses, in no particular order.
+    template<class F> void for_each(F&& visit) const {
+        for (const auto& [slot, pose] : m_poses) visit(pose.first);
+    }
     size_t size() const noexcept { return m_poses.size(); }
     bool empty() const noexcept { return m_poses.empty(); }
 

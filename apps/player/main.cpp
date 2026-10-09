@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
             const auto view = i + 1 < argc ? maya::debug_view_named(argv[i + 1]) : std::nullopt;
             if (!view) {
                 std::cerr << "[Player] --debug-view needs a view: none, luminance, false-color, base-color, normals, shading-normals, "
-                             "metallic, roughness, occlusion, emissive, direct-light, environment-light, lighting, cascades, or texels\n";
+                             "metallic, roughness, occlusion, emissive, direct-light, environment-light, lighting, cascades, texels, or lod\n";
                 return 2;
             }
             options.debug_view = *view;

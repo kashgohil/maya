@@ -148,6 +148,15 @@ public:
         }
         return {{}, slot.second};
     }
+    /// The resident version, or an empty lease, without loading it or counting it as used: what a mirror
+    /// of the World (the renderer's visibility index, #1066) reads for bounds.
+    template<Asset T> AssetLease<T> resident(AssetRef<T> ref) const {
+        const auto it = m_ids.find(ref.id);
+        if (it == m_ids.end()) return {};
+        const auto& entry = m_entries[it->second];
+        if (entry.record.kind != asset_kind<T> || !usable(entry.payload)) return {};
+        return AssetLease<T>{std::get<std::shared_ptr<const T>>(entry.payload), {m_token, it->second, entry.generation}, ref};
+    }
     /// Once a frame on the owner thread: applies finished preparations, cancels loads no one wants any
     /// more, finalizes prepared loads in arrival order within `budget`, then releases what a category over
     /// its budget holds unused, least recently used first, a bounded number of versions at a time.

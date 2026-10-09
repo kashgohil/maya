@@ -21,7 +21,7 @@ struct Project;
 /// bytes must raise its version, so entries cooked before are not read.
 inline constexpr uint32_t texture_cook_version = 1;
 inline constexpr uint32_t environment_cook_version = 1;
-inline constexpr uint32_t imported_mesh_cook_version = 2; // 2: with joints and weights (#1038)
+inline constexpr uint32_t imported_mesh_cook_version = 3; // 2: with joints and weights (#1038); 3: levels of detail (#1066)
 inline constexpr uint32_t imported_texture_cook_version = 1;
 inline constexpr uint32_t skin_cook_version = 1;
 inline constexpr uint32_t animation_cook_version = 1;

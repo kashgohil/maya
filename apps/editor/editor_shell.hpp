@@ -17,6 +17,7 @@
 #include "maya/metrics/metrics.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
+#include "maya/renderer/visibility_index.hpp"
 #include "maya/simulation/play_session.hpp"
 #include <array>
 #include <deque>
@@ -263,6 +264,8 @@ public:
         bool sun = false;
     };
     const LightCounts& lights() const noexcept { return m_lights; }
+    /// The viewport's last view: what it drew, by level of detail, and into its shadow maps (#1066).
+    const RenderViewReport& view_report() const noexcept { return m_view_report; }
     const std::vector<RenderDiagnostic>& frame_problems() const noexcept { return m_frame_problems; }
     /// The open scene's editing session, or null when no scene is open.
     SceneEditor* scene() noexcept { return m_scene.get(); }
@@ -573,6 +576,10 @@ private:
     std::optional<EntityId> m_reveal; // expand and scroll the hierarchy to this entity
     // Play
     std::unique_ptr<PlaySession> m_play;
+    /// The visibility index (#1066) of the World the viewport draws: the scene's, or the play World's. It
+    /// must go before its World does (it reads the World's change log), so it is declared after both and
+    /// reset whenever the scene is replaced or Play stops.
+    std::unique_ptr<VisibilityIndex> m_visibility;
     std::shared_ptr<ScriptReloads> m_play_reloads; // changed scripts for the play session
     std::optional<PlayRecording> m_play_recording; // the running Play's, finished at Stop
     std::optional<PlayRecording> m_last_recording;
@@ -616,6 +623,7 @@ private:
     std::vector<RenderDiagnostic> m_frame_problems;
     RenderSnapshotStats m_extraction{};
     LightCounts m_lights{};
+    RenderViewReport m_view_report{};
     PixelSize m_viewport_request{};
     float m_font_scale = 0.0f;
     RhiStats m_shown_stats{}; // refreshed a few times a second so the numbers stay readable

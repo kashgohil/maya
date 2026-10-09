@@ -146,6 +146,7 @@ World::~World() {
     m_ids.clear();
     m_live.clear();
     for (auto& slot : m_slots) slot.id = {};
+    m_pool_by_index.clear();
     m_pools.clear();
 }
 
@@ -177,6 +178,44 @@ std::vector<EntityHandle> World::staged(StageGroup group) const {
     return result;
 }
 
+uint32_t World::open_change_log() const {
+    for (size_t i = 0; i < m_change_logs.size(); ++i)
+        if (!m_change_logs[i]) {
+            m_change_logs[i].emplace();
+            return uint32_t(i + 1);
+        }
+    m_change_logs.emplace_back(std::in_place);
+    return uint32_t(m_change_logs.size());
+}
+
+void World::close_change_log(uint32_t log) const noexcept {
+    if (log >= 1 && log <= m_change_logs.size()) m_change_logs[log - 1].reset();
+}
+
+WorldChanges World::take_changes(uint32_t log) const {
+    if (log < 1 || log > m_change_logs.size() || !m_change_logs[log - 1]) throw std::invalid_argument("World::take_changes of a log that is not open");
+    auto& taken = *m_change_logs[log - 1];
+    return {std::exchange(taken.entities, {}), std::exchange(taken.all, false)};
+}
+
+void World::reserve_changes(size_t incoming) {
+    const auto limit = std::max<size_t>(1024, m_slots.size());
+    for (auto& log : m_change_logs) {
+        if (!log || log->all) continue;
+        if (log->entities.size() + incoming > limit) {
+            log->all = true;
+            log->entities = {};
+            continue;
+        }
+        detail::reserve_for(log->entities, log->entities.size() + incoming);
+    }
+}
+
+void World::note_change(EntityHandle entity) noexcept {
+    for (auto& log : m_change_logs)
+        if (log && !log->all) log->entities.push_back(entity);
+}
+
 std::vector<EntityHandle> World::publish(StageGroup group) {
     if (m_committing || m_borrows != 0) throw std::logic_error("World::publish during publication or a borrow");
     const auto found = m_stages.find(group);
@@ -184,6 +223,7 @@ std::vector<EntityHandle> World::publish(StageGroup group) {
     auto result = std::vector<EntityHandle>{};
     result.reserve(found->second.size());
     detail::reserve_for(m_live, m_live.size() + found->second.size());
+    reserve_changes(found->second.size());
     // Nothing allocates from here: the group becomes visible in one step.
     for (const auto slot : found->second) {
         auto& entry = m_slots[slot];
@@ -191,6 +231,7 @@ std::vector<EntityHandle> World::publish(StageGroup group) {
         entry.dense = static_cast<uint32_t>(m_live.size());
         m_live.push_back(slot);
         result.push_back(handle(slot));
+        note_change(result.back());
     }
     m_staged -= found->second.size();
     m_stages.erase(found);
@@ -205,6 +246,7 @@ WorldError World::stage(std::span<const EntityHandle> entities, StageGroup group
     staged.reserve(staged.size() + entities.size());
     auto marked = std::vector<uint32_t>{};
     marked.reserve(entities.size());
+    reserve_changes(entities.size());
     // Each entity is marked with the group as it is checked, so the hierarchy check needs no set; a refusal
     // takes the marks off again.
     const auto refuse = [&](WorldError error) {
@@ -232,6 +274,7 @@ WorldError World::stage(std::span<const EntityHandle> entities, StageGroup group
         m_live.pop_back();
         entry.dense = invalid_entity_slot;
         staged.push_back(slot);
+        note_change(handle(slot)); // hidden now: a mirror lets it go
         ++m_staged;
     }
     ++m_names_revision;
@@ -506,6 +549,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     result.destroyed.reserve(destroyed_count);
     if (m_journal_on) detail::reserve_for(m_journal, m_journal.size() + changed.size());
     if (m_edits_on) detail::reserve_for(m_edits, m_edits.size() + commands.m_commands.size() + destroyed_count);
+    reserve_changes(commands.m_commands.size() + destroyed_count);
     for (const auto& [group, count] : staging) {
         auto& slots = m_stages[group];
         slots.reserve(slots.size() + count);
@@ -520,6 +564,9 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     };
     prepare_map(m_ids, new_ids.size());
     prepare_map(m_pools, new_pools.size());
+    const auto added_pools = !new_pools.empty();
+    for (const auto& [type, pool] : new_pools)
+        if (pool->index() >= m_pool_by_index.size()) m_pool_by_index.resize(size_t(pool->index()) + 1, nullptr);
     for (const auto& [type, count] : additions) {
         const auto existing = m_pools.find(type);
         auto& pool = existing == m_pools.end() ? *new_pools.at(type) : *existing->second;
@@ -532,6 +579,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     m_spatial.resize(slot_count);
     m_ids.merge(new_ids);
     m_pools.merge(new_pools);
+    if (added_pools)
+        for (const auto& [type, pool] : m_pools) m_pool_by_index[pool->index()] = pool.get();
     m_free = next_free;
     auto renamed = false; // names or hierarchy changed: names_revision()
     for (size_t index = 0; index < commands.m_commands.size(); ++index) {
@@ -557,6 +606,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         case Kind::destroy:
             for (const auto descendant : destroyed[index]) {
                 result.destroyed.push_back(handle(descendant));
+                note_change(result.destroyed.back());
                 if (m_edits_on && m_slots[descendant].stage == 0 && m_slots[descendant].origin != 0)
                     m_edits.push_back({m_slots[descendant].id, m_slots[descendant].origin});
                 destroy(descendant);
@@ -577,6 +627,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         }
         if (transforms[index])
             find_pool<TransformComponent>()->get().value(slot) = *transforms[index];
+        if (command.kind != Kind::destroy) note_change(handle(slot));
         if (m_edits_on && command.kind != Kind::create && command.kind != Kind::destroy && m_slots[slot].id.valid() &&
             m_slots[slot].stage == 0 && m_slots[slot].origin != 0)
             m_edits.push_back({m_slots[slot].id, m_slots[slot].origin});

@@ -23,6 +23,8 @@ struct MeshRendererComponent {
     AssetRef<MeshAsset> mesh{};
     AssetRef<MaterialAsset> material{};
     bool visible = true;
+    /// Metres from the camera beyond which it is not drawn, nor casts shadows (#1066); 0 for no limit.
+    float max_distance = 0.0f;
 };
 
 /// Window-independent data; aspect ratio belongs to the view, not the scene camera.

@@ -129,7 +129,10 @@ const auto& mesh_bindings() {
     static const auto values = std::array{
         bind<&MeshRendererComponent::mesh>(1, "mesh", "Mesh", Hint::asset),
         bind<&MeshRendererComponent::material>(2, "material", "Material", Hint::asset),
-        bind<&MeshRendererComponent::visible>(3, "visible", "Visible", Hint::toggle)};
+        bind<&MeshRendererComponent::visible>(3, "visible", "Visible", Hint::toggle),
+        since(bind<&MeshRendererComponent::max_distance>(4, "max_distance", "Max distance", Hint::number, nonnegative, "m",
+                                                         "Not drawn, nor casting shadows, beyond this distance from the camera; 0 for no limit."),
+              2)};
     return values;
 }
 const auto& camera_bindings() {
@@ -533,7 +536,7 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 2, transforms}, // 2: double translation (#1065)
-        ComponentDescriptor{ComponentId::mesh_renderer, "maya.mesh_renderer", "Mesh renderer", 1, meshes},
+        ComponentDescriptor{ComponentId::mesh_renderer, "maya.mesh_renderer", "Mesh renderer", 2, meshes}, // 2: max distance (#1066)
         ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 2, cameras}, // 2: exposure, tone mapping (#1032)
         ComponentDescriptor{ComponentId::light, "maya.light", "Light", 2, lights}, // 2: candela, shadows (#1034)
         ComponentDescriptor{ComponentId::spin, "maya.spin", "Spin", 1, spins},

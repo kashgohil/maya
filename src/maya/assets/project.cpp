@@ -106,6 +106,18 @@ ProjectSettingsResult read_project(std::istream& input) {
             else settings.script_memory = uint32_t(number);
             continue;
         }
+        if (key == "lod_bias" || key == "cull_pixels") {
+            auto& field = key == "lod_bias" ? settings.lod_bias : settings.cull_pixels;
+            const auto low = key == "lod_bias" ? 0.25 : 0.0, high = key == "lod_bias" ? 8.0 : 64.0;
+            auto number = 0.0;
+            const auto parsed = (input >> value) ? std::from_chars(value.data(), value.data() + value.size(), number)
+                                                 : std::from_chars_result{value.data(), std::errc::invalid_argument};
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !std::isfinite(number) || number < low || number > high)
+                return {{}, key == "lod_bias" ? "'lod_bias' needs a scale from 0.25 to 8" : "'cull_pixels' needs a size in pixels from 0 to 64"};
+            if (field) return {{}, "'" + key + "' is set twice"};
+            field = float(number);
+            continue;
+        }
         if (key == "stream_load" || key == "stream_activate" || key == "stream_hysteresis") {
             auto& field = key == "stream_load" ? settings.stream_load : key == "stream_activate" ? settings.stream_activate : settings.stream_hysteresis;
             auto number = 0.0;
@@ -161,6 +173,8 @@ void write_project(std::ostream& output, const ProjectSettings& settings) {
     for (size_t i = 0; i < resident_setting_keys.size(); ++i)
         if (settings.resident[i]) text << resident_setting_keys[i] << ' ' << *settings.resident[i] << '\n';
     if (settings.cook_cache_limit) text << "cook_cache_limit " << *settings.cook_cache_limit << '\n';
+    if (settings.lod_bias) text << "lod_bias " << *settings.lod_bias << '\n';
+    if (settings.cull_pixels) text << "cull_pixels " << *settings.cull_pixels << '\n';
     const auto defaults = default_collision_groups();
     for (size_t i = 0; i < collision_group_names; ++i)
         if (settings.collision_groups[i] != defaults[i] && !settings.collision_groups[i].empty())
@@ -253,4 +267,7 @@ ProjectResult open_project(const std::filesystem::path& file_or_directory) {
     }
     return {std::move(project), {}};
 }
+float project_lod_pixels(const ProjectSettings& project) noexcept { return project.lod_bias.value_or(1.0f); }
+float project_cull_pixels(const ProjectSettings& project) noexcept { return project.cull_pixels.value_or(2.0f); }
+
 } // namespace maya

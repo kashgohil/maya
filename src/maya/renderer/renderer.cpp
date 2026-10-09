@@ -236,7 +236,7 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
                     if (auto error = m_device.set_texture(0, asset->texture().handle())) return error;
                     if (auto error = m_device.set_sampler(0, asset->sampler().handle())) return error;
                 }
-                if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first)) return error;
+                if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first, batch.level)) return error;
                 ++m_stats.shadow_draws;
                 m_stats.shadow_instances += batch.count;
             }
@@ -335,7 +335,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     // instance's transform and every pass's order are uploaded once, and read by all passes.
     m_draws.clear();
     const auto view_batches = plan_view_batches(snapshot, view, m_draws, m_batch_scratch);
-    m_view_report = {view_batches.drawn, view_batches.culled, view_batches.opaque.size() + view_batches.blended.size()};
+    m_view_report = {view_batches.drawn, view_batches.culled, view_batches.opaque.size() + view_batches.blended.size(), view_batches.levels};
     auto sun_maps = std::vector<math::Mat4>{}, spot_maps = std::vector<math::Mat4>{};
     auto sun_batches = std::vector<std::vector<DrawBatch>>{}, spot_batches = std::vector<std::vector<DrawBatch>>{};
     if (plan.sun)
@@ -347,9 +347,17 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     for (const auto& spot : plan.spot_shadows) {
         spot_maps.push_back(spot.view_projection);
         const auto& light = snapshot.local_lights[spot.light];
-        spot_batches.push_back(plan_shadow_batches(snapshot, [&](const RenderInstance& instance) { return casts_into(light, instance); },
-                                                   m_draws, m_batch_scratch));
+        // Within its range and its cone (#1066): the visibility index looks for casters through the same cone.
+        const auto cone = Frustum::from(spot.view_projection);
+        spot_batches.push_back(plan_shadow_batches(snapshot, [&](const RenderInstance& instance) {
+            return casts_into(light, instance) && cone.reaches(instance.bounds_center, instance.bounds_radius);
+        }, m_draws, m_batch_scratch));
     }
+    for (const auto* passes : {&sun_batches, &spot_batches})
+        for (const auto& batches : *passes) {
+            ++m_view_report.shadow_passes;
+            for (const auto& batch : batches) m_view_report.shadow_casters += batch.count;
+        }
     m_instances = {};
     m_order = {};
     if (!m_draws.order.empty()) {
@@ -361,6 +369,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             for (size_t c = 0; c < 3; ++c) draw.normal_matrix[c] = {instance.normal_matrix[c], 0.0f};
             draw.skin[0] = instance.first_joint;
             draw.skin[1] = instance.joint_count;
+            draw.skin[2] = instance.level; // the LOD debug view's
         }
         const auto instances = m_device.upload_transient(m_instance_data.data(), m_instance_data.size() * sizeof(DrawConstants));
         if (!instances) return instances.diagnostic;
@@ -494,7 +503,7 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
                 if (auto error = m_device.set_uniform_buffer(3, uploaded.slice)) return error;
                 bound_material = constants;
             }
-            if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first)) return error;
+            if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first, batch.level)) return error;
             ++m_stats.draws;
             m_stats.instances += batch.count;
             return {};

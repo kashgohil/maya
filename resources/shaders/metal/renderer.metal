@@ -51,7 +51,7 @@ struct ViewConstants {
 struct DrawConstants { // per instance, for the vertex stage: an array indexed through the pass's order
     float4x4 model;
     float4 normal_matrix[3];
-    uint4 skin; // x the first joint in the palette, y the skin's joints (0: not skinned)
+    uint4 skin; // x the first joint in the palette, y the skin's joints (0: not skinned), z the level of detail
 };
 
 // Skinned meshes' second vertex stream (#1038): four joints, as indices into the skin, and their weights.
@@ -80,6 +80,9 @@ struct LitOut {
     float4 world_tangent; // xyz, and w the bitangent's sign
     float4 color;
     float2 uv;
+#ifdef MAYA_DEBUG_VIEWS
+    uint level [[flat]]; // the level of detail drawn, for the LOD view
+#endif
 };
 
 // A vertex placed by `model`, with `normal_matrix` the inverse transpose of its linear part, which keeps
@@ -105,8 +108,12 @@ vertex LitOut litVertex(uint id [[vertex_id]], uint instance [[instance_id]],
                         constant ViewConstants& view [[buffer(2)]],
                         const device uint* order [[buffer(4)]]) {
     const DrawConstants draw = instances[order[instance]];
-    return lit_vertex(vertices[id], draw.model, float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
-                                                         draw.normal_matrix[2].xyz), view);
+    LitOut out = lit_vertex(vertices[id], draw.model, float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
+                                                               draw.normal_matrix[2].xyz), view);
+#ifdef MAYA_DEBUG_VIEWS
+    out.level = draw.skin.z;
+#endif
+    return out;
 }
 
 // Skinning (#1038, docs/animation.md#skinning): a vertex's world placement is its joints' skin matrices
@@ -137,7 +144,11 @@ vertex LitOut litSkinnedVertex(uint id [[vertex_id]], uint instance [[instance_i
     const float3x3 normal_matrix = draw.skin.y == 0 ? float3x3(draw.normal_matrix[0].xyz, draw.normal_matrix[1].xyz,
                                                                draw.normal_matrix[2].xyz)
                                                     : cofactors(model);
-    return lit_vertex(vertices[id], model, normal_matrix, view);
+    LitOut out = lit_vertex(vertices[id], model, normal_matrix, view);
+#ifdef MAYA_DEBUG_VIEWS
+    out.level = draw.skin.z;
+#endif
+    return out;
 }
 
 // glTF's metallic-roughness BRDF (docs/renderer.md#materials), as tests/support/shading.hpp mirrors it.
@@ -310,7 +321,7 @@ float3 srgb_encode(float3 c) {
 #ifdef MAYA_DEBUG_VIEWS
 constant uint debug_base_color = 3, debug_normals = 4, debug_shading_normals = 5, debug_metallic = 6, debug_roughness = 7,
               debug_occlusion = 8, debug_emissive = 9, debug_direct = 10, debug_environment = 11, debug_lighting = 12,
-              debug_cascades = 13, debug_texels = 14; // DebugView
+              debug_cascades = 13, debug_texels = 14, debug_lod = 15; // DebugView
 #endif
 
 fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
@@ -340,13 +351,14 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
 #ifdef MAYA_DEBUG_VIEWS
     const uint debug_view = uint(view.shadows.view_forward.w);
     const float authored_roughness = roughness;
-    if (debug_view == debug_lighting) { // lighting without albedo: white, fully rough, and not metallic
+    // Lighting without albedo: white, fully rough, and not metallic; the LOD view tints that.
+    if (debug_view == debug_lighting || debug_view == debug_lod) {
         base.rgb = float3(1.0);
         metallic = 0.0;
         roughness = 1.0;
     }
     const bool with_surroundings = debug_view != debug_direct, with_direct = debug_view != debug_environment;
-    const bool with_emitted = debug_view < debug_direct || debug_view > debug_lighting;
+    const bool with_emitted = (debug_view < debug_direct || debug_view > debug_lighting) && debug_view != debug_lod;
 #else
     constexpr bool with_surroundings = true, with_direct = true, with_emitted = true;
 #endif
@@ -453,6 +465,12 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                 if ((int(texel.x) + int(texel.y)) & 1) rgb *= 0.55;
             }
         }
+    }
+    // Levels of detail (#1066): the finest green, then yellow, orange, red, magenta, and blue the coarsest.
+    if (debug_view == debug_lod) {
+        const float3 tints[6] = {float3(0.35, 1.0, 0.35), float3(1.0, 1.0, 0.3), float3(1.0, 0.6, 0.25),
+                                 float3(1.0, 0.3, 0.3), float3(1.0, 0.35, 1.0), float3(0.4, 0.5, 1.0)};
+        rgb *= tints[min(in.level, 5u)] * 1.5;
     }
 #endif
     return float4(rgb, alpha_mode == 2 ? base.a : 1.0);

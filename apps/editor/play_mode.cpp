@@ -121,6 +121,7 @@ void EditorShell::stop_play() {
         m_last_recording = std::move(m_play_recording);
         m_play_recording.reset();
     }
+    m_visibility.reset(); // before its World
     m_play.reset(); // the play World, its systems, and the snapshot's leases on it go now
     m_play_reloads.reset();
     m_shown_physics.reset();

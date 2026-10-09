@@ -47,7 +47,7 @@ struct PackageManifestResult {
     std::string error; // empty on success
     explicit operator bool() const noexcept { return error.empty(); }
 };
-/// The text form ("maya-package 1"): name, build, project, scene lines, file lines, then the content digest.
+/// The text form ("maya-package 2"; 2 since #1066, whose cooked meshes carry levels of detail): name, build, project, scene lines, file lines, then the content digest.
 void write_package_manifest(std::ostream& output, const PackageManifest& manifest);
 PackageManifestResult read_package_manifest(std::istream& input);
 /// The digest of a list of files, as `content` records it.

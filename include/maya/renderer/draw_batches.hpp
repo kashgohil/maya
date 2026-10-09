@@ -12,6 +12,9 @@
 
 namespace maya {
 
+/// Where a box is against a volume.
+enum class Containment : uint8_t { outside, intersects, inside };
+
 /// A view's or shadow map's clip volume as six planes (a, b, c, d with a x + b y + c z + d >= 0 inside),
 /// from its view-projection; Metal's depth is [0, 1].
 struct Frustum {
@@ -19,6 +22,9 @@ struct Frustum {
     static Frustum from(const math::Mat4& view_projection) noexcept;
     /// Whether a sphere reaches inside. An infinite radius always does.
     bool reaches(const math::Vec3& center, float radius) const noexcept;
+    /// Whether an axis-aligned box is outside, partly inside, or wholly inside (conservatively: a box near
+    /// a corner may be called intersecting though it is outside).
+    Containment classify(const math::Vec3& low, const math::Vec3& high) const noexcept;
 };
 
 /// One instanced draw: `count` instances of one mesh with one material, numbered from `first` in the
@@ -28,6 +34,7 @@ struct DrawBatch {
     uint32_t count = 0;
     uint32_t mesh = 0; // index into RenderSnapshot::meshes
     uint32_t material = 0; // index into RenderSnapshot::materials
+    uint8_t level = 0; // the mesh's level of detail it draws (#1066)
 };
 
 /// The instances one frame's passes draw, in drawing order: each pass's batches index one shared order,
@@ -45,6 +52,7 @@ struct ViewBatches {
     std::vector<DrawBatch> blended;
     size_t drawn = 0; // instances inside the view
     size_t culled = 0; // instances outside it
+    std::array<size_t, max_mesh_levels> levels{}; // of those drawn, by level of detail
 };
 
 /// Reused working memory, so steady frames do not allocate.
@@ -63,7 +71,7 @@ ViewBatches plan_view_batches(const RenderSnapshot& snapshot, const RenderView& 
 
 /// Appends one shadow map's casters to `list` and returns their batches: instances `casts` accepts that
 /// are not blended, opaque ones grouped by mesh alone (any material casts the same), masked ones by
-/// material and mesh, opaque first.
+/// material and mesh, opaque first; each at its shadow level of detail (one coarser than the view's).
 std::vector<DrawBatch> plan_shadow_batches(const RenderSnapshot& snapshot, const std::function<bool(const RenderInstance&)>& casts,
                                            DrawList& list, BatchScratch& scratch);
 

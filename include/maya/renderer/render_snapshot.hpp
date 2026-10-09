@@ -14,6 +14,8 @@
 #include <vector>
 
 namespace maya {
+class VisibilityIndex;
+struct RenderView;
 inline constexpr size_t max_directional_lights = 4;
 /// Point and spot lights drawn per view, chosen by their importance to it (docs/renderer.md#lights).
 inline constexpr size_t max_local_lights = 16;
@@ -78,6 +80,9 @@ struct RenderInstance {
     /// vertices are placed by them in world space, and `world` is not applied. None when joint_count is 0.
     uint32_t first_joint = 0;
     uint32_t joint_count = 0;
+    /// Its mesh's level of detail in the view, and in shadow maps (one coarser), when extraction had a view
+    /// (docs/renderer.md#levels-of-detail); 0, the full mesh, otherwise.
+    uint8_t level = 0, shadow_level = 0;
 };
 /// A light's shadow settings (LightComponent's), in shadow-map texels.
 struct RenderShadow {
@@ -147,6 +152,16 @@ struct RenderExtractOptions {
     /// The snapshot's origin (RenderSnapshot::origin): the camera's position for the view it is drawn for,
     /// so what is near the camera is precise however far from the world's origin it is.
     math::DVec3 origin{};
+    /// The view it is drawn for (#1066, docs/renderer.md#visibility-and-levels-of-detail). With it,
+    /// instances under `cull_pixels` across or beyond their renderer's max distance are left out, and each
+    /// gets the coarsest level of detail whose error stays under `lod_pixels`. Without it, every instance
+    /// is drawn at its full mesh.
+    const RenderView* view = nullptr;
+    /// With a view: the World's visibility index, which extraction updates and asks for what the view and
+    /// its shadow maps may see, rather than visiting every mesh renderer. One per World and view.
+    VisibilityIndex* index = nullptr;
+    float lod_pixels = 1.0f; // a level's error on screen it accepts (a project's lod_bias scales it)
+    float cull_pixels = 2.0f; // smaller instances are not drawn; 0 draws them all
 };
 /// Loads everything `world` draws now: its meshes, materials and their textures, skins, and environment.
 /// An explicit wait (docs/assets.md#asynchronous-loading), for a loading screen before streaming frames.
@@ -155,6 +170,11 @@ size_t preload_render_assets(const World& world, AssetRegistry& assets);
 
 struct RenderSnapshotStats {
     size_t mesh_renderers = 0;
+    // With a view (docs/renderer.md#visibility-and-levels-of-detail): renderers the index ruled out
+    // without visiting them, those visited, and instances left out as too small or beyond their max distance.
+    size_t index_culled = 0, visited = 0;
+    size_t culled_small = 0, culled_distance = 0;
+    std::array<size_t, max_mesh_levels> levels{}; // instances by their level of detail in the view
     size_t hidden = 0; // not visible, or no mesh assigned
     size_t skipped = 0; // could not be drawn; see diagnostics
     // Streaming extraction (AssetLoading::stream): what was still loading.
@@ -224,6 +244,7 @@ enum class DebugView : uint8_t {
     lighting, // all light on a white, fully rough, nonmetallic surface: lighting without albedo
     cascades, // tinted by the sun's cascade that shadows each surface: red, green, blue, yellow
     texels, // and a checker of that cascade's shadow-map texels
+    lod, // lighting, tinted by the level of detail drawn: green the finest, then yellow, orange, red, magenta, blue (#1066)
 };
 /// Whether the view's lit pass draws it (with the debug pipelines), rather than the tone-mapping pass alone.
 constexpr bool lit_debug_view(DebugView view) noexcept { return view >= DebugView::base_color; }
