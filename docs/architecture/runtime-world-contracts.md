@@ -58,12 +58,26 @@ Prepare fallible additions before applying destructive removals in a mixed trans
 | Units | Metres, seconds, kilograms; velocity m/s, acceleration m/s², force newtons, torque N·m. Gravity is world configuration, not a hardcoded gameplay assumption. |
 | Axes | Right-handed, +X right, +Y up, camera/object forward -Z. Importers/adapters perform external convention conversion explicitly. |
 | Rotation | Radians in runtime/property data, normalized quaternions stored x/y/z/w; identity (0,0,0,1). UI may display degrees with explicit conversion. Legacy Camera FOV/yaw/pitch degree inputs are an adapter exception. |
-| Matrices | Column-major memory; column vectors. Local matrix = T × R × S, world matrix = parent world × local, clip position = projection × view × world × position. Positive rotation uses the right-hand rule. |
-| Camera | Vertical FOV in radians; validate 0 < FOV < π, aspect > 0, 0 < near < far, finite inputs. View is inverse of a rigid camera pose; camera ancestry must not scale/shear the view. |
+| Matrices | Column-major memory; column vectors. Local matrix = T × R × S, world matrix = parent world × local, clip position = projection × view × world × position. Positive rotation uses the right-hand rule. World poses keep their translation in double ([coordinates](#coordinates)). |
+| Camera | Vertical FOV in radians; validate 0 < FOV < π, aspect > 0, 0 < near < far, finite inputs. View is the inverse of a rigid camera pose's rotation; the camera's position is the origin everything drawn is placed relative to ([coordinates](#coordinates)). Camera ancestry must not scale/shear the view. |
 | Depth and rasterization | Initial perspective maps view-space -near to 0 and -far to 1, depth clear 1, compare less. Front faces are counterclockwise after backend convention conversion; back faces culled. Reversed depth would be a coordinated future change. |
 | View dimensions | Framebuffer pixels, not logical window points. Zero-sized views skip allocation/rendering. Editor input converts logical coordinates and viewport origin/scale before picking. |
 
-Local TRS is authoritative authored data; derived world matrices are cached, never a second editable transform. Initially local positions and rendering matrices remain floats near the origin. This does **not** approve a maximum world extent: world-position conversions must have named boundaries so a later precision strategy does not require changing entity identity or every component API.
+Local TRS is authoritative authored data; derived world poses are cached, never a second editable transform.
+
+### Coordinates
+
+Since [#1065](https://work.rezee.app/kash/issues/1065), as [#1060 decided](world-scale-decision.md#coordinates-double-positions): positions are double, everything relative is float, and the conversions happen at named places.
+
+| Space | Precision | What is in it |
+| --- | --- | --- |
+| World | double | `TransformComponent::translation` (`math::DVec3`); world poses (`math::Affine`: a float 3×3 rotation and scale, a double translation), from `World::world_matrix`, `PresentationPoses`, and the spatial functions `local_pose`, `compose_pose`, and `inverse_pose`; physics positions (Jolt is built with `JPH_DOUBLE_PRECISION`): body states, query origins and hit points, kinematic targets, teleports, and event points; scripts' `position` values; editor rays, the editor camera, and its pivot; scene files (`maya.transform` version 2, written to read back exactly). |
+| Relative | float | Everything near an origin it names: render snapshots (`RenderSnapshot::origin`, the camera's position), views (camera-relative: no translation in the view matrix), shadow and spot maps, culling, debug lines (`DebugDraw::origin`), and the gizmo. Offsets between positions (`position − position` is a float vector). |
+| Local | float | Mesh, skin, and joint data, collider offsets, rotations, scales, directions, velocities, forces, and clip keys. |
+
+The conversions: `Affine::relative_to(origin)` and `DVec3::to_float()` narrow, after subtracting in double; extraction subtracts the snapshot's origin from every pose; `view_frame` places a view's camera at its offset from a snapshot's origin; a debug draw is rebased to the snapshot's origin when extracted; physics converts at `jolt_position` and `maya_position`, and gives shape casts and overlaps their own origin as Jolt's base offset; the Luau `position` type crosses scripts' boundary. Narrowing a world position anywhere else is a bug. A float vector widens to a position exactly, so APIs that take positions also take vectors.
+
+**Extent.** The origin-offset sweep checks rendering (V1 and R1 against the origin's images), physics (a resting stack and a rolling sphere within 0.1 mm of the origin's), editing (picking and gizmo drags), scripts, and scene files at 0, 100 m, 1 km, 10 km, 11.6 km (W1's farthest corner), and 100 km ([tests](../spatial.md#world-positions)). **The supported extent is 100 km from the origin.** A double's spacing there is 15 nm; beyond it, nothing has been checked, not that anything stops working.
 
 Allow finite positive nonuniform scale for visual entities. Parent composition can produce shear: keep the full affine world matrix rather than decomposing it each frame. Transform normals with the inverse transpose of the world linear transform. Initially reject zero/negative scale, singular transforms, and nonfinite values at authoring/load boundaries; mirror authoring and its winding/tangent rules need an explicit extension. Normalize finite nonzero quaternions; reject a zero quaternion. Floating-point tolerances are explicit and tested in [#992 spatial operations](../spatial.md), not hidden in arbitrary clamps. That record also defines failure handling when finite local transforms compose into a world pose outside float matrix/inverse representability.
 
@@ -113,7 +127,7 @@ Recorded for #1015. `MayaPhysics` ([#1017](../physics.md)) implements the interf
 - **After the step.** On the owner thread, the adapter resolves indices to entities, sorts the records deterministically, and delivers them in phase 7 ([scheduling](scheduling-contracts.md#physics-and-behavior-in-the-fixed-tick)).
 - **Queries** (raycasts, shape casts, overlaps) run on the owner thread between steps, against the last completed step. Their results are sorted by distance and then EntityId, because Jolt's broad-phase order is not deterministic. Queries from inside Jolt callbacks are not allowed.
 
-**Precision and errors.** Physics runs in single precision in the same metres, seconds, and kilograms as the World, and inherits the open world-extent decision. Jolt returns no exceptions; step error flags become diagnostics. Maya code called by Jolt is `noexcept`.
+**Precision and errors.** Physics runs in the same metres, seconds, and kilograms as the World, with positions in double (`JPH_DOUBLE_PRECISION`, since #1065, [coordinates](#coordinates)) and velocities, forces, and shapes in float. Jolt returns no exceptions; step error flags become diagnostics. Maya code called by Jolt is `noexcept`.
 
 **Integration contracts for later work.** These are out of scope for this milestone, but their seams are fixed now:
 

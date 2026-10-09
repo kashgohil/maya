@@ -50,7 +50,7 @@ These remain open rather than being resolved by convenient defaults in the proto
 | Decision | Evidence needed / decision point |
 | --- | --- |
 | Shipping platforms and minimum hardware | Select actual representative game content and supported device matrix before promising a minimum spec. macOS/Metal is the implementation base only. |
-| Required world extent and precision | Decided in #1060: double-precision world positions, double-precision Jolt, and camera-relative rendering, from an origin-offset sweep to 10 km ([record](world-scale-decision.md#coordinates-double-positions)). The supported extent is checked across W1 (11.6 km); a larger range needs a longer sweep. |
+| Required world extent and precision | Decided in #1060 and implemented in #1065: double-precision world positions, double-precision Jolt, and camera-relative rendering ([record](world-scale-decision.md#coordinates-double-positions), [contract](runtime-world-contracts.md#coordinates)). The origin-offset sweep passes to 100 km, the supported extent. |
 | Frame, memory, load, and iteration budgets | Run the proposed workloads through #1004; allocate budgets with headroom on named hardware. No production numbers have been approved. Regression budgets for the M4 Pro reference runs were approved in [acceptance](../acceptance.md#budgets). |
 | Game genres, content density, and physics workload | Choose a representative game slice, active/sleeping body mix, query/constraint count, and traversal speed before scale acceptance. |
 | Simulation frequency and overload policy for shipping | Validate the proposed 60 Hz profile against physics stability, input latency, and CPU cost. Multiplayer/rollback requirements may alter timing and determinism needs. |

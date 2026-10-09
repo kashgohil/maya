@@ -286,6 +286,7 @@ The `l1_play` run shows why the window moved: over the old window its slope was 
   - The script VM holds 0.6 MiB.
   - The process footprint is 235–247 MiB, with slopes from −876 to +366 bytes per tick over the sampled ticks.
 - **Determinism.** All six runs ended in the same state (`77030e512a75db62`), and no step hit a physics limit.
+- **Double positions** (#1065, Jolt with `JPH_DOUBLE_PRECISION`; Release, back to back with the code before it, two invocations each, thermal state nominal at the start): the whole tick took 6.36–6.48 ms (P99 6.94–7.45 ms) against 6.14–6.35 ms (P99 6.67–8.72 ms), the step 2.51–2.56 ms against 2.54–2.66 ms, and Jolt's heap peaked at 40.4 MiB against 39.6 MiB, within the 8.5 ms and 48 MiB budgets. Every run ends in the same state, `62db8f85e75f9005`: positions are double, so it differs from the single-precision one above.
 - **Queries.** Before `raycast_nearest`, the rays alone took 5.0 ms per tick; they take 0.95 ms as closest-hit queries ([physics](physics.md#queries)).
 
 **P1 at 20,000 dynamic bodies** (`p1_20k`, 20,556 bodies; a stress input with no budget). All six runs completed with no physics limit hit and ended in the same state (`44972d3041dd06d8`).
@@ -416,6 +417,8 @@ Measured for #1040 on 7 October 2026, on the Mac16,7 above (Apple M4 Pro, macOS 
 | simulation (animation 0.003 ms), extraction, encoding, submission | 0.010, 0.039, 0.052, 0.004 ms | |
 
 R1 is bound by the GPU: the CPU's own work is 0.1 ms of a 2 ms frame, which it spends waiting for frames in flight. The disturbed run (the third of the first invocation) took 2.82 ms on the GPU (P95 4.08 ms) and 2.13 ms on the CPU (P99 3.85 ms), with the same counts.
+
+**Double positions** (#1065, camera-relative rendering): Release, back to back with the code before it, two invocations each at thermal state nominal, with one disturbed run in each build set apart. The two builds match: frame 2.03–2.04 ms (P99 2.87–2.97 ms) against 2.02–2.04 ms (P99 2.85–3.01 ms), GPU P95 3.29–3.32 ms in both, CPU work (simulation, extraction, and encoding) 0.10–0.42 ms against 0.10–0.43 ms, Metal's allocation 565 MiB in both, and the warm first frame 1.64–1.72 s against 1.68–1.69 s. In this round the code before #1065 also measured a GPU P95 at the 3.3 ms budget rather than the 2.70 ms above, and CPU work up to 0.43 ms in some invocations: that drift is the machine's or an earlier change's, not #1065's, and is recorded for the next R1 review.
 
 **Counts per frame:** 119 instanced draws of 289 instances and 8.0 million triangles, over 4 passes; 5 shadow maps (the sun's four cascades and one spot map) with 94.5 shadow draws; 3 point and spot lights, none left out or unshadowed; 57 mesh renderers, all in view; 1 skinned instance (CesiumMan, 19 joints).
 

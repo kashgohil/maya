@@ -83,7 +83,8 @@ A script's hooks are the functions its table holds when it loads; functions adde
 
 Scripts reach the engine only through the read-only `maya` table and methods on entity values. Values cross as:
 - numbers, booleans, and strings;
-- Luau vectors (`vector.create(x, y, z)`, with the `vector` library);
+- Luau vectors (`vector.create(x, y, z)`, with the `vector` library), which are float: directions, offsets, velocities, and forces;
+- positions (since #1065, [below](#positions)), which are double;
 - quaternions;
 - entity values.
 
@@ -98,6 +99,7 @@ An entity value holds a persistent ID and is checked again on every use.
 | `input.down(key)`, `input.pressed(key)`, `input.released(key)` | This tick's keys: `A`–`Z`, `0`–`9`, `F1`–`F12`, `Space`, `Enter`, `Escape`, `Tab`, `Backspace`, `Left`, `Right`, `Up`, `Down`, `LeftShift`, `RightShift`, `LeftControl`, `RightControl`, `LeftAlt`, and `RightAlt`. |
 | `input.look()`, `input.scroll()` | Pointer movement (a vector) and scrolling for this tick. |
 | `quaternion.new(x, y, z, w)`, `quaternion.identity()`, `quaternion.from_axis_angle(axis, radians)` | Quaternions, which have fields `x`, `y`, `z`, `w`, the methods `rotate(vector)`, `normalized()`, and `inverse()`, and `*` to compose them. |
+| `position.new(x, y, z)` | A [position](#positions). |
 
 | Entity method | |
 | --- | --- |
@@ -109,6 +111,21 @@ An entity value holds a persistent ID and is checked again on every use.
 | `destroy()` | Queues the entity's removal, with everything below it. |
 
 Reads see the World as the previous tick committed it.
+
+### Positions
+
+Since [#1065](https://work.rezee.app/kash/issues/1065), world positions are double ([coordinates](architecture/runtime-world-contracts.md#coordinates)), and Luau's vectors are float, so positions have their own type. `position()`, `world_position()`, a hit's `point`, and a contact's `point` are positions; `set_position`, `maya.create`, `move_kinematic`, `teleport`, the queries' origins, and `maya.position.new` take them.
+
+```lua
+local me = self.entity:world_position()           -- a position: me.x is a double
+local to = target:world_position() - me           -- position - position: the offset, a vector
+self.entity:set_position(me + to * 0.1)           -- position + vector (or vector + position) is a position
+self.entity:set_position(vector.create(0, 1, 0))  -- a vector is accepted wherever a position is
+```
+
+- **Arithmetic.** `position - position` is a vector (the offset between them, small, so float is enough); `position + vector`, `vector + position`, and `position - vector` are positions. Positions compare with `==`, and `tostring` writes every digit (`position(11600.000001, 2, -3)`).
+- **Vectors where positions go.** Every call that takes a position also takes a vector, which widens exactly, so scripts written before #1065 keep working.
+- **The one change.** A position is not a vector: pass `p:to_vector()` (float, for values near the origin) or an offset (`p - origin`) to the `vector` library. A script that called `vector.magnitude(self.entity:position())` must now write `vector.magnitude(self.entity:position():to_vector())`.
 
 ## Bodies, queries, and events
 

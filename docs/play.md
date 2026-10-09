@@ -168,7 +168,7 @@ A click on the Game/Scene toggle in the viewport's corner never hands the input 
 - **The seed** the scripts ran with.
 - **The scene.** The document that was played, as scene-file text, saved or not, and the scene's path for messages.
 - **Asset versions.** A hash (FNV-1a 64) of each mesh and material file and each script's source that the scene names. For scripts, this is the version Play used, which in the editor is the last good one.
-- **The build and physics.** `recording_build()` is the revision, build type, sanitizers, and compiler. A build from uncommitted changes carries a hash of those changes, so two different dirty builds do not share a name. `recording_physics()` is Jolt's version and configuration and the collision steps.
+- **The build and physics.** `recording_build()` is the revision, build type, sanitizers, and compiler. A build from uncommitted changes carries a hash of those changes, so two different dirty builds do not share a name. `recording_physics()` is Jolt's version and configuration and the collision steps. Recordings made before #1065 name single-precision physics, so they still read, and their scenes load (`maya.transform` 1 migrates), but their replays are refused with that reason: double-precision physics gives other poses.
 - **Reloads.** Each script reload applied while recording, with its tick.
 - **Checkpoints.** A `state_hash` every 60 ticks, and `full_state_hash` after the last tick.
 

@@ -18,6 +18,7 @@ Each property's control comes from its schema descriptor:
 | scalar | Drag field, clamped to the schema range (an exclusive bound stays just inside it), with its unit (`m`). Radian properties (`rad`) show and edit degrees. |
 | vector3 | Three drag fields with red, green, and blue axis marks. |
 | vector2 | Two drag fields with red and green axis marks (a material's UV offset and scale, #1036). |
+| position | A transform's translation (#1065): three drag fields like a vector3's, holding doubles, so a typed coordinate keeps every digit it is given. |
 | vector3, color | Color editor (RGB with a swatch), allowing values above 1 (HDR). |
 | quaternion | Euler angles in degrees, rotation = Rz·Ry·Rx. They are kept stable during a drag so they do not jump at ±180°, and gimbal lock is handled. |
 | boolean | Checkbox. |
@@ -84,6 +85,8 @@ The gizmo sits on the primary selection when it has a transform. [ImGuizmo](http
 
 The keys work while the pointer is over the viewport and no control is active, so typing never switches tools. The keys to fly the camera only work while the right button is held ([input routing](editor.md#input-routing)).
 
+**Far from the origin** (#1065). ImGuizmo works in float, so it gets the entity's pose and the view relative to the camera, as the renderer draws them; the moved pose gets the camera's position back in double. Snapping is relative to where the drag began, so it does not depend on that frame. Picking casts its ray from the camera's position in double, moved to the snapshot's origin before it meets instances. Picking and dragging an object 100 km out behave as at the origin ([sweep](spatial.md#world-positions)).
+
 **Hierarchy.** The gizmo works on the entity's world matrix. Each change is converted back to a local transform, inverse(parent world) × new world, and must decompose into a valid positive-scale transform. A move always maps back. Some rotations under a rotated, nonuniformly scaled parent would need shear: they are refused, the entity stays where it was, and the Inspector says why. A drag is one undo step, "Move ⟨name⟩", "Rotate ⟨name⟩", or "Scale ⟨name⟩". A drag interrupted by the selection vanishing closes its group.
 
 ## Picking
@@ -122,5 +125,6 @@ That is fine for picking on click; a spatial acceleration structure is the next 
   - a 20-frame Inspector drag is one undo step that undo reverses;
   - typing an invalid near clip is refused with a reason and changes nothing;
   - a real gizmo drag along X moves only X, as one "Move" step;
+  - picking an object and dragging its gizmo moves it the same distance at 0, 1 km, 11.6 km, and 100 km from the origin (#1065);
   - gizmo matrices under a rotated, nonuniformly scaled parent map moves back and refuse shear;
   - tool keys work over the viewport, but not over the Hierarchy or while a field is being typed in.
