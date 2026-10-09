@@ -1,11 +1,13 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/renderer/shader_constants.hpp"
+#include "maya/renderer/visibility_index.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "support/hdr.hpp"
 #include "support/render_scene.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cstring>
+#include <random>
 #include <set>
 #include <unordered_map>
 
@@ -25,6 +27,8 @@ public:
         uint32_t index_buffer;
         std::string pipeline; // its label
         std::array<uint32_t, material_slots> textures; // bound per MaterialSlot, by native slot
+        uint32_t index_count = 0; // and the byte offset of the first: which level of detail it draws
+        size_t index_offset = 0;
     };
     struct Present {
         PresentConstants constants;
@@ -51,6 +55,7 @@ public:
         ShadowConstants shadow;
         DrawConstants constants;
         std::string pipeline;
+        uint32_t index_count = 0;
     };
     struct Call {
         std::string pipeline;
@@ -126,18 +131,19 @@ protected:
     }
     // Instanced draws (#1025) are recorded as one draw per instance, each with the transform its instance
     // number picks through the pass's order (buffer 4) from the view's instances (buffer 1).
-    void backend_draw_indexed(uint32_t slot, IndexType, uint32_t, size_t, uint32_t instances, uint32_t first) override {
+    void backend_draw_indexed(uint32_t slot, IndexType, uint32_t count, size_t offset, uint32_t instances, uint32_t first) override {
         const auto shadow = m_pipeline.ends_with("shadow caster");
         (shadow ? shadow_calls : draw_calls).push_back({m_pipeline, instances});
         for (uint32_t k = first; k < first + instances; ++k) {
             const auto index = read<uint32_t>(4, k * sizeof(uint32_t));
             const auto constants = read<DrawConstants>(1, index * sizeof(DrawConstants));
             if (shadow) {
-                shadow_draws.push_back({read<ShadowConstants>(2), constants, m_pipeline});
+                shadow_draws.push_back({read<ShadowConstants>(2), constants, m_pipeline, count});
                 continue;
             }
             sequence.push_back(m_pipeline);
-            draws.push_back({constants, read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot, m_pipeline, m_textures});
+            draws.push_back({constants, read<MaterialConstants>(3), read<ViewConstants>(2), m_bound.at(0).first, slot, m_pipeline, m_textures,
+                             count, offset});
         }
     }
 
@@ -1377,4 +1383,203 @@ TEST_CASE("Views and shadow maps draw one instanced draw per mesh and material i
     // Shadow maps: opaque casters by mesh alone, so at most two draws in each of the four cascades.
     CHECK(device.shadow_calls.size() <= 4 * 2);
     CHECK(device.shadow_draws.size() == renderer.stats().shadow_instances);
+}
+
+TEST_CASE("Extraction through the visibility index draws and shadows exactly what extraction of every renderer does", "[renderer][visibility]") {
+    CapturingDevice device({3, size_t{16} << 20});
+    TestProject project(device, {{"cube.mesh", unit_cube()}}, {{"red.material", red}});
+    const auto cube = project.add<MeshAsset>(1, "cube.mesh");
+    const auto material = project.add<MaterialAsset>(2, "red.material");
+    World world;
+    std::mt19937 random(1066);
+    auto real = [&](float low, float high) { return std::uniform_real_distribution<float>(low, high)(random); };
+    build_world(world, [&](WorldCommands& commands) {
+        // Small and large objects over 800 m, a sun whose cascades reach past the view, and a shadowed spot light.
+        for (int i = 0; i < 3000; ++i) {
+            auto entity = commands.create();
+            const auto size = i % 50 == 0 ? real(10, 40) : real(0.3f, 3.0f);
+            commands.add(entity, TransformComponent{{double(real(-400, 400)), double(real(0, 30)), double(real(-400, 400))},
+                                                    math::Quat::from_axis_angle({0, 1, 0}, real(-3, 3)), {size}});
+            commands.add(entity, MeshRendererComponent{cube, material, true});
+        }
+        auto sun = commands.create();
+        commands.add(sun, TransformComponent{{}, math::Quat::from_axis_angle(math::Vec3{1, 0.4f, 0}.normalized(), -0.9f), {1.0f}});
+        commands.add(sun, LightComponent{});
+        auto spot = LightComponent{};
+        spot.kind = LightKind::spot;
+        spot.range = 80.0f;
+        auto lamp = commands.create();
+        commands.add(lamp, TransformComponent{{10, 30, -10}, math::Quat::from_axis_angle({1, 0, 0}, -1.3f), {1.0f}});
+        commands.add(lamp, spot);
+    });
+    const auto view = make_render_view(camera_component, look_pose({0, 12, 40}, {15, 0, -40}), 320, 180);
+    REQUIRE(view);
+    auto every = RenderExtractOptions{};
+    every.origin = view->position;
+    const auto all = extract_render_snapshot(world, *project.registry, every);
+    REQUIRE(all.instances.size() == 3000);
+    auto index = VisibilityIndex(world);
+    auto indexed_options = every;
+    indexed_options.view = &*view;
+    indexed_options.index = &index;
+    indexed_options.cull_pixels = 0.0f; // the index alone
+    const auto indexed = extract_render_snapshot(world, *project.registry, indexed_options);
+    CHECK(indexed.stats.mesh_renderers == 3000);
+    CHECK(indexed.stats.visited == indexed.instances.size());
+    CHECK(indexed.stats.visited + indexed.stats.index_culled == 3000);
+    CHECK(indexed.instances.size() < 3000 / 2); // most are out of the view and its shadow maps
+
+    // Drawn the same: each view draw and each shadow draw, by its transform and its shadow map. (A sun
+    // cascade's depth is fitted to its casters, so a map is told by its extent across the light alone.)
+    auto renderer = Renderer(device, "test source");
+    auto target = RenderTarget(device);
+    REQUIRE_FALSE(target.resize(320, 180));
+    using Placed = std::array<float, 6>;
+    const auto draw = [&](const RenderSnapshot& snapshot) {
+        device.draws.clear();
+        device.shadow_draws.clear();
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(renderer.render(snapshot, *view, target));
+        REQUIRE_FALSE(device.end_frame());
+        auto drawn = std::vector<Placed>{}, shadowed = std::vector<Placed>{};
+        for (const auto& d : device.draws) drawn.push_back({d.constants.model.at(0, 3), d.constants.model.at(1, 3), d.constants.model.at(2, 3)});
+        for (const auto& d : device.shadow_draws)
+            shadowed.push_back({d.constants.model.at(0, 3), d.constants.model.at(1, 3), d.constants.model.at(2, 3),
+                                d.shadow.view_projection.at(0, 0), d.shadow.view_projection.at(0, 3), d.shadow.view_projection.at(1, 3)});
+        std::ranges::sort(drawn);
+        std::ranges::sort(shadowed);
+        return std::pair{drawn, shadowed};
+    };
+    const auto [all_drawn, all_shadowed] = draw(all);
+    const auto [indexed_drawn, indexed_shadowed] = draw(indexed);
+    CHECK(!all_drawn.empty());
+    // Casters outside the view still shadow it.
+    const auto in_view = [&](const Placed& caster) {
+        return std::ranges::any_of(all_drawn, [&](const Placed& d) { return d[0] == caster[0] && d[1] == caster[1] && d[2] == caster[2]; });
+    };
+    CHECK(std::ranges::count_if(all_shadowed, [&](const Placed& caster) { return !in_view(caster); }) > 0);
+    CHECK(indexed_drawn == all_drawn);
+    CHECK(indexed_shadowed == all_shadowed);
+    CHECK(renderer.last_view().shadow_casters > 0);
+}
+
+TEST_CASE("Extraction chooses levels of detail by their error on screen, with hysteresis, and culls by distance and size", "[renderer][visibility][lod]") {
+    CapturingDevice device({3, size_t{4} << 20});
+    auto geometry = unit_cube();
+    geometry.levels = {{0, 36, 0.0f}, {0, 24, 0.02f}, {0, 12, 0.08f}, {0, 6, 0.32f}}; // metres
+    TestProject project(device, {{"lod.mesh", geometry}});
+    const auto mesh = project.add<MeshAsset>(1, "lod.mesh");
+    World world;
+    const auto created = build_world(world, [&](WorldCommands& commands) {
+        auto entity = commands.create();
+        commands.add(entity, TransformComponent{{0, 0, -5}, {}, {1.0f}});
+        commands.add(entity, MeshRendererComponent{mesh, {}, true});
+        auto sun = commands.create();
+        commands.add(sun, TransformComponent{{}, math::Quat::from_axis_angle({1, 0, 0}, -1.0f), {1.0f}});
+        commands.add(sun, LightComponent{});
+    });
+    REQUIRE(project.registry->acquire(mesh));
+    const auto view = make_render_view(camera_component, look_pose({0, 0, 0}, {0, 0, -1}), 200, 200);
+    REQUIRE(view);
+    const auto pixels_per_metre = view_frame(RenderSnapshot{}, *view).matrices.projection.at(1, 1) * 100.0f;
+    const auto radius = std::sqrt(3.0f) * 0.5f;
+    auto index = VisibilityIndex(world);
+    auto options = RenderExtractOptions{};
+    options.view = &*view;
+    options.cull_pixels = 0.0f;
+    // `distance` from the eye to the nearest point of the cube's bounds.
+    const auto at = [&](float distance, MeshRendererComponent renderer = {}) {
+        auto commands = world.commands();
+        commands.set_transform(created[0], TransformComponent{{0, 0, -double(distance + radius)}, {}, {1.0f}});
+        if (renderer.mesh.valid()) commands.replace(created[0], renderer);
+        REQUIRE(world.commit(commands));
+        return extract_render_snapshot(world, *project.registry, options);
+    };
+    const auto level_at = [&](float distance) {
+        const auto snapshot = at(distance);
+        REQUIRE(snapshot.instances.size() == 1);
+        return snapshot.instances[0].level;
+    };
+    // Where a level's error is one pixel on screen.
+    const auto threshold = [&](size_t level) { return geometry.levels[level].error * pixels_per_metre; };
+
+    SECTION("Without an index, the coarsest level under a pixel, and shadows one coarser") {
+        for (size_t level = 1; level < geometry.levels.size(); ++level) {
+            CHECK(level_at(threshold(level) * 0.98f) == level - 1);
+            CHECK(level_at(threshold(level) * 1.02f) == level);
+        }
+        const auto near = at(threshold(1) * 1.5f);
+        CHECK(near.instances[0].level == 1);
+        CHECK(near.instances[0].shadow_level == 2);
+        CHECK(near.stats.levels[1] == 1);
+        const auto far = at(threshold(3) * 2.0f);
+        CHECK(far.instances[0].shadow_level == 3); // none coarser
+        // The view draws its level's indices, the shadow maps theirs.
+        auto renderer = Renderer(device, "test source");
+        auto target = RenderTarget(device);
+        REQUIRE_FALSE(target.resize(200, 200));
+        REQUIRE_FALSE(device.begin_frame());
+        REQUIRE_FALSE(renderer.render(near, *view, target));
+        REQUIRE_FALSE(device.end_frame());
+        REQUIRE(device.draws.size() == 1);
+        CHECK(device.draws[0].index_count == 24);
+        REQUIRE_FALSE(device.shadow_draws.empty());
+        for (const auto& shadow : device.shadow_draws) CHECK(shadow.index_count == 12);
+        CHECK(renderer.last_view().levels[1] == 1);
+    }
+    SECTION("With an index, coarser only below three quarters of a pixel, and finer above one") {
+        options.index = &index;
+        auto previous = level_at(0.5f);
+        CHECK(previous == 0);
+        auto coarser = std::vector<float>(geometry.levels.size(), 0.0f), finer = coarser;
+        for (auto distance = 0.5f; distance < threshold(3) * 1.6f; distance += 0.05f) {
+            const auto level = level_at(distance);
+            CHECK(level >= previous);
+            if (level != previous) coarser[level] = distance;
+            previous = level;
+        }
+        for (auto distance = threshold(3) * 1.6f; distance > 0.5f; distance -= 0.05f) {
+            const auto level = level_at(distance);
+            CHECK(level <= previous);
+            if (level != previous) finer[level] = distance;
+            previous = level;
+        }
+        for (size_t level = 1; level < geometry.levels.size(); ++level) {
+            INFO("level " << level);
+            CHECK(coarser[level] == Catch::Approx(threshold(level) / 0.75f).margin(0.06f));
+            CHECK(finer[level - 1] == Catch::Approx(threshold(level)).margin(0.06f));
+        }
+        // An entity not drawn in the last frame chooses afresh: drawn again after a hidden frame, the
+        // coarsest level under a pixel, where it would otherwise have kept the finest.
+        CHECK(previous == 0);
+        CHECK(at(threshold(1) * 1.1f, {mesh, {}, false}).instances.empty());
+        const auto again = at(threshold(1) * 1.1f, {mesh, {}, true});
+        REQUIRE(again.instances.size() == 1);
+        CHECK(again.instances[0].level == 1);
+    }
+    SECTION("Culled beyond its maximum distance, and below the smallest size on screen") {
+        options.index = &index;
+        auto limited = MeshRendererComponent{mesh, {}, true};
+        limited.max_distance = 20.0f;
+        CHECK(at(19.5f, limited).instances.size() == 1);
+        const auto beyond = at(20.5f, limited);
+        CHECK(beyond.instances.empty());
+        CHECK(beyond.stats.culled_distance == 1);
+        limited.max_distance = 0.0f; // none
+        CHECK(at(500.0f, limited).instances.size() == 1);
+        // Two pixels across: its bounding sphere's diameter.
+        options.cull_pixels = 2.0f;
+        const auto smallest = 2.0f * radius * pixels_per_metre / 2.0f;
+        CHECK(at(smallest * 0.98f).instances.size() == 1);
+        const auto small = at(smallest * 1.02f);
+        CHECK(small.instances.empty());
+        CHECK(small.stats.culled_small == 1);
+        options.cull_pixels = 0.0f;
+        CHECK(at(smallest * 1.02f).instances.size() == 1);
+        // Inside its bounds, nothing is culled and the finest level drawn.
+        options.cull_pixels = 1000.0f;
+        const auto inside = at(-0.2f);
+        REQUIRE(inside.instances.size() == 1);
+        CHECK(inside.instances[0].level == 0);
+    }
 }

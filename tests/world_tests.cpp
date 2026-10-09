@@ -604,3 +604,70 @@ TEST_CASE("Staging refuses a split hierarchy and changes nothing; edits name the
     CHECK(world.take_edits().empty());
     world.record_edits(false);
 }
+
+TEST_CASE("Change logs collect what commits, publishing, and staging touch, for each reader, and overflow to everything", "[world][changes]") {
+    World world;
+    const auto first = world.open_change_log();
+    auto commands = world.commands();
+    auto parent = commands.create();
+    commands.add(parent, TransformComponent{});
+    auto child = commands.create();
+    commands.add(child, TransformComponent{});
+    commands.reparent(child, parent, ReparentPolicy::keep_local);
+    const auto created = world.commit(commands);
+    REQUIRE(created);
+    const auto taken = world.take_changes(first);
+    CHECK_FALSE(taken.all);
+    for (const auto entity : created.created) CHECK(std::ranges::find(taken.entities, entity) != taken.entities.end());
+    CHECK(world.take_changes(first).entities.empty()); // taken once
+
+    // A second reader collects from when it opens; each takes its own.
+    const auto second = world.open_change_log();
+    auto move = world.commands();
+    move.set_transform(created.created[0], TransformComponent{{1, 0, 0}, {}, {1.0f}});
+    REQUIRE(world.commit(move));
+    CHECK(world.take_changes(first).entities == std::vector{created.created[0]}); // not the child: a reader walks below what moved
+    CHECK(world.take_changes(second).entities == std::vector{created.created[0]});
+
+    // Staging hides, publishing shows, and destroying ends: each is a change.
+    REQUIRE(world.stage(created.created, 7) == WorldError::none);
+    auto staged = world.take_changes(first).entities;
+    std::ranges::sort(staged);
+    auto expected = created.created;
+    std::ranges::sort(expected);
+    CHECK(staged == expected);
+    const auto shown = world.publish(7);
+    CHECK(world.take_changes(first).entities.size() == shown.size());
+    auto destroy = world.commands();
+    destroy.destroy(created.created[0]);
+    REQUIRE(world.commit(destroy));
+    CHECK(world.take_changes(first).entities.size() == 2); // the parent and the child below it
+
+    // A log that would hold more than the World's slots (at least 1,024) gives up its entries for `all`, and
+    // collects again once taken.
+    (void)world.take_changes(second);
+    for (int batch = 0; batch < 3; ++batch) {
+        auto many = world.commands();
+        for (int i = 0; i < 400; ++i) many.add(many.create(), TransformComponent{});
+        REQUIRE(world.commit(many));
+    }
+    const auto overflowed = world.take_changes(second);
+    CHECK(overflowed.all);
+    CHECK(overflowed.entities.empty());
+    CHECK(world.take_changes(first).all);
+    auto again = world.commands();
+    auto one = again.create();
+    again.add(one, TransformComponent{});
+    const auto last = world.commit(again);
+    REQUIRE(last);
+    const auto after = world.take_changes(second);
+    CHECK_FALSE(after.all);
+    REQUIRE_FALSE(after.entities.empty());
+    for (const auto entity : after.entities) CHECK(entity == last.created.front()); // once per command: created, then its transform
+
+    // Closed logs collect nothing; their numbers are reused.
+    world.close_change_log(second);
+    CHECK_THROWS_AS(world.take_changes(second), std::invalid_argument);
+    CHECK(world.open_change_log() == second);
+    world.close_change_log(first);
+}

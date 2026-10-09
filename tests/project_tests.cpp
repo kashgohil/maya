@@ -273,3 +273,39 @@ TEST_CASE("Projects may set their resident-memory budgets and cook cache limit, 
     refused("cook_cache_limit -1\n", "from 0 to 1048576");
     refused("resident_total 100\nresident_total 200\n", "'resident_total' is set twice");
 }
+
+TEST_CASE("Projects may scale where levels of detail change and set the smallest size drawn", "[assets][project][lod]") {
+    const auto header = std::string("maya-project 1\ncontent \".\"\ncatalog \"catalog.maya\"\n");
+    const auto defaults = parse(header);
+    REQUIRE(defaults);
+    CHECK_FALSE(defaults.settings.lod_bias);
+    CHECK_FALSE(defaults.settings.cull_pixels);
+    // Unset: a level's error under one pixel, and nothing under two pixels across (#1060).
+    CHECK(project_lod_pixels(defaults.settings) == 1.0f);
+    CHECK(project_cull_pixels(defaults.settings) == 2.0f);
+
+    const auto set = parse(header + "lod_bias 2.5\ncull_pixels 0\n");
+    REQUIRE(set);
+    CHECK(project_lod_pixels(set.settings) == 2.5f);
+    CHECK(project_cull_pixels(set.settings) == 0.0f); // off
+    auto written = std::ostringstream{};
+    write_project(written, set.settings);
+    CHECK(written.str() == header + "lod_bias 2.5\ncull_pixels 0\n");
+    const auto again = parse(written.str());
+    CHECK(again.settings.lod_bias == set.settings.lod_bias);
+    CHECK(again.settings.cull_pixels == set.settings.cull_pixels);
+
+    const auto refused = [&](const std::string& lines, std::string_view why) {
+        const auto result = parse(header + lines);
+        INFO(lines);
+        CHECK_FALSE(result);
+        CHECK(result.error.find(why) != std::string::npos);
+    };
+    refused("lod_bias 0.2\n", "from 0.25 to 8");
+    refused("lod_bias 9\n", "from 0.25 to 8");
+    refused("lod_bias fine\n", "from 0.25 to 8");
+    refused("cull_pixels -1\n", "from 0 to 64");
+    refused("cull_pixels 65\n", "from 0 to 64");
+    refused("cull_pixels nan\n", "from 0 to 64");
+    refused("lod_bias 1\nlod_bias 2\n", "'lod_bias' is set twice");
+}

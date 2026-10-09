@@ -136,6 +136,8 @@ stream_load on
 TEST_CASE("Repeated instances share one mesh and material, and every instance is counted", "[benchmark]") {
     auto device = Device{};
     auto manifest = small(Workload::instances);
+    manifest.width = 640; // large enough that every cube covers more than the 2 px the view culls below (#1066)
+    manifest.height = 360;
     const auto result = run(manifest, device, "renderer");
     INFO(result.failure);
     REQUIRE(result.failure.empty());
@@ -188,6 +190,7 @@ TEST_CASE("Repeated instances share one mesh and material, and every instance is
 
     // More instances than the upload memory can hold fail with the reason, not silently.
     manifest.count = 80000; // 112 bytes each and 4 for their order is more than 8 MiB
+    manifest.spacing = 0.05f; // all of them in view, so none is culled before upload (#1066)
     const auto overflow = run(manifest, device, "renderer");
     CHECK(has(overflow.failure, "upload"));
     CHECK(has(to_json(overflow), "\"succeeded\":false"));

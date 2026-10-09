@@ -20,6 +20,7 @@ namespace maya::test {
 struct Geometry {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<MeshLevel> levels; // none: one level, every index
 };
 
 /// Unit cube (half extent 0.5), one normal per face, counter-clockwise seen from outside.
@@ -75,7 +76,8 @@ public:
         ++*m_loads;
         const auto found = m_meshes.find(path.filename().string());
         if (found == m_meshes.end()) return {{}, {AssetError::invalid_data, "no inline mesh " + path.string()}};
-        auto mesh = std::make_unique<Mesh>(m_device, found->second.vertices, found->second.indices);
+        auto mesh = std::make_unique<Mesh>(m_device, found->second.vertices, found->second.indices, std::span<const SkinVertex>{},
+                                           found->second.levels);
         if (!mesh->valid()) return {{}, {AssetError::device_unavailable, "mesh upload failed"}};
         return {std::make_shared<const MeshAsset>(std::move(mesh),
                     MeshGeometry::from(found->second.vertices, found->second.indices)), {}};

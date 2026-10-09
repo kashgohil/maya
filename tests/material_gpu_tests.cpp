@@ -29,7 +29,7 @@ Geometry textured_quad(bool mirrored = false) {
     for (const auto i : {0, 1, 2, 0, 2, 3}) list.push_back(corners[i]);
     REQUIRE(generate_tangents(list));
     auto welded = weld_vertices(list);
-    return {std::move(welded.vertices), std::move(welded.indices)};
+    return {std::move(welded.vertices), std::move(welded.indices), {}};
 }
 
 uint8_t encode(double value) { return uint8_t(std::lround(std::clamp(value, 0.0, 1.0) * 255.0)); }

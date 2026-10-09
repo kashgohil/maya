@@ -816,3 +816,40 @@ TEST_CASE("Version 1 lights load with point and spot intensities converted from 
     for (const auto& property : component_schema("maya.light")->properties)
         CHECK(property.since == (property.id >= PropertyId(8) ? 2u : 1u));
 }
+
+TEST_CASE("Version 1 mesh renderers load with no maximum distance, and save as version 2", "[scene][lod]") {
+    Project project;
+    // A mesh renderer written before #1066: no max_distance.
+    const auto v1 = std::string("maya-scene 1\nentity 1 1\n  component maya.mesh_renderer 1\n    mesh 6d617961 1\n"
+                                "    material none\n    visible true\nend\n");
+    const auto loaded = read_scene(std::string_view(v1), project.context());
+    REQUIRE(loaded);
+    const auto& renderer = std::get<MeshRendererComponent>(loaded.document.entities.front().components.front());
+    CHECK(renderer.mesh == tree_mesh);
+    CHECK(renderer.max_distance == 0.0f); // none
+    const auto saved = encode(loaded.document, project.context());
+    CHECK(saved.find("component maya.mesh_renderer 2\n") != std::string::npos);
+    CHECK(saved.find("    max_distance 0\n") != std::string::npos);
+
+    // Version 2 values round-trip.
+    auto document = loaded.document;
+    std::get<MeshRendererComponent>(document.entities.front().components.front()).max_distance = 250.5f;
+    const auto text = encode(document, project.context());
+    CHECK(text.find("    max_distance 250.5\n") != std::string::npos);
+    const auto again = read_scene(std::string_view(text), project.context());
+    REQUIRE(again);
+    CHECK(std::get<MeshRendererComponent>(again.document.entities.front().components.front()).max_distance == 250.5f);
+
+    const auto refused = [&](const std::string& bad, SceneError code, const std::string& excerpt) {
+        const auto result = read_scene(std::string_view(bad), project.context());
+        INFO(bad);
+        REQUIRE_FALSE(result);
+        CHECK(result.diagnostics.front().code == code);
+        CHECK(result.diagnostics.front().message.find(excerpt) != std::string::npos);
+    };
+    refused(replace(text, "max_distance 250.5", "max_distance -1"), SceneError::invalid_value, "max_distance");
+    refused(replace(v1, "    visible true\n", "    visible true\n    max_distance 5\n"), SceneError::unknown_property, "maya.mesh_renderer version 1");
+    refused(replace(text, "    max_distance 250.5\n", ""), SceneError::missing_property, "'max_distance'; version 2");
+    for (const auto& property : component_schema("maya.mesh_renderer")->properties)
+        CHECK(property.since == (property.name == "max_distance" ? 2u : 1u));
+}

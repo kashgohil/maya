@@ -4,6 +4,8 @@
 
 #include "r1.hpp"
 #include "maya/assets/cook_cache.hpp"
+#include "maya/assets/project.hpp"
+#include "maya/renderer/visibility_index.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
 #include "maya/simulation/play_session.hpp"
@@ -13,6 +15,7 @@
 #include "maya/core/file_system.hpp"
 #include "support/metal_view.hpp"
 #include <array>
+#include <functional>
 #include <sstream>
 #include <catch2/catch_test_macros.hpp>
 #include "maya/core/system_info.hpp"
@@ -33,6 +36,8 @@ struct R1 {
     std::unique_ptr<AssetRegistry> registry;
     std::unique_ptr<PlaySession> session;
     SkinBindingCache skins;
+    std::unique_ptr<VisibilityIndex> index; // of the session's World, as the player keeps one (#1066)
+    float lod_pixels = 1.0f, cull_pixels = 2.0f; // the project's
     explicit R1(GraphicsDevice& device, const math::DVec3& offset = {}) {
         auto opened = open_project(r1_folder());
         REQUIRE(opened);
@@ -40,6 +45,8 @@ struct R1 {
                                           std::make_unique<FileAssetProvider>(device, std::make_shared<CookCache>(cook_cache_folder(opened.project))));
         REQUIRE(assets);
         registry = std::move(assets.registry);
+        lod_pixels = project_lod_pixels(opened.project.settings);
+        cull_pixels = project_cull_pixels(opened.project.settings);
         const auto context = asset_property_context(*registry);
         auto loaded = load_scene_file(*opened.project.startup_scene, context);
         REQUIRE(loaded);
@@ -51,15 +58,29 @@ struct R1 {
         session = std::move(started.session);
         session->clock().pause();
     }
-    /// Runs ticks until `tick` ticks have completed.
-    void run_to(uint64_t tick) {
+    /// Runs ticks until `tick` ticks have completed, calling `each` after every one.
+    void run_to(uint64_t tick, const std::function<void()>& each = {}) {
         while (session->clock().tick() < tick) {
             session->clock().step();
             const auto frame = session->update(0.0);
             REQUIRE(frame.error.empty());
             for (const auto& message : frame.messages) UNSCOPED_INFO(message.text);
             REQUIRE(frame.messages.empty());
+            if (each) each();
         }
+    }
+    /// What the player extracts for `view` (#1066): through the session World's visibility index, with the
+    /// project's levels of detail and culls.
+    RenderExtractOptions player_options(const RenderView& view) {
+        if (!index) index = std::make_unique<VisibilityIndex>(session->world());
+        auto options = RenderExtractOptions{};
+        options.skins = &skins;
+        options.origin = view.position;
+        options.view = &view;
+        options.index = index.get();
+        options.lod_pixels = lod_pixels;
+        options.cull_pixels = cull_pixels;
+        return options;
     }
     RgbImage render(Gpu& gpu, EntityId camera) {
         const auto& world = session->world();
@@ -67,9 +88,7 @@ struct R1 {
         REQUIRE(handle);
         auto view = extract_render_view(world, *handle, width, height);
         REQUIRE(view);
-        auto options = RenderExtractOptions{};
-        options.skins = &skins;
-        return gpu.render(world, *registry, *view, options);
+        return gpu.render(world, *registry, *view, player_options(*view));
     }
     EntityId path_camera() const {
         auto found = std::optional<EntityId>{};
@@ -156,6 +175,10 @@ TEST_CASE("R1 shows the same image in the editor's Play as in the player, along 
     auto* play = shell.play_session();
     REQUIRE(play);
     play->clock().pause();
+    // Everything loaded before the first tick, so each frame draws all it sees, as the player's side below
+    // does: a level of detail depends on the frames before (hysteresis, docs/renderer.md#levels-of-detail).
+    preload_render_assets(play->world(), *shell.assets());
+    shell.assets()->wait_idle();
     while (play->clock().tick() < tick) {
         play->clock().step();
         frame();
@@ -172,15 +195,22 @@ TEST_CASE("R1 shows the same image in the editor's Play as in the player, along 
     const auto view_width = shell.viewport().width(), view_height = shell.viewport().height();
     const auto left = uint32_t(layout.viewport_min.x), top = uint32_t(layout.viewport_min.y); // points are pixels at scale 1
     REQUIRE(uint32_t(layout.viewport_max.x) - left == view_width);
-    // The player's path at the same size and tick.
+    // The player's path at the same size and tick, extracting once a tick as the editor drew a frame.
     auto r1 = R1(device);
-    r1.run_to(tick);
+    const auto camera = r1.path_camera();
+    const auto view_at = [&] {
+        const auto& world = r1.session->world();
+        auto view = extract_render_view(world, *world.find(camera), view_width, view_height);
+        REQUIRE(view);
+        return *view;
+    };
+    r1.run_to(tick, [&] {
+        const auto view = view_at();
+        (void)extract_render_snapshot(r1.session->world(), *r1.registry, r1.player_options(view));
+    });
     const auto& world = r1.session->world();
-    auto view = extract_render_view(world, *world.find(r1.path_camera()), view_width, view_height);
-    REQUIRE(view);
-    auto options = RenderExtractOptions{};
-    options.skins = &r1.skins;
-    const auto player = gpu.render(world, *r1.registry, *view, options);
+    const auto view = view_at();
+    const auto player = gpu.render(world, *r1.registry, view, r1.player_options(view));
     // Between the Game view's tool bar and its "Click to play" hint, every pixel the same.
     // MAYA_R1_DIFF=<folder> writes both images and their difference when they are not.
     auto differing = size_t{0}, compared = size_t{0};

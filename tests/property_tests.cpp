@@ -63,9 +63,10 @@ TEST_CASE("Property schemas have stable identities, discoverable defaults, and t
         REQUIRE(ids.insert(schema.id).second);
         REQUIRE(names.insert(schema.name).second);
         // Every schema is version 1 except the camera's (2: exposure and tone mapping, #1032), the
-        // light's (2: candela and shadows, #1034), and the transform's (2: a double translation, #1065).
+        // light's (2: candela and shadows, #1034), the transform's (2: a double translation, #1065), and the
+        // mesh renderer's (2: a maximum draw distance, #1066).
         REQUIRE(schema.version == (schema.id == ComponentId::camera || schema.id == ComponentId::light ||
-                                   schema.id == ComponentId::transform ? 2u : 1u));
+                                   schema.id == ComponentId::transform || schema.id == ComponentId::mesh_renderer ? 2u : 1u));
         for (const auto& property : schema.properties) REQUIRE((property.since >= 1 && property.since <= schema.version));
         REQUIRE(component_schema(schema.name) == &schema);
         auto value = default_component(schema.id);

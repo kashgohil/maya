@@ -1,7 +1,7 @@
 maya-benchmark 1
-# I1 at 10,000 instances with the camera close to the grid, so only a fixed subset is in view. The
-# renderer does not cull yet, so it still submits every instance; counters.centers_in_view records
-# how many a frustum test would keep.
+# I1 at 10,000 instances with the camera close to the grid, so only a fixed subset is in view. Since
+# #1066 extraction visits only what the visibility index returns for the view (counters.visited and
+# counters.index_culled); counters.centers_in_view records how many the view then draws.
 name "i1-10k-subset"
 workload instances
 project "../samples/basic_scene"

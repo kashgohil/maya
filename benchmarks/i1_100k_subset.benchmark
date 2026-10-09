@@ -1,0 +1,20 @@
+maya-benchmark 1
+# I1 at 100,000 instances with the camera where i1-10k-subset has it, so the same few hundred are in
+# view of ten times as many (#1066): extraction visits what the visibility index returns, so its cost
+# follows what is visible rather than the instance count. Compare counters.visited and the extract
+# times with i1-10k-subset's.
+name "i1-100k-subset"
+workload instances
+project "../samples/basic_scene"
+mesh 6d617961 2
+material 6d617961 11
+count 100000
+rotating 0.1
+spacing 1.5
+seed 990
+camera 0 4 12 0 0 0
+resolution 1920 1080
+upload_mib 128
+warmup 300
+samples 3000
+runs 3

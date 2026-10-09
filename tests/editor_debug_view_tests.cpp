@@ -27,7 +27,7 @@ size_t debug_pipelines(const Harness& harness) {
 constexpr auto every_view = std::array{DebugView::none, DebugView::luminance, DebugView::false_color, DebugView::base_color,
                                        DebugView::normals, DebugView::shading_normals, DebugView::metallic, DebugView::roughness,
                                        DebugView::occlusion, DebugView::emissive, DebugView::direct_light, DebugView::environment_light,
-                                       DebugView::lighting, DebugView::cascades, DebugView::texels};
+                                       DebugView::lighting, DebugView::cascades, DebugView::texels, DebugView::lod};
 } // namespace
 
 TEST_CASE("Debug views have stable names, and preferences keep one of them", "[editor][debug-views]") {
@@ -76,7 +76,7 @@ TEST_CASE("Debug views come from the eye menu one at a time, are saved, and buil
     // A new editor starts with the last one chosen.
     Harness again;
     again.shell.use_preferences_file(file);
-    CHECK(again.shell.debug_view() == DebugView::texels);
+    CHECK(again.shell.debug_view() == DebugView::lod);
     again.frames(2);
     press(again, control(again, "tool.physics-debug"));
     again.frames(2);
@@ -84,4 +84,19 @@ TEST_CASE("Debug views come from the eye menu one at a time, are saved, and buil
     again.frames(2);
     CHECK(again.shell.debug_view() == DebugView::none);
     fs::remove_all(folder);
+}
+
+TEST_CASE("The viewport draws through the visibility index, and Diagnostics counts what it left out and each level drawn", "[editor][lod]") {
+    Harness harness;
+    harness.frames(3);
+    const auto& extraction = harness.shell.extraction();
+    const auto& view = harness.shell.view_report();
+    REQUIRE(extraction.mesh_renderers > 0);
+    CHECK(extraction.visited > 0);
+    // Every mesh renderer is visited, left out by the index, or hidden; each drawn instance is at one level.
+    CHECK(extraction.visited + extraction.index_culled + extraction.hidden == extraction.mesh_renderers);
+    CHECK(view.drawn > 0);
+    auto by_level = size_t{0};
+    for (const auto count : view.levels) by_level += count;
+    CHECK(by_level == view.drawn);
 }

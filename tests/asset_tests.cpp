@@ -1,3 +1,4 @@
+#include "maya/assets/asset_cooker.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "maya/world/world.hpp"
@@ -593,4 +594,51 @@ TEST_CASE("A load kept for no one since a boundary is cancelled, not left to arr
     registry.evict_unused(later);
     CHECK(registry.info(refs[0].id)->state == AssetState::loading);
     registry.wait_idle();
+}
+
+TEST_CASE("Meshes cook into levels of detail that halve, record their error, and come out the same every time", "[assets][lod]") {
+    auto cooker = AssetCooker{};
+    const auto sphere = std::filesystem::path(MAYA_SOURCE_DIR) / "samples/basic_scene/assets/sphere.obj";
+    auto cooked = cooker.mesh(sphere);
+    REQUIRE(cooked);
+    const auto& mesh = *cooked.value;
+    REQUIRE(mesh.levels.size() >= 4);
+    CHECK(mesh.levels.size() <= max_mesh_levels);
+    CHECK(mesh.levels.front() == MeshLevel{0, 2208 * 3, 0.0f}); // level 0 is the whole sphere
+    for (size_t i = 1; i < mesh.levels.size(); ++i) {
+        INFO("level " << i << ": " << mesh.levels[i].index_count / 3 << " triangles, error " << mesh.levels[i].error);
+        const auto& level = mesh.levels[i];
+        const auto& finer = mesh.levels[i - 1];
+        CHECK(level.first_index == finer.first_index + finer.index_count); // stored one after another
+        CHECK(level.index_count <= finer.index_count * 6 / 10); // about half, never more than 60%
+        CHECK(level.index_count >= 8 * 3);
+        CHECK(level.error > finer.error); // coarser strays further
+        CHECK(level.error < 1.0f); // the unit sphere's levels stay near it
+        for (auto j = level.first_index; j < level.first_index + level.index_count; ++j) CHECK(mesh.indices[j] < mesh.vertices.size());
+    }
+    CHECK(mesh.indices.size() == size_t(mesh.levels.back().first_index + mesh.levels.back().index_count));
+    // Deterministic, and through the cooked form unchanged.
+    auto again = cooker.mesh(sphere);
+    REQUIRE(again);
+    CHECK(again.value->indices == mesh.indices);
+    CHECK(again.value->levels == mesh.levels);
+    const auto read = read_cooked_mesh(write_cooked_mesh(mesh));
+    REQUIRE(read);
+    CHECK(read->levels == mesh.levels);
+    CHECK(read->indices == mesh.indices);
+    // A level outside the indices, or of partial triangles, is refused.
+    auto broken = mesh;
+    broken.levels.back().index_count += 3;
+    CHECK_FALSE(read_cooked_mesh(write_cooked_mesh(broken)));
+    // Too small to simplify: a cube keeps one level.
+    auto cube = cooker.mesh(std::filesystem::path(MAYA_SOURCE_DIR) / "samples/basic_scene/assets/cube.obj");
+    REQUIRE(cube);
+    CHECK(cube.value->levels.empty());
+    // Uploaded, a mesh draws any level and keeps the full mesh for picking.
+    CountingDevice device;
+    const auto uploaded = upload_mesh(device, mesh);
+    REQUIRE(uploaded.value);
+    CHECK(uploaded.value->mesh().levels().size() == mesh.levels.size());
+    CHECK(uploaded.value->geometry().indices.size() == 2208 * 3);
+    CHECK(uploaded.value->mesh().index_count() == 2208 * 3);
 }

@@ -392,6 +392,132 @@ TEST_CASE("The material test scene in every debug view matches its references", 
                             fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs", images);
 }
 
+TEST_CASE("Levels of detail draw within a pixel of the full mesh where they are chosen, and the LOD view shows which is drawn", "[visual][gpu][lod]") {
+    const auto project = open_project(sample_project());
+    REQUIRE(project);
+    Gpu gpu;
+    auto assets = open_project_assets(project.project, std::make_unique<FileAssetProvider>(gpu.device));
+    REQUIRE(assets);
+    auto& registry = *assets.registry;
+    const auto sphere = AssetRef<MeshAsset>{{0x6d617961, 5}};
+    const auto material = AssetRef<MaterialAsset>{{0x6d617961, 0x70}};
+    const auto loaded = registry.acquire(sphere);
+    REQUIRE(loaded);
+    const auto levels = std::vector<MeshLevel>(loaded.lease.value().mesh().levels().begin(), loaded.lease.value().mesh().levels().end());
+    REQUIRE(levels.size() == max_mesh_levels);
+    const auto& geometry = loaded.lease.value().geometry();
+    const auto bounds_radius = (geometry.max - geometry.min).length() * 0.5f;
+
+    World world;
+    auto spheres = std::vector<EntityHandle>{};
+    const auto place = [&](const std::vector<math::DVec3>& centres) {
+        auto commands = world.commands();
+        for (const auto entity : spheres) commands.destroy(entity);
+        for (const auto& centre : centres) {
+            auto entity = commands.create();
+            commands.add(entity, TransformComponent{centre, {}, {1.0f}});
+            commands.add(entity, MeshRendererComponent{sphere, material, true});
+        }
+        auto result = world.commit(commands);
+        REQUIRE(result);
+        spheres = result.created;
+    };
+    {
+        auto commands = world.commands();
+        auto sun = commands.create();
+        commands.add(sun, TransformComponent{{}, math::Quat::from_axis_angle(math::Vec3{1, 0.5f, 0}.normalized(), -0.8f), {1.0f}});
+        commands.add(sun, LightComponent{});
+        REQUIRE(world.commit(commands));
+    }
+    auto view = make_render_view(CameraComponent{}, math::Mat4::identity(), 512, 288); // at the origin, looking down -z
+    REQUIRE(view);
+    const auto pixels_per_metre = view_frame(RenderSnapshot{}, *view).matrices.projection.at(1, 1) * 144.0f;
+    auto options = RenderExtractOptions{};
+    options.view = &*view;
+    options.cull_pixels = 0.0f;
+    const auto chosen = [&](float lod_pixels) {
+        auto extract = options;
+        extract.lod_pixels = lod_pixels;
+        extract.origin = view->position;
+        auto chosen_levels = std::vector<uint8_t>{};
+        for (const auto& instance : extract_render_snapshot(world, registry, extract).instances) chosen_levels.push_back(instance.level);
+        return chosen_levels;
+    };
+
+    // Each coarser level where it is first chosen, against the whole mesh there: the silhouette within a pixel
+    // of it everywhere, and the shading close. (Measured: 7 to 40 outline pixels change, none by more than a
+    // pixel; the shading by 0.25 of 255 on average at level 1 to 7 at level 5, where the sphere is 6 px across.)
+    for (size_t level = 1; level < levels.size(); ++level) {
+        INFO("level " << level << ", error " << levels[level].error << " m");
+        const auto distance = levels[level].error * pixels_per_metre * 1.02f; // the bounds' nearest point
+        place({{0.0, 0.0, -double(distance + bounds_radius)}});
+        REQUIRE(chosen(1.0f) == std::vector<uint8_t>{uint8_t(level)});
+        REQUIRE(chosen(1e-6f) == std::vector<uint8_t>{0});
+        auto coarse_options = options;
+        auto full_options = options;
+        full_options.lod_pixels = 1e-6f; // every level's error is more than that: the whole mesh
+        const auto coarse = gpu.render(world, registry, *view, coarse_options);
+        const auto full = gpu.render(world, registry, *view, full_options);
+        const auto at = [&](const RgbImage& image, int x, int y) { return &image.rgb[(size_t(y) * image.width + size_t(x)) * 3]; };
+        const auto background = at(full, 0, 0);
+        const auto covered = [&](const RgbImage& image, int x, int y) {
+            const auto* p = at(image, x, y);
+            return std::abs(int(p[0]) - int(background[0])) + std::abs(int(p[1]) - int(background[1])) + std::abs(int(p[2]) - int(background[2])) > 12;
+        };
+        const auto near = [&](const RgbImage& image, int x, int y, bool value) { // within a pixel
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const auto nx = std::clamp(x + dx, 0, int(image.width) - 1), ny = std::clamp(y + dy, 0, int(image.height) - 1);
+                    if (covered(image, nx, ny) == value) return true;
+                }
+            return false;
+        };
+        auto silhouette = size_t{0}, displaced = size_t{0}, inside = size_t{0};
+        auto shading = 0.0;
+        for (int y = 0; y < int(full.height); ++y)
+            for (int x = 0; x < int(full.width); ++x) {
+                const auto a = covered(coarse, x, y), b = covered(full, x, y);
+                if (a != b) {
+                    ++silhouette;
+                    if (!near(full, x, y, a)) ++displaced;
+                } else if (a) {
+                    ++inside;
+                    for (int c = 0; c < 3; ++c) shading += std::abs(int(at(coarse, x, y)[c]) - int(at(full, x, y)[c]));
+                }
+            }
+        const auto mean = shading / double(std::max<size_t>(inside, 1) * 3);
+        INFO("silhouette pixels changed " << silhouette << ", farther than a pixel " << displaced << ", mean shading difference " << mean);
+        CHECK(inside > 20);
+        CHECK(displaced == 0);
+        CHECK(mean < 8.0); // 3% of the range: the coarse mesh's normals interpolate over larger triangles
+    }
+
+    // The LOD view: a field of spheres 2 m across, to 240 m away, in bands of the level each draws. The
+    // threshold is a quarter of a pixel (a project's lowest lod_bias), so the bands are far enough apart to
+    // see from above: a level's size on screen where it is chosen does not depend on the sphere's size.
+    auto centres = std::vector<math::DVec3>{};
+    for (int row = 0; row < 60; ++row)
+        for (int column = -10; column <= 10; ++column) centres.push_back({double(column) * 3.5, 0.0, -4.0 - double(row) * 4.0});
+    place(centres);
+    const auto pose = inverse_affine(math::Mat4::look_at({0.0f, 3.0f, 0.0f}, {0.0f, -2.0f, -25.0f}, {0.0f, 1.0f, 0.0f}));
+    REQUIRE(pose);
+    auto field = make_render_view(CameraComponent{}, *pose, 512, 288);
+    REQUIRE(field);
+    options.view = &*field;
+    options.lod_pixels = 0.25f;
+    auto counted = options;
+    counted.origin = field->position;
+    const auto snapshot = extract_render_snapshot(world, registry, counted);
+    for (size_t level = 0; level < levels.size(); ++level) {
+        INFO("level " << level);
+        CHECK(snapshot.stats.levels[level] > 0);
+    }
+    field->debug_view = DebugView::lod;
+    const auto images = std::vector<std::pair<std::string, RgbImage>>{{"lod", gpu.render(world, registry, *field, options)}};
+    compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/debug-views",
+                            fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs", images);
+}
+
 TEST_CASE("Resizing, reloading, and play resets settle at a steady state without stale handles", "[acceptance][gpu]") {
     Gpu gpu;
     const auto project = open_project(sample_project());
