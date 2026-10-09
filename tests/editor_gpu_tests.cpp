@@ -1,6 +1,7 @@
 #include "editor_shell.hpp"
 #include "maya/core/file_system.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
+#include "support/metal_view.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <cstdlib>
@@ -141,5 +142,86 @@ TEST_CASE("Metal editor draws docked panels and the scene viewport at Retina sca
     }
     device.wait_idle();
     CHECK(device.take_gpu_errors().empty());
+    device.shutdown();
+}
+
+TEST_CASE("The Residency panel matches its reference", "[gpu][editor][visual][residency]") {
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr, {3, size_t{16} << 20}));
+    {
+        const auto read = [](const char* relative) {
+            auto file = std::ifstream(*FileSystem::resolve(relative), std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(file), {});
+        };
+        auto shell = EditorShell(device, FileSystem::read_text("resources/shaders/metal/renderer.metal"),
+                                 FileSystem::read_text("resources/shaders/metal/editor_ui.metal"), {},
+                                 {read("resources/fonts/Inter-Regular.ttf"), read("resources/fonts/Inter-SemiBold.ttf"),
+                                  read("resources/fonts/GeistMono-Regular.ttf"), read("resources/fonts/Phosphor-Light.ttf")});
+        const auto project = FileSystem::resolve("samples/basic_scene/project.maya");
+        REQUIRE(project);
+        REQUIRE(shell.open_project(*project));
+        // Fixed figures: the platform's (Metal's allocation, the process's footprint) change from run to run.
+        constexpr auto mib = size_t{1} << 20;
+        auto figures = EditorShell::ResidencyFigures{};
+        figures.report.budgets = default_residency_budgets();
+        figures.report.bytes[size_t(ResidencyCategory::meshes)] = {12 * mib, 96 * mib};
+        figures.report.bytes[size_t(ResidencyCategory::textures)] = {0, 812 * mib}; // over its 768 MiB
+        figures.report.bytes[size_t(ResidencyCategory::environments)] = {0, 48 * mib};
+        figures.report.bytes[size_t(ResidencyCategory::animation)] = {3 * mib, 0};
+        figures.report.bytes[size_t(ResidencyCategory::cells)] = {14 * mib, 0};
+        figures.report.bytes[size_t(ResidencyCategory::other)] = {mib / 4, 0};
+        figures.report.bytes[size_t(ResidencyCategory::renderer)] = {0, 150 * mib};
+        figures.report.tracked_gpu = 1106 * mib;
+        figures.report.unattributed_gpu = 0;
+        figures.report.upload_gpu = 48 * mib;
+        figures.report.reported_gpu = 1190 * mib;
+        figures.report.footprint = 1420 * mib;
+        figures.largest = {{"models/FlightHelmet/textures/lenses_basecolor.png#color", ResidencyCategory::textures, {0, 85 * mib}, true},
+                           {"textures/terrain_albedo.texture", ResidencyCategory::textures, {0, 64 * mib}, true},
+                           {"environments/workshop.environment", ResidencyCategory::environments, {0, 48 * mib}, true},
+                           {"models/Sponza.gltf#mesh/0/12", ResidencyCategory::meshes, {2 * mib, 18 * mib}, false}};
+        figures.release.released = 37;
+        figures.release.released_for_budget = 12;
+        figures.release.over_budget[size_t(ResidencyCategory::textures)] = true;
+        figures.viewport_versions = 41;
+        figures.viewport_bytes = 960 * mib;
+        figures.loading = 2;
+        figures.ready = 1;
+        // Tall, so the bottom panels' share (28%) shows the whole panel.
+        auto metrics = WindowMetrics{1200, 3400, 2400, 6800};
+        auto window = device.create_texture({metrics.framebuffer_width, metrics.framebuffer_height, Format::bgra8_unorm,
+                                             TextureUsage::render_target | TextureUsage::readback, "window"});
+        REQUIRE(window);
+        const auto frames = [&](int count) {
+            for (int frame = 0; frame < count; ++frame) {
+                shell.update(1.0f / 60.0f, {}, metrics);
+                REQUIRE_FALSE(device.begin_frame());
+                REQUIRE_FALSE(shell.render(window.handle));
+                REQUIRE_FALSE(device.end_frame());
+            }
+        };
+        frames(3); // the dock layout is built first
+        shell.pin_residency(figures);
+        shell.show_residency();
+        frames(4);
+        auto pixels = std::vector<std::byte>{};
+        REQUIRE_FALSE(device.read_texture(window.handle, pixels));
+        const auto panel = shell.layout().control("residency.panel");
+        REQUIRE(panel);
+        // The panel, in framebuffer pixels (2x).
+        const auto left = uint32_t(panel->min.x * 2.0f), top = uint32_t(panel->min.y * 2.0f);
+        const auto width = uint32_t((panel->max.x - panel->min.x) * 2.0f), height = uint32_t((panel->max.y - panel->min.y) * 2.0f);
+        REQUIRE(width > 0);
+        REQUIRE(height > 0);
+        auto image = test::RgbImage{width, height, {}};
+        for (uint32_t y = 0; y < height; ++y)
+            for (uint32_t x = 0; x < width; ++x) {
+                const auto* p = pixels.data() + (size_t(top + y) * metrics.framebuffer_width + left + x) * 4; // BGRA
+                image.rgb.insert(image.rgb.end(), {uint8_t(p[2]), uint8_t(p[1]), uint8_t(p[0])});
+            }
+        test::compare_with_references(std::filesystem::path(MAYA_SOURCE_DIR) / "tests/references/editor",
+                                      std::filesystem::path(MAYA_SOURCE_DIR) / "build/visual-diffs", {{"residency", image}});
+        device.destroy(window.handle);
+    }
     device.shutdown();
 }

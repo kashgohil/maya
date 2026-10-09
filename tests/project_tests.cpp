@@ -229,3 +229,47 @@ TEST_CASE("Projects may set their scripts' work budget and memory limit", "[asse
     refused("script_work 2000\nscript_work 3000\n", "'script_work' is set twice");
     CHECK(parse(header + "script_work 1000\nscript_memory 4096\n"));
 }
+
+TEST_CASE("Projects may set their resident-memory budgets and cook cache limit, in MiB", "[assets][project][residency]") {
+    const auto header = std::string("maya-project 1\ncontent \".\"\ncatalog \"catalog.maya\"\n");
+    const auto defaults = parse(header);
+    REQUIRE(defaults);
+    for (const auto& field : defaults.settings.resident) CHECK_FALSE(field);
+    CHECK_FALSE(defaults.settings.cook_cache_limit);
+    // Unset: W1's budgets (#1060) and a 4 GiB cache.
+    const auto w1 = project_residency_budgets(defaults.settings);
+    constexpr auto mib = size_t{1} << 20;
+    CHECK(w1.of(ResidencyCategory::textures) == 768 * mib);
+    CHECK(w1.of(ResidencyCategory::meshes) == 256 * mib);
+    CHECK(w1.of(ResidencyCategory::environments) == 128 * mib);
+    CHECK(w1.of(ResidencyCategory::animation) == 64 * mib);
+    CHECK(w1.of(ResidencyCategory::cells) == 64 * mib);
+    CHECK(w1.of(ResidencyCategory::other) == 0); // never budgeted
+    CHECK(w1.of(ResidencyCategory::renderer) == 0);
+    CHECK(w1.total == 1536 * mib);
+
+    const auto set = parse(header + "resident_textures 512\nresident_cells 16\nresident_total 2048\ncook_cache_limit 0\n");
+    REQUIRE(set);
+    const auto budgets = project_residency_budgets(set.settings);
+    CHECK(budgets.of(ResidencyCategory::textures) == 512 * mib);
+    CHECK(budgets.of(ResidencyCategory::cells) == 16 * mib);
+    CHECK(budgets.of(ResidencyCategory::meshes) == 256 * mib); // the rest stay W1's
+    CHECK(budgets.total == 2048 * mib);
+    CHECK(set.settings.cook_cache_limit == 0u); // never prunes by itself
+    auto written = std::ostringstream{};
+    write_project(written, set.settings);
+    CHECK(written.str() == header + "resident_textures 512\nresident_cells 16\nresident_total 2048\ncook_cache_limit 0\n");
+    CHECK(parse(written.str()).settings.resident == set.settings.resident);
+
+    const auto refused = [&](const std::string& lines, std::string_view why) {
+        const auto result = parse(header + lines);
+        INFO(lines);
+        CHECK_FALSE(result);
+        CHECK(result.error.find(why) != std::string::npos);
+    };
+    refused("resident_meshes 0\n", "from 1 to 1048576");
+    refused("resident_meshes 1048577\n", "from 1 to 1048576");
+    refused("resident_textures 1.5\n", "from 1 to 1048576");
+    refused("cook_cache_limit -1\n", "from 0 to 1048576");
+    refused("resident_total 100\nresident_total 200\n", "'resident_total' is set twice");
+}

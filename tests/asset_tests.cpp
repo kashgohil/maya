@@ -442,3 +442,155 @@ TEST_CASE("Script assets are cataloged and read as source text", "[assets][scrip
     REQUIRE_FALSE(registry.register_asset(AssetRef<ScriptAsset>{{0x5c, 2}}, "gone.luau"));
     CHECK(registry.acquire(AssetRef<ScriptAsset>{{0x5c, 2}}).diagnostic.code == AssetError::missing_file);
 }
+
+namespace {
+/// A project of `count` triangles, cataloged as meshes 0x60, 0x61, ...
+std::vector<AssetRef<MeshAsset>> triangles(Project& project, AssetRegistry& registry, size_t count) {
+    auto refs = std::vector<AssetRef<MeshAsset>>{};
+    for (size_t i = 0; i < count; ++i) {
+        const auto name = "mesh" + std::to_string(i) + ".obj";
+        project.write(name, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+        refs.push_back({{0x60, i + 1}});
+        REQUIRE_FALSE(registry.register_asset(refs.back(), name));
+    }
+    return refs;
+}
+constexpr size_t triangle_bytes = 3 * sizeof(Vertex) + 3 * sizeof(uint32_t) + 3 * sizeof(math::Vec3) + 3 * sizeof(uint32_t); // GPU and picking
+} // namespace
+
+TEST_CASE("Residency keeps each category's bytes as versions come and go", "[assets][residency]") {
+    Project project; CountingDevice device;
+    AssetRegistry registry(project.root, std::make_unique<FileAssetProvider>(device));
+    const auto refs = triangles(project, registry, 3);
+    REQUIRE_FALSE(registry.register_asset(material_ref, "surface.mat"));
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == 0);
+    for (const auto& ref : refs) REQUIRE(registry.acquire(ref));
+    REQUIRE(registry.acquire(material_ref));
+    const auto meshes = registry.resident(ResidencyCategory::meshes);
+    CHECK(meshes.gpu == 3 * (3 * sizeof(Vertex) + 3 * sizeof(uint32_t)));
+    CHECK(meshes.total() == 3 * triangle_bytes);
+    CHECK(meshes.gpu == device.stats().buffer_bytes); // the device agrees
+    CHECK(registry.resident(ResidencyCategory::other).cpu == sizeof(MaterialAsset)); // materials and scripts
+    const auto report = registry.residency();
+    CHECK(report.bytes[size_t(ResidencyCategory::meshes)].total() == meshes.total());
+    CHECK(report.budgets.total == default_residency_budgets().total);
+    // A reload replaces a version: the same bytes, not twice them.
+    REQUIRE(registry.reload(refs[0]));
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == 3 * triangle_bytes);
+    // The largest first, and whether something holds them.
+    {
+        const auto held = registry.acquire(refs[1]);
+        const auto largest = registry.largest(2);
+        REQUIRE(largest.size() == 2);
+        CHECK(largest[0].bytes.total() == triangle_bytes);
+        CHECK(std::ranges::count_if(largest, [](const ResidentAsset& asset) { return asset.leased; }) <= 1);
+        CHECK(registry.residency().leased_bytes[size_t(ResidencyCategory::meshes)] == triangle_bytes);
+    }
+    CHECK(registry.evict_unused() == 4);
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == 0);
+    CHECK(registry.resident(ResidencyCategory::other).total() == 0);
+    CHECK(registry.release_stats().released == 4);
+}
+
+TEST_CASE("A budget releases the least recently used unused versions, never one in use or drawn by the last frame", "[assets][residency]") {
+    Project project; CountingDevice device;
+    AssetRegistry registry(project.root, std::make_unique<FileAssetProvider>(device));
+    const auto refs = triangles(project, registry, 6);
+    auto budgets = default_residency_budgets();
+    budgets.bytes[size_t(ResidencyCategory::meshes)] = 3 * triangle_bytes;
+    registry.set_budgets(budgets);
+    for (const auto& ref : refs) REQUIRE(registry.acquire(ref)); // loaded in order: 0 is the least recently used
+    auto held = std::vector<AssetLease<MeshAsset>>{registry.acquire(refs[1]).lease, registry.acquire(refs[4]).lease};
+    const auto state = [&](size_t i) { return registry.info(refs[i].id)->state; };
+    // Everything was used since the last update (there was none): nothing goes yet.
+    registry.update();
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == 6 * triangle_bytes);
+    // An update later, the oldest unused go until the category fits: 0, 2, and 3; 1 and 4 are held.
+    registry.update();
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == 3 * triangle_bytes);
+    CHECK(state(0) == AssetState::unloaded);
+    CHECK(state(2) == AssetState::unloaded);
+    CHECK(state(3) == AssetState::unloaded);
+    for (const auto i : {1, 4, 5}) CHECK(state(size_t(i)) == AssetState::ready);
+    CHECK(registry.release_stats().released_for_budget == 3);
+    CHECK(registry.take_budget_warnings().empty());
+    // A smaller budget: 5 is used this frame (leased and dropped), so it stays this update and goes the next.
+    budgets.bytes[size_t(ResidencyCategory::meshes)] = triangle_bytes;
+    registry.set_budgets(budgets);
+    REQUIRE(registry.acquire(refs[5]));
+    registry.update();
+    CHECK(state(5) == AssetState::ready);
+    registry.update();
+    CHECK(state(5) == AssetState::unloaded);
+    // What is left is all in use: it stays, over budget, and one warning names the largest holders.
+    for (int i = 0; i < 3; ++i) registry.update();
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == 2 * triangle_bytes);
+    CHECK(registry.release_stats().over_budget[size_t(ResidencyCategory::meshes)]);
+    const auto warnings = registry.take_budget_warnings();
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings.front().find("Resident meshes are") == 0);
+    CHECK(warnings.front().find("all of it is in use") != std::string::npos);
+    CHECK(warnings.front().find("mesh1.obj") != std::string::npos);
+    registry.update();
+    CHECK(registry.take_budget_warnings().empty()); // once each time it goes over
+    // Let one go: the next updates release it, and the category fits again.
+    held.erase(held.begin());
+    registry.update();
+    registry.update();
+    CHECK(state(1) == AssetState::unloaded);
+    CHECK(state(4) == AssetState::ready);
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == triangle_bytes);
+    CHECK_FALSE(registry.release_stats().over_budget[size_t(ResidencyCategory::meshes)]);
+}
+
+TEST_CASE("Releasing over a budget looks at a bounded number of versions an update", "[assets][residency]") {
+    Project project; CountingDevice device;
+    AssetRegistry registry(project.root, std::make_unique<FileAssetProvider>(device));
+    const auto refs = triangles(project, registry, 200);
+    for (const auto& ref : refs) REQUIRE(registry.acquire(ref));
+    auto budgets = default_residency_budgets();
+    budgets.bytes[size_t(ResidencyCategory::meshes)] = triangle_bytes;
+    registry.set_budgets(budgets);
+    registry.update();
+    registry.update();
+    const auto first = registry.release_stats().released_for_budget;
+    CHECK(first > 0);
+    CHECK(first <= 64); // never a sweep of the catalog
+    for (int i = 0; i < 4; ++i) registry.update();
+    CHECK(registry.resident(ResidencyCategory::meshes).total() == triangle_bytes);
+}
+
+TEST_CASE("Releasing after a boundary keeps what was used since", "[assets][residency]") {
+    Project project; CountingDevice device;
+    AssetRegistry registry(project.root, std::make_unique<FileAssetProvider>(device));
+    const auto refs = triangles(project, registry, 3);
+    for (const auto& ref : refs) REQUIRE(registry.acquire(ref));
+    const auto boundary = registry.use_clock(); // a scene closed
+    REQUIRE(registry.acquire(refs[2])); // the next frame draws this one, briefly
+    CHECK(registry.evict_unused(boundary) == 2);
+    CHECK(registry.info(refs[2].id)->state == AssetState::ready);
+    CHECK(registry.evict_unused() == 1); // with no clock, every unused version
+}
+
+TEST_CASE("A load kept for no one since a boundary is cancelled, not left to arrive unused", "[assets][residency]") {
+    Project project; CountingDevice device;
+    AssetRegistry registry(project.root, std::make_unique<FileAssetProvider>(device));
+    const auto refs = triangles(project, registry, 2);
+    // The closing scene was drawing both: their loads are in flight, kept by the registry; one is also requested.
+    CHECK(registry.try_acquire(refs[0]).diagnostic.code == AssetError::loading);
+    CHECK(registry.try_acquire(refs[1]).diagnostic.code == AssetError::loading);
+    const auto request = registry.request(refs[1]);
+    const auto boundary = registry.use_clock();
+    const auto cancelled = registry.load_stats().cancelled;
+    registry.evict_unused(boundary);
+    CHECK(registry.info(refs[0].id)->state == AssetState::unloaded); // no one wanted it since
+    CHECK(registry.load_stats().cancelled == cancelled + 1);
+    registry.wait(request);
+    CHECK(registry.info(refs[1].id)->state == AssetState::ready); // requested: it goes on
+    // Wanting it again after the boundary keeps it.
+    const auto later = registry.use_clock();
+    CHECK(registry.try_acquire(refs[0]).diagnostic.code == AssetError::loading);
+    registry.evict_unused(later);
+    CHECK(registry.info(refs[0].id)->state == AssetState::loading);
+    registry.wait_idle();
+}

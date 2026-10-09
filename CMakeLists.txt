@@ -547,7 +547,9 @@ if(BUILD_TESTING)
     set_tests_properties(maya_physics PROPERTIES LABELS "cpu;physics" TIMEOUT 120)
 
     add_executable(maya_streaming_tests tests/streaming_tests.cpp)
-    target_link_libraries(maya_streaming_tests PRIVATE MayaStreaming Catch2::Catch2WithMain)
+    # Pruning the cook cache (#1063) imports a model and writes test images (zlib, tests/support/png.hpp).
+    target_link_libraries(maya_streaming_tests PRIVATE MayaStreaming MayaImport Catch2::Catch2WithMain z)
+    target_include_directories(maya_streaming_tests PRIVATE tests)
     maya_target_options(maya_streaming_tests)
     add_test(NAME maya_streaming COMMAND maya_streaming_tests)
     set_tests_properties(maya_streaming PROPERTIES LABELS "cpu;streaming" TIMEOUT 120)
@@ -649,7 +651,7 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/r1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/editor_residency_tests.cpp tests/r1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
@@ -702,7 +704,14 @@ if(BUILD_TESTING)
         set_tests_properties(maya_r1_assemble PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 60 SKIP_RETURN_CODE 77
             FIXTURES_SETUP r1_project)
         add_test(NAME maya_r1_steady COMMAND maya_editor_tests "[r1][steady]")
-        set_tests_properties(maya_r1_steady PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 600 FIXTURES_REQUIRED r1_project)
+        # It reimports a model into build/r1, which an editor open on R1 notices and refreshes: never beside
+        # another test that opens R1 in the editor (RESOURCE_LOCK).
+        set_tests_properties(maya_r1_steady PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 600 FIXTURES_REQUIRED r1_project
+            RESOURCE_LOCK r1_project_files)
+        # Opening and closing R1's scene returns to the same resident bytes (#1063); MAYA_R1_CYCLES=50 is the soak.
+        add_test(NAME maya_r1_residency COMMAND maya_editor_tests "[r1][residency]")
+        set_tests_properties(maya_r1_residency PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 600 FIXTURES_REQUIRED r1_project
+            RESOURCE_LOCK r1_project_files)
         add_test(NAME maya_r1_reference COMMAND maya_editor_tests "[r1][visual]~[precision]")
         set_tests_properties(maya_r1_reference PROPERTIES LABELS "gpu;acceptance;visual;r1" TIMEOUT 900 RUN_SERIAL TRUE
             FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
@@ -814,6 +823,13 @@ if(BUILD_TESTING)
             MAYA_ACCEPTANCE_DIR="${CMAKE_CURRENT_BINARY_DIR}/acceptance")
         add_dependencies(maya_package_tests maya_player)
         maya_target_options(maya_package_tests)
+        # maya_cook (#1063): a dry run over the sample project's cook cache removes nothing and reports.
+        if(TARGET maya_cook)
+            add_test(NAME maya_cook_dry_run COMMAND ${CMAKE_COMMAND}
+                "-DCOMMAND=$<TARGET_FILE:maya_cook>|${CMAKE_CURRENT_SOURCE_DIR}/samples/basic_scene/project.maya|--prune|--dry-run"
+                -DEXIT_CODE=0 "-DEXPECT=would keep" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+            set_tests_properties(maya_cook_dry_run PROPERTIES LABELS "cpu;smoke;cache" TIMEOUT 120)
+        endif()
         add_test(NAME maya_package COMMAND maya_package_tests "~[gpu]")
         set_tests_properties(maya_package PROPERTIES LABELS "cpu;package" TIMEOUT 120)
         add_test(NAME maya_package_gpu COMMAND maya_package_tests "[gpu]~[acceptance]")

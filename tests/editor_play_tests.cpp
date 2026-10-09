@@ -121,16 +121,24 @@ TEST_CASE("Playing and stopping again and again releases what each play made", "
     harness.frames(4);
     const auto before = harness.device.stats();
     const auto authored = text(harness.shell.scene()->world());
-    for (int round = 0; round < 40; ++round) {
+    const auto play = [&] {
         REQUIRE(harness.shell.start_play());
         harness.frames(3);
         harness.shell.stop_play();
         harness.frames(1);
-    }
+    };
+    // The first Stop also releases what nothing used since (#1063): textures the Assets panel loaded to
+    // make its thumbnails. After that, every round returns to the same resources.
+    play();
     harness.frames(4); // let retired resources pass through the frames in flight
+    const auto first = harness.device.stats();
+    CHECK(first.buffers == before.buffers);
+    CHECK(first.textures <= before.textures);
+    for (int round = 1; round < 40; ++round) play();
+    harness.frames(4);
     const auto after = harness.device.stats();
-    CHECK(after.buffers == before.buffers);
-    CHECK(after.textures == before.textures);
+    CHECK(after.buffers == first.buffers);
+    CHECK(after.textures == first.textures);
     CHECK(after.pipelines == before.pipelines);
     CHECK(after.pending_retirements == before.pending_retirements);
     CHECK(text(harness.shell.scene()->world()) == authored);

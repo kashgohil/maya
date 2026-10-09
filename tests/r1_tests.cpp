@@ -12,7 +12,10 @@
 #include "editor_shell.hpp"
 #include "maya/core/file_system.hpp"
 #include "support/metal_view.hpp"
+#include <array>
+#include <sstream>
 #include <catch2/catch_test_macros.hpp>
+#include "maya/core/system_info.hpp"
 #include <fstream>
 #include <iterator>
 
@@ -255,8 +258,9 @@ TEST_CASE("Reimporting, reloading, and playing R1 again and again return to the 
     settle();
     INFO("after reloads: " << counts(harness) << "; shown: " << shown);
     CHECK(counts(harness) == shown);
-    // Play and Stop, 10 times, playing 60 ticks each: CesiumMan walks and the camera turns. The first Play
-    // loads the two clips, which the registry keeps as it keeps any loaded asset; nothing else stays.
+    // Play and Stop, 10 times, playing 60 ticks each: CesiumMan walks and the camera turns. Each Play loads
+    // the two clips; stopping releases them, and whatever else no one uses since (#1063), so the editor
+    // returns to what it showed.
     const auto play = [&] {
         REQUIRE(harness.shell.start_play());
         harness.frames(60);
@@ -264,12 +268,91 @@ TEST_CASE("Reimporting, reloading, and playing R1 again and again return to the 
         settle();
     };
     play();
-    auto played = shown;
-    played.clips = 2;
     INFO("after the first Play: " << counts(harness) << "; shown: " << shown);
-    CHECK(counts(harness) == played);
+    CHECK(counts(harness) == shown);
     for (int round = 1; round < 10; ++round) play();
     INFO("after ten: " << counts(harness));
-    CHECK(counts(harness) == played);
+    CHECK(counts(harness) == shown);
     CHECK(harness.shell.extraction().skipped == 0);
+}
+
+TEST_CASE("Opening and closing R1's scene again and again returns to the same resident bytes", "[r1][residency]") {
+    if (!assembled()) SKIP("R1 is not assembled; fetch the samples (tools/fetch_render_samples.sh) and run the r1_project fixture");
+    using namespace editor::testing;
+    Harness harness(false);
+    // Frames until nothing is loading or waiting to retire: the scene shown whole, its old versions gone.
+    const auto settle = [&] {
+        for (int frame = 0; frame < 2000; ++frame) {
+            harness.frames(1);
+            if (harness.shell.load_stats().in_flight == 0 && harness.shell.extraction().pending == 0 &&
+                harness.device.stats().pending_retirements == 0 && frame >= 4)
+                return;
+        }
+        FAIL("R1 never settled");
+    };
+    struct Resident {
+        std::array<ResidentBytes, residency_category_count> bytes{};
+        size_t buffer_bytes = 0, texture_bytes = 0;
+        bool operator==(const Resident& other) const {
+            return buffer_bytes == other.buffer_bytes && texture_bytes == other.texture_bytes &&
+                   std::ranges::equal(bytes, other.bytes, [](const ResidentBytes& a, const ResidentBytes& b) { return a.cpu == b.cpu && a.gpu == b.gpu; });
+        }
+    };
+    const auto resident = [&] {
+        auto result = Resident{harness.shell.assets()->residency().bytes, harness.device.stats().buffer_bytes, harness.device.stats().texture_bytes};
+        return result;
+    };
+    const auto text = [](const Resident& r) {
+        auto out = std::ostringstream{};
+        for (size_t c = 0; c < residency_category_count; ++c) out << residency_category_name(ResidencyCategory(c)) << ' ' << r.bytes[c].total() << ", ";
+        out << "buffers " << r.buffer_bytes << ", textures " << r.texture_bytes;
+        return out.str();
+    };
+    REQUIRE(harness.shell.open_project(r1_folder()));
+    // The Residency tab in front of the Assets panel: its thumbnails load textures of their own, whenever
+    // their rows show, which is not what closing a scene is about.
+    harness.shell.show_residency();
+    settle();
+    const auto scene = harness.shell.scene_path();
+    REQUIRE(!scene.empty());
+    const auto shown = resident();
+    REQUIRE(shown.bytes[size_t(ResidencyCategory::textures)].gpu > 0);
+    // MAYA_R1_CYCLES sets how many (the soak, #1063: 50); a few by default. MAYA_R1_SOAK_OUT=<file> writes
+    // each cycle's resident bytes, closed and open, and the process's footprint, as JSON lines.
+    const auto cycles = std::getenv("MAYA_R1_CYCLES") ? std::max(1, std::atoi(std::getenv("MAYA_R1_CYCLES"))) : 3;
+    auto soak = std::getenv("MAYA_R1_SOAK_OUT") ? std::ofstream(std::getenv("MAYA_R1_SOAK_OUT")) : std::ofstream{};
+    const auto record = [&](int cycle, const char* moment, const Resident& r) {
+        if (!soak) return;
+        auto total = size_t{0};
+        for (const auto& bytes : r.bytes) total += bytes.total();
+        const auto memory = process_memory();
+        soak << "{\"cycle\": " << cycle << ", \"moment\": \"" << moment << "\", \"resident_bytes\": " << total
+             << ", \"textures_bytes\": " << r.bytes[size_t(ResidencyCategory::textures)].total()
+             << ", \"meshes_bytes\": " << r.bytes[size_t(ResidencyCategory::meshes)].total() << ", \"buffer_bytes\": " << r.buffer_bytes
+             << ", \"texture_bytes\": " << r.texture_bytes << ", \"footprint_bytes\": " << (memory ? memory->footprint : 0) << "}\n";
+    };
+    record(-1, "first open", shown);
+    auto closed = std::optional<Resident>{};
+    for (int cycle = 0; cycle < cycles; ++cycle) {
+        REQUIRE(harness.shell.new_scene()); // R1's scene closes: its content is released once a frame is drawn
+        settle();
+        const auto after_close = resident();
+        record(cycle, "closed", after_close);
+        INFO("cycle " << cycle << ", closed: " << text(after_close));
+        auto left = std::ostringstream{};
+        for (const auto& asset : harness.shell.assets()->largest(4))
+            left << asset.path << " (" << asset.bytes.total() << (asset.leased ? ", leased" : "") << "); ";
+        const auto loads = harness.shell.assets()->load_stats();
+        INFO("left: " << left.str() << "loads started " << loads.started << ", cancelled " << loads.cancelled << ", finalized " << loads.finalized
+                      << "; released " << harness.shell.assets()->release_stats().released);
+        CHECK(after_close.bytes[size_t(ResidencyCategory::meshes)].total() == 0);
+        CHECK(after_close.bytes[size_t(ResidencyCategory::textures)].total() == 0);
+        if (!closed) closed = after_close;
+        CHECK(after_close == *closed);
+        REQUIRE(harness.shell.open_scene(scene));
+        settle();
+        record(cycle, "open", resident());
+        INFO("cycle " << cycle << ", open again: " << text(resident()) << "; first: " << text(shown));
+        CHECK(resident() == shown);
+    }
 }

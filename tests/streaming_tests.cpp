@@ -4,6 +4,11 @@
 #include "maya/scene/world_io.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "maya/streaming/world_streamer.hpp"
+#include "maya/import/gltf_import.hpp"
+#include "maya/rhi/null_device.hpp"
+#include "support/gltf.hpp"
+#include "support/hdr.hpp"
+#include "support/png.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <atomic>
@@ -488,4 +493,145 @@ TEST_CASE("Physics adds a cell's bodies in one batch when it activates and remov
     REQUIRE(again);
     CHECK(session->world().world_matrix(*again)->translation.y == Approx(0.5).margin(0.05)); // within Jolt's penetration slop
     REQUIRE(session->update(1.0 / 60.0).error.empty());
+}
+
+TEST_CASE("Pruning the cook cache keeps what loading reads now and removes the rest", "[streaming][cache]") {
+    // A project with a texture, an environment, an imported model, and a world of 3 x 3 cells.
+    const Folder folder;
+    const auto write = [&](const std::string& name, const std::string& text) {
+        fs::create_directories((folder.path / name).parent_path());
+        std::ofstream(folder.path / name, std::ios::binary) << text;
+    };
+    const auto image = [](uint8_t seed) {
+        auto rgba = std::vector<uint8_t>{};
+        for (uint32_t i = 0; i < 16 * 8; ++i) rgba.insert(rgba.end(), {uint8_t(i * 7 + seed), uint8_t(i * 3), uint8_t(255 - i), 255});
+        return test::encode_png_rgba(16, 8, rgba);
+    };
+    write("wood.png", image(1));
+    write("wood.texture", "maya-texture 1\nsource \"wood.png\"\nusage color\ncompression rgba8\nmips on\n"
+                          "filter linear linear\nmip_filter linear\nanisotropy 8\naddress repeat repeat\n");
+    write("sky.hdr", test::radiance_file(test::environment_image(32, [](const math::Vec3& d) { return math::Vec3{1.0f + d.y}; })));
+    write("sky.environment", "maya-environment 1\nsource \"sky.hdr\"\nspecular_size 16\nsamples 16\n");
+    write("models/props.gltf", test::props_gltf());
+    write("models/textures/normal.png", test::flat_normal_png());
+    write("project.maya", "maya-project 1\ncontent \".\"\ncatalog \"catalog.maya\"\n");
+    write("catalog.maya", "maya-assets 1\ntexture 1 1 \"wood.texture\"\nenvironment 1 2 \"sky.environment\"\n");
+    const auto world_file = folder.path / "levels/grid.world";
+    fs::create_directories(world_file.parent_path());
+    REQUIRE(save_world(world_file, grid_world(1, 2), any_asset).empty());
+    auto opened = open_project(folder.path);
+    REQUIRE(opened);
+    const auto& project = opened.project;
+    REQUIRE(import_gltf(project, "models/props.gltf"));
+    opened = open_project(folder.path); // the import added its parts to the catalog
+    REQUIRE(opened);
+
+    NullGraphicsDevice device;
+    REQUIRE(device.initialize(nullptr));
+    const auto limits = cook_limits(device); // what the device samples changes how textures cook
+    const auto cache_folder = cook_cache_folder(project);
+    const auto load_everything = [&] {
+        auto cache = std::make_shared<CookCache>(cache_folder);
+        auto assets = open_project_assets(opened.project, std::make_unique<FileAssetProvider>(device, cache));
+        REQUIRE(assets);
+        for (const auto& record : assets.registry->records()) {
+            INFO(record.path.generic_string());
+            if (record.kind == AssetKind::texture) CHECK(assets.registry->acquire(AssetRef<TextureAsset>{record.id}));
+            else if (record.kind == AssetKind::environment) CHECK(assets.registry->acquire(AssetRef<EnvironmentAsset>{record.id}));
+            else if (record.kind == AssetKind::mesh) CHECK(assets.registry->acquire(AssetRef<MeshAsset>{record.id}));
+        }
+        auto text = std::ifstream(world_file);
+        const auto world = read_world(std::string(std::istreambuf_iterator<char>(text), {}));
+        REQUIRE(world);
+        const auto loader = cooked_cell_loader(world_file.parent_path(), cache, any_asset);
+        for (const auto& cell : world.document->cells) {
+            auto load = CellLoad{};
+            job_system().submit(JobTier::frame, [&](JobContext& job) { load = loader(cell, job); }).wait();
+            CHECK(load.document);
+        }
+        return std::pair{cache->stats(), assets.registry->records()};
+    };
+    const auto entries = [&] {
+        auto names = std::set<std::string>{};
+        for (const auto& entry : fs::recursive_directory_iterator(cache_folder))
+            if (entry.is_regular_file() && entry.path().filename() != ".gitignore" && entry.path().filename() != "notes.txt")
+                names.insert(entry.path().filename().string());
+        return names;
+    };
+    // Cold: a texture, an environment, the model's parts, and 9 cells, each written once.
+    const auto [cold, records] = load_everything();
+    const auto written = entries();
+    CHECK(cold.writes == written.size());
+    CHECK(std::ranges::count_if(written, [](const std::string& name) { return name.ends_with(".cell"); }) == 9);
+    // Everything there is reachable: pruning keeps it all, and leaves files that are not entries alone.
+    write(".maya/cache/notes.txt", "not an entry");
+    auto cache = std::make_shared<CookCache>(cache_folder);
+    const auto keys = reachable_cook_keys(project, records, cache, limits);
+    CHECK(keys.size() == written.size());
+    auto kept = cache->prune(keys);
+    CHECK(kept.removed == 0);
+    CHECK(kept.kept == written.size());
+    CHECK(cache->usage().entries == written.size());
+    CHECK(cache->usage().bytes == kept.kept_bytes);
+    // A changed image and a changed cell: loading cooks them again, and their old entries are unreachable.
+    write("wood.png", image(2));
+    auto cell_scene = std::ifstream(world_file.parent_path() / "grid/cells/0_0.scene");
+    auto changed_cell = std::string(std::istreambuf_iterator<char>(cell_scene), {});
+    cell_scene.close();
+    changed_cell.replace(changed_cell.find("Prop 0"), 6, "Prop A");
+    write("levels/grid/cells/0_0.scene", changed_cell);
+    const auto [recooked, unused] = load_everything();
+    CHECK(recooked.writes == 2);
+    CHECK(entries().size() == written.size() + 2);
+    cache = std::make_shared<CookCache>(cache_folder);
+    const auto now = reachable_cook_keys(project, records, cache, limits);
+    const auto dry = cache->prune(now, true);
+    CHECK(dry.removed == 2);
+    CHECK(entries().size() == written.size() + 2); // a dry run removes nothing
+    const auto pruned = cache->prune(now);
+    CHECK(pruned.removed == 2);
+    CHECK(pruned.errors.empty());
+    CHECK(entries().size() == written.size());
+    CHECK(fs::exists(cache_folder / "notes.txt"));
+    // Still warm: every load reads its entry, and nothing is cooked again.
+    const auto [warm, again] = load_everything();
+    CHECK(warm.writes == 0);
+    CHECK(warm.hits == written.size());
+    // Within its limit the cache is left as it is; past it, pruned; a limit of 0 never prunes.
+    CHECK_FALSE(prune_cook_cache_over(project, records, cache, uint64_t{1} << 40, limits));
+    CHECK_FALSE(prune_cook_cache_over(project, records, cache, 0, limits));
+    const auto over = prune_cook_cache_over(project, records, cache, 1, limits);
+    REQUIRE(over);
+    CHECK(over->removed == 0);
+    CHECK(project_cook_cache_limit(project.settings) == default_cook_cache_limit);
+    device.shutdown();
+}
+
+TEST_CASE("Past the cells budget only cells that must activate load; the rest of the load radius waits", "[streaming][residency]") {
+    auto saved = SavedWorld(2, 4); // 5 x 5 cells
+    auto session = saved.session();
+    auto settings = StreamingSettings{};
+    settings.load_radius = 300.0; // most of the world
+    settings.activate_radius = 30.0; // the middle cell
+    settings.resident_bytes = 1; // already full
+    {
+        auto streamer = WorldStreamer(saved.document, saved.loader(), settings);
+        streamer.set_sources({{64.0, 0.0, 64.0}});
+        streamer.settle(session->world(), &session->physics());
+        CHECK(streamer.state({0, 0}) == CellState::active); // activating never waits on the budget
+        CHECK(streamer.stats().cells[size_t(CellState::active)] == 1);
+        CHECK(streamer.stats().cells[size_t(CellState::ready)] == 0); // nothing loaded ahead
+        streamer.unload_all(session->world(), &session->physics());
+    }
+    settings.resident_bytes = size_t{64} << 20;
+    auto streamer = WorldStreamer(saved.document, saved.loader(), settings);
+    streamer.set_sources({{64.0, 0.0, 64.0}});
+    streamer.settle(session->world(), &session->physics());
+    CHECK(streamer.stats().cells[size_t(CellState::active)] == 1);
+    CHECK(streamer.stats().cells[size_t(CellState::ready)] > 0); // within the budget, the ring loads ahead
+    // The project's cells budget reaches the streamer.
+    auto project = ProjectSettings{};
+    project.resident[4] = 16; // resident_cells, MiB
+    CHECK(project_streaming_settings(project).resident_bytes == size_t{16} << 20);
+    CHECK(project_streaming_settings(ProjectSettings{}).resident_bytes == size_t{64} << 20);
 }
