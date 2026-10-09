@@ -195,7 +195,8 @@ The editor watches the files of loaded materials (#1033), textures, and environm
 The Diagnostics panel shows the current state:
 
 - viewport size in pixels and points, scale, and allocation count;
-- drawn, hidden, and skipped mesh renderers;
+- mesh renderers, hidden, skipped, and loading;
+- **Visibility** (#1066, [renderer](renderer.md#visibility-and-levels-of-detail)): what the visibility index visited and left out, what was culled beyond its `max_distance` or under the project's `cull_pixels`, and what the view drew; **Detail**, the view's instances at each level of detail (L0 the finest); and **Shadows**, the casters drawn into the view's shadow maps and how many maps;
 - frames, waits, and upload-memory high water against capacity;
 - live resources and pending retirements;
 - **Loading** ([asynchronous loading](assets.md#asynchronous-loading)): loads in flight, loads prepared and waiting to finalize, the last update's finalize time and bytes, and waits for a load inside a frame, which must stay 0;

@@ -10,7 +10,7 @@
 | --- | --- |
 | 1 / `maya.name` | 1 `value` |
 | 2 / `maya.transform` | 1 `translation`, 2 `rotation`, 3 `scale` |
-| 3 / `maya.mesh_renderer` | 1 `mesh`, 2 `material`, 3 `visible` |
+| 3 / `maya.mesh_renderer` | 1 `mesh`, 2 `material`, 3 `visible`, (since version 2) 4 `max_distance` |
 | 4 / `maya.camera` | 1 `vertical_fov`, 2 `near_clip`, 3 `far_clip` |
 | 5 / `maya.light` | 1 `kind`, 2 `color`, 3 `intensity`, 4 `range`, 5 `inner_cone`, 6 `outer_cone`, 7 `enabled`, (since version 2) 8 `cast_shadows`, 9 `shadow_bias`, 10 `shadow_normal_bias`, 11 `shadow_distance` |
 | 6 / `maya.spin` | 1 `axis`, 2 `speed` (rad/s) — a built-in play behavior (#1003, [play](play.md#systems)) |
@@ -67,6 +67,7 @@ The detached API lets a future scene loader validate an entire unpublished scene
 | Light color / intensity | Finite nonnegative linear RGB (HDR above one allowed), finite nonnegative intensity. Directional intensity is lux; point/spot intensity is candela (lumens in version 1, [migration](scene.md#versions-and-migration)). |
 | Light range / cones | Finite range > 0; full-angle cones in radians with 0 <= inner <= outer < pi and outer > 0. Validate inactive fields too, so switching light kind does not reveal invalid values. |
 | Light shadows (since version 2, #1034) | `cast_shadows` a boolean (default true; point lights cast none yet); `shadow_bias` and `shadow_normal_bias` in texels of the light's shadow map, 0 to 20 (default 1 each); `shadow_distance` in metres, 1 to 10,000 (default 60), how far a directional light's cascades reach ([shadows](renderer.md#shadows)). |
+| Mesh renderer distance (since version 2, #1066) | `max_distance` in metres, at least 0 (default 0, none): beyond it from the camera to the nearest point of its bounds the mesh is [not drawn](renderer.md#distance-and-size), nor does it cast. |
 | Choices / flags | Only the named choices (light kind, collider shape, body motion); booleans require exact bool values. |
 | Collider | Positive half extents, radius, and half height; finite offset; a finite nonzero rotation, normalized; friction ≥ 0; restitution 0 to 1; group 0 to 15; mask at most 0xFFFF. |
 | Rigid body | Mass ≥ 0 (0 derives it from the density); density > 0; damping ≥ 0; finite gravity factor and velocities. A kinematic body has no initial velocity. |

@@ -42,10 +42,11 @@ end
 
 entity 7e 1
   parent ca 1
-  component maya.mesh_renderer 1
+  component maya.mesh_renderer 2
     mesh 6d617961 1
     material none
     visible true
+    max_distance 0
 end
 ```
 
@@ -99,7 +100,7 @@ An asset absent from the catalog is an error, so a scene never loads with an unk
 
 ## Versions and migration
 
-The format is `maya-scene 1`. Component schemas are version 1, except `maya.camera`, version 2 since #1032 (exposure and tone mapping), `maya.light`, version 2 since #1034 (candela and shadows), and `maya.transform`, version 2 since #1065 (a double translation). Newer format or component versions are rejected with `unsupported_version` before any World is built, and version 0 is malformed.
+The format is `maya-scene 1`. Component schemas are version 1, except `maya.camera`, version 2 since #1032 (exposure and tone mapping), `maya.light`, version 2 since #1034 (candela and shadows), `maya.transform`, version 2 since #1065 (a double translation), and `maya.mesh_renderer`, version 2 since #1066 (`max_distance`, additive: a version-1 renderer loads with none). Newer format or component versions are rejected with `unsupported_version` before any World is built, and version 0 is malformed.
 
 **Additive migration** (#1032). Every schema change so far only added properties. Each property records the component version that added it (`PropertyDescriptor::since`), so an older component migrates without a table of steps: its file must hold exactly the properties its version had (a later one is an `unknown_property` for that version, and a missing one is `missing_property`), and every property added since takes its documented default. A `maya.camera 1` loads with `exposure 0` (EV100) and `tone_mapping agx`. A change that is not additive (a renamed or reinterpreted property) needs its own migration, keyed by component and version, where the parser checks versions.
 

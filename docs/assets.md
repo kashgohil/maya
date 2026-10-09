@@ -184,7 +184,7 @@ Values above the half-float range (65,504) are clamped. An `EnvironmentAsset` ow
 | --- | --- | --- |
 | `texture` | the cooked image as [KTX2](#ktx2) | role, compression, mips, and whether the device samples ASTC |
 | `environment` | the background, the specular cube, and the irradiance | `specular_size`, `samples`, and the largest dimension decoded |
-| `mesh` (imported) | the welded vertices and indices, and (since #1038, `imported_mesh_cook_version` 2) each vertex's four joints and weights | the part |
+| `mesh` (imported) | the welded vertices and indices, (since #1038, `imported_mesh_cook_version` 2) each vertex's four joints and weights, and (since #1066, version 3) its [levels of detail](#levels-of-detail) | the part |
 | `imported-texture` | the sampler's description, then KTX2 | the part, role, compression, mips, and ASTC |
 | `skin`, `animation` (#1038) | a [skin's](animation.md#skins-and-clips) joint paths and inverse bind matrices; a clip's name, duration, and channels | the part |
 
@@ -202,6 +202,16 @@ A cached environment reports a cooking time of 0. With R1's content, loading fro
 Since [#1039](https://work.rezee.app/kash/issues/1039) cooking is separate from the device ([asset_cooker.hpp](../include/maya/assets/asset_cooker.hpp)). `AssetCooker` turns an OBJ file, a texture or environment file, or an imported glTF part into its cooked form (`CookedMesh`: welded vertices with tangents and indices, and joints and weights for a skinned part; `SkinAsset` and `AnimationAsset` for skins and clips (#1038); `CookedTexture`: the mip chain in its GPU format, the sampler, and the role; `CookedEnvironment`) for the `CookLimits` it is given (ASTC or RGBA8, and the largest dimension), through the cook cache with the same keys and entries as before. `FileAssetProvider` cooks for its device's limits and uploads (`upload_mesh`, `upload_texture`, `upload_environment`); packaging cooks and writes the results into a [package](projects.md#packages), whose `PackageAssetProvider` uploads them. `ModelLoader::parse_obj` reads an OBJ without a device.
 
 A package's cooked files are `write_cooked_mesh`, `write_cooked_texture` (the role, the sampler, then KTX2), and `write_cooked_environment` payloads in the cache's checked envelope (`wrap_cooked`: "MAYACOOK", the format, the payload's size and SHA-256). `unwrap_cooked` and the readers refuse damaged or malformed bytes, so a damaged package fails to load that asset, with the reason, rather than drawing garbage.
+
+## Levels of detail
+
+[#1066](https://work.rezee.app/kash/issues/1066) cooks every mesh, OBJ or imported, into up to six levels of detail with [meshoptimizer](https://github.com/zeux/meshoptimizer) 1.3, as [#1060's record](architecture/world-scale-decision.md) chose (`build_mesh_lods`, [asset_cooker.hpp](../include/maya/assets/asset_cooker.hpp)). The renderer chooses among them by their error on screen ([renderer](renderer.md#levels-of-detail)).
+
+- **Levels.** Level 0 is the mesh as cooked. Each next level simplifies the one before to about half its triangles (`meshopt_simplifyWithAttributes`, permissive and pruning small disconnected parts), weighing normals at 0.5 and texture coordinates at 1 so seams and creases hold. Cooking stops at six levels, below 8 triangles, or when a level would keep more than 90% of the one before: a cube has one level.
+- **Error.** Each level records how far its surface may stand from the original's, in the mesh's units (metres): the sum of the simplifier's errors down the chain, so it is never less than the level's true error. The [sample sphere](../samples/basic_scene/assets/sphere.obj), radius 1 m and 2,208 triangles, cooks to 1,103, 551, 275, 137, and 68 triangles, with errors from 5.7 mm to 158 mm.
+- **One buffer.** The levels share the mesh's vertices and follow each other in its index buffer; `CookedMesh::levels` and `Mesh::levels()` give each level's first index, index count, and error. CPU geometry (`MeshGeometry`, for picking and bounds) is level 0's.
+- **Stored.** A cooked mesh (`write_cooked_mesh`) ends with its levels; the reader checks that each is whole triangles within the indices and refuses anything else. So imported meshes' cook entries went to version 3, and packages to `maya-package 2` ([packages](projects.md#packages)).
+- **Deterministic.** The same mesh cooks to the same levels, byte for byte.
 
 ## Loading and reload
 

@@ -16,7 +16,7 @@
 
 **Re-blessed for shadows (#1034).** Lights cast [shadows](renderer.md#shadows) by default, so nine references were re-blessed: the six V1 views (`overlap` and the five camera-path frames, where the cubes, pyramids, and slab now shadow the floor and wall; 0.5–5.3% of pixels changed), the two textured material views (the cutout cube shadows itself through its leaves, and each tiled cube shades a strip of its neighbour's side), and the physics debug `triggers` view (the pillar and cube cast shadows). Elsewhere the lit floor moved by at most one level. Only those nine files were rewritten, from the renders the test wrote; the HDR, Sample Viewer, and other physics-debug references still match. The project owner inspected the before, after, and difference images and approved them on 6 October 2026.
 
-**Debug views** (#1037, [renderer](renderer.md#debug-views)). [tests/references/debug-views](../tests/references/debug-views) holds the material test scene's overview in each of its 14 debug views (every one but `none`, which the materials overview is), at 512 × 288 with the same tolerance, named as the views are. The project owner inspected each beside the lit overview and approved them on 6 October 2026.
+**Debug views** (#1037, [renderer](renderer.md#debug-views)). [tests/references/debug-views](../tests/references/debug-views) holds the material test scene's overview in each of its 14 debug views (every one but `none`, which the materials overview is), at 512 × 288 with the same tolerance, named as the views are. The project owner inspected each beside the lit overview and approved them on 6 October 2026. Since #1066 it also holds `lod`, at 512 × 288: a field of the sample sphere to 240 m in bands of the [level of detail](renderer.md#levels-of-detail) each draws, green nearest to blue at the horizon, with a quarter-pixel threshold so every level is in view. The project owner approved it on 10 October 2026.
 
 ## Automated checks
 
@@ -89,7 +89,7 @@ Repeated work must return to these states, with no stale handles and no unbounde
 | Scene | Where | Purpose |
 | --- | --- | --- |
 | V1 visual reference | [v1_reference.scene](../samples/basic_scene/assets/v1_reference.scene) in the sample project | See below. |
-| I1 repeated instances | [benchmarks/i1_*.benchmark](../benchmarks) (generated) | 1,000, 10,000, and 100,000 instances of one cube and one material; a subset view |
+| I1 repeated instances | [benchmarks/i1_*.benchmark](../benchmarks) (generated) | 1,000, 10,000, and 100,000 instances of one cube and one material; a subset view of 10,000 and (since #1066) of 100,000 |
 | L1 load/unload and play reset | [benchmarks/l1_load.benchmark](../benchmarks/l1_load.benchmark), [l1_play.benchmark](../benchmarks/l1_play.benchmark) | 300 cycles of a 10,000-entity scene (100 before #1024); malformed and missing-asset scenes |
 | The sample scene | [basic.scene](../samples/basic_scene/assets/basic.scene) | The fast regression case; not evidence of scale |
 | Material test scene | [materials.scene](../samples/basic_scene/assets/materials.scene), [benchmarks/materials.benchmark](../benchmarks/materials.benchmark) | Spheres across metallic and roughness, and surfaces with each kind of map, a cutout, and glass (#1033), lit by an environment and drawn against its sky (#1035); its reference images below |
@@ -359,7 +359,7 @@ maya_r1 --compression rgba8 build/render-samples build/r1   # what the tests use
 CTest's **`maya_r1_assemble`** (fixture `r1_project`, skipped with 77 without the samples) writes `build/r1` with RGBA8 textures. In an unoptimized build, its first load cooks for about 6 minutes; later runs read the cook cache.
 
 **The visual bar** ([r1_tests.cpp](../tests/r1_tests.cpp), `maya_r1_reference`):
-- The five views at the first tick, and the path camera at ticks 1, 150, 300, and 450, match the references in [tests/references/r1](../tests/references/r1), at 640 × 360 with the usual tolerance. The project owner approved them on 7 October 2026.
+- The five views at the first tick, and the path camera at ticks 1, 150, 300, and 450, match the references in [tests/references/r1](../tests/references/r1), at 640 × 360 with the usual tolerance. The project owner approved them on 7 October 2026, and on 10 October 2026 seven of them again, rendered as the player draws them with [levels of detail](renderer.md#levels-of-detail) (#1066): the board view, the grazing view, the walker view, and the four path frames, where 0.52–2.40% of pixels had changed, in fine texture and edges on the chess set, the helmet, and the walker. The views are rendered through a visibility index with the project's settings, and the editor-and-player comparison extracts once a tick on the player's side, as the editor draws a frame, since a level depends on the frames before.
 - **The editor and the player** show the same image: the editor on Metal plays R1 in its Game view, held at tick 300, and every pixel of its viewport (between its tool bar and its "Click to play" hint) equals the player's path at the same size and tick.
 - **The package** ([package_tests.cpp](../tests/package_tests.cpp), `maya_package_gpu`): R1 packaged through its warm cook cache renders each view, and the path after 300 ticks of play, pixel for pixel as from its sources, and the packaged player runs from a folder outside the checkout.
 - **No acne, cascade seams, or shimmer** along the path: the cascades' stability and bias are tested in [lighting_gpu_tests.cpp](../tests/lighting_gpu_tests.cpp) (#1034), and the path is reviewed in the [manual script](#manual-script-rendering-and-content).
@@ -454,6 +454,8 @@ Approved on 7 October 2026 by the project owner, from the baselines above. They 
 | R1 memory | Metal-reported allocation at most 700 MiB | `r1` | 565 MiB | About 20% above the observation |
 | R1 warm load | The first frame through a warm cook cache at most 2.0 s | `r1` | 1.66–1.67 s | About 20% above the observation |
 | Cold cooking and import | **No budget** | `r1`, `r1_import` | 12.8 s cold first frame; per model above | Recorded; cooking cost depends on the content's textures |
+
+**Visibility and levels of detail** (#1066; Release, back to back with the commit before it, two invocations each, nominal throughout; [renderer](renderer.md#what-it-costs)). R1 draws 0.43 million triangles a frame instead of 8.0 million: GPU frame 1.54–1.75 ms (P95 1.71–1.87 ms) against 2.60–2.67 ms (P95 2.71–2.92 ms). Metal's allocation is 573 MiB against 565 MiB (the levels' indices), and the warm first frame 1.72–1.73 s against 1.64 s. CPU work (simulation, extraction, and encoding) is 0.08 ms in each invocation's first run and 0.25–0.28 ms in the others, over the 0.2 ms budget, with the same work and the same 0.64 ms frame: the frame is now a third as long, and the waiting thread's clock drops. Kept at speed by another process loading the performance cores, every run measures 0.074–0.077 ms, against 0.083–0.106 ms before #1066 under the same condition. The I1 budgets hold: `i1_10k` CPU P99 0.80–0.85 ms and GPU P95 1.04–1.07 ms; `i1_100k` CPU P99 9.63–9.99 ms and GPU P95 4.14–4.15 ms.
 
 ### Limits, rendering and content
 
