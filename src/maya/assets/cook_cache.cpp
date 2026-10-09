@@ -2,6 +2,7 @@
 #include "maya/assets/project.hpp"
 #include "maya/core/file_replace.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -117,6 +118,59 @@ std::optional<Sha256Digest> CookCache::source_digest(const std::filesystem::path
     const auto bytes = read_file(file);
     if (!bytes) return std::nullopt;
     return source_digest(file, *bytes);
+}
+
+namespace {
+/// An entry's digest, from its path: "<2 hex>/<64 hex>.<kind>" under the folder; empty for anything else.
+std::string entry_name(const std::filesystem::path& path) {
+    const auto stem = path.stem().string();
+    const auto hex = stem.size() == 64 && std::ranges::all_of(stem, [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+    if (!hex || path.extension().empty() || path.parent_path().filename() != stem.substr(0, 2)) return {};
+    return stem;
+}
+} // namespace
+
+CookCache::Usage CookCache::usage() const {
+    auto usage = Usage{};
+    std::error_code error;
+    for (auto it = std::filesystem::recursive_directory_iterator(m_folder, error); !error && it != std::filesystem::recursive_directory_iterator();
+         it.increment(error)) {
+        if (!it->is_regular_file(error) || entry_name(it->path()).empty()) continue;
+        ++usage.entries;
+        usage.bytes += it->file_size(error);
+    }
+    return usage;
+}
+
+CookCache::Pruning CookCache::prune(std::span<const CookKey> reachable, bool dry_run) {
+    auto keep = std::unordered_set<std::string>{};
+    for (const auto& key : reachable) keep.insert(sha256_text(key.digest()));
+    auto pruning = Pruning{};
+    auto doomed = std::vector<std::pair<std::filesystem::path, uint64_t>>{};
+    std::error_code error;
+    for (auto it = std::filesystem::recursive_directory_iterator(m_folder, error); !error && it != std::filesystem::recursive_directory_iterator();
+         it.increment(error)) {
+        if (!it->is_regular_file(error)) continue;
+        const auto name = entry_name(it->path());
+        if (name.empty()) continue;
+        const auto size = it->file_size(error);
+        if (keep.contains(name)) {
+            ++pruning.kept;
+            pruning.kept_bytes += size;
+        } else {
+            doomed.emplace_back(it->path(), size);
+        }
+    }
+    for (const auto& [path, size] : doomed) { // after the walk: removing during it would disturb the iterator
+        if (dry_run || (std::filesystem::remove(path, error) && !error)) {
+            ++pruning.removed;
+            pruning.removed_bytes += size;
+        } else {
+            pruning.errors.push_back(path.string() + ": " + (error ? error.message() : "not removed"));
+        }
+        error.clear();
+    }
+    return pruning;
 }
 
 std::filesystem::path cook_cache_folder(const Project& project) { return project.file.parent_path() / ".maya" / "cache"; }

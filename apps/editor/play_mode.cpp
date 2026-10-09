@@ -132,6 +132,7 @@ void EditorShell::stop_play() {
     }
     m_play_selection.clear();
     m_log.add(DiagnosticSource::play, "Stopped after " + std::to_string(ticks) + " ticks", m_frame);
+    release_unused_later("stopping Play");
 }
 
 void EditorShell::toggle_pause() {

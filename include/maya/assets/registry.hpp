@@ -1,11 +1,15 @@
 #pragma once
 #include "maya/assets/asset.hpp"
+#include "maya/assets/residency.hpp"
 #include "maya/jobs/jobs.hpp"
+#include <array>
 #include <chrono>
 #include <deque>
+#include <set>
 #include <iosfwd>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 
 namespace maya {
@@ -20,6 +24,20 @@ struct AssetResidency {
     size_t mesh_cpu_bytes = 0; // their picking geometry (MeshGeometry)
     size_t texture_gpu_bytes = 0; // every mip level of resident textures (texture_bytes)
     size_t environment_gpu_bytes = 0; // resident environments' backgrounds and specular cubes
+    // By category (#1063, docs/assets.md#residency): every resident version's bytes, those of them also
+    // leased, and the budgets they are held under.
+    std::array<ResidentBytes, residency_category_count> bytes{};
+    std::array<size_t, residency_category_count> leased_bytes{};
+    ResidencyBudgets budgets;
+};
+
+/// What releasing has done (docs/assets.md#residency).
+struct AssetReleaseStats {
+    uint64_t released = 0; // versions released: unused at a boundary, or over a budget
+    uint64_t released_for_budget = 0; // of those, by the budgets
+    /// Categories over their budget with nothing left to release: everything else in them is in use.
+    std::array<bool, residency_category_count> over_budget{};
+    double last_ms = 0.0, longest_ms = 0.0; // the last update's maintenance, and the longest
 };
 
 /// How much finalizing (making device resources for prepared loads) one update may do
@@ -92,6 +110,17 @@ public:
     std::optional<AssetInfo> info(AssetId id) const;
     /// Counts and bytes of what is resident; O(catalog size).
     AssetResidency residency() const noexcept;
+    /// A category's resident bytes, kept as versions come and go: O(1).
+    ResidentBytes resident(ResidencyCategory category) const noexcept { return m_resident[size_t(category)]; }
+    /// The budgets update() holds categories under (docs/assets.md#residency); W1's by default.
+    void set_budgets(const ResidencyBudgets& budgets) noexcept { m_budgets = budgets; }
+    const ResidencyBudgets& budgets() const noexcept { return m_budgets; }
+    /// The `count` largest resident versions, largest first; O(catalog size).
+    std::vector<ResidentAsset> largest(size_t count) const;
+    AssetReleaseStats release_stats() const noexcept { return m_release; }
+    /// Warnings since the last call: a category over its budget whose content is all in use, naming the
+    /// largest holders. Once each time a category goes over.
+    std::vector<std::string> take_budget_warnings() { return std::exchange(m_warnings, {}); }
     uint64_t token() const noexcept { return m_token; }
     /// The project directory that catalog paths are relative to.
     const std::filesystem::path& root() const noexcept { return m_root; }
@@ -113,13 +142,15 @@ public:
         const auto slot = find(ref.id, asset_kind<T>);
         if (!slot.second) {
             if (usable(m_entries[slot.first].payload)) return lease<T>(slot.first, ref);
+            m_entries[slot.first].last_wanted = ++m_clock; // wanted, though still loading
             if (auto diagnostic = start_held(slot.first)) return {{}, std::move(diagnostic)};
             return {{}, {AssetError::loading, "Asset " + m_entries[slot.first].record.path.string() + " is loading"}};
         }
         return {{}, slot.second};
     }
     /// Once a frame on the owner thread: applies finished preparations, cancels loads no one wants any
-    /// more, and finalizes prepared loads in arrival order within `budget`.
+    /// more, finalizes prepared loads in arrival order within `budget`, then releases what a category over
+    /// its budget holds unused, least recently used first, a bounded number of versions at a time.
     AssetLoadStats update(AssetLoadBudget budget = {});
     AssetLoadStats load_stats() const;
     void reset_load_peaks() noexcept { m_stats.longest_ms = m_stats.last_ms; }
@@ -161,8 +192,13 @@ public:
             return {{}, {AssetError::stale_handle, "Asset version was evicted, replaced, or its device session ended"}};
         return {AssetLease<T>{std::get<std::shared_ptr<const T>>(entry.payload),handle,{entry.record.id}}, {}};
     }
-    /// Releases resident versions no one else holds; entries with a load in flight are kept.
-    size_t evict_unused();
+    /// The use clock: a version leased (or loaded) later has a later last use.
+    uint64_t use_clock() const noexcept { return m_clock; }
+    /// Releases resident versions no one else holds and no one has wanted (leased, requested, or tried)
+    /// since `clock`, and cancels the loads the registry keeps for no one since then; by default, every
+    /// unused version, keeping loads in flight. A scene closing or Play stopping notes the clock, then
+    /// releases after the next frame, so what that frame drew stays (docs/assets.md#residency).
+    size_t evict_unused(uint64_t clock = std::numeric_limits<uint64_t>::max());
     /// Publishes `value` as the material's next version, as a successful reload would, without reading
     /// its file: an editor's unsaved edit (docs/editor.md#materials). Later acquisitions and extractions
     /// see it; leases of the previous version keep it; a load of it in flight is cancelled. Fails for an
@@ -189,11 +225,27 @@ private:
         Payload payload{};
         AssetDiagnostic diagnostic{};
         std::optional<PendingLoad> pending;
+        ResidencyCategory category = ResidencyCategory::other;
+        ResidentBytes bytes; // the resident version's
+        mutable uint64_t last_use = 0; // when it was last leased (or loaded): what budgets go by
+        mutable uint64_t last_wanted = 0; // when it was last leased, requested, or tried while loading: what boundaries go by
+        mutable uint64_t queued = 0; // its place in m_lru: its last use, or later once maintenance passed it by in use
     };
     template<Asset T> AssetResult<T> lease(uint32_t slot, AssetRef<T> ref) const {
         const auto& entry = m_entries[slot];
+        touch(slot);
         return {AssetLease<T>{std::get<std::shared_ptr<const T>>(entry.payload), {m_token, slot, entry.generation}, ref}, {}};
     }
+    /// Replaces the entry's resident version (or releases it, with an empty payload), keeping the totals
+    /// and the least-recently-used order.
+    void set_payload(uint32_t slot, Payload payload);
+    void release(uint32_t slot);
+    void touch(uint32_t slot) const;
+    /// Moves an entry in use to the back of its category's queue without counting it as used.
+    void requeue(uint32_t slot) const;
+    /// Releases versions of categories over budget that no one has used since `used_since` (the previous
+    /// update: content a frame draws is leased only while it draws), examining a bounded number.
+    void maintain(uint64_t used_since);
     template<Asset T> AssetResult<T> load(AssetRef<T> ref, bool reload) {
         const auto slot = find(ref.id, asset_kind<T>);
         if (slot.second) return {{}, slot.second};
@@ -230,6 +282,15 @@ private:
     size_t m_latency_next = 0;
     bool m_in_frame = false;
     int m_explicit = 0;
+    // Residency (#1063): totals by category, each category's resident slots by last use, the budgets.
+    std::array<ResidentBytes, residency_category_count> m_resident{};
+    mutable std::array<std::set<std::pair<uint64_t, uint32_t>>, residency_category_count> m_lru;
+    mutable uint64_t m_clock = 0;
+    uint64_t m_update_clock = 0; // the clock at the last update
+    std::array<size_t, residency_category_count> m_passed{}; // versions passed over in use since the last release
+    ResidencyBudgets m_budgets = default_residency_budgets();
+    AssetReleaseStats m_release;
+    std::vector<std::string> m_warnings;
     CompletionQueue m_completions;
     JobScope m_jobs; // last: destroyed first, so no job outlives what it uses
 };

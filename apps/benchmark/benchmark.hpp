@@ -109,6 +109,7 @@ struct MemorySample {
     std::optional<ProcessMemory> process;
     AssetResidency assets{};
     size_t entities = 0; // live entities in the benchmark's World(s)
+    size_t renderer_gpu = 0; // the renderer's shadow maps and tables, and the view's target (#1063)
 };
 
 /// One load/play cycle.

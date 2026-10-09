@@ -36,9 +36,10 @@ inline const std::string viewport_title = std::string(icon::cube_focus) + "  Vie
 inline const std::string inspector_title = std::string(icon::sliders) + "  Inspector###Inspector";
 inline const std::string assets_title = std::string(icon::folder) + "  Assets###Assets";
 inline const std::string diagnostics_title = std::string(icon::pulse) + "  Diagnostics###Diagnostics";
+inline const std::string residency_title = std::string(icon::memory) + "  Residency###Residency";
 
 inline const char* const panel_titles[] = {hierarchy_title.c_str(), viewport_title.c_str(), inspector_title.c_str(),
-                                    assets_title.c_str(), diagnostics_title.c_str()};
+                                    assets_title.c_str(), diagnostics_title.c_str(), residency_title.c_str()};
 
 /// Begins a docked panel with the tab padding, so its reserved title height matches its tab bar, and
 /// muted text: ImGui may draw the node's tab bar here (see theme::decorate_tabs).

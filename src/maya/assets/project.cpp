@@ -1,4 +1,5 @@
 #include "maya/assets/project.hpp"
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -117,6 +118,19 @@ ProjectSettingsResult read_project(std::istream& input) {
             field = number;
             continue;
         }
+        if (const auto known = std::ranges::find_if(resident_setting_keys, [&](const char* name) { return key == name; });
+            known != resident_setting_keys.end() || key == "cook_cache_limit") {
+            auto& field = known != resident_setting_keys.end() ? settings.resident[size_t(known - resident_setting_keys.begin())] : settings.cook_cache_limit;
+            const auto minimum = key == "cook_cache_limit" ? uint64_t{0} : uint64_t{1};
+            auto number = uint64_t{};
+            const auto parsed = (input >> value) ? std::from_chars(value.data(), value.data() + value.size(), number)
+                                                 : std::from_chars_result{value.data(), std::errc::invalid_argument};
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || number < minimum || number > max_resident_mib)
+                return {{}, "'" + key + "' needs a whole number of MiB from " + std::to_string(minimum) + " to " + std::to_string(max_resident_mib)};
+            if (field) return {{}, "'" + key + "' is set twice"};
+            field = uint32_t(number);
+            continue;
+        }
         if (key != "group") return {{}, "Unexpected '" + key + "' after the project settings"};
         auto index = 0u;
         if (!(input >> index) || index >= collision_group_names)
@@ -144,6 +158,9 @@ void write_project(std::ostream& output, const ProjectSettings& settings) {
     if (settings.stream_load) text << "stream_load " << *settings.stream_load << '\n';
     if (settings.stream_activate) text << "stream_activate " << *settings.stream_activate << '\n';
     if (settings.stream_hysteresis) text << "stream_hysteresis " << *settings.stream_hysteresis << '\n';
+    for (size_t i = 0; i < resident_setting_keys.size(); ++i)
+        if (settings.resident[i]) text << resident_setting_keys[i] << ' ' << *settings.resident[i] << '\n';
+    if (settings.cook_cache_limit) text << "cook_cache_limit " << *settings.cook_cache_limit << '\n';
     const auto defaults = default_collision_groups();
     for (size_t i = 0; i < collision_group_names; ++i)
         if (settings.collision_groups[i] != defaults[i] && !settings.collision_groups[i].empty())

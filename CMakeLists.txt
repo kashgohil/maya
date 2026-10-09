@@ -117,6 +117,7 @@ FetchContent_MakeAvailable(cgltf)
 
 add_library(MayaAssets STATIC
     src/maya/assets/registry.cpp
+    src/maya/assets/residency.cpp
     src/maya/assets/property_context.cpp
     src/maya/assets/file_provider.cpp
     src/maya/assets/asset_cooker.cpp
@@ -324,6 +325,11 @@ if(MAYA_BUILD_PLAYER)
     add_library(MayaPackage STATIC src/maya/package/packager.cpp)
     target_link_libraries(MayaPackage PUBLIC MayaAssets MayaScene MayaBuildInfo MayaMetrics)
     maya_target_options(MayaPackage)
+    # Maintains a project's cook cache (#1063): maya_cook <project> --prune [--dry-run].
+    add_executable(maya_cook apps/cook/main.cpp)
+    target_link_libraries(maya_cook PRIVATE MayaStreaming)
+    maya_target_options(maya_cook)
+
     add_executable(maya_package apps/package/main.cpp)
     target_link_libraries(maya_package PRIVATE MayaPackage MayaRuntime)
     add_dependencies(maya_package maya_player) # bundled from beside it
@@ -382,6 +388,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/editor_camera.cpp
         apps/editor/editor_preferences.cpp
         apps/editor/editor_shell.cpp
+        apps/editor/residency_panel.cpp
         apps/editor/editor_theme.cpp
         apps/editor/import_files.cpp
         apps/editor/input_router.cpp
@@ -396,7 +403,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/ui_renderer.cpp
         apps/editor/viewport_tools.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
-    target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImport MayaImGui)
+    target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImport MayaImGui MayaStreaming)
     maya_target_options(MayaEditor)
 
     add_executable(maya_editor apps/editor/main.cpp)

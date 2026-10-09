@@ -46,6 +46,7 @@ RhiDiagnostic UiRenderer::upload_fonts(ImFontAtlas& atlas) {
     if (!created) return created.diagnostic;
     if (!m_lifetime.expired()) m_device.destroy(m_font); // retired after frames that sampled it
     m_font = created.handle;
+    m_font_bytes = size_t(width) * size_t(height) * 4;
     if (m_font_id == 0) m_font_id = add_texture(m_font);
     else set_texture(m_font_id, m_font);
     atlas.SetTexID(m_font_id);

@@ -6,12 +6,16 @@
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
+#include "maya/streaming/world_streamer.hpp"
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <utility>
+#include <sstream>
+#include <iomanip>
 
 namespace maya::editor {
 using namespace detail;
@@ -148,6 +152,7 @@ std::string EditorShell::read_catalog(const Project& project, std::unique_ptr<As
         m_cook_cache = std::make_shared<CookCache>(cook_cache_folder(project));
     auto opened = open_project_assets(project, std::make_unique<FileAssetProvider>(m_device, m_cook_cache));
     registry = std::move(opened.registry);
+    if (registry) registry->set_budgets(project_residency_budgets(project.settings)); // docs/assets.md#residency
     return opened.error;
 }
 
@@ -165,6 +170,7 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     m_thumbnails.clear(); // their versions and loads belong to the old registry
     m_texture_loads.clear();
     m_reloads.clear();
+    m_release.reset(); // its clock was the old registry's
     m_assets = std::move(registry);
     m_selected_asset.reset();
     scan_project();
@@ -175,7 +181,42 @@ bool EditorShell::open_project(const std::filesystem::path& path) {
     check_script_files(); // compile errors are reported now, before anything plays
     // A startup scene that cannot be opened leaves a new scene, with the reason in a notice.
     if (!m_project->startup_scene || !open_scene(*m_project->startup_scene)) new_scene();
+    start_cook_maintenance(false); // past its limit, the cook cache is pruned in the background
     return true;
+}
+
+void EditorShell::start_cook_maintenance(bool asked) {
+    if (!m_project || !m_assets || (m_cook_maintenance && !m_cook_maintenance->job.done())) return;
+    const auto limit = asked ? uint64_t{1} : project_cook_cache_limit(m_project->settings); // asked: whatever its size
+    if (limit == 0) return; // the project never prunes by itself
+    auto result = std::make_shared<std::optional<CookCache::Pruning>>();
+    // Its own cache object on the same folder: loads use the editor's meanwhile. A load racing the prune
+    // at worst misses an entry and cooks it again.
+    auto job = job_system().submit(JobTier::background, [project = *m_project, records = m_assets->records(), limits = cook_limits(m_device),
+                                                          limit, result](JobContext&) {
+        *result = prune_cook_cache_over(project, records, std::make_shared<CookCache>(cook_cache_folder(project)), limit, limits);
+    });
+    m_cook_maintenance = CookMaintenance{std::move(job), std::move(result), asked};
+    if (asked) m_log.add(DiagnosticSource::asset, "Pruning the cook cache", m_frame);
+}
+
+void EditorShell::finish_cook_maintenance() {
+    if (!m_cook_maintenance || !m_cook_maintenance->job.done()) return;
+    const auto done = std::exchange(m_cook_maintenance, std::nullopt);
+    const auto mib = [](uint64_t bytes) {
+        auto text = std::ostringstream{};
+        text << std::fixed << std::setprecision(1) << double(bytes) / double(1 << 20) << " MiB";
+        return text.str();
+    };
+    if (!*done->result) {
+        if (done->asked) m_log.add(DiagnosticSource::asset, "The cook cache is empty", m_frame);
+        return;
+    }
+    const auto& pruning = **done->result;
+    m_log.add(DiagnosticSource::asset, "Pruned the cook cache: removed " + std::to_string(pruning.removed) + " entries (" +
+              mib(pruning.removed_bytes) + ") no source or setting produces now; kept " + std::to_string(pruning.kept) + " (" +
+              mib(pruning.kept_bytes) + ")", m_frame);
+    for (const auto& error : pruning.errors) m_log.add(DiagnosticSource::asset, "Cook cache: " + error, m_frame);
 }
 
 void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path) {
@@ -201,6 +242,7 @@ void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesys
     m_pick_hits.clear();
     m_reveal.reset();
     m_frame_problems.clear();
+    release_unused_later("closing the scene");
 }
 
 bool EditorShell::open_scene(const std::filesystem::path& path) {
@@ -346,6 +388,7 @@ void EditorShell::refresh_project() {
         m_thumbnails.clear(); // their versions and loads belong to the old registry
         m_texture_loads.clear();
         m_reloads.clear();
+        m_release.reset(); // its clock was the old registry's
         m_assets = std::move(registry); // loaded versions are reloaded from their files on next use
         if (m_scene) // edits not yet saved stay shown
             for (const auto id : m_scene->dirty_materials()) m_assets->publish(AssetRef<MaterialAsset>{id}, *m_scene->material(id));
@@ -813,6 +856,8 @@ ImTextureID EditorShell::texture_thumbnail(AssetId texture, bool preview) {
     // load); a failure is reported once, when its load ends.
     const auto info = m_assets->info(texture);
     if (!info) return 0;
+    // Made already from this version: shown without holding the texture, so it can be released (#1063).
+    if (const auto shown = m_thumbnails.current(texture, info->generation, preview)) return shown;
     if (info->state == AssetState::unloaded) m_texture_loads.try_emplace(texture, m_assets->request(AssetRef<TextureAsset>{texture}));
     if (const auto it = m_texture_loads.find(texture); it != m_texture_loads.end()) {
         if (!it->second.done()) return 0;

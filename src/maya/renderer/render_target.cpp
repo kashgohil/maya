@@ -23,6 +23,12 @@ void RenderTarget::release() noexcept {
     m_width = m_height = 0;
 }
 
+size_t RenderTarget::gpu_bytes() const noexcept {
+    if (!valid()) return 0;
+    return texture_bytes({m_width, m_height, m_desc.color_format, {}, {}}) + texture_bytes({m_width, m_height, m_desc.scene_format, {}, {}}) +
+           texture_bytes({m_width, m_height, Format::depth32_float, {}, {}});
+}
+
 RhiDiagnostic RenderTarget::resize(uint32_t width, uint32_t height) {
     if (width == 0 || height == 0)
         return {RhiError::invalid_descriptor, "Render target '" + m_desc.label + "' needs a nonzero size"};

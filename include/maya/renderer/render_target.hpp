@@ -37,6 +37,8 @@ public:
     Format color_format() const noexcept { return m_desc.color_format; }
     /// Number of successful allocations, for checking that steady frames do not reallocate.
     uint64_t allocations() const noexcept { return m_allocations; }
+    /// Tracked bytes of its textures (texture_bytes): the renderer's residency (#1063).
+    size_t gpu_bytes() const noexcept;
 
 private:
     void release() noexcept;

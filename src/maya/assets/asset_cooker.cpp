@@ -78,6 +78,38 @@ bool parse_part(std::string_view part, std::string_view kind, uint32_t& first, s
     return !rest.empty();
 }
 std::string part_name(const std::filesystem::path& source, std::string_view part) { return source.string() + "#" + std::string(part); }
+
+// The keys entries are written under, one function each, shared by cooking and by cook_key (what pruning
+// keeps, #1063): a key the cooking writes and cook_key does not compute would be pruned and cooked again.
+CookKey texture_key(const TextureSettings& settings, const CookLimits& limits) {
+    return {"texture", texture_cook_version, {}, texture_cook_settings(settings, limits)};
+}
+uint32_t environment_max_dimension(const CookLimits& limits) noexcept { return std::min(limits.max_texture_dimension, 8192u); }
+CookKey environment_key(const EnvironmentSettings& settings, const CookLimits& limits) {
+    return {"environment", environment_cook_version, {}, "specular_size " + std::to_string(settings.specular_size) + "\nsamples " +
+            std::to_string(settings.samples) + "\nmax_dimension " + std::to_string(environment_max_dimension(limits)) + "\n"};
+}
+CookKey part_key(const char* kind, uint32_t version, std::string_view part, const std::string& settings = {}) {
+    return {kind, version, {}, "part " + std::string(part) + "\n" + settings};
+}
+/// An imported texture's settings: its role from the part, its compression and mips from the import file
+/// when there is one (the defaults otherwise). An error message, or empty.
+std::string imported_texture_settings(const std::filesystem::path& source, std::string_view part, TextureSettings& settings) {
+    uint32_t index = 0;
+    auto role_name = std::string{};
+    if (!parse_part(part, "texture", index, role_name)) return "a texture part is 'texture/<texture>/<role>'";
+    if (role_name == "color") settings.role = TextureRole::color;
+    else if (role_name == "data") settings.role = TextureRole::data;
+    else if (role_name == "normal") settings.role = TextureRole::normal;
+    else return "the role '" + role_name + "' is not color, data, or normal";
+    if (auto input = std::ifstream(import_file_path(source))) {
+        const auto read = read_import_file(input);
+        if (!read) return import_file_path(source).filename().string() + ": " + read.error;
+        settings.compression = read.file.settings.compression;
+        settings.mips = read.file.settings.mips;
+    }
+    return {};
+}
 using SamplerWords = std::array<uint32_t, 6>;
 SamplerWords sampler_words(const SamplerDesc& s) {
     return {uint32_t(s.min_filter), uint32_t(s.mag_filter), uint32_t(s.address_u), uint32_t(s.address_v), uint32_t(s.mip_filter), s.max_anisotropy};
@@ -95,6 +127,48 @@ struct AssetCooker::OpenGltf {
 };
 AssetCooker::AssetCooker(CookLimits limits, std::shared_ptr<CookCache> cache) : m_limits(limits), m_cache(std::move(cache)) {}
 AssetCooker::~AssetCooker() = default;
+
+std::optional<CookKey> AssetCooker::cook_key(AssetKind kind, const std::filesystem::path& path, std::string_view part) {
+    auto key = std::optional<CookKey>{};
+    if (!part.empty()) {
+        if (kind == AssetKind::mesh) key = part_key("mesh", imported_mesh_cook_version, part);
+        else if (kind == AssetKind::skin) key = part_key("skin", skin_cook_version, part);
+        else if (kind == AssetKind::animation) key = part_key("animation", animation_cook_version, part);
+        else if (kind == AssetKind::texture) {
+            auto settings = TextureSettings{};
+            if (!imported_texture_settings(path, part, settings).empty()) return std::nullopt;
+            key = part_key("imported-texture", imported_texture_cook_version, part, texture_cook_settings(settings, m_limits));
+        } else return std::nullopt;
+        const auto digest = imported_digest(path);
+        if (!digest) return std::nullopt;
+        key->source = *digest;
+        return key;
+    }
+    auto source = std::optional<std::filesystem::path>{};
+    auto problem = AssetDiagnostic{};
+    if (kind == AssetKind::texture) {
+        auto input = std::ifstream(path);
+        if (!input) return std::nullopt;
+        const auto read = read_texture_settings(input);
+        if (!read) return std::nullopt;
+        source = named_source(path, read.settings.source, problem, "texture");
+        const auto extension = source ? lowercase_extension(*source) : std::string{};
+        if (extension != ".png" && extension != ".jpg" && extension != ".jpeg") return std::nullopt; // KTX2 is read as it is
+        key = texture_key(read.settings, m_limits);
+    } else if (kind == AssetKind::environment) {
+        auto input = std::ifstream(path);
+        if (!input) return std::nullopt;
+        const auto read = read_environment_settings(input);
+        if (!read) return std::nullopt;
+        source = named_source(path, read.settings.source, problem, "environment");
+        key = environment_key(read.settings, m_limits);
+    }
+    if (!key || !source || !m_cache) return std::nullopt;
+    const auto digest = m_cache->source_digest(*source);
+    if (!digest) return std::nullopt;
+    key->source = *digest;
+    return key;
+}
 
 CookResult<CookedMesh> AssetCooker::mesh(const std::filesystem::path& path) {
     if (path.extension() != ".obj") return failure<CookedMesh>(AssetError::invalid_data, "Initial mesh provider expects a triangulated .obj: " + path.string());
@@ -136,7 +210,7 @@ CookResult<CookedTexture> AssetCooker::texture(const std::filesystem::path& path
             return failed(AssetError::load_failed, "source '" + settings.source.generic_string() + "' is ASTC, which this device cannot sample");
     } else if (extension == ".png" || extension == ".jpg" || extension == ".jpeg") {
         // Cooked before with these settings: read back from the cache.
-        auto key = CookKey{"texture", texture_cook_version, {}, texture_cook_settings(settings, m_limits)};
+        auto key = texture_key(settings, m_limits);
         if (m_cache) {
             key.source = m_cache->source_digest(*source, *bytes);
             if (const auto entry = m_cache->read(key))
@@ -170,9 +244,8 @@ CookResult<CookedEnvironment> AssetCooker::environment(const std::filesystem::pa
         return failed(AssetError::invalid_data, "source '" + settings.source.generic_string() + "' must be a Radiance .hdr file");
     const auto bytes = read_bytes(*source);
     if (!bytes) return failed(AssetError::missing_file, "cannot read source '" + settings.source.generic_string() + "'");
-    const auto max_dimension = std::min(m_limits.max_texture_dimension, 8192u);
-    auto key = CookKey{"environment", environment_cook_version, {}, "specular_size " + std::to_string(settings.specular_size) +
-                       "\nsamples " + std::to_string(settings.samples) + "\nmax_dimension " + std::to_string(max_dimension) + "\n"};
+    const auto max_dimension = environment_max_dimension(m_limits);
+    auto key = environment_key(settings, m_limits);
     auto cooked = std::optional<CookedEnvironment>{};
     if (m_cache) {
         key.source = m_cache->source_digest(*source, *bytes);
@@ -232,7 +305,7 @@ CookResult<CookedMesh> AssetCooker::imported_mesh(const std::filesystem::path& s
     if (!parse_part(part, "mesh", mesh, rest) || std::from_chars(rest.data(), rest.data() + rest.size(), primitive).ptr != rest.data() + rest.size())
         return failed(AssetError::invalid_path, "a mesh part is 'mesh/<mesh>/<primitive>'");
     // Cooked before: the welded vertices and indices, read without parsing the file.
-    auto key = CookKey{"mesh", imported_mesh_cook_version, {}, "part " + std::string(part) + "\n"};
+    auto key = part_key("mesh", imported_mesh_cook_version, part);
     if (m_cache)
         if (const auto digest = imported_digest(source)) {
             key.source = *digest;
@@ -254,21 +327,12 @@ CookResult<CookedTexture> AssetCooker::imported_texture(const std::filesystem::p
     uint32_t index = 0;
     auto role_name = std::string{};
     if (!parse_part(part, "texture", index, role_name)) return failed(AssetError::invalid_path, "a texture part is 'texture/<texture>/<role>'");
-    auto settings = TextureSettings{};
-    if (role_name == "color") settings.role = TextureRole::color;
-    else if (role_name == "data") settings.role = TextureRole::data;
-    else if (role_name == "normal") settings.role = TextureRole::normal;
-    else return failed(AssetError::invalid_path, "the role '" + role_name + "' is not color, data, or normal");
     // The import's settings, when the import file is there; the defaults otherwise.
-    if (auto input = std::ifstream(import_file_path(source))) {
-        const auto read = read_import_file(input);
-        if (!read) return failed(AssetError::invalid_data, import_file_path(source).filename().string() + ": " + read.error);
-        settings.compression = read.file.settings.compression;
-        settings.mips = read.file.settings.mips;
-    }
+    auto settings = TextureSettings{};
+    if (auto problem = imported_texture_settings(source, part, settings); !problem.empty())
+        return failed(problem.starts_with("a texture part") || problem.starts_with("the role") ? AssetError::invalid_path : AssetError::invalid_data, problem);
     // Cooked before: the sampler's description, then the KTX2 file, read without parsing the source.
-    auto key = CookKey{"imported-texture", imported_texture_cook_version, {}, "part " + std::string(part) + "\n" +
-                       texture_cook_settings(settings, m_limits)};
+    auto key = part_key("imported-texture", imported_texture_cook_version, part, texture_cook_settings(settings, m_limits));
     if (m_cache)
         if (const auto digest = imported_digest(source)) {
             key.source = *digest;
@@ -311,7 +375,7 @@ CookResult<SkinAsset> AssetCooker::imported_skin(const std::filesystem::path& so
     uint32_t index = 0;
     if (!part.starts_with("skin/") || std::from_chars(part.data() + 5, part.data() + part.size(), index).ptr != part.data() + part.size())
         return failed(AssetError::invalid_path, "a skin part is 'skin/<skin>'");
-    auto key = CookKey{"skin", skin_cook_version, {}, "part " + std::string(part) + "\n"};
+    auto key = part_key("skin", skin_cook_version, part);
     if (m_cache)
         if (const auto digest = imported_digest(source)) {
             key.source = *digest;
@@ -340,7 +404,7 @@ CookResult<AnimationAsset> AssetCooker::imported_animation(const std::filesystem
     uint32_t index = 0;
     if (!part.starts_with("animation/") || std::from_chars(part.data() + 10, part.data() + part.size(), index).ptr != part.data() + part.size())
         return failed(AssetError::invalid_path, "an animation part is 'animation/<animation>'");
-    auto key = CookKey{"animation", animation_cook_version, {}, "part " + std::string(part) + "\n"};
+    auto key = part_key("animation", animation_cook_version, part);
     if (m_cache)
         if (const auto digest = imported_digest(source)) {
             key.source = *digest;

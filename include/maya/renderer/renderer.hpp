@@ -80,6 +80,10 @@ public:
     /// The last view's lights.
     const RenderLightReport& last_lights() const noexcept { return m_lights; }
     const RenderViewReport& last_view() const noexcept { return m_view_report; }
+    /// Tracked bytes of the textures the renderer itself keeps (#1063): the shadow atlases, and the tables
+    /// and stand-ins it binds. Views' targets are their own (RenderTarget::gpu_bytes).
+    size_t shadow_bytes() const noexcept;
+    size_t table_bytes() const noexcept;
 
 private:
     // Lit surfaces by alpha mode (blend or not) and sidedness; masks discard in the opaque pipelines.

@@ -35,6 +35,8 @@ public:
                          const std::array<double, 4>& clear_color);
     const UiRendererStats& stats() const noexcept { return m_stats; }
     const std::string& shader_source() const noexcept { return m_shader_source; }
+    /// Tracked bytes of the font atlas (#1063: the editor's own GPU memory).
+    size_t gpu_bytes() const noexcept { return m_font.valid() ? m_font_bytes : 0; }
 
 private:
     TextureHandle lookup(ImTextureID id) const;
@@ -46,6 +48,7 @@ private:
     std::vector<std::pair<Format, PipelineHandle>> m_pipelines;
     SamplerHandle m_sampler;
     TextureHandle m_font;
+    size_t m_font_bytes = 0;
     ImTextureID m_font_id = 0;
     std::vector<TextureHandle> m_textures; // ID n refers to m_textures[n - 1]
     UiRendererStats m_stats{};

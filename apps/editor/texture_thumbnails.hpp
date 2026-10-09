@@ -27,6 +27,9 @@ public:
     /// The UI texture showing this version of `asset`, rendered before this frame's UI is drawn.
     ImTextureID row(AssetId asset, const AssetLease<TextureAsset>& texture) { return request(asset, texture, {}, false); }
     ImTextureID preview(AssetId asset, const AssetLease<TextureAsset>& texture) { return request(asset, texture, {}, true); }
+    /// The thumbnail already made of this version of `asset`, or 0: what a row shows without holding the
+    /// texture, or loading it again once it is released (#1063).
+    ImTextureID current(AssetId asset, uint64_t generation, bool preview);
     /// The placeholder's thumbnail, for a texture that is missing or failed.
     ImTextureID placeholder(bool preview);
     /// Inside a frame with no pass open: renders the thumbnails requested since the last call.
@@ -34,6 +37,8 @@ public:
     /// Forgets every thumbnail, e.g. when the project's registry is replaced.
     void clear();
     size_t cached() const noexcept { return m_rows.size(); }
+    /// Tracked bytes of the thumbnails' targets (#1063: the editor's own GPU memory).
+    size_t gpu_bytes() const noexcept;
     /// The target holding a texture's row thumbnail (readable, for tests), or none.
     TextureHandle row_target(AssetId asset) const {
         const auto found = m_rows.find(asset);

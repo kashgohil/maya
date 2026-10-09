@@ -237,6 +237,23 @@ public:
     const TextureThumbnails& thumbnails() const noexcept { return m_thumbnails; }
     const UiRenderer& ui_renderer() const noexcept { return m_ui; }
     const RenderSnapshotStats& extraction() const noexcept { return m_extraction; }
+    const AssetLoadStats& load_stats() const noexcept { return m_load_stats; }
+    /// The Residency panel's figures (#1063, docs/editor.md#residency).
+    struct ResidencyFigures {
+        ResidencyReport report;
+        std::vector<ResidentAsset> largest;
+        AssetReleaseStats release;
+        size_t viewport_versions = 0, viewport_bytes = 0; // held by the viewport's snapshot
+        size_t loading = 0, ready = 0; // loads in flight, and of those prepared
+    };
+    /// Brings the Residency panel's tab forward.
+    void show_residency() noexcept { m_focus_residency = true; }
+    /// Shows these figures in the Residency panel from now on, never refreshed: for screenshots, which
+    /// must not change from run to run.
+    void pin_residency(ResidencyFigures figures) {
+        m_shown_residency = std::move(figures);
+        m_residency_pinned = true;
+    }
     /// The registry's loading as of this frame's update (Diagnostics' Loading row).
     const AssetLoadStats& loading() const noexcept { return m_load_stats; }
     /// The last viewport frame's lights (Diagnostics' Lights row), and its scene problems, including the
@@ -414,6 +431,7 @@ private:
     /// folder of its own); null, with a notice, when it cannot.
     std::optional<std::filesystem::path> copy_into_project(const std::filesystem::path& source);
     void draw_diagnostics();
+    void draw_residency();
     void draw_top_bar();
     void draw_status_bar();
     void render_viewport();
@@ -487,6 +505,32 @@ private:
     std::unordered_map<AssetId, PendingReload, PersistentIdHash> m_reloads;
     void finish_reloads();
     AssetLoadStats m_load_stats;
+    /// A scene closed or Play stopped (#1063, docs/assets.md#residency): what no one has used since the
+    /// registry's clock then is released once a frame has been drawn after the frame noted.
+    struct PendingRelease {
+        uint64_t clock = 0, frame = 0;
+        std::string reason; // "closing the scene", "stopping Play"
+    };
+    ResidencyFigures m_shown_residency; // refreshed a few times a second
+    float m_residency_age = 1.0f;
+    bool m_residency_pinned = false; // pin_residency: never refreshed
+    bool m_focus_residency = false; // bring its tab forward next frame
+    /// The editor's residency now: the registry's, with the renderer's, the viewport's, and the editor's own
+    /// textures (fonts and thumbnails) as the renderer's share.
+    ResidencyReport residency_report() const;
+    std::optional<PendingRelease> m_release;
+    void release_unused_later(std::string reason);
+    void release_unused();
+    /// The cook cache's maintenance (#1063, docs/assets.md#cook-cache): a prune on a background job, when
+    /// a project opens with its cache over the limit or when asked, and what it did.
+    struct CookMaintenance {
+        JobHandle job;
+        std::shared_ptr<std::optional<CookCache::Pruning>> result;
+        bool asked = false;
+    };
+    std::optional<CookMaintenance> m_cook_maintenance;
+    void start_cook_maintenance(bool asked);
+    void finish_cook_maintenance();
     /// An imported glTF file (content-relative), and it and the files it names as last seen.
     struct ImportedSource {
         std::filesystem::path source;

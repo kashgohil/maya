@@ -99,6 +99,15 @@ ImTextureID TextureThumbnails::request(AssetId asset, const AssetLease<TextureAs
     return entry->id;
 }
 
+ImTextureID TextureThumbnails::current(AssetId asset, uint64_t generation, bool preview) {
+    if (m_lifetime.expired() || generation == 0) return 0;
+    if (preview) return m_preview_asset == asset && m_preview.version == generation && m_preview.target.valid() ? m_preview.id : 0;
+    const auto found = m_rows.find(asset);
+    if (found == m_rows.end() || found->second.version != generation || !found->second.target.valid()) return 0;
+    found->second.used = m_counter + 1; // shown this frame: its row stays
+    return found->second.id;
+}
+
 ImTextureID TextureThumbnails::placeholder(bool preview) {
     if (!m_placeholder || !m_placeholder->valid()) m_placeholder = make_placeholder_texture(m_device);
     return m_placeholder ? request({}, {}, m_placeholder, preview) : 0;
@@ -156,6 +165,13 @@ RhiDiagnostic TextureThumbnails::render() {
         }
     }
     return {};
+}
+
+size_t TextureThumbnails::gpu_bytes() const noexcept {
+    const auto bytes = [](const Entry& entry, uint32_t size) { return entry.target.valid() ? size_t(size) * size * 4 : 0; }; // RGBA8
+    auto total = bytes(m_preview, preview_size) + bytes(m_placeholder_row, row_size) + bytes(m_placeholder_preview, preview_size);
+    for (const auto& [asset, entry] : m_rows) total += bytes(entry, row_size);
+    return total;
 }
 
 } // namespace maya::editor

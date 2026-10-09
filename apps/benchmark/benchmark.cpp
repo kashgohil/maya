@@ -209,8 +209,18 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     return sample;
 }
 
-MemorySample memory(GraphicsDevice& device, const AssetRegistry& registry, size_t entities) {
-    return {device.stats(), device.reported_memory(), process_memory(), registry.residency(), entities};
+/// With MAYA_BENCHMARK_FOOTPRINT=<folder>, the footprint tool's account of this process by kind of memory
+/// (footprint-<label>.json): what attributes the load cycles' plateau (#1063, docs/performance.md#memory).
+void footprint_snapshot(const std::string& label) {
+    const auto* folder = std::getenv("MAYA_BENCHMARK_FOOTPRINT");
+    if (!folder) return;
+    const auto command = "footprint --json '" + (fs::path(folder) / ("footprint-" + label + ".json")).string() + "' -p " +
+                         std::to_string(::getpid()) + " > /dev/null 2>&1";
+    if (std::system(command.c_str()) != 0) std::cerr << "[Benchmark] footprint failed for " << label << '\n';
+}
+
+MemorySample memory(GraphicsDevice& device, const AssetRegistry& registry, size_t entities, size_t renderer_gpu = 0) {
+    return {device.stats(), device.reported_memory(), process_memory(), registry.residency(), entities, renderer_gpu};
 }
 
 /// A run: a fresh play session from the document, warmup frames, then sampled frames, with GPU
@@ -440,6 +450,25 @@ void write_memory(Json& json, std::string_view name, const MemorySample& m) {
     json.field("resident_skins", m.assets.skins);
     json.field("resident_animations", m.assets.animations);
     json.close('}');
+    json.close('}');
+    // By category (#1063, docs/assets.md#residency), against the device's tracked bytes.
+    const auto report = residency_report(m.assets, 0, m.renderer_gpu, m.device, m.gpu_reported,
+                                         m.process ? std::optional(size_t(m.process->footprint)) : std::nullopt);
+    json.key("residency");
+    json.open('{');
+    for (size_t c = 0; c < residency_category_count; ++c) {
+        json.key(residency_category_name(ResidencyCategory(c)));
+        json.open('{');
+        json.field("cpu_bytes", report.bytes[c].cpu);
+        json.field("gpu_bytes", report.bytes[c].gpu);
+        json.field("leased_bytes", report.leased[c]);
+        json.field("budget_bytes", report.budgets.bytes[c]);
+        json.close('}');
+    }
+    json.field("total_bytes", report.total());
+    json.field("budget_total_bytes", report.budgets.total);
+    json.field("tracked_gpu_bytes", report.tracked_gpu);
+    json.field("unattributed_gpu_bytes", report.unattributed_gpu);
     json.close('}');
     json.key("reported");
     json.open('{');
@@ -901,7 +930,9 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         auto warmed = renderer.render(RenderSnapshot{}, RenderView{manifest.width, manifest.height}, target);
         if (auto ended = device.end_frame(); !warmed) warmed = std::move(ended);
         if (warmed) throw std::runtime_error(warmed.message);
-        result.baseline = memory(device, registry, 0);
+        const auto renderer_gpu = [&] { return renderer.shadow_bytes() + renderer.table_bytes() + target.gpu_bytes(); };
+        result.baseline = memory(device, registry, 0, renderer_gpu());
+        footprint_snapshot("baseline");
         if (manifest.workload == Workload::scene) {
             // Starting play, then loading what the scene draws through the cook cache (a loading screen),
             // and the first frame: first_frame_ms is both, as before loading was asynchronous.
@@ -1006,12 +1037,13 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
             sample.stop = clock.milliseconds();
             device.wait_idle(); // retire this cycle's GPU work
             registry.evict_unused(); // explicit maintenance: unused versions leave the cache
-            sample.after = memory(device, registry, 0);
+            sample.after = memory(device, registry, 0, renderer_gpu());
+            if (cycle == 0 || cycle == 9 || cycle == 99 || cycle + 1 == manifest.cycles) footprint_snapshot("cycle-" + std::to_string(cycle + 1));
             device.take_gpu_timings();
             result.cycles.push_back(sample);
         }
         result.authored_unchanged = scene_text(capture_scene(*authored_world.world), context) == authored_before;
-        result.resident = memory(device, registry, authored_world.world->size());
+        result.resident = memory(device, registry, authored_world.world->size(), renderer_gpu());
         result.loading = registry.load_stats();
     } catch (const std::exception& error) {
         result.failure = error.what();

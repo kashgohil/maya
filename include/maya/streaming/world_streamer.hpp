@@ -1,5 +1,7 @@
 #pragma once
 
+#include "maya/assets/asset_cooker.hpp"
+#include "maya/assets/cook_cache.hpp"
 #include "maya/jobs/jobs.hpp"
 #include "maya/scene/world_io.hpp"
 #include <array>
@@ -16,7 +18,7 @@
 
 namespace maya {
 struct ProjectSettings;
-class CookCache;
+struct Project;
 class PhysicsWorld;
 class World;
 
@@ -36,12 +38,29 @@ struct StreamingSettings {
     /// Owner-thread time a frame spends committing cells into the World and taking them out (#1060: 1 ms).
     std::chrono::microseconds frame_budget{1000};
     size_t frame_entities = 4096; // most entities committed or removed a frame
-    size_t bytes_in_flight = size_t{64} << 20; // most cooked cell bytes loading or waiting to activate
+    size_t bytes_in_flight = size_t{64} << 20; // most cooked cell bytes loading at once (an estimate until loaded)
+    /// The cells budget (#1063, docs/assets.md#residency): cooked bytes held, past which only cells wanted
+    /// active load; cells within the load radius alone wait. 64 MiB, W1's, by default.
+    size_t resident_bytes = size_t{64} << 20;
     JobTier tier = JobTier::background;
 };
 
-/// The project's streaming radii (ProjectSettings::stream_*) over the defaults.
+/// The project's streaming radii (ProjectSettings::stream_*) over the defaults, and its cells budget.
 StreamingSettings project_streaming_settings(const ProjectSettings& project);
+
+// The cook cache's maintenance (#1063, docs/assets.md#cook-cache) lives here, with the cells' keys.
+/// The key a cell scene's load reads (cooked_cell_loader), from its text's digest.
+CookKey cell_cook_key(const Sha256Digest& source);
+/// Every entry loading the project could read now: its catalog's cooked sources, as `limits` cook them,
+/// and the cells of every world under its content root. Reads (and digests) every source: run it on a job.
+std::vector<CookKey> reachable_cook_keys(const Project& project, std::span<const AssetRecord> records, std::shared_ptr<CookCache> cache,
+                                         CookLimits limits = {});
+/// Prunes the cache to what is reachable when it holds more than `limit` bytes (0: never), and says what
+/// it did; nothing when it is within the limit. What opening a project does.
+std::optional<CookCache::Pruning> prune_cook_cache_over(const Project& project, std::span<const AssetRecord> records,
+                                                        std::shared_ptr<CookCache> cache, uint64_t limit, CookLimits limits = {});
+/// The project's cook cache limit in bytes (cook_cache_limit, 4 GiB by default; 0 for never).
+uint64_t project_cook_cache_limit(const ProjectSettings& project) noexcept;
 
 /// What loading a cell produces, off the owner thread.
 struct CellLoad {

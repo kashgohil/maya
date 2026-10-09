@@ -20,6 +20,7 @@
 namespace maya {
 class CookCache;
 class GltfFile;
+struct CookKey;
 
 /// What the device samples, which changes how textures cook: ASTC or RGBA8, and the largest dimension.
 struct CookLimits {
@@ -72,6 +73,11 @@ public:
     /// "skin/<skin>" and "animation/<animation>" (#1038): joints and clips named by node path.
     CookResult<SkinAsset> imported_skin(const std::filesystem::path& source, std::string_view part);
     CookResult<AnimationAsset> imported_animation(const std::filesystem::path& source, std::string_view part);
+    /// The key loading this source reads from the cook cache (`path` is the descriptor or the imported
+    /// file, `part` what follows '#'), or nothing when it cooks nothing (an .obj, a cooked KTX2, a
+    /// material, a script) or cannot be read: what pruning keeps (#1063, docs/assets.md#cook-cache).
+    /// Needs a cache, for the sources' digests.
+    std::optional<CookKey> cook_key(AssetKind kind, const std::filesystem::path& path, std::string_view part);
 
 private:
     struct OpenGltf;

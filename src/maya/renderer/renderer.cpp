@@ -675,4 +675,14 @@ RhiDiagnostic Renderer::present(const RenderTarget& source, TextureHandle destin
     return result ? result : closed;
 }
 
+size_t Renderer::shadow_bytes() const noexcept {
+    const auto bytes = [](const std::unique_ptr<Texture>& texture) { return texture ? texture->gpu_bytes() : 0; };
+    return bytes(m_sun_atlas) + bytes(m_spot_atlas) + bytes(m_no_shadows);
+}
+
+size_t Renderer::table_bytes() const noexcept {
+    const auto bytes = [](const std::unique_ptr<Texture>& texture) { return texture ? texture->gpu_bytes() : 0; };
+    return bytes(m_brdf_table) + bytes(m_empty_cube) + (m_placeholder ? m_placeholder->gpu_bytes() : 0);
+}
+
 } // namespace maya

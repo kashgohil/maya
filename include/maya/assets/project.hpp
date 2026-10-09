@@ -27,6 +27,11 @@ std::string collision_group_label(const CollisionGroupNames& groups, size_t inde
 /// Bounds of the script limits a project may set (docs/scripting.md#sandbox-and-limits).
 inline constexpr uint64_t min_script_work = 1'000, max_script_work = 1'000'000'000; // safepoints per hook call
 inline constexpr uint32_t max_script_memory = 4096; // MiB per play session
+/// The resident-memory budgets a project may set (#1063, docs/assets.md#residency), in MiB, by key: the
+/// budgeted categories, then the total.
+inline constexpr std::array<const char*, 6> resident_setting_keys = {"resident_meshes", "resident_textures", "resident_environments",
+                                                                      "resident_animation", "resident_cells", "resident_total"};
+inline constexpr uint32_t max_resident_mib = 1u << 20; // 1 TiB
 
 /// A project file's settings. Every path is relative and stays inside its base, so a project keeps
 /// working wherever its directory is moved or copied.
@@ -40,6 +45,10 @@ struct ProjectSettings {
     /// Streaming radii for worlds (#1064, docs/world.md#streaming), in metres: from a source to a cell, to
     /// load it, to activate it, and the hysteresis before either is undone. The engine's defaults when unset.
     std::optional<double> stream_load, stream_activate, stream_hysteresis;
+    /// Resident-memory budgets in MiB, as resident_setting_keys orders them (#1063); W1's when unset.
+    std::array<std::optional<uint32_t>, resident_setting_keys.size()> resident;
+    /// The cook cache's size in MiB past which opening the project prunes it; 4 GiB when unset, 0 for never.
+    std::optional<uint32_t> cook_cache_limit;
 };
 struct ProjectSettingsResult {
     ProjectSettings settings;

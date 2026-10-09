@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace maya {
@@ -57,6 +58,23 @@ public:
     };
     const Stats& stats() const noexcept { return m_stats; }
     std::filesystem::path entry_path(const CookKey& key) const;
+
+    /// The entries on disk and their bytes, walking the folder.
+    struct Usage {
+        size_t entries = 0;
+        uint64_t bytes = 0;
+    };
+    Usage usage() const;
+    /// What pruning did (#1063, docs/assets.md#cook-cache).
+    struct Pruning {
+        size_t kept = 0, removed = 0;
+        uint64_t kept_bytes = 0, removed_bytes = 0;
+        std::vector<std::string> errors; // entries that could not be removed
+    };
+    /// Removes every entry whose key is not one of `reachable` (the keys loading could read now:
+    /// reachable_cook_keys); files that are not entries are left alone. A dry run removes nothing and
+    /// reports what it would.
+    Pruning prune(std::span<const CookKey> reachable, bool dry_run = false);
 
 private:
     struct Remembered {

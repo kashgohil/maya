@@ -141,11 +141,55 @@ const char* cell_state_name(CellState state) noexcept {
     return "unknown";
 }
 
+CookKey cell_cook_key(const Sha256Digest& source) {
+    return {"cell", cell_cook_version, source, "schemas " + std::to_string(scene_schema_fingerprint()) + "\n"};
+}
+
+std::vector<CookKey> reachable_cook_keys(const Project& project, std::span<const AssetRecord> records, std::shared_ptr<CookCache> cache,
+                                         CookLimits limits) {
+    auto keys = std::vector<CookKey>{};
+    auto cooker = AssetCooker(limits, cache);
+    for (const auto& record : records) {
+        const auto source = split_asset_path(record.path);
+        const auto file = project.resolve(source.file);
+        if (!file) continue;
+        if (auto key = cooker.cook_key(record.kind, *file, source.part)) keys.push_back(std::move(*key));
+    }
+    // Worlds' cells, wherever the content holds a world file (not inside the project's own .maya folder).
+    std::error_code error;
+    for (auto it = std::filesystem::recursive_directory_iterator(project.content_root, error);
+         !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+        if (it->is_directory(error) && it->path().filename() == ".maya") {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(error) || it->path().extension() != ".world") continue;
+        auto input = std::ifstream(it->path());
+        const auto read = read_world(std::string(std::istreambuf_iterator<char>(input), {}));
+        if (!read) continue;
+        for (const auto& cell : read.document->cells)
+            if (const auto digest = cache->source_digest(it->path().parent_path() / cell.scene)) keys.push_back(cell_cook_key(*digest));
+    }
+    return keys;
+}
+
+std::optional<CookCache::Pruning> prune_cook_cache_over(const Project& project, std::span<const AssetRecord> records,
+                                                        std::shared_ptr<CookCache> cache, uint64_t limit, CookLimits limits) {
+    if (limit == 0 || cache->usage().bytes <= limit) return std::nullopt;
+    const auto keys = reachable_cook_keys(project, records, cache, limits);
+    return cache->prune(keys);
+}
+
+uint64_t project_cook_cache_limit(const ProjectSettings& project) noexcept {
+    return project.cook_cache_limit ? uint64_t(*project.cook_cache_limit) << 20 : default_cook_cache_limit;
+}
+
 StreamingSettings project_streaming_settings(const ProjectSettings& project) {
     auto settings = StreamingSettings{};
     if (project.stream_load) settings.load_radius = *project.stream_load;
     if (project.stream_activate) settings.activate_radius = *project.stream_activate;
     if (project.stream_hysteresis) settings.hysteresis = *project.stream_hysteresis;
+    settings.resident_bytes = project_residency_budgets(project).of(ResidencyCategory::cells);
     return settings;
 }
 
@@ -166,7 +210,7 @@ CellLoader cooked_cell_loader(std::filesystem::path world_folder, std::shared_pt
             if (!decoded) return {std::nullopt, path.generic_string() + ": " + decoded.diagnostics.front().message, 0};
             return {std::move(decoded.document), {}, bytes.size()};
         }
-        auto key = CookKey{"cell", cell_cook_version, {}, "schemas " + std::to_string(scene_schema_fingerprint()) + "\n"};
+        auto key = cell_cook_key({});
         if (cache) {
             const auto guard = std::lock_guard(*lock);
             key.source = cache->source_digest(path, std::as_bytes(std::span(text)));
@@ -317,6 +361,9 @@ void measure(double& cost, double measured) { cost = measured > cost ? measured 
 double microseconds_since(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
 }
+/// A cell's cooked bytes before it is loaded, generously at 256 bytes an entity; the load reports the
+/// real size.
+size_t estimated_bytes(const WorldCell& cell) noexcept { return size_t(cell.entities) * 256; }
 bool has_physics(const SceneEntity& entity) {
     return std::ranges::any_of(entity.components, [](const ComponentValue& value) {
         return std::holds_alternative<ColliderComponent>(value) || std::holds_alternative<RigidBodyComponent>(value) ||
@@ -492,6 +539,7 @@ const StreamingStats& WorldStreamer::update(World& world, PhysicsWorld* physics)
     std::ranges::sort(order, {}, [](const Cell* cell) { return cell->distance; }); // nearest first
     // Decisions: cheap, every cell. What costs the World time waits for the work below.
     auto loads = size_t(std::ranges::count(order, CellState::loading, &Cell::state));
+    auto in_flight = m_stats.bytes_in_flight;
     for (auto* cell : order) {
         const auto want = this->want(*cell);
         switch (cell->state) {
@@ -499,8 +547,12 @@ const StreamingStats& WorldStreamer::update(World& world, PhysicsWorld* physics)
             if (!want.loaded) cell->state = CellState::unloaded; // tried again when it comes back
             break;
         case CellState::unloaded:
-            if (want.loaded && loads < max_loads_in_flight && m_stats.bytes_loaded < m_settings.bytes_in_flight) {
+            // Loads in flight are bounded by count and estimated bytes; past the cells budget, only a cell
+            // that must activate loads (activating never waits on the budget: it is reported instead).
+            if (want.loaded && loads < max_loads_in_flight && in_flight < m_settings.bytes_in_flight &&
+                (want.active || m_stats.bytes_loaded + in_flight < m_settings.resident_bytes)) {
                 start_load(*cell);
+                in_flight += estimated_bytes(*cell->info);
                 ++loads;
             }
             break;
@@ -571,6 +623,8 @@ const StreamingStats& WorldStreamer::settle(World& world, PhysicsWorld* physics)
             const auto want = this->want(cell);
             if (cell.state == CellState::loading || cell.state == CellState::activating || cell.state == CellState::deactivating) return true;
             if (cell.state == CellState::failed || cell.pinned) return false;
+            // Waiting for room in the cells budget, and only to load ahead: nothing to wait for.
+            if (cell.state == CellState::unloaded && !want.active && m_stats.bytes_loaded >= m_settings.resident_bytes) return false;
             return want.active ? cell.state != CellState::active : want.loaded ? cell.state != CellState::ready : cell.state != CellState::unloaded;
         });
         if (!busy) break;
@@ -627,7 +681,7 @@ void WorldStreamer::count() {
     m_stats.bytes_in_flight = m_stats.bytes_loaded = m_stats.active_entities = m_stats.deltas = 0;
     for (const auto& [index, cell] : m_cells) {
         ++m_stats.cells[size_t(cell->state)];
-        if (cell->state == CellState::loading) m_stats.bytes_in_flight += size_t(cell->info->entities) * 256; // an estimate until loaded
+        if (cell->state == CellState::loading) m_stats.bytes_in_flight += estimated_bytes(*cell->info);
         m_stats.bytes_loaded += cell->bytes;
         m_stats.active_entities += cell->entities.size();
         m_stats.deltas += cell->delta.has_value();

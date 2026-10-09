@@ -11,7 +11,9 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
+#include <utility>
 #include <type_traits>
 
 namespace maya::editor {
@@ -254,7 +256,9 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     if (m_assets) {
         m_load_stats = m_assets->update();
         m_assets->begin_frame();
+        for (auto& warning : m_assets->take_budget_warnings()) m_log.add(DiagnosticSource::asset, std::move(warning), m_frame);
     }
+    finish_cook_maintenance();
     finish_reloads();
     if (m_minimized) {
         m_minimized = false;
@@ -304,6 +308,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_inspector();
     draw_assets();
     draw_diagnostics();
+    draw_residency();
     accept_dropped_files();
     // New windows take focus as they are created, and a focused docked window brings its tab to the
     // front. Start with the viewport focused, so the bottom panels open on Assets, not on Diagnostics
@@ -345,6 +350,7 @@ void EditorShell::build_dock_layout(ImGuiID dockspace) {
     ImGui::DockBuilderDockWindow(inspector_title.c_str(), right);
     ImGui::DockBuilderDockWindow(assets_title.c_str(), bottom);
     ImGui::DockBuilderDockWindow(diagnostics_title.c_str(), bottom);
+    ImGui::DockBuilderDockWindow(residency_title.c_str(), bottom);
     ImGui::DockBuilderDockWindow(viewport_title.c_str(), center);
     ImGui::DockBuilderFinish(dockspace);
     m_layout_built = true;
@@ -386,6 +392,9 @@ void EditorShell::draw_top_bar() {
             ImGui::PopStyleColor(2);
             if (ImGui::BeginPopup("project_menu")) {
                 if (ImGui::MenuItem((std::string(icon::stack) + "  Collision groups").c_str())) m_groups_open = true;
+                const auto pruning = m_cook_maintenance.has_value();
+                if (ImGui::MenuItem((std::string(icon::broom) + "  Prune cook cache").c_str(), nullptr, false, !pruning)) start_cook_maintenance(true);
+                m_layout.controls.push_back({"project.prune_cook_cache", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
                 ImGui::EndPopup();
             }
             ImGui::SameLine(0.0f, 14.0f);
@@ -1159,7 +1168,30 @@ RhiDiagnostic EditorShell::render(TextureHandle destination) {
     m_performance.ui.add(clock.milliseconds());
     if (result) m_log.add(DiagnosticSource::ui, result.message, m_frame);
     ImGui::SetCurrentContext(previous ? previous : m_context);
+    if (m_release && m_frame > m_release->frame) release_unused();
     return result;
+}
+
+void EditorShell::release_unused_later(std::string reason) {
+    if (!m_assets) return;
+    // An earlier release still pending keeps its older clock: what it would release, this one releases too.
+    if (!m_release) m_release = PendingRelease{m_assets->use_clock(), m_frame, std::move(reason)};
+    else m_release->frame = m_frame;
+}
+
+void EditorShell::release_unused() {
+    const auto release = std::exchange(m_release, std::nullopt);
+    if (!m_assets || !release) return;
+    auto before = size_t{0};
+    for (const auto& category : m_assets->residency().bytes) before += category.total();
+    const auto count = m_assets->evict_unused(release->clock);
+    if (count == 0) return;
+    auto after = size_t{0};
+    for (const auto& category : m_assets->residency().bytes) after += category.total();
+    auto text = std::ostringstream{};
+    text << "Released " << count << (count == 1 ? " unused asset (" : " unused assets (") << std::fixed << std::setprecision(1)
+         << double(before - after) / double(1 << 20) << " MiB) after " << release->reason;
+    m_log.add(DiagnosticSource::asset, text.str(), m_frame);
 }
 
 } // namespace maya::editor

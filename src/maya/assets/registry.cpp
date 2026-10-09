@@ -22,6 +22,51 @@ std::string id_text(AssetId id) {
     text << std::hex << id.high << ':' << id.low;
     return text.str();
 }
+ResidencyCategory category_of(AssetKind kind) noexcept {
+    switch (kind) {
+    case AssetKind::mesh: return ResidencyCategory::meshes;
+    case AssetKind::texture: return ResidencyCategory::textures;
+    case AssetKind::environment: return ResidencyCategory::environments;
+    case AssetKind::skin:
+    case AssetKind::animation: return ResidencyCategory::animation;
+    case AssetKind::material:
+    case AssetKind::script: break;
+    }
+    return ResidencyCategory::other;
+}
+/// A version's bytes: the device's from its descriptors, the CPU's from what it keeps.
+ResidentBytes bytes_of(const AssetValue& payload) noexcept {
+    return std::visit([](const auto& value) {
+        auto bytes = ResidentBytes{};
+        if (!value) return bytes;
+        using T = typename std::decay_t<decltype(value)>::element_type;
+        if constexpr (std::same_as<T, const MeshAsset>) {
+            bytes.gpu = value->mesh().gpu_bytes();
+            bytes.cpu = value->geometry().positions.size() * sizeof(math::Vec3) + value->geometry().indices.size() * sizeof(uint32_t);
+        } else if constexpr (std::same_as<T, const TextureAsset> || std::same_as<T, const EnvironmentAsset>) {
+            bytes.gpu = value->gpu_bytes();
+        } else if constexpr (std::same_as<T, const SkinAsset>) {
+            bytes.cpu = value->inverse_bind.size() * sizeof(math::Mat4);
+            for (const auto& joint : value->joints) bytes.cpu += sizeof(joint) + joint.capacity();
+        } else if constexpr (std::same_as<T, const AnimationAsset>) {
+            for (const auto& channel : value->channels)
+                bytes.cpu += sizeof(channel) + channel.target.capacity() + (channel.times.size() + channel.values.size()) * sizeof(float);
+        } else if constexpr (std::same_as<T, const ScriptAsset>) {
+            bytes.cpu = value->source.size();
+        } else {
+            bytes.cpu = sizeof(T);
+        }
+        return bytes;
+    }, payload);
+}
+bool leased(const AssetValue& payload) noexcept {
+    return std::visit([](const auto& value) { return value && value.use_count() > 1; }, payload); // the cache's own is one
+}
+std::string mib_text(size_t bytes) {
+    auto text = std::ostringstream{};
+    text << std::fixed << std::setprecision(1) << double(bytes) / double(1 << 20) << " MiB";
+    return text.str();
+}
 }
 AssetRegistry::AssetRegistry(std::filesystem::path root, std::unique_ptr<AssetProvider> provider)
     : m_token(detail::next_lifetime_token()), m_root(project_root(root)), m_provider(std::move(provider)) {
@@ -148,6 +193,7 @@ AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
     const auto id = record.id;
     const auto slot = static_cast<uint32_t>(m_entries.size());
     auto added = Entry{};
+    added.category = category_of(record.kind);
     added.record = std::move(record);
     m_entries.push_back(std::move(added));
     try {
@@ -172,6 +218,7 @@ AssetResidency AssetRegistry::residency() const noexcept {
         else if (entry.state == AssetState::loading) ++result.loading;
         else if (entry.state == AssetState::ready) ++result.ready;
         else if (entry.state == AssetState::failed) ++result.failed;
+        if (leased(entry.payload)) result.leased_bytes[size_t(entry.category)] += entry.bytes.total();
         std::visit([&](const auto& value) {
             if (!value) return;
             if (value.use_count() > 1) ++result.leased; // the cache's own reference is one
@@ -197,7 +244,113 @@ AssetResidency AssetRegistry::residency() const noexcept {
             }
         }, entry.payload);
     }
+    result.bytes = m_resident;
+    result.budgets = m_budgets;
     return result;
+}
+
+std::vector<ResidentAsset> AssetRegistry::largest(size_t count) const {
+    auto result = std::vector<ResidentAsset>{};
+    for (const auto& entry : m_entries)
+        if (usable(entry.payload))
+            result.push_back({entry.record.path.generic_string(), entry.category, entry.bytes, leased(entry.payload)});
+    const auto keep = std::min(count, result.size());
+    std::ranges::partial_sort(result, result.begin() + ptrdiff_t(keep), std::ranges::greater{}, [](const ResidentAsset& asset) { return asset.bytes.total(); });
+    result.resize(keep);
+    return result;
+}
+
+void AssetRegistry::touch(uint32_t slot) const {
+    const auto& entry = m_entries[slot];
+    auto& order = m_lru[size_t(entry.category)];
+    order.erase({entry.queued, slot});
+    entry.last_use = entry.last_wanted = entry.queued = ++m_clock;
+    order.insert({entry.queued, slot});
+}
+
+void AssetRegistry::requeue(uint32_t slot) const {
+    const auto& entry = m_entries[slot];
+    auto& order = m_lru[size_t(entry.category)];
+    order.erase({entry.queued, slot});
+    entry.queued = ++m_clock;
+    order.insert({entry.queued, slot});
+}
+
+void AssetRegistry::set_payload(uint32_t slot, Payload payload) {
+    auto& entry = m_entries[slot];
+    auto& total = m_resident[size_t(entry.category)];
+    auto& order = m_lru[size_t(entry.category)];
+    total.cpu -= entry.bytes.cpu;
+    total.gpu -= entry.bytes.gpu;
+    order.erase({entry.queued, slot});
+    entry.payload = std::move(payload);
+    entry.bytes = bytes_of(entry.payload);
+    total.cpu += entry.bytes.cpu;
+    total.gpu += entry.bytes.gpu;
+    if (std::visit([](const auto& value) { return static_cast<bool>(value); }, entry.payload)) {
+        entry.last_use = entry.queued = ++m_clock; // a new version counts as used now
+        order.insert({entry.queued, slot});
+    }
+}
+
+void AssetRegistry::release(uint32_t slot) {
+    auto& entry = m_entries[slot];
+    set_payload(slot, std::shared_ptr<const MeshAsset>{});
+    entry.state = AssetState::unloaded;
+    entry.diagnostic = {};
+    ++m_release.released;
+}
+
+void AssetRegistry::maintain(uint64_t used_since) {
+    if (m_loading) return;
+    const auto start = std::chrono::steady_clock::now();
+    constexpr size_t examine = 64; // versions looked at an update, over every category: never a sweep of the catalog
+    auto examined = size_t{0};
+    for (size_t c = 0; c < residency_category_count; ++c) {
+        const auto category = ResidencyCategory(c);
+        const auto budget = m_budgets.bytes[c];
+        auto over = budgeted(category) && budget > 0 && m_resident[c].total() > budget;
+        if (!over) {
+            m_release.over_budget[c] = false;
+            m_passed[c] = 0;
+            continue;
+        }
+        auto& order = m_lru[c];
+        auto held = std::vector<uint32_t>{}; // in use: moved to the back, so the next look starts past them
+        for (auto it = order.begin(); it != order.end() && over && examined < examine; ++examined) {
+            const auto slot = (it++)->second;
+            const auto& entry = m_entries[slot];
+            if (entry.pending) continue; // a reload in flight replaces it soon
+            if (leased(entry.payload) || entry.last_use > used_since) { // held, or drawn by the last frame
+                held.push_back(slot);
+                continue;
+            }
+            release(slot);
+            ++m_release.released_for_budget;
+            m_passed[c] = 0;
+            over = m_resident[c].total() > budget;
+        }
+        for (const auto slot : held) requeue(slot);
+        // Passed over in use, twice a whole queue's worth since anything was released (two looks at each, so
+        // not merely what a load just brought in), and still over: it is all in use.
+        m_passed[c] += held.size();
+        const auto exhausted = over && m_passed[c] >= 2 * order.size();
+        if (exhausted && !m_release.over_budget[c]) {
+            // Say so once, naming the largest holders.
+            auto users = std::vector<std::pair<size_t, uint32_t>>{};
+            for (const auto& [queued, slot] : order) users.emplace_back(m_entries[slot].bytes.total(), slot);
+            std::ranges::sort(users, std::ranges::greater{});
+            auto text = std::string("Resident ") + residency_category_name(category) + " are " + mib_text(m_resident[c].total()) + ", over their " +
+                        mib_text(budget) + " budget, and all of it is in use. Largest: ";
+            for (size_t i = 0; i < std::min<size_t>(3, users.size()); ++i)
+                text += (i ? ", " : "") + m_entries[users[i].second].record.path.generic_string() + " (" + mib_text(users[i].first) + ")";
+            m_warnings.push_back(std::move(text));
+        }
+        if (exhausted) m_release.over_budget[c] = true;
+        else if (!over) m_release.over_budget[c] = false;
+    }
+    m_release.last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    m_release.longest_ms = std::max(m_release.longest_ms, m_release.last_ms);
 }
 
 std::optional<AssetInfo> AssetRegistry::info(AssetId id) const {
@@ -282,6 +435,7 @@ AssetRequest AssetRegistry::request_entry(AssetId id, AssetKind kind, JobTier ti
         return AssetRequest(request);
     }
     auto& entry = m_entries[slot];
+    entry.last_wanted = ++m_clock;
     if (!reload && !entry.pending) {
         if (usable(entry.payload)) {
             request->state = AssetState::ready;
@@ -452,7 +606,7 @@ void AssetRegistry::finalize(uint32_t slot) {
         entry.state = usable(entry.payload) ? AssetState::ready : AssetState::failed;
         ++m_stats.failed;
     } else {
-        entry.payload = std::move(value);
+        set_payload(slot, std::move(value));
         ++entry.generation;
         entry.diagnostic = {};
         entry.state = AssetState::ready;
@@ -508,6 +662,7 @@ AssetLoadStats AssetRegistry::update(AssetLoadBudget budget) {
     m_stats.last_bytes = bytes;
     m_stats.last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     m_stats.longest_ms = std::max(m_stats.longest_ms, m_stats.last_ms);
+    maintain(std::exchange(m_update_clock, m_clock));
     return load_stats();
 }
 
@@ -586,23 +741,27 @@ AssetDiagnostic AssetRegistry::publish(AssetRef<MaterialAsset> ref, MaterialAsse
     if (m_loading) return {AssetError::busy,"Nested asset loads are not supported; stage dependencies before publication"};
     if (entry.generation == std::numeric_limits<uint64_t>::max()) return {AssetError::load_failed,"Asset version counter exhausted"};
     if (entry.pending) cancel_load(it->second); // the edit wins over a load of the file in flight
-    entry.payload = std::make_shared<const MaterialAsset>(std::move(value));
+    set_payload(it->second, std::make_shared<const MaterialAsset>(std::move(value)));
     ++entry.generation;
     entry.diagnostic = {};
     entry.state = AssetState::ready;
     return {};
 }
 
-size_t AssetRegistry::evict_unused() {
+size_t AssetRegistry::evict_unused(uint64_t clock) {
     if (m_loading) return 0;
     size_t count = 0;
-    for (auto& entry : m_entries) {
+    const auto boundary = clock != std::numeric_limits<uint64_t>::max();
+    for (uint32_t slot = 0; slot < m_entries.size(); ++slot) {
+        const auto& entry = m_entries[slot];
+        if (entry.last_wanted > clock) continue;
+        // A load the registry keeps for no one since the boundary (what a closed scene was drawing) would
+        // arrive unused: it is cancelled. One someone requests goes on.
+        if (entry.pending && boundary && entry.pending->held && !wanted(entry.pending->requests)) cancel_load(slot);
         if (entry.pending) continue;
         const auto unused = std::visit([](const auto& value) { return value && value.use_count() == 1; },entry.payload);
         if (!unused) continue;
-        entry.payload = std::shared_ptr<const MeshAsset>{};
-        entry.state = AssetState::unloaded;
-        entry.diagnostic = {};
+        release(slot);
         ++count;
     }
     return count;

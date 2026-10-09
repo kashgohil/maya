@@ -6,6 +6,7 @@
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/core/file_system.hpp"
+#include "maya/core/system_info.hpp"
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
 #include "maya/simulation/physics_debug.hpp"
@@ -53,6 +54,8 @@ public:
         auto assets = open_project_assets(project, std::move(provider));
         if (!assets) return fail(assets.error);
         m_assets = std::move(assets.registry);
+        m_assets->set_budgets(project_residency_budgets(project.settings)); // docs/assets.md#residency
+        m_device = &device;
 
         const auto context = asset_property_context(*m_assets);
         auto scripts = project_script_settings(project.settings);
@@ -143,6 +146,7 @@ public:
         // Loading first: prepared assets are finalized within the budget; then the frame is marked.
         m_assets->update();
         m_assets->begin_frame();
+        for (const auto& warning : m_assets->take_budget_warnings()) std::cerr << "[Player] " << warning << '\n';
         // Then the world's cells around the camera, within the frame's budget (#1064).
         if (m_streamer) {
             m_streamer->set_sources({camera_position()});
@@ -221,6 +225,15 @@ public:
         if (m_assets) { // a frame never waits for a load; anything else is a bug (docs/assets.md#asynchronous-loading)
             const auto loading = m_assets->load_stats();
             std::cerr << "[Player] loads: " << loading.finalized << " finished, " << loading.waited_in_frames << " waited for inside a frame\n";
+            if (m_device) { // what was resident at the end (docs/assets.md#residency)
+                const auto memory = process_memory();
+                const auto report = residency_report(m_assets->residency(), m_streamer ? m_streamer->stats().bytes_loaded : 0,
+                                                     (m_renderer ? m_renderer->shadow_bytes() + m_renderer->table_bytes() : 0) +
+                                                         (m_view ? m_view->gpu_bytes() : 0),
+                                                     m_device->stats(), m_device->reported_memory(),
+                                                     memory ? std::optional(size_t(memory->footprint)) : std::nullopt);
+                std::cerr << "[Player] resident: " << residency_summary(report) << '\n';
+            }
         }
         m_streamer.reset(); // its loads end before the session and the assets they use
         // Device shutdown releases anything still pending after these owners are gone.
@@ -243,6 +256,7 @@ private:
     }
 
     PlayerOptions m_options;
+    GraphicsDevice* m_device = nullptr;
     std::unique_ptr<AssetRegistry> m_assets;
     std::unique_ptr<PlaySession> m_session;
     std::unique_ptr<Renderer> m_renderer;
