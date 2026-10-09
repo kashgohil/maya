@@ -1,0 +1,13 @@
+maya-benchmark 1
+# The stream workload (#1064, docs/performance.md#stream): a generated 16 × 16 world of 128 m cells, 2,000
+# entities each (512,000 in all), crossed back and forth 10 times at 60 m/s through the middle of a row,
+# with W1's streaming radii (#1060). Each frame streams, then runs one tick; nothing is drawn.
+name "stream"
+workload stream
+grid 16
+count 2000
+seed 990
+speed 60
+radii 640 384 64
+cycles 10
+runs 1

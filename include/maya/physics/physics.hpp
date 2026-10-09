@@ -289,14 +289,12 @@ public:
     /// transform of, removes the transform of, or reparents an entity with a kinematic or dynamic
     /// body, or puts any body under one.
     void check_world_commands(const World& world, const WorldCommands& commands, size_t first = 0) const;
-    /// Phase 4: moves static bodies whose committed transforms changed, then applies the requests of
+    /// Phase 4: moves static bodies whose committed transforms changed (those below the entities in
+    /// `moved`, the World's transform journal since the last call, #1064), then applies the requests of
     /// each list in turn, in the order they were made. Kinematic bodies reach their targets over
     /// `interval`; those without a target stop.
-    void prepare(const World& world, std::span<const BodyCommands* const> requests, float interval);
-    void prepare(const World& world, const BodyCommands& requests, float interval) {
-        const BodyCommands* lists[] = {&requests};
-        prepare(world, lists, interval);
-    }
+    void prepare(const World& world, std::span<const EntityHandle> moved, std::span<const BodyCommands* const> requests,
+                 float interval);
     /// Phase 5: one fixed interval.
     void step(float interval);
     /// Phase 6: appends the moved kinematic and dynamic poses to the tick's batch, in creation order.
@@ -323,7 +321,11 @@ public:
     /// Creates every body in order, or none: returns why the first refused one cannot be created,
     /// naming its entity, or empty. Play sessions use it for the bodies authored in a scene.
     std::string create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies);
-    /// After the batch commits: removes the bodies of destroyed entities and applies created and
+    /// Removes the bodies of `entities` (those that have one) in one batch: what an unloading cell does
+    /// before its entities are destroyed (#1064). Between ticks, on the owner thread. Contacts they were in
+    /// end, as when an entity is destroyed.
+    void remove_bodies(std::span<const EntityHandle> entities);
+    /// After the batch commits: removes the bodies of the entities it destroyed (`result.destroyed`) and applies created and
     /// removed bodies in request order. Throws std::runtime_error naming the source and the entity if
     /// a body cannot be created; bodies created before it stay.
     void commit(const World& world, const BodyCommands& requests, const WorldCommitResult& result);

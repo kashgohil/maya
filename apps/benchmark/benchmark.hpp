@@ -26,6 +26,7 @@ enum class Workload {
     physics, // P1: the physics stress scene, ticked back to back with no views
     import, // glTF files imported into a new project, then loaded cold (cooking) and warm (cook cache)
     animation, // A1: copies of an imported skinned model playing their clips, with every system of play
+    stream, // a generated grid world crossed back and forth while its cells stream (#1064), with no views
 };
 
 /// A versioned benchmark description (docs/performance.md#manifests). Paths are relative to the
@@ -67,6 +68,11 @@ struct Manifest {
     // Animation (A1): `count` copies of the first model, `spacing` apart; without skinning, their meshes are
     // drawn as authored, for skinning's cost by difference.
     bool skinning = true;
+    // Stream (#1064): a `grid` × `grid` world of 128 m cells, `count` entities each, crossed `cycles` times
+    // at `speed`, with these streaming radii.
+    uint32_t grid = 8;
+    double speed = 30.0; // metres per second
+    double load_radius = 640.0, activate_radius = 384.0, hysteresis = 64.0;
 };
 struct ManifestResult {
     Manifest manifest;
@@ -171,6 +177,22 @@ struct PhysicsScene {
     size_t boxes = 0, spheres = 0, capsules = 0, obstacles = 0, sensors = 0, scripted = 0;
 };
 
+/// Stream: one run of crossings (#1064).
+struct StreamCrossing {
+    double ms = 0.0; // the crossing's wall time
+    double longest_streaming_ms = 0.0; // the longest frame of streaming work in it
+    std::optional<size_t> footprint; // the process, at its end
+    size_t active_entities = 0, bytes_loaded = 0;
+};
+struct StreamRun {
+    std::string failure;
+    size_t cells = 0, entities = 0; // the world
+    std::vector<double> frame, streaming; // per frame: all of it (streaming and one tick), and streaming alone
+    std::vector<StreamCrossing> crossings;
+    uint64_t loads = 0, cancelled = 0, failed = 0, discarded = 0, activations = 0, deactivations = 0;
+    size_t cooked_cache_hits = 0;
+};
+
 /// Import: one model in one run, in milliseconds.
 struct ImportSample {
     std::string model; // its file name
@@ -209,6 +231,7 @@ struct Result {
     std::optional<bool> deterministic; // physics: every run and worker configuration ended in the same state; import: every
                                        // run cooked the same bytes
     std::vector<ImportSample> imports; // import: per run, per model
+    std::vector<StreamRun> stream_runs; // stream: per run
     std::vector<std::pair<std::string, std::string>> unavailable; // metric, reason
     std::optional<double> refresh_hz; // presenting runs: the display's refresh rate
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended

@@ -1,5 +1,6 @@
 #include "maya/assets/project.hpp"
 #include <charconv>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <istream>
@@ -104,6 +105,18 @@ ProjectSettingsResult read_project(std::istream& input) {
             else settings.script_memory = uint32_t(number);
             continue;
         }
+        if (key == "stream_load" || key == "stream_activate" || key == "stream_hysteresis") {
+            auto& field = key == "stream_load" ? settings.stream_load : key == "stream_activate" ? settings.stream_activate : settings.stream_hysteresis;
+            auto number = 0.0;
+            const auto parsed = (input >> value) ? std::from_chars(value.data(), value.data() + value.size(), number)
+                                                 : std::from_chars_result{value.data(), std::errc::invalid_argument};
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !std::isfinite(number) || number < 0.0 ||
+                number > 1.0e6)
+                return {{}, "'" + key + "' needs a distance in metres from 0 to 1000000"};
+            if (field) return {{}, "'" + key + "' is set twice"};
+            field = number;
+            continue;
+        }
         if (key != "group") return {{}, "Unexpected '" + key + "' after the project settings"};
         auto index = 0u;
         if (!(input >> index) || index >= collision_group_names)
@@ -128,6 +141,9 @@ void write_project(std::ostream& output, const ProjectSettings& settings) {
     if (!settings.startup_scene.empty()) text << "startup " << std::quoted(settings.startup_scene.generic_string()) << '\n';
     if (settings.script_work) text << "script_work " << *settings.script_work << '\n';
     if (settings.script_memory) text << "script_memory " << *settings.script_memory << '\n';
+    if (settings.stream_load) text << "stream_load " << *settings.stream_load << '\n';
+    if (settings.stream_activate) text << "stream_activate " << *settings.stream_activate << '\n';
+    if (settings.stream_hysteresis) text << "stream_hysteresis " << *settings.stream_hysteresis << '\n';
     const auto defaults = default_collision_groups();
     for (size_t i = 0; i < collision_group_names; ++i)
         if (settings.collision_groups[i] != defaults[i] && !settings.collision_groups[i].empty())

@@ -32,6 +32,8 @@ public:
     virtual ~ComponentPoolBase() = default;
     virtual void prepare(size_t slot_count, size_t additions) = 0;
     virtual void remove(uint32_t slot) noexcept = 0;
+    /// Room for slots up to `slot_count` and for `values` components, without growing later.
+    virtual void reserve(size_t slot_count, size_t values) = 0;
     bool contains(uint32_t slot) const noexcept {
         return slot < m_sparse.size() && m_sparse[slot] != invalid_entity_slot;
     }
@@ -53,6 +55,11 @@ public:
             throw std::length_error("World component storage exhausted");
         reserve_for(m_slots, m_slots.size() + additions);
         reserve_for(m_values, m_values.size() + additions);
+    }
+    void reserve(size_t slot_count, size_t values) override {
+        reserve_for(m_sparse, slot_count);
+        reserve_for(m_slots, values);
+        reserve_for(m_values, values);
     }
     void add(uint32_t slot, T&& value) noexcept {
         m_sparse[slot] = static_cast<uint32_t>(m_values.size());

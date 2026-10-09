@@ -136,7 +136,9 @@ maya_target_options(MayaAssets)
 # Scene persistence depends only on World data and a caller-supplied asset-reference resolver.
 add_library(MayaScene STATIC
     src/maya/scene/scene_document.cpp
-    src/maya/scene/scene_codec.cpp)
+    src/maya/scene/scene_codec.cpp
+    src/maya/scene/scene_binary.cpp
+    src/maya/scene/world_io.cpp)
 add_library(Maya::Scene ALIAS MayaScene)
 target_link_libraries(MayaScene PUBLIC MayaWorld)
 maya_target_options(MayaScene)
@@ -250,6 +252,14 @@ add_library(Maya::Simulation ALIAS MayaSimulation)
 target_link_libraries(MayaSimulation PUBLIC MayaWorld MayaScene MayaPhysics MayaBuildInfo PRIVATE Luau.VM Luau.Compiler)
 maya_target_options(MayaSimulation)
 
+# World streaming (#1064, docs/world.md#streaming): cells load on jobs, cook to binary through the cook
+# cache, and activate into a play session's World within a frame budget.
+add_library(MayaStreaming STATIC src/maya/streaming/world_streamer.cpp)
+add_library(Maya::Streaming ALIAS MayaStreaming)
+target_include_directories(MayaStreaming PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(MayaStreaming PUBLIC MayaSimulation MayaAssets MayaJobs)
+maya_target_options(MayaStreaming)
+
 add_library(MayaRuntime STATIC
     src/maya/core/engine.cpp
     src/maya/core/camera.cpp
@@ -299,7 +309,7 @@ if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     # Runs a project's saved scene through a play session. The player and the sample share it.
     add_library(MayaPlayer STATIC apps/player/player_application.cpp)
     target_include_directories(MayaPlayer PUBLIC apps/player)
-    target_link_libraries(MayaPlayer PUBLIC MayaRuntime)
+    target_link_libraries(MayaPlayer PUBLIC MayaRuntime MayaStreaming)
     maya_target_options(MayaPlayer)
 endif()
 
@@ -332,9 +342,9 @@ if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
 
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
     add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp apps/benchmark/import_workload.cpp
-        apps/benchmark/animation_workload.cpp)
+        apps/benchmark/animation_workload.cpp apps/benchmark/stream_workload.cpp)
     target_include_directories(MayaBenchmark PUBLIC apps/benchmark)
-    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaImport MayaBuildInfo)
+    target_link_libraries(MayaBenchmark PUBLIC MayaRuntime MayaImport MayaBuildInfo MayaStreaming)
     maya_target_options(MayaBenchmark)
     add_executable(maya_benchmark apps/benchmark/main.cpp)
     # A window, and a display kept awake, for presenting runs.

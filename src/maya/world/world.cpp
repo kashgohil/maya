@@ -1,4 +1,5 @@
 #include "maya/world/world.hpp"
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -23,6 +24,13 @@ PendingEntity WorldCommands::create(EntityId id) {
     const auto pending = PendingEntity{m_batch, m_created};
     m_commands.push_back({Kind::create, pending, id, typeid(void), {}});
     ++m_created;
+    return pending;
+}
+
+PendingEntity WorldCommands::create_staged(EntityId id, StageGroup stage) {
+    if (stage == 0) throw std::invalid_argument("A stage group is nonzero");
+    const auto pending = create(id);
+    m_commands.back().stage = stage;
     return pending;
 }
 
@@ -141,10 +149,14 @@ World::~World() {
     m_pools.clear();
 }
 
-bool World::alive(EntityHandle entity) const noexcept {
+bool World::exists(EntityHandle entity) const noexcept {
     return entity.world == m_token && entity.slot < m_slots.size() &&
         entity.generation != 0 && m_slots[entity.slot].generation == entity.generation &&
         m_slots[entity.slot].id.valid();
+}
+
+bool World::alive(EntityHandle entity) const noexcept {
+    return exists(entity) && m_slots[entity.slot].stage == 0;
 }
 
 std::optional<EntityId> World::persistent_id(EntityHandle entity) const noexcept {
@@ -154,13 +166,122 @@ std::optional<EntityId> World::persistent_id(EntityHandle entity) const noexcept
 
 std::optional<EntityHandle> World::find(EntityId id) const {
     const auto it = m_ids.find(id);
-    if (it == m_ids.end()) return std::nullopt;
+    if (it == m_ids.end() || m_slots[it->second.slot].stage != 0) return std::nullopt; // staged: not yet visible
     return it->second;
 }
 
+std::vector<EntityHandle> World::staged(StageGroup group) const {
+    auto result = std::vector<EntityHandle>{};
+    if (const auto found = m_stages.find(group); found != m_stages.end())
+        for (const auto slot : found->second) result.push_back(handle(slot));
+    return result;
+}
+
+std::vector<EntityHandle> World::publish(StageGroup group) {
+    if (m_committing || m_borrows != 0) throw std::logic_error("World::publish during publication or a borrow");
+    const auto found = m_stages.find(group);
+    if (found == m_stages.end()) return {};
+    auto result = std::vector<EntityHandle>{};
+    result.reserve(found->second.size());
+    detail::reserve_for(m_live, m_live.size() + found->second.size());
+    // Nothing allocates from here: the group becomes visible in one step.
+    for (const auto slot : found->second) {
+        auto& entry = m_slots[slot];
+        entry.stage = 0;
+        entry.dense = static_cast<uint32_t>(m_live.size());
+        m_live.push_back(slot);
+        result.push_back(handle(slot));
+    }
+    m_staged -= found->second.size();
+    m_stages.erase(found);
+    ++m_names_revision;
+    return result;
+}
+
+WorldError World::stage(std::span<const EntityHandle> entities, StageGroup group) {
+    if (m_committing || m_borrows != 0) return WorldError::busy;
+    if (group == 0) return WorldError::invalid_policy;
+    auto& staged = m_stages[group]; // allocations first: nothing changes after a failure
+    staged.reserve(staged.size() + entities.size());
+    auto marked = std::vector<uint32_t>{};
+    marked.reserve(entities.size());
+    // Each entity is marked with the group as it is checked, so the hierarchy check needs no set; a refusal
+    // takes the marks off again.
+    const auto refuse = [&](WorldError error) {
+        for (const auto slot : marked) m_slots[slot].stage = 0;
+        if (staged.empty()) m_stages.erase(group);
+        return error;
+    };
+    for (const auto entity : entities) {
+        if (exists(entity) && m_slots[entity.slot].stage == group) continue; // listed twice
+        if (!alive(entity)) return refuse(WorldError::invalid_entity);
+        m_slots[entity.slot].stage = group;
+        marked.push_back(entity.slot);
+    }
+    for (const auto slot : marked) { // whole hierarchies only
+        const auto& node = m_spatial[slot];
+        if (node.parent != invalid_entity_slot && m_slots[node.parent].stage != group) return refuse(WorldError::stage_mismatch);
+        for (auto child = node.first_child; child != invalid_entity_slot; child = m_spatial[child].next)
+            if (m_slots[child].stage != group) return refuse(WorldError::stage_mismatch);
+    }
+    for (const auto slot : marked) {
+        auto& entry = m_slots[slot];
+        const auto moved_slot = m_live.back();
+        m_live[entry.dense] = moved_slot;
+        m_slots[moved_slot].dense = entry.dense;
+        m_live.pop_back();
+        entry.dense = invalid_entity_slot;
+        staged.push_back(slot);
+        ++m_staged;
+    }
+    ++m_names_revision;
+    return WorldError::none;
+}
+
+void World::reserve(size_t entities) {
+    if (m_committing || m_borrows != 0) throw std::logic_error("World::reserve during publication or a borrow");
+    detail::reserve_for(m_slots, entities);
+    detail::reserve_for(m_spatial, entities);
+    detail::reserve_for(m_spatial_work, entities);
+    detail::reserve_for(m_live, entities);
+    if (double(entities) > double(m_ids.bucket_count()) * m_ids.max_load_factor()) m_ids.reserve(entities);
+    // Each component's storage in proportion to the entities that have it now.
+    const auto present = std::max<size_t>(1, m_live.size() + m_staged);
+    for (auto& [type, pool] : m_pools)
+        pool->reserve(entities, size_t(double(pool->size()) * double(entities) / double(present)));
+}
+
+size_t World::discard(StageGroup group, size_t limit) {
+    if (m_committing || m_borrows != 0) throw std::logic_error("World::discard during publication or a borrow");
+    const auto found = m_stages.find(group);
+    if (found == m_stages.end()) return 0;
+    auto& slots = found->second;
+    const auto count = std::min(limit, slots.size());
+    for (size_t i = 0; i < count; ++i) {
+        const auto slot = slots.back();
+        slots.pop_back();
+        --m_staged;
+        m_slots[slot].stage = 0; // out of its group already; destroy() treats it as hidden
+        m_slots[slot].dense = invalid_entity_slot;
+        m_spatial[slot] = SpatialNode{}; // hidden relatives never read it again
+        m_ids.erase(m_slots[slot].id);
+        m_slots[slot].id = {};
+        auto& entity = m_slots[slot];
+        if (entity.generation != std::numeric_limits<uint64_t>::max()) {
+            ++entity.generation;
+            entity.next_free = m_free;
+            m_free = slot;
+        }
+        for (auto& [type, pool] : m_pools) pool->remove(slot);
+    }
+    const auto left = slots.size();
+    if (left == 0) m_stages.erase(found);
+    return left;
+}
+
 WorldCommitResult World::commit(WorldCommands& commands) {
-    if (m_committing || m_borrows != 0) return {WorldError::busy, 0, {}};
-    if (commands.m_world != m_token) return {WorldError::wrong_world, 0, {}};
+    if (m_committing || m_borrows != 0) return {WorldError::busy, 0, {}, {}};
+    if (commands.m_world != m_token) return {WorldError::wrong_world, 0, {}, {}};
     struct PublicationGuard {
         bool& active;
         explicit PublicationGuard(bool& flag) : active(flag) { active = true; }
@@ -170,12 +291,15 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     using Kind = WorldCommands::Kind;
     struct VirtualEntity {
         bool alive = true;
-        std::unordered_map<std::type_index, bool> components;
+        std::vector<std::pair<std::type_index, bool>> components; // an entity has few: a list, not a table
     };
+    // The batch's scratch tables are sized once: growing them entity by entity cost most of a big commit (#1064).
     auto touched = std::unordered_map<uint32_t, VirtualEntity>{};
+    touched.reserve(commands.m_commands.size());
     auto additions = std::unordered_map<std::type_index, size_t>{};
     auto new_pools = decltype(m_pools){};
     auto new_ids = decltype(m_ids){};
+    new_ids.reserve(commands.m_created);
     auto resolved = std::vector<uint32_t>(commands.m_commands.size());
     auto result = WorldCommitResult{};
     result.created.resize(commands.m_created);
@@ -187,9 +311,17 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         std::optional<TransformComponent> local;
     };
     auto spatial = std::unordered_map<uint32_t, SpatialEdit>{};
+    spatial.reserve(commands.m_commands.size());
     auto transforms = std::vector<std::optional<TransformComponent>>(commands.m_commands.size());
     auto destroyed = std::vector<std::vector<uint32_t>>(commands.m_commands.size());
     auto changed = std::vector<uint32_t>{};
+    auto new_stages = std::unordered_map<uint32_t, StageGroup>{}; // created slots' groups
+    auto staging = std::unordered_map<StageGroup, size_t>{}; // entities created into each group
+    auto destroyed_count = size_t{0};
+    const auto stage_of = [&](uint32_t slot) {
+        if (const auto found = new_stages.find(slot); found != new_stages.end()) return found->second;
+        return slot < m_slots.size() ? m_slots[slot].stage : StageGroup{0};
+    };
     const auto transform_pool = find_pool<TransformComponent>();
     const auto edit = [&](uint32_t slot) -> SpatialEdit& {
         auto [it, inserted] = spatial.try_emplace(slot);
@@ -224,7 +356,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     const auto resolve_target = [&](const EntityTarget& target, uint32_t& slot) -> WorldError {
         if (const auto entity = std::get_if<EntityHandle>(&target)) {
             if (entity->world != m_token) return WorldError::wrong_world;
-            if (!alive(*entity)) return WorldError::invalid_entity;
+            if (!exists(*entity)) return WorldError::invalid_entity; // staged entities too
+
             slot = entity->slot;
         } else {
             const auto pending = std::get<PendingEntity>(target);
@@ -241,7 +374,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     // Simulate the batch in enqueue order without modifying live identity or components.
     for (size_t index = 0; index < commands.m_commands.size(); ++index) {
         const auto& command = commands.m_commands[index];
-        const auto fail = [index](WorldError error) { return WorldCommitResult{error, index, {}}; };
+        const auto fail = [index](WorldError error) { return WorldCommitResult{error, index, {}, {}}; };
         auto slot = invalid_entity_slot;
         if (command.kind == Kind::create) {
             if (!command.id.valid()) return fail(WorldError::invalid_id);
@@ -260,6 +393,10 @@ WorldCommitResult World::commit(WorldCommands& commands) {
             result.created[std::get<PendingEntity>(command.target).index] = entity;
             new_ids.emplace(command.id, entity);
             spatial[slot] = SpatialEdit{};
+            if (command.stage != 0) {
+                new_stages[slot] = command.stage;
+                ++staging[command.stage];
+            }
         } else {
             const auto error = resolve_target(command.target, slot);
             if (error != WorldError::none) return fail(error);
@@ -278,6 +415,7 @@ WorldCommitResult World::commit(WorldCommands& commands) {
                      child = edit(child).node.next) subtree.push_back(child);
             }
             for (const auto current : subtree) spatial[current] = SpatialEdit{};
+            destroyed_count += subtree.size();
         } else if (command.kind == Kind::set_transform) {
             if (!edit(slot).local) return fail(WorldError::component_missing);
             transforms[index] = validated_transform(command.transform);
@@ -294,6 +432,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
                 if (!edit(parent_slot).local) return fail(WorldError::component_missing);
             }
             if (!edit(slot).local) return fail(WorldError::component_missing);
+            // A staged entity's hierarchy stays inside its group: a cell's content never hangs from the rest.
+            if (parent_slot != invalid_entity_slot && stage_of(parent_slot) != stage_of(slot)) return fail(WorldError::stage_mismatch);
             for (auto ancestor = parent_slot; ancestor != invalid_entity_slot;
                  ancestor = edit(ancestor).node.parent)
                 if (ancestor == slot) return fail(WorldError::hierarchy_cycle);
@@ -320,11 +460,13 @@ WorldCommitResult World::commit(WorldCommands& commands) {
             changed.push_back(slot);
         } else if (command.kind == Kind::add || command.kind == Kind::remove ||
                    command.kind == Kind::replace) {
-            auto present = state.components.find(command.type);
+            auto present = std::ranges::find(state.components, command.type, &std::pair<std::type_index, bool>::first);
             if (present == state.components.end()) {
                 const auto pool = m_pools.find(command.type);
                 const auto exists = pool != m_pools.end() && pool->second->contains(slot);
-                present = state.components.emplace(command.type, exists).first;
+                if (state.components.empty()) state.components.reserve(4);
+                state.components.emplace_back(command.type, exists);
+                present = std::prev(state.components.end());
             }
             if (command.kind == Kind::add) {
                 if (present->second) return fail(WorldError::component_exists);
@@ -361,11 +503,20 @@ WorldCommitResult World::commit(WorldCommands& commands) {
     detail::reserve_for(m_spatial, slot_count);
     detail::reserve_for(m_spatial_work, slot_count);
     detail::reserve_for(m_live, m_live.size() + result.created.size());
+    result.destroyed.reserve(destroyed_count);
+    if (m_journal_on) detail::reserve_for(m_journal, m_journal.size() + changed.size());
+    if (m_edits_on) detail::reserve_for(m_edits, m_edits.size() + commands.m_commands.size() + destroyed_count);
+    for (const auto& [group, count] : staging) {
+        auto& slots = m_stages[group];
+        slots.reserve(slots.size() + count);
+    }
     const auto prepare_map = [](auto& map, size_t incoming) {
         const auto required = map.size() + incoming;
+        // Grown geometrically, as reserve_for grows vectors: an exact reserve rehashed every entity each
+        // time a commit passed the last size (#1064: 256-entity cell chunks took 10 ms in a 60,000-entity World).
         if (static_cast<double>(required) >
             static_cast<double>(map.bucket_count()) * map.max_load_factor())
-            map.reserve(required);
+            map.reserve(std::max(required, map.size() + map.size() / 2));
     };
     prepare_map(m_ids, new_ids.size());
     prepare_map(m_pools, new_pools.size());
@@ -391,12 +542,25 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         switch (command.kind) {
         case Kind::create:
             m_slots[slot].id = command.id;
-            m_slots[slot].dense = static_cast<uint32_t>(m_live.size());
             m_slots[slot].next_free = invalid_entity_slot;
-            m_live.push_back(slot);
+            m_slots[slot].stage = command.stage;
+            m_slots[slot].origin = command.stage;
+            if (command.stage != 0) { // staged: not visible until its group is published
+                m_slots[slot].dense = invalid_entity_slot;
+                m_stages[command.stage].push_back(slot);
+                ++m_staged;
+            } else {
+                m_slots[slot].dense = static_cast<uint32_t>(m_live.size());
+                m_live.push_back(slot);
+            }
             break;
         case Kind::destroy:
-            for (const auto descendant : destroyed[index]) destroy(descendant);
+            for (const auto descendant : destroyed[index]) {
+                result.destroyed.push_back(handle(descendant));
+                if (m_edits_on && m_slots[descendant].stage == 0 && m_slots[descendant].origin != 0)
+                    m_edits.push_back({m_slots[descendant].id, m_slots[descendant].origin});
+                destroy(descendant);
+            }
             break;
         case Kind::add:
             command.addition->publish(*m_pools.at(command.type), slot);
@@ -413,9 +577,15 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         }
         if (transforms[index])
             find_pool<TransformComponent>()->get().value(slot) = *transforms[index];
+        if (m_edits_on && command.kind != Kind::create && command.kind != Kind::destroy && m_slots[slot].id.valid() &&
+            m_slots[slot].stage == 0 && m_slots[slot].origin != 0)
+            m_edits.push_back({m_slots[slot].id, m_slots[slot].origin});
     }
     for (const auto& [slot, value] : spatial) m_spatial[slot] = value.node;
     for (const auto slot : changed) dirty_subtree(slot);
+    if (m_journal_on)
+        for (const auto slot : changed)
+            if (m_slots[slot].id.valid()) m_journal.push_back(handle(slot));
     if (renamed) ++m_names_revision;
     result.command_index = commands.m_commands.size();
     commands.m_commands.clear();
@@ -429,10 +599,22 @@ void World::destroy(uint32_t slot) noexcept {
     auto& entity = m_slots[slot];
     m_ids.erase(entity.id);
     entity.id = {};
-    const auto moved_slot = m_live.back();
-    m_live[entity.dense] = moved_slot;
-    m_slots[moved_slot].dense = entity.dense;
-    m_live.pop_back();
+    if (entity.stage != 0) { // a staged entity leaves its group, not the visible list
+        if (const auto found = m_stages.find(entity.stage); found != m_stages.end()) {
+            auto& slots = found->second;
+            if (const auto at = std::ranges::find(slots, slot); at != slots.end()) {
+                *at = slots.back();
+                slots.pop_back();
+                --m_staged;
+            }
+        }
+        entity.stage = 0;
+    } else {
+        const auto moved_slot = m_live.back();
+        m_live[entity.dense] = moved_slot;
+        m_slots[moved_slot].dense = entity.dense;
+        m_live.pop_back();
+    }
     entity.dense = invalid_entity_slot;
     // Retire exhausted slots. Never allow an ancient handle to become valid after wrap.
     if (entity.generation != std::numeric_limits<uint64_t>::max()) {
@@ -460,6 +642,7 @@ const char* error_name(WorldError error) noexcept {
     case WorldError::hierarchy_in_use: return "hierarchy in use";
     case WorldError::unrepresentable_transform: return "unrepresentable transform";
     case WorldError::invalid_policy: return "invalid policy";
+    case WorldError::stage_mismatch: return "stage mismatch";
     }
     return "unknown";
 }

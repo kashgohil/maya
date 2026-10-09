@@ -571,18 +571,20 @@ struct PhysicsWorld::Impl {
     /// Keeps creation order while dropping removed records, once they outnumber the live ones.
     void compact() {
         if (dead < 64 || dead < records.size() / 2) return;
-        auto kept = std::vector<Record>{};
-        kept.reserve(records.size() - dead);
-        for (auto& record : records)
-            if (record.alive) kept.push_back(std::move(record));
-        records = std::move(kept);
-        index.clear();
-        by_body.clear();
+        // In place: only the records that move are re-indexed, and the indexes keep their tables (#1064:
+        // rebuilding them took a streaming frame 2.8 ms).
+        auto kept = uint32_t{0};
         for (uint32_t i = 0; i < records.size(); ++i) {
-            index[records[i].entity.slot] = i;
-            by_body[records[i].body.GetIndexAndSequenceNumber()] = i;
-            bodies().SetUserData(records[i].body, i);
+            if (!records[i].alive) continue;
+            if (i != kept) {
+                records[kept] = std::move(records[i]);
+                index[records[kept].entity.slot] = kept;
+                by_body[records[kept].body.GetIndexAndSequenceNumber()] = kept;
+                bodies().SetUserData(records[kept].body, kept);
+            }
+            ++kept;
         }
+        records.resize(kept);
         dead = 0;
     }
 
@@ -939,14 +941,35 @@ void PhysicsWorld::check_world_commands(const World& world, const WorldCommands&
     }
 }
 
-void PhysicsWorld::prepare(const World& world, std::span<const BodyCommands* const> lists, float interval) {
+void PhysicsWorld::prepare(const World& world, std::span<const EntityHandle> moved, std::span<const BodyCommands* const> lists,
+                           float interval) {
     auto& impl = *m_impl;
     const auto timer = PhaseTimer(impl.stats.prepare_ms);
     auto& bodies = impl.bodies();
-    // Static colliders whose committed transforms changed.
+    // Static colliders whose committed transforms changed: below what the journal says moved, not a scan
+    // of every body (#1064). A moving body's own moves are its, and nothing with a body is below it.
+    auto statics = std::vector<Impl::Record*>{};
     if (impl.live_static > 0) {
-        for (auto& record : impl.records) {
-            if (!record.alive || record.motion != MotionType::static_body) continue;
+        // Most of the journal is the moving bodies' own poses, written back last tick: skip those first.
+        auto pending = std::vector<EntityHandle>{};
+        for (const auto entity : moved)
+            if (!impl.moving_body(entity)) pending.push_back(entity);
+        auto seen = std::unordered_set<uint32_t>{};
+        while (!pending.empty()) {
+            const auto entity = pending.back();
+            pending.pop_back();
+            if (!world.alive(entity) || !seen.insert(entity.slot).second) continue;
+            if (auto* record = impl.find(entity)) {
+                if (record->motion != MotionType::static_body) continue;
+                statics.push_back(record);
+            }
+            for (const auto child : world.children(entity)) pending.push_back(child);
+        }
+        std::ranges::sort(statics, {}, [](const Impl::Record* record) { return record->id; }); // in a stable order
+    }
+    {
+        for (auto* pointer : statics) {
+            auto& record = *pointer;
             const auto matrix = world.world_matrix(record.entity);
             if (matrix && *matrix == record.world) continue;
             const auto pose = matrix ? decompose_transform(*matrix) : std::nullopt;
@@ -1267,6 +1290,30 @@ std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::DV
     return results;
 }
 
+void PhysicsWorld::remove_bodies(std::span<const EntityHandle> entities) {
+    auto& impl = *m_impl;
+    auto records = std::vector<Impl::Record*>{};
+    auto ids = std::vector<JPH::BodyID>{};
+    for (const auto entity : entities)
+        if (auto* record = impl.find(entity)) {
+            records.push_back(record);
+            ids.push_back(record->body);
+        }
+    if (ids.empty()) return;
+    impl.bodies().RemoveBodies(ids.data(), int(ids.size())); // one batch out of the broad phase
+    impl.bodies().DestroyBodies(ids.data(), int(ids.size()));
+    for (auto* record : records) {
+        impl.end_pairs_of(*record);
+        impl.index.erase(record->entity.slot);
+        impl.by_body.erase(record->body.GetIndexAndSequenceNumber());
+        record->alive = false;
+        (record->motion == MotionType::static_body ? impl.live_static : impl.live_moving) -= 1;
+        ++impl.stats.bodies_removed;
+        ++impl.dead;
+    }
+    impl.compact();
+}
+
 std::string PhysicsWorld::create_bodies(const World& world, std::span<const std::pair<EntityHandle, BodyDesc>> bodies) {
     auto& impl = *m_impl;
     const auto first = impl.records.size();
@@ -1305,8 +1352,8 @@ std::string PhysicsWorld::create_bodies(const World& world, std::span<const std:
 void PhysicsWorld::commit(const World& world, const BodyCommands& requests, const WorldCommitResult& result) {
     auto& impl = *m_impl;
     const auto timer = PhaseTimer(impl.stats.commit_ms);
-    for (auto& record : impl.records)
-        if (record.alive && !world.alive(record.entity)) impl.remove(record);
+    for (const auto entity : result.destroyed) // what the batch destroyed, not a scan of every body (#1064)
+        if (auto* record = impl.find(entity)) impl.remove(*record);
     auto activate = std::vector<JPH::BodyID>{};
     auto resting = std::vector<JPH::BodyID>{};
     const auto add_created = [&] {

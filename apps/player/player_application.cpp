@@ -10,6 +10,7 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/simulation/physics_debug.hpp"
 #include "maya/simulation/play_session.hpp"
+#include "maya/streaming/world_streamer.hpp"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -78,9 +79,23 @@ public:
                 return fail(m_options.scene ? m_options.scene->generic_string() + " is outside the project's content root"
                                             : project.file.string() + " has no startup scene; name a scene to run");
             }
-            auto loaded = load_scene_file(*scene_path, context);
-            if (!loaded) return fail(*scene_path, loaded.diagnostics);
-            document = std::move(loaded.document);
+            if (scene_path->extension() == ".world") {
+                // A world (#1064): its persistent part plays as the scene, and its cells stream around the camera.
+                auto file = std::ifstream(*scene_path, std::ios::binary);
+                auto world = read_world(std::string(std::istreambuf_iterator<char>(file), {}));
+                if (!world) return fail(scene_path->filename().string() + ": " + world.error);
+                if (m_options.record || m_options.replay) return fail("recording and replaying a streamed world are not supported yet");
+                auto loaded = load_scene_file(scene_path->parent_path() / world.document->persistent, context);
+                if (!loaded) return fail(scene_path->parent_path() / world.document->persistent, loaded.diagnostics);
+                document = std::move(loaded.document);
+                const auto cache = package ? std::shared_ptr<CookCache>{} : std::make_shared<CookCache>(cook_cache_folder(project));
+                m_streamer = std::make_unique<WorldStreamer>(*world.document, cooked_cell_loader(scene_path->parent_path(), cache, context),
+                                                             project_streaming_settings(project.settings));
+            } else {
+                auto loaded = load_scene_file(*scene_path, context);
+                if (!loaded) return fail(*scene_path, loaded.diagnostics);
+                document = std::move(loaded.document);
+            }
             scene_name = project.relative(*scene_path).generic_string();
         }
         if (m_options.record)
@@ -106,6 +121,12 @@ public:
         // A loading screen: what the scene draws is resident before the first frame, which then streams
         // anything later (docs/assets.md#asynchronous-loading).
         const auto loading = Stopwatch{};
+        if (m_streamer) { // the cells around the camera, before the first frame
+            m_streamer->set_sources({camera_position()});
+            const auto& streamed = m_streamer->settle(m_session->world(), &m_session->physics());
+            std::cerr << "[Player] streamed " << streamed.cells[size_t(CellState::active)] << " cells in around the camera\n";
+            if (!streamed.last_error.empty()) std::cerr << "[Player] " << streamed.last_error << '\n';
+        }
         const auto loaded = preload_render_assets(m_session->world(), *m_assets);
         std::cerr << "[Player] loaded " << loaded << " assets in " << int(loading.milliseconds()) << " ms\n";
         m_renderer = std::make_unique<Renderer>(device, std::move(shader));
@@ -122,6 +143,13 @@ public:
         // Loading first: prepared assets are finalized within the budget; then the frame is marked.
         m_assets->update();
         m_assets->begin_frame();
+        // Then the world's cells around the camera, within the frame's budget (#1064).
+        if (m_streamer) {
+            m_streamer->set_sources({camera_position()});
+            const auto errors = m_streamer->stats().loads_failed + m_streamer->stats().pinned;
+            const auto& streamed = m_streamer->update(m_session->world(), &m_session->physics());
+            if (streamed.loads_failed + streamed.pinned != errors) std::cerr << "[Player] " << streamed.last_error << '\n';
+        }
         // Every window event belongs to the game in the player.
         if (input_enabled) m_session->input().feed(Input::instance().events());
         const auto frame = m_session->update(delta_time);
@@ -194,6 +222,7 @@ public:
             const auto loading = m_assets->load_stats();
             std::cerr << "[Player] loads: " << loading.finalized << " finished, " << loading.waited_in_frames << " waited for inside a frame\n";
         }
+        m_streamer.reset(); // its loads end before the session and the assets they use
         // Device shutdown releases anything still pending after these owners are gone.
         m_renderer.reset();
         m_view.reset();
@@ -218,6 +247,12 @@ private:
     std::unique_ptr<PlaySession> m_session;
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<RenderTarget> m_view;
+    std::unique_ptr<WorldStreamer> m_streamer; // when the scene is a world: its cells around the camera
+    math::DVec3 camera_position() const {
+        const auto camera = m_session->world().find(*m_session->camera());
+        const auto pose = camera ? m_session->world().world_matrix(*camera) : std::nullopt;
+        return pose ? pose->translation : math::DVec3{};
+    }
     size_t m_reported = 0;
     DebugDraw m_debug; // --debug-physics and --debug-skeletons: this frame's, reused
     SkinBindingCache m_skins; // the session's skins' joints, between frames (#1038)

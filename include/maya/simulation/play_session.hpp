@@ -53,6 +53,9 @@ public:
     const World& world() const noexcept { return *m_world; }
     /// The session's physics, created with it and destroyed before its World.
     const PhysicsWorld& physics() const noexcept { return *m_physics; }
+    /// For what changes the World between ticks on the owner thread, such as a world streamer adding and
+    /// removing a cell's bodies (#1064). Never during update.
+    PhysicsWorld& physics() noexcept { return *m_physics; }
     /// Wall time of each system's fixed-tick hooks in the last tick, in system order: phase 3
     /// (fixed_update) and phase 7 (late_fixed_update, with the event hooks it runs). For benchmarks.
     struct SystemTiming {

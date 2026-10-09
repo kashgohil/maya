@@ -34,6 +34,8 @@ constexpr uint64_t mix(uint64_t value) noexcept {
     return value ^ (value >> 31);
 }
 
+/// Stream: crosses a generated grid world in every run of the manifest, and records them in `result`.
+void run_stream(Result& result, const Manifest& manifest);
 /// P1: runs every worker configuration and run of the manifest, and records them in `result`.
 void run_physics(Result& result, const Manifest& manifest);
 /// Import: imports and loads each model of the manifest in every run, and records them in `result`.

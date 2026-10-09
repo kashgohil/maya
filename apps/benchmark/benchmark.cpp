@@ -37,12 +37,14 @@ const char* workload_name(Workload workload) {
     case Workload::physics: return "physics";
     case Workload::import: return "import";
     case Workload::animation: return "animation";
+    case Workload::stream: return "stream";
     }
     return "?";
 }
 /// Workloads that generate a scene of one mesh and material.
 bool generated(Workload workload) {
-    return workload != Workload::scene && workload != Workload::physics && workload != Workload::import && workload != Workload::animation;
+    return workload != Workload::scene && workload != Workload::physics && workload != Workload::import && workload != Workload::animation &&
+           workload != Workload::stream;
 }
 
 // Manifests -------------------------------------------------------------------------------------------
@@ -683,7 +685,8 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             else if (text == "physics") manifest.workload = Workload::physics;
             else if (text == "import") manifest.workload = Workload::import;
             else if (text == "animation") manifest.workload = Workload::animation;
-            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, physics, import, or animation");
+            else if (text == "stream") manifest.workload = Workload::stream;
+            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, physics, import, animation, or stream");
         } else if (key == "content") {
             ok = bool(in >> std::quoted(text)) && !text.empty();
             manifest.content = (folder / text).lexically_normal();
@@ -742,6 +745,13 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         } else if (key == "present") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.present = text == "on";
+        } else if (key == "grid") {
+            ok = bool(in >> manifest.grid) && manifest.grid >= 1 && manifest.grid <= 256;
+        } else if (key == "speed") {
+            ok = bool(in >> manifest.speed) && manifest.speed > 0.0 && manifest.speed <= 1000.0;
+        } else if (key == "radii") {
+            ok = bool(in >> manifest.load_radius >> manifest.activate_radius >> manifest.hysteresis) && manifest.activate_radius > 0.0 &&
+                 manifest.load_radius >= manifest.activate_radius && manifest.hysteresis >= 0.0;
         } else if (key == "skinning") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.skinning = text == "on";
@@ -761,7 +771,8 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             if (std::ranges::find(seen, required) == seen.end())
                 return {{}, std::string("the ") + workload_name(manifest.workload) + " workload needs '" + required + "'"};
         if (manifest.workload == Workload::animation && manifest.models.size() != 1) return {{}, "the animation workload plays one model"};
-    } else if (manifest.workload != Workload::physics && std::ranges::find(seen, "project") == seen.end()) {
+    } else if (manifest.workload != Workload::physics && manifest.workload != Workload::stream &&
+               std::ranges::find(seen, "project") == seen.end()) {
         return {{}, "missing 'project'"};
     }
     if ((manifest.workload == Workload::load_cycles || manifest.workload == Workload::play_cycles) && manifest.slope_from > manifest.cycles)
@@ -792,6 +803,15 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         };
         try {
             detail::run_import(result, manifest, device);
+        } catch (const std::exception& error) {
+            result.failure = error.what();
+        }
+        return;
+    }
+    if (manifest.workload == Workload::stream) { // headless: a generated world, no views
+        result.unavailable = {{"rendering", "the stream workload renders nothing; it measures streaming and ticks"}};
+        try {
+            detail::run_stream(result, manifest);
         } catch (const std::exception& error) {
             result.failure = error.what();
         }
@@ -1302,6 +1322,56 @@ std::string to_json(const Result& r) {
     json.key("authored_unchanged");
     if (r.authored_unchanged) json.value(*r.authored_unchanged); else json.null();
     if (m.workload == Workload::physics) write_physics(json, r);
+    if (m.workload == Workload::stream) {
+        json.key("streaming");
+        json.open('[');
+        for (const auto& run : r.stream_runs) {
+            json.open('{');
+            json.field("failure", run.failure);
+            json.field("cells", run.cells);
+            json.field("entities", run.entities);
+            json.field("grid", m.grid);
+            json.field("speed_m_s", m.speed);
+            json.field("load_radius_m", m.load_radius);
+            json.field("activate_radius_m", m.activate_radius);
+            json.field("hysteresis_m", m.hysteresis);
+            write_summary(json, "frame_ms", run.frame);
+            write_summary(json, "streaming_ms", run.streaming);
+            json.field("loads", run.loads);
+            json.field("loads_cancelled", run.cancelled);
+            json.field("loads_failed", run.failed);
+            json.field("completions_discarded", run.discarded);
+            json.field("activations", run.activations);
+            json.field("deactivations", run.deactivations);
+            json.key("crossings");
+            json.open('[');
+            for (const auto& crossing : run.crossings) {
+                json.open('{');
+                json.field("ms", crossing.ms);
+                json.field("longest_streaming_ms", crossing.longest_streaming_ms);
+                json.key("footprint_bytes");
+                if (crossing.footprint) json.value(*crossing.footprint);
+                else json.null();
+                json.field("active_entities", crossing.active_entities);
+                json.field("bytes_loaded", crossing.bytes_loaded);
+                json.close('}');
+            }
+            json.close(']');
+            json.key("samples");
+            json.open('{');
+            json.key("frame_ms");
+            json.open('[');
+            for (const auto value : run.frame) json.value(value);
+            json.close(']');
+            json.key("streaming_ms");
+            json.open('[');
+            for (const auto value : run.streaming) json.value(value);
+            json.close(']');
+            json.close('}');
+            json.close('}');
+        }
+        json.close(']');
+    }
     if (m.workload == Workload::import) {
         json.key("imports");
         json.open('[');
@@ -1461,6 +1531,25 @@ std::string to_text(const Result& r) {
         }
         if (r.deterministic) out << "  " << (*r.deterministic ? "every run cooked the same bytes" : "RUNS DIFFER: a determinism failure") << "\n";
     }
+    if (r.manifest.workload == Workload::stream)
+        for (const auto& run : r.stream_runs) {
+            if (!run.failure.empty()) {
+                out << "  FAILED: " << run.failure << '\n';
+                continue;
+            }
+            const auto frame = summarize(run.frame), streaming = summarize(run.streaming);
+            out << "  " << run.cells << " cells, " << run.entities << " entities; " << run.crossings.size() << " crossings: frame "
+                << frame.mean << " ms (P99 " << frame.p99 << ", max " << frame.max << "), streaming " << streaming.mean << " ms (P99 "
+                << streaming.p99 << ", max " << streaming.max << "); " << run.activations << " activations, " << run.deactivations
+                << " deactivations, " << run.loads << " loads (" << run.cancelled << " cancelled, " << run.failed << " failed)\n";
+            for (size_t i = 0; i < run.crossings.size(); ++i) {
+                const auto& crossing = run.crossings[i];
+                out << "    crossing " << i + 1 << ": " << crossing.ms << " ms, longest streaming " << crossing.longest_streaming_ms << " ms, "
+                    << crossing.active_entities << " active entities, " << crossing.bytes_loaded / 1024 << " KiB loaded";
+                if (crossing.footprint) out << ", footprint " << *crossing.footprint / (1024 * 1024) << " MiB";
+                out << '\n';
+            }
+        }
     if (r.manifest.workload == Workload::physics) {
         const auto& s = r.physics_scene;
         out << "  " << s.bodies << " bodies (" << s.dynamic_bodies << " dynamic: " << s.active_set << " dropped, " << s.sleeping_set

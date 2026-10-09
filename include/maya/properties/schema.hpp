@@ -70,6 +70,9 @@ struct ComponentDescriptor {
     std::string_view label;
     uint32_t version;
     std::span<const PropertyDescriptor> properties;
+    /// Whether play's changes to it survive its cell unloading (#1064, docs/world.md#state-across-unloads):
+    /// kept as a delta against the cooked cell. Every component today does; generated content can opt out.
+    bool keeps_state = true;
 };
 
 enum class ReferenceKind { mesh, material, script, texture, environment, skin, animation };

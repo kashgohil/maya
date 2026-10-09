@@ -6,7 +6,9 @@
 #include "maya/core/build_info.hpp"
 #include "maya/metrics/metrics.hpp"
 #include "maya/properties/schema.hpp"
+#include "maya/scene/scene_binary.hpp"
 #include "maya/scene/scene_io.hpp"
+#include "maya/scene/world_io.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -129,8 +131,29 @@ PackageReport package_project(const PackageOptions& options) {
         return ReferenceStatus::valid;
     }};
     auto scene_texts = std::vector<std::pair<fs::path, std::vector<std::byte>>>{};
+    const auto bytes_of = [](std::string_view text) {
+        const auto bytes = std::as_bytes(std::span(text));
+        return std::vector<std::byte>(bytes.begin(), bytes.end());
+    };
     for (const auto& scene : scenes) {
         const auto path = project.content_root / scene;
+        if (scene.extension() == ".world") {
+            // A world (#1064): the world file, its persistent scene, and each cell cooked to packed binary,
+            // so the packaged player decodes cells and never parses them.
+            const auto loaded = load_world(path, context);
+            if (!loaded) return fail(scene.generic_string() + ": " + loaded.diagnostics.front().message);
+            auto world = *loaded.world;
+            auto persistent = read_file(path.parent_path() / world.persistent);
+            if (!persistent) return fail("cannot read " + (scene.parent_path() / world.persistent).generic_string());
+            scene_texts.emplace_back(scene.parent_path() / world.persistent, std::move(*persistent));
+            for (auto& cell : world.cells) {
+                const auto binary = encode_scene_binary(loaded.cells.at(cell.index));
+                cell.scene.replace_extension(".cell");
+                scene_texts.emplace_back(scene.parent_path() / cell.scene, wrap_cooked(std::as_bytes(std::span(binary))));
+            }
+            scene_texts.emplace_back(scene, bytes_of(write_world(world)));
+            continue;
+        }
         const auto loaded = load_scene_file(path, context);
         if (!loaded) return fail(scene.generic_string() + ": " + loaded.diagnostics.front().message);
         auto bytes = read_file(path);

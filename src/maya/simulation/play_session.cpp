@@ -44,6 +44,8 @@ PlayStartResult PlaySession::start(SceneDocument document, const PropertyValidat
     }
     if (auto error = session->m_physics->create_bodies(*session->m_world, authored.bodies); !error.empty())
         return {nullptr, {}, "Physics: " + error};
+    // From here, physics learns which static bodies moved from the World's journal, not a scan (#1064).
+    session->m_world->record_transform_changes(true);
     for (auto& system : session->m_systems) {
         ++session->m_started; // stop runs for a system whose start threw, too
         try {
@@ -168,7 +170,8 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
         auto lists = std::vector<const BodyCommands*>{};
         if (m_late_bodies) lists.push_back(m_late_bodies.get());
         lists.push_back(&bodies);
-        m_physics->prepare(*m_world, lists, interval);
+        const auto moved = m_world->take_transform_changes();
+        m_physics->prepare(*m_world, moved, lists, interval);
         m_physics->step(interval); // phase 5
         m_physics->synchronize(*m_world, commands); // phase 6
     } catch (const std::exception& error) {

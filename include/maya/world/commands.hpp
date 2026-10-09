@@ -12,6 +12,10 @@ namespace maya {
 class World;
 enum class ReparentPolicy { keep_local, keep_world };
 using EntityTarget = std::variant<EntityHandle, PendingEntity>;
+/// A group of staged entities (#1064): created into the World but invisible to everything that reads it
+/// (find, alive, has, with, for_each, children, world_matrix) until World::publish makes the whole group
+/// visible at once, or World::discard removes it. 0 is no group: visible as soon as it is committed.
+using StageGroup = uint32_t;
 
 /// Owned staging values; may outlive the World. No publication until World::commit.
 class WorldCommands {
@@ -22,6 +26,8 @@ public:
     WorldCommands& operator=(WorldCommands&& other) noexcept;
 
     PendingEntity create(EntityId id = EntityId::generate());
+    /// A new entity in stage group `stage` (nonzero): committed, but not visible until the group is published.
+    PendingEntity create_staged(EntityId id, StageGroup stage);
     void destroy(EntityTarget target);
     template<Component T> void add(EntityTarget target, T value) {
         require_active();
@@ -101,6 +107,7 @@ private:
         std::optional<EntityTarget> parent{};
         ReparentPolicy policy = ReparentPolicy::keep_local;
         TransformComponent transform{};
+        StageGroup stage = 0; // create only
     };
     void require_active() const {
         if (m_world == 0) throw std::logic_error("WorldCommands is consumed or moved from");
