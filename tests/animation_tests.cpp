@@ -235,7 +235,7 @@ struct Session {
         REQUIRE(play->world().with<TransformComponent>(*play->world().find(id), [&](const TransformComponent& value) { result = value; }));
         return result;
     }
-    math::Mat4 world_matrix(EntityId id) const { return *play->world().world_matrix(*play->world().find(id)); }
+    math::Mat4 world_matrix(EntityId id) const { return play->world().world_matrix(*play->world().find(id))->matrix(); }
     size_t said(const std::string& part) const {
         return size_t(std::ranges::count_if(messages, [&](const SimulationMessage& m) { return m.text.find(part) != std::string::npos; }));
     }
@@ -369,7 +369,7 @@ return S
         const auto arm = *session.play->world().find(arm_id);
         const auto matrix = poses.world_matrix(session.play->world(), arm);
         REQUIRE(matrix);
-        return std::atan2(-matrix->at(2, 0), matrix->at(0, 0)); // about +Y, from the turned X axis
+        return std::atan2(-matrix->linear.at(2, 0), matrix->linear.at(0, 0)); // about +Y, from the turned X axis
     };
     // Tick 0's pose is the clip's first, which the joints jump to; tick 1 is the first shown between two.
     session.run(4, 1.0 / 120.0);

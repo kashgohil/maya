@@ -529,7 +529,7 @@ if(BUILD_TESTING)
     add_test(NAME maya_physics COMMAND maya_physics_tests)
     set_tests_properties(maya_physics PROPERTIES LABELS "cpu;physics" TIMEOUT 120)
 
-    add_executable(maya_scripting_tests tests/scripting_tests.cpp)
+    add_executable(maya_scripting_tests tests/scripting_tests.cpp tests/precision_tests.cpp)
     target_link_libraries(maya_scripting_tests PRIVATE MayaSimulation Catch2::Catch2WithMain)
     maya_target_options(maya_scripting_tests)
     add_test(NAME maya_scripting COMMAND maya_scripting_tests)
@@ -680,8 +680,12 @@ if(BUILD_TESTING)
             FIXTURES_SETUP r1_project)
         add_test(NAME maya_r1_steady COMMAND maya_editor_tests "[r1][steady]")
         set_tests_properties(maya_r1_steady PROPERTIES LABELS "cpu;acceptance;r1" TIMEOUT 600 FIXTURES_REQUIRED r1_project)
-        add_test(NAME maya_r1_reference COMMAND maya_editor_tests "[r1][visual]")
+        add_test(NAME maya_r1_reference COMMAND maya_editor_tests "[r1][visual]~[precision]")
         set_tests_properties(maya_r1_reference PROPERTIES LABELS "gpu;acceptance;visual;r1" TIMEOUT 900 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # R1 at 100 m to 100 km from the origin against the origin (#1065, the origin-offset sweep).
+        add_test(NAME maya_r1_offsets COMMAND maya_editor_tests "[r1][precision]")
+        set_tests_properties(maya_r1_offsets PROPERTIES LABELS "gpu;acceptance;visual;r1;precision" TIMEOUT 1200 RUN_SERIAL TRUE
             FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         if(TARGET maya_player)
             add_test(NAME maya_acceptance_player COMMAND ${CMAKE_COMMAND}

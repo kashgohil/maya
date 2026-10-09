@@ -79,10 +79,9 @@ TEST_CASE("View rays pass through the pixels they were made for", "[editor][pick
     const auto view = make_render_view(camera, pose, 1600, 900);
     REQUIRE(view);
     for (const auto [x, y] : {std::pair{0.0f, 0.0f}, {0.8f, -0.5f}, {-0.95f, 0.9f}}) {
-        const auto ray = view_ray(*view, pose, camera.vertical_fov, x, y);
+        const auto ray = view_ray(*view, math::Affine::from_matrix(pose), camera.vertical_fov, x, y);
         CHECK(ray.direction.length() == Approx(1.0f));
-        const auto point = ray.origin + ray.direction * 7.0f;
-        const auto clip = view->matrices.view_projection * math::Vec4(point, 1.0f);
+        const auto clip = clip_of(*view, ray.at(7.0f));
         CHECK(clip.x / clip.w == Approx(x).margin(1e-4));
         CHECK(clip.y / clip.w == Approx(y).margin(1e-4));
     }

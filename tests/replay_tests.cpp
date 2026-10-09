@@ -1,3 +1,4 @@
+#include "maya/scene/scene_io.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "maya/simulation/recording.hpp"
 #include "maya/simulation/scripting.hpp"
@@ -237,6 +238,37 @@ TEST_CASE("Recordings from another build or physics, with changed assets, or wit
     other.reloads = {{240, zone.id, "scripts/zone.luau"}};
     CHECK(replay_refusal(other, {zone}, {}) ==
           "scripts/zone.luau was reloaded at tick 240 of the recorded session, so its replay is not promised to match");
+}
+
+TEST_CASE("A recording made before double positions still reads, its scene migrates, and its replay is refused for the physics", "[replay][precision]") {
+    // #1065: a recording from a single-precision build reads unchanged; its scene (maya.transform 1) loads
+    // as the floats it held; and its replay is refused with the reason, since double-precision physics
+    // gives other poses than the session it recorded.
+    auto old = PlayRecording{};
+    old.build = "0123456789ab Release sanitizers none AppleClang 17";
+    old.physics = "Jolt 5.6.0, single precision; 1 collision step";
+    old.scene_name = "basic.scene";
+    old.scene = "maya-scene 1\n\nentity 72 1\n  component maya.transform 1\n    translation 0.1 4096.37 -2\n"
+                "    rotation 0 0 0 1\n    scale 1 1 1\nend\n";
+    for (int i = 0; i < 60; ++i) old.inputs.push({});
+    old.checkpoints = {{60, 0x0123456789abcdefull}};
+    auto file = std::ostringstream{};
+    write_recording(file, old);
+    auto input = std::istringstream(file.str());
+    const auto read = read_recording(input);
+    INFO(read.error);
+    REQUIRE(read);
+    CHECK(read.recording->scene == old.scene);
+    CHECK(read.recording->checkpoints == old.checkpoints);
+    const auto any_asset = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    const auto scene = read_scene(read.recording->scene, any_asset);
+    REQUIRE(scene);
+    const auto& transform = std::get<TransformComponent>(scene.document.entities.front().components.front());
+    CHECK(transform.translation == math::DVec3{double(0.1f), double(4096.37f), -2.0});
+    old.build = recording_build(); // even from this build, the physics differs
+    const auto refusal = replay_refusal(old, {}, {});
+    CHECK(refusal.starts_with("It was recorded with Jolt 5.6.0, single precision"));
+    CHECK(refusal.find("double precision") != std::string::npos);
 }
 
 TEST_CASE("Recording cost at 1,000, 10,000, and 50,000 entities", "[.][replay][cost]") {

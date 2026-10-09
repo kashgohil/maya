@@ -5,8 +5,10 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include "support/poses.hpp"
 
 using namespace maya;
+using namespace maya::test;
 using Catch::Approx;
 namespace {
 PropertyResult edit(ComponentValue& value, PropertyId id, PropertyValue input,
@@ -60,9 +62,10 @@ TEST_CASE("Property schemas have stable identities, discoverable defaults, and t
     for (const auto& schema : component_schemas()) {
         REQUIRE(ids.insert(schema.id).second);
         REQUIRE(names.insert(schema.name).second);
-        // Every schema is version 1 except the camera's (2: exposure and tone mapping, #1032) and the
-        // light's (2: candela and shadows, #1034).
-        REQUIRE(schema.version == (schema.id == ComponentId::camera || schema.id == ComponentId::light ? 2u : 1u));
+        // Every schema is version 1 except the camera's (2: exposure and tone mapping, #1032), the
+        // light's (2: candela and shadows, #1034), and the transform's (2: a double translation, #1065).
+        REQUIRE(schema.version == (schema.id == ComponentId::camera || schema.id == ComponentId::light ||
+                                   schema.id == ComponentId::transform ? 2u : 1u));
         for (const auto& property : schema.properties) REQUIRE((property.since >= 1 && property.since <= schema.version));
         REQUIRE(component_schema(schema.name) == &schema);
         auto value = default_component(schema.id);
@@ -230,10 +233,10 @@ TEST_CASE("World property edits retain identity and hierarchy and invalidate des
     auto commands = world.commands();
     commands.reparent(child, parent, ReparentPolicy::keep_local);
     REQUIRE(world.commit(commands));
-    REQUIRE(world.world_matrix(child)->at(0, 3) == 0);
+    REQUIRE(world.world_matrix(child)->translation.x == 0);
     const auto move = std::array{PropertyEdit{1, math::Vec3{5, 0, 0}}};
     REQUIRE(edit_properties(world, parent, ComponentId::transform, move));
-    REQUIRE(world.world_matrix(child)->at(0, 3) == 5);
+    REQUIRE(world.world_matrix(child)->translation.x == 5);
     REQUIRE(world.parent(child) == parent);
     REQUIRE(world.persistent_id(parent) == id);
     const auto clips = std::array{PropertyEdit{2, 2.0f}, PropertyEdit{3, 500.0f}};
@@ -294,7 +297,7 @@ TEST_CASE("Component replacement participates in atomic ordered World command ba
     const auto result = world.commit(commands);
     REQUIRE(result);
     REQUIRE(std::get<NameComponent>(*read_component(world, result.created[0], ComponentId::name)).value == "fourth");
-    REQUIRE(world.world_matrix(entity)->at(0, 3) == 3);
+    REQUIRE(world.world_matrix(entity)->translation.x == 3);
     auto missing = world.commands();
     missing.replace(result.created[0], CameraComponent{});
     REQUIRE(world.commit(missing).error == WorldError::component_missing);

@@ -30,7 +30,7 @@ struct R1 {
     std::unique_ptr<AssetRegistry> registry;
     std::unique_ptr<PlaySession> session;
     SkinBindingCache skins;
-    R1(GraphicsDevice& device) {
+    explicit R1(GraphicsDevice& device, const math::DVec3& offset = {}) {
         auto opened = open_project(r1_folder());
         REQUIRE(opened);
         auto assets = open_project_assets(opened.project,
@@ -40,6 +40,7 @@ struct R1 {
         const auto context = asset_property_context(*registry);
         auto loaded = load_scene_file(*opened.project.startup_scene, context);
         REQUIRE(loaded);
+        shift_roots(loaded.document, offset); // the origin-offset sweep (#1065)
         auto started = PlaySession::start(std::move(loaded.document), context,
                                           play_systems(registry_script_sources(*registry), registry_animation_clips(*registry)));
         INFO(started.error);
@@ -95,6 +96,28 @@ TEST_CASE("R1's named views and frames along its camera path render as approved"
     }
     compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/r1", fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs",
                             images);
+}
+
+TEST_CASE("R1 renders the same at every distance from the origin", "[visual][gpu][r1][precision]") {
+    if (!assembled()) SKIP("R1 is not assembled; fetch the samples (tools/fetch_render_samples.sh) and run the r1_project fixture");
+    // #1065: R1 and its cameras moved kilometres out render as at the origin, within the references' tolerance.
+    Gpu gpu;
+    const auto render = [&](double distance) {
+        auto r1 = R1(gpu.device, offset_toward(distance));
+        r1.run_to(150);
+        auto images = std::vector<RgbImage>{r1.render(gpu, r1.path_camera())};
+        for (const auto& view : r1::views()) images.push_back(r1.render(gpu, view.camera));
+        return images;
+    };
+    const auto origin = render(0.0);
+    for (const auto distance : offset_distances) {
+        if (distance == 0.0) continue;
+        const auto far = render(distance);
+        for (size_t i = 0; i < far.size(); ++i)
+            compare_images((i == 0 ? std::string("path-150") : "view " + std::string(r1::views()[i - 1].name)) + " at " +
+                               std::to_string(int(distance)) + " m",
+                           origin[i], far[i]);
+    }
 }
 
 TEST_CASE("R1 shows the same image in the editor's Play as in the player, along its camera path", "[visual][gpu][r1]") {

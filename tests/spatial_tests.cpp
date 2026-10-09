@@ -4,9 +4,11 @@
 #include <limits>
 #include <random>
 #include <type_traits>
+#include "support/poses.hpp"
 
 namespace {
 using namespace maya;
+using namespace maya::test;
 using Catch::Approx;
 
 void matrix_close(const math::Mat4& actual, const math::Mat4& expected, float tolerance = 2e-4f) {
@@ -30,7 +32,7 @@ void attach(World& world, EntityHandle child, std::optional<EntityTarget> parent
 math::Mat4 matrix(const World& world, EntityHandle entity) {
     const auto value = world.world_matrix(entity);
     REQUIRE(value);
-    return *value;
+    return value->matrix(); // near the origin
 }
 
 TEST_CASE("Nested TRS preserves inherited shear and propagates edits", "[world][spatial]") {
@@ -262,7 +264,11 @@ TEST_CASE("Camera data computes independent rigid view and Metal depth", "[world
     const auto pose = local_matrix({{4,5,6}, math::Quat::from_axis_angle({0,1,0}, .4f)});
     const auto result = camera_matrices(camera, pose, 2);
     REQUIRE(result);
-    matrix_close(result->view * pose, math::Mat4::identity());
+    // Camera-relative (#1065): the view turns but does not move; the camera's position is the origin.
+    auto turned = pose;
+    turned.at(0,3) = turned.at(1,3) = turned.at(2,3) = 0;
+    matrix_close(result->view * turned, math::Mat4::identity());
+    CHECK(result->origin == math::DVec3{4, 5, 6});
     CHECK(result->projection.at(0,0) == Approx(.5f));
     CHECK(result->projection.at(1,1) == Approx(1));
     auto near = result->projection * math::Vec4{0,0,-camera.near_clip,1};
@@ -288,7 +294,8 @@ TEST_CASE("World camera rejects scaled ancestry even when scales cancel", "[worl
     attach(world, child, root);
     auto add = world.commands(); add.add(child, CameraComponent{}); REQUIRE(world.commit(add));
     auto camera = world.camera(child, 1); REQUIRE(camera);
-    CHECK(camera->view.at(0,3) == Approx(-3)); CHECK(camera->view.at(2,3) == Approx(-2));
+    CHECK(camera->view.at(0,3) == 0); CHECK(camera->view.at(2,3) == 0); // camera-relative (#1065)
+    CHECK(camera->origin == math::DVec3{3, 0, 2});
     auto edits = world.commands();
     edits.set_transform(root, {{3,0,0}, {}, {2,2,2}});
     edits.set_transform(child, {{0,0,2}, {}, {.5f,.5f,.5f}});

@@ -147,7 +147,7 @@ TEST_CASE("Metal renderer draws many instances of each mesh and material with on
     CHECK(fixture.renderer->last_view().culled == 1);
     for (int row = 0; row < 5; ++row)
         for (int column = 0; column < 7; ++column) {
-            const auto clip = view.matrices.view_projection * math::Vec4{float(column - 3) * 0.6f, float(row - 2) * 0.6f, 0.15f, 1.0f};
+            const auto clip = clip_of(view, math::Vec3{float(column - 3) * 0.6f, float(row - 2) * 0.6f, 0.15f});
             const auto x = uint32_t((clip.x / clip.w * 0.5f + 0.5f) * 256.0f), y = uint32_t((0.5f - clip.y / clip.w * 0.5f) * 256.0f);
             const auto shown = pixel(pixels, 256, x, y);
             INFO("cube " << column << ", " << row);
@@ -425,7 +425,7 @@ TEST_CASE("Metal keeps detail under a bright and a dim light in one view", "[rhi
     auto target = RenderTarget(fixture.device, {Format::rgba8_unorm, true, "bright and dim"});
     const auto pixels = fixture.render(snapshot, *view, target);
     const auto at = [&](const math::Vec3& point) { // a world point's pixel
-        const auto clip = view->matrices.view_projection * math::Vec4(point, 1.0f);
+        const auto clip = clip_of(*view, point);
         const auto x = uint32_t((clip.x / clip.w * 0.5f + 0.5f) * 128.0f), y = uint32_t((0.5f - clip.y / clip.w * 0.5f) * 96.0f);
         return pixel(pixels, 128, x, y);
     };

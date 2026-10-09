@@ -188,10 +188,10 @@ TEST_CASE("The editor camera flies relative to its view and keeps a rigid pose",
 
 namespace {
 /// Where a point lies in the camera's view: its direction from the camera, in camera axes.
-math::Vec3 seen(const EditorCamera& camera, const math::Vec3& point) {
+math::Vec3 seen(const EditorCamera& camera, const math::DVec3& point) {
     const auto pose = camera.pose();
-    const auto axis = [&](int c) { return math::Vec3(pose.at(0, c), pose.at(1, c), pose.at(2, c)); };
-    const auto d = (point - camera.position).normalized();
+    const auto axis = [&](int c) { return pose.axis(c); };
+    const auto d = (point - camera.position).to_float().normalized();
     return {math::Vec3::dot(d, axis(0)), math::Vec3::dot(d, axis(1)), math::Vec3::dot(d, axis(2))};
 }
 } // namespace
@@ -227,7 +227,7 @@ TEST_CASE("The editor camera orbits, pans, and zooms around its pivot", "[editor
     CHECK(camera.pitch == pitch);
     CHECK((camera.position - before).length() == Approx(1.0f).epsilon(1e-4));
     CHECK((camera.pivot - pivot).length() == Approx(1.0f).epsilon(1e-4));
-    CHECK(math::Vec3::dot(camera.position - before, math::Vec3(std::cos(yaw), 0.0f, -std::sin(yaw))) == Approx(-1.0f).epsilon(1e-4));
+    CHECK(math::Vec3::dot((camera.position - before).to_float(), math::Vec3(std::cos(yaw), 0.0f, -std::sin(yaw))) == Approx(-1.0f).epsilon(1e-4));
 
     // Zoom: dragging right moves toward the pivot, and stops just short of it.
     auto zoom = NavigationInput{};
@@ -417,7 +417,7 @@ TEST_CASE("Typing into an inspector field never moves the camera; navigation tak
     harness.frames(10);
     const auto moved = harness.shell.camera().position;
     CHECK((moved - start).length() > 0.1f);
-    CHECK(math::Vec3::dot((moved - start).normalized(), harness.shell.camera().forward()) == Approx(1.0f));
+    CHECK(math::Vec3::dot((moved - start).to_float().normalized(), harness.shell.camera().forward()) == Approx(1.0f));
 
     // Releasing the button returns the cursor; a key still held no longer moves the camera.
     harness.frame({MouseButtonEvent{MouseButton::right, false, KeyModifiers::none}});
@@ -654,7 +654,7 @@ TEST_CASE("Dragging a row onto another reparents it and keeps its world pose", "
     REQUIRE(scene.record(red));
     CHECK(scene.record(red)->parent == ground);
     const auto moved = *scene.world().world_matrix(*scene.world().find(red));
-    for (int i = 0; i < 16; ++i) CHECK(moved.elements[i] == Approx(pose.elements[i]).margin(1e-4));
+    for (int i = 0; i < 16; ++i) CHECK(moved.matrix().elements[i] == Approx(pose.matrix().elements[i]).margin(1e-4));
     CHECK(scene.undo_label() == "Move Red cube");
 }
 
@@ -775,7 +775,7 @@ TEST_CASE("Gizmo drags move along an axis as one undo step and respect the hiera
     REQUIRE(harness.shell.layout().gizmo_origin);
     const auto origin = *harness.shell.layout().gizmo_origin;
     const auto world = *scene.world().world_matrix(*scene.world().find(pyramid));
-    const auto tip = on_screen(harness, {world.at(0, 3) + 1.0f, world.at(1, 3), world.at(2, 3)});
+    const auto tip = on_screen(harness, world.translation + math::DVec3{1.0, 0.0, 0.0});
     auto direction = ImVec2{tip.x - origin.x, tip.y - origin.y};
     const auto length = std::sqrt(direction.x * direction.x + direction.y * direction.y);
     direction = {direction.x / length, direction.y / length};
@@ -802,6 +802,57 @@ TEST_CASE("Gizmo drags move along an axis as one undo step and respect the hiera
     CHECK(transform_of(scene, pyramid).translation.x == before.translation.x);
 }
 
+TEST_CASE("Picking and gizmo drags work alike at every distance from the origin", "[editor][tools][precision]") {
+    // #1065: the view, picking, and the gizmo are camera-relative, so an object 100 km out is picked and
+    // moved as one at the origin is.
+    auto moves = std::vector<math::DVec3>{};
+    for (const auto distance : {0.0, 1000.0, 11600.0, 100000.0}) {
+        INFO("offset " << distance << " m");
+        Harness harness;
+        harness.frames(2);
+        auto& scene = *harness.shell.scene();
+        const auto pyramid = find_named(scene, "Pyramid");
+        auto placed = transform_of(scene, pyramid);
+        placed.translation += math::DVec3{distance * 0.6, 0.0, -distance * 0.8};
+        if (distance > 0.0) REQUIRE(scene.set_component(pyramid, placed));
+        const auto at = placed.translation;
+        harness.shell.camera() = EditorCamera::looking_at(at + math::DVec3{0.0, 2.0, 5.0}, at);
+        scene.clear_selection();
+        harness.frames(2);
+        // Clicking it selects it.
+        press(harness, on_screen(harness, at + math::DVec3{0.0, 0.3, 0.0}));
+        harness.frames(1);
+        REQUIRE(scene.primary() == pyramid);
+        harness.frames(1);
+        REQUIRE(harness.shell.layout().gizmo_origin);
+        const auto origin = *harness.shell.layout().gizmo_origin;
+        // The gizmo sits on it, and its X handle drags it along X.
+        const auto shown = on_screen(harness, at);
+        CHECK(origin.x == Approx(shown.x).margin(0.5));
+        CHECK(origin.y == Approx(shown.y).margin(0.5));
+        const auto tip = on_screen(harness, at + math::DVec3{1.0, 0.0, 0.0});
+        auto direction = ImVec2{tip.x - origin.x, tip.y - origin.y};
+        const auto length = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+        direction = {direction.x / length, direction.y / length};
+        auto grab = std::optional<ImVec2>{};
+        for (float step = 20.0f; step < 200.0f && !grab; step += 4.0f) {
+            const auto point = ImVec2{origin.x + direction.x * step, origin.y + direction.y * step};
+            harness.frame({MouseMoveEvent{point.x, point.y}});
+            harness.frame();
+            if (harness.shell.gizmo_hovered()) grab = point;
+        }
+        REQUIRE(grab);
+        drag(harness, *grab, {grab->x + direction.x * 60.0f, grab->y + direction.y * 60.0f});
+        moves.push_back(transform_of(scene, pyramid).translation - at);
+    }
+    for (const auto& move : moves) {
+        CHECK(move.x > 0.05);
+        CHECK(move.x == Approx(moves.front().x).margin(1e-4)); // the same drag moves it the same distance
+        CHECK(std::abs(move.y) < 1e-6);
+        CHECK(std::abs(move.z) < 1e-6);
+    }
+}
+
 TEST_CASE("Gizmo matrices become validated local transforms under their parents", "[editor][tools]") {
     Harness harness;
     harness.frames(2);
@@ -815,14 +866,14 @@ TEST_CASE("Gizmo matrices become validated local transforms under their parents"
     const auto world = *scene.world().world_matrix(*scene.world().find(child));
     // Moving in world space is fine: the translation maps back into the parent.
     auto moved = world;
-    moved.at(0, 3) += 2.0f;
+    moved.translation.x += 2.0;
     REQUIRE(harness.shell.apply_world_matrix(child, moved));
     const auto result = *scene.world().world_matrix(*scene.world().find(child));
-    CHECK(result.at(0, 3) == Approx(world.at(0, 3) + 2.0f).margin(1e-4));
-    CHECK(result.at(1, 3) == Approx(world.at(1, 3)).margin(1e-4));
+    CHECK(result.translation.x == Approx(world.translation.x + 2.0).margin(1e-4));
+    CHECK(result.translation.y == Approx(world.translation.y).margin(1e-4));
     // Rotating it in world space would need shear from this parent: refused, nothing changes.
     const auto history = scene.history_size();
-    const auto sheared = math::Quat::from_axis_angle({1, 0, 0}, 0.7f).to_mat4() * result;
+    const auto sheared = math::Affine::from_matrix(math::Quat::from_axis_angle({1, 0, 0}, 0.7f).to_mat4() * result.matrix());
     CHECK_FALSE(harness.shell.apply_world_matrix(child, sheared));
     CHECK(harness.shell.edit_error().find("shear") != std::string::npos);
     CHECK(scene.history_size() == history);

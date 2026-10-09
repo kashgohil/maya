@@ -3,6 +3,7 @@
 #include "maya/assets/environment_cook.hpp"
 #include "maya/assets/registry.hpp"
 #include "maya/world/world.hpp"
+#include "support/poses.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <atomic>

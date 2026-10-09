@@ -9,8 +9,10 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include "support/poses.hpp"
 
 using namespace maya;
+using namespace maya::test;
 using Catch::Approx;
 
 namespace {
@@ -342,7 +344,7 @@ std::unique_ptr<PlaySession> drive(SceneDocument document, std::function<void(Ti
     return std::move(started.session);
 }
 EntityHandle live(const World& world, uint64_t low) { return *world.find(EntityId{0x51, low}); }
-math::Vec3 origin_of(const math::Mat4& m) { return {m.at(0, 3), m.at(1, 3), m.at(2, 3)}; }
+math::DVec3 origin_of(const math::Affine& m) { return m.translation; }
 math::Quat turn(float degrees) { return math::Quat::from_axis_angle({0, 1, 0}, degrees * 3.14159265f / 180.0f); }
 TransformComponent placed(math::Vec3 at, math::Quat rotation = {}, math::Vec3 scale = math::Vec3(1.0f)) {
     return {at, rotation, scale};

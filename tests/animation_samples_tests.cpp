@@ -23,8 +23,10 @@
 #include <fstream>
 #include <map>
 #include <unistd.h>
+#include "support/poses.hpp"
 
 using namespace maya;
+using namespace maya::test;
 using Catch::Approx;
 namespace fs = std::filesystem;
 
@@ -334,7 +336,7 @@ TEST_CASE("Khronos's skinning samples pose every node and joint as an independen
                         REQUIRE(entities[n]);
                         const auto actual = world.world_matrix(*entities[n]);
                         REQUIRE(actual);
-                        const auto difference = largest_difference(expected[n], *actual);
+                        const auto difference = largest_difference(expected[n], actual->matrix());
                         INFO("largest difference " << difference);
                         CHECK(difference <= tolerance(expected[n]));
                         ++compared_nodes;

@@ -105,7 +105,7 @@ struct LightingFixture {
     }
     /// The pixel a world point falls on in the last view.
     std::pair<uint32_t, uint32_t> pixel(const math::Vec3& p) const {
-        const auto clip = last_view.matrices.view_projection * math::Vec4{p, 1.0f};
+        const auto clip = clip_of(last_view, p);
         const auto x = (clip.x / clip.w * 0.5f + 0.5f) * float(last_view.width), y = (0.5f - clip.y / clip.w * 0.5f) * float(last_view.height);
         return {uint32_t(x), uint32_t(y)};
     }

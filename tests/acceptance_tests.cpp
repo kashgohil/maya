@@ -119,10 +119,10 @@ TEST_CASE("A scene is created, placed, edited, saved, and reopened in the editor
         CHECK_FALSE(scene.dirty());
         expected = saved_text(harness);
         // Every placed object has a distinct transform; two meshes are shared by four instances.
-        auto matrices = std::vector<math::Mat4>{};
+        auto matrices = std::vector<math::Affine>{};
         for (const auto id : {left, middle, right, copy}) matrices.push_back(*scene.world().world_matrix(*scene.world().find(id)));
         for (size_t i = 0; i < matrices.size(); ++i)
-            for (size_t j = i + 1; j < matrices.size(); ++j) CHECK_FALSE(std::ranges::equal(matrices[i].elements, matrices[j].elements));
+            for (size_t j = i + 1; j < matrices.size(); ++j) CHECK_FALSE(matrices[i] == matrices[j]);
         CHECK(renderer_of(scene.world(), left)->material.id == red);
         CHECK(renderer_of(scene.world(), right)->material.id == blue);
         CHECK(renderer_of(scene.world(), copy)->mesh.id == pyramid_mesh);
@@ -161,8 +161,7 @@ TEST_CASE("The authored scene runs through the player's path and draws each obje
     world.for_each<TransformComponent, MeshRendererComponent>([&](EntityHandle entity, const TransformComponent&,
                                                                    const MeshRendererComponent& renderer) {
         const auto matrix = *world.world_matrix(entity);
-        const auto center = math::Vec4(matrix.elements[12], matrix.elements[13] + 0.35f, matrix.elements[14], 1.0f);
-        const auto clip = view->matrices.view_projection * center;
+        const auto clip = clip_of(*view, matrix.translation + math::DVec3{0.0, 0.35, 0.0});
         const auto x = int((clip.x / clip.w * 0.5f + 0.5f) * 320.0f), y = int((0.5f - clip.y / clip.w * 0.5f) * 180.0f);
         INFO("entity at pixel " << x << "," << y);
         REQUIRE(x >= 0);
@@ -240,6 +239,49 @@ TEST_CASE("The V1 reference scene matches its reference images, and authoring an
     // Compare with the blessed references: each channel within 6 on at least 99.5% of pixels.
     compare_with_references(fs::path(MAYA_SOURCE_DIR) / "tests/references/v1", fs::path(MAYA_ACCEPTANCE_DIR).parent_path() / "visual-diffs",
                             images);
+}
+
+TEST_CASE("The V1 reference scene renders the same at every distance from the origin", "[visual][gpu][precision]") {
+    // #1065: the whole scene and its views moved kilometres out render as at the origin, within the
+    // references' tolerance; float world space was off by pixels at 4 km.
+    const auto project = open_project(sample_project());
+    REQUIRE(project);
+    Gpu gpu;
+    auto assets = open_project_assets(project.project, std::make_unique<FileAssetProvider>(gpu.device));
+    REQUIRE(assets);
+    const auto context = asset_property_context(*assets.registry);
+    auto loaded = load_scene_file(*project.project.resolve("v1_reference.scene"), context);
+    REQUIRE(loaded);
+    constexpr uint32_t width = 256, height = 144;
+    const auto render = [&](double distance) {
+        const auto offset = offset_toward(distance);
+        auto document = loaded.document;
+        shift_roots(document, offset);
+        auto started = PlaySession::start(std::move(document), context, builtin_systems());
+        REQUIRE(started);
+        auto& session = *started.session;
+        const auto camera = *session.world().find(*session.camera());
+        auto images = std::vector<RgbImage>{};
+        for (const auto tick : {0, 300}) {
+            while (session.clock().tick() < uint64_t(tick)) REQUIRE(session.update(1.0 / 60.0).error.empty());
+            const auto view = extract_render_view(session.world(), camera, width, height);
+            REQUIRE(view);
+            images.push_back(gpu.render(session.world(), *assets.registry, *view));
+        }
+        auto overview = make_render_view(CameraComponent{}, math::Affine::from_matrix(pose({0.0f, 18.0f, 14.0f}, {0.0f, 0.0f, -1.0f})), width, height);
+        REQUIRE(overview);
+        overview->position += offset;
+        overview->matrices.origin = overview->position;
+        images.push_back(gpu.render(session.world(), *assets.registry, *overview));
+        return images;
+    };
+    const auto origin = render(0.0);
+    for (const auto distance : offset_distances) {
+        if (distance == 0.0) continue;
+        const auto far = render(distance);
+        const char* names[] = {"path-0000", "path-0300", "overview"};
+        for (size_t i = 0; i < far.size(); ++i) compare_images(std::string(names[i]) + " at " + std::to_string(int(distance)) + " m", origin[i], far[i]);
+    }
 }
 
 TEST_CASE("The V1 overview through exposure, both tone mappers, and the exposure views matches its HDR references", "[visual][gpu]") {

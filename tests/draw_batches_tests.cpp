@@ -39,7 +39,7 @@ std::vector<uint32_t> drawn(const DrawList& list, const DrawBatch& batch) {
 
 TEST_CASE("A view's frustum keeps spheres that reach inside it, at every edge, and drops the rest", "[renderer][batches]") {
     const auto view = view_from({0, 0, 10}, {0, 0, 0});
-    const auto frustum = Frustum::from(view.matrices.view_projection);
+    const auto frustum = Frustum::from(view_frame(RenderSnapshot{}, view).matrices.view_projection); // about the world's origin
     // The view's half extents at 10 m: tan(0.5) x 10 up and down, twice that left and right (2:1).
     const auto half_y = std::tan(0.5f) * 10.0f, half_x = half_y * 2.0f;
     for (const auto& [direction, extent] : {std::pair{math::Vec3{1, 0, 0}, half_x}, std::pair{math::Vec3{-1, 0, 0}, half_x},

@@ -151,6 +151,7 @@ inline std::vector<InputEvent> key(KeyCode code, bool down, uint32_t text = 0) {
 }
 
 inline bool same(const math::Vec3& a, const math::Vec3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
+inline bool same(const math::DVec3& a, const math::DVec3& b) { return a == b; }
 inline bool logged(const DiagnosticLog& log, DiagnosticSource source, std::string_view text) {
     return std::ranges::any_of(log.entries(), [&](const DiagnosticEntry& entry) {
         return entry.source == source && entry.message.find(text) != std::string::npos;
@@ -201,12 +202,12 @@ inline EntityId find_named(SceneEditor& scene, const std::string& name) {
 }
 
 /// Screen position (points) of a world point in the editor viewport, from the shell's own camera.
-inline ImVec2 on_screen(Harness& harness, const math::Vec3& point) {
+inline ImVec2 on_screen(Harness& harness, const math::DVec3& point) {
     const auto& layout = harness.shell.layout();
     const auto request = harness.shell.viewport_request();
     const auto view = make_render_view(harness.shell.camera().camera, harness.shell.camera().pose(), request.width, request.height);
     REQUIRE(view);
-    const auto clip = view->matrices.view_projection * math::Vec4(point, 1.0f);
+    const auto clip = view->matrices.view_projection * math::Vec4((point - view->position).to_float(), 1.0f); // camera-relative
     return {layout.viewport_min.x + (clip.x / clip.w * 0.5f + 0.5f) * (layout.viewport_max.x - layout.viewport_min.x),
             layout.viewport_min.y + (0.5f - clip.y / clip.w * 0.5f) * (layout.viewport_max.y - layout.viewport_min.y)};
 }

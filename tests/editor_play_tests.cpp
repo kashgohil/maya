@@ -301,8 +301,8 @@ TEST_CASE("At a 120 Hz display, play shows motion every frame though ticks come 
         const auto handle = *world.find(pyramid);
         const auto pose = *harness.shell.play_session()->presentation().world_matrix(world, handle);
         const auto now = *world.world_matrix(handle);
-        shown.push_back(std::atan2(pose.at(0, 2), pose.at(2, 2))); // the turn of its local +Z about Y
-        committed.push_back(std::atan2(now.at(0, 2), now.at(2, 2)));
+        shown.push_back(std::atan2(pose.linear.at(0, 2), pose.linear.at(2, 2))); // the turn of its local +Z about Y
+        committed.push_back(std::atan2(now.linear.at(0, 2), now.linear.at(2, 2)));
     }
     auto shown_changes = 0, committed_changes = 0;
     for (size_t i = 3; i < shown.size(); ++i) {

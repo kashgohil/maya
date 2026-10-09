@@ -6,8 +6,10 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include "support/poses.hpp"
 
 using namespace maya;
+using namespace maya::test;
 using Catch::Approx;
 
 namespace {
@@ -128,7 +130,7 @@ TEST_CASE("The sun's four cascades cover the view to its shadow distance, each h
         CHECK(cascade.near < previous_far + 1e-4f); // it overlaps the band where the one before blends into it
         CHECK(cascade.texel == Approx(2.0f * cascade.radius / float(sun_cascade_size)));
         // Every corner of its slice of the view's frustum lies inside its sphere, and inside its map.
-        const auto camera = *inverse_affine(view.matrices.view);
+        const auto camera = *inverse_affine(view_frame(snapshot, view).matrices.view); // in the snapshot's frame (#1065)
         const auto tan_y = std::tan(0.5f), tan_x = tan_y * 1600.0f / 900.0f;
         for (const auto depth : {cascade.near, cascade.far})
             for (const auto sx : {-1.0f, 1.0f})

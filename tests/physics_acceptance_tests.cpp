@@ -96,10 +96,10 @@ std::optional<ScriptComponent> script_of(SceneEditor& scene, EntityId id) {
     const auto value = read_component(scene.world(), *scene.world().find(id), ComponentId::script);
     return value ? std::optional(std::get<ScriptComponent>(*value)) : std::nullopt;
 }
-math::Vec3 position_in(const World& world, EntityId id) {
+math::DVec3 position_in(const World& world, EntityId id) {
     const auto handle = world.find(id);
     REQUIRE(handle);
-    auto position = math::Vec3(0.0f);
+    auto position = math::DVec3{};
     world.with<TransformComponent>(*handle, [&](const TransformComponent& t) { position = t.translation; });
     return position;
 }

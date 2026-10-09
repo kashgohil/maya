@@ -154,7 +154,7 @@ TEST_CASE("Play views draw the physics world's bodies at their shown poses, with
     // At a shown pose between ticks, not the World's.
     const auto body = *session->world().find(EntityId{0x5d, 2});
     auto poses = PresentationPoses{};
-    poses.set(body, math::Mat4::translate({7, 8, 9}));
+    poses.set(body, math::Affine::from_matrix(math::Mat4::translate({7, 8, 9})));
     play_physics_debug(session->world(), session->physics(), {uint8_t(PhysicsDebugCategory::colliders)}, &poses, draw);
     CHECK(std::ranges::count_if(draw.shapes, [](const DebugShape& s) { return translation(s.world).x == Approx(7.0f); }) == 1);
     CHECK(std::ranges::count_if(draw.shapes, [](const DebugShape& s) { return translation(s.world).x == Approx(8.0f); }) == 1); // the part

@@ -58,7 +58,7 @@ void check_consistent(const SceneEditor& editor) {
 math::Mat4 world_matrix(const SceneEditor& editor, EntityId id) {
     const auto matrix = editor.world().world_matrix(*editor.world().find(id));
     REQUIRE(matrix);
-    return *matrix;
+    return matrix->matrix();
 }
 } // namespace
 

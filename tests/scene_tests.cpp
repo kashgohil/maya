@@ -144,8 +144,7 @@ void require_equivalent(const World& expected, const World& actual) {
         const auto matrix = expected.world_matrix(entity);
         const auto loaded_matrix = actual.world_matrix(*loaded);
         REQUIRE(matrix.has_value() == loaded_matrix.has_value());
-        if (matrix) for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r)
-            REQUIRE(matrix->at(r, c) == loaded_matrix->at(r, c));
+        if (matrix) REQUIRE(*matrix == *loaded_matrix);
     });
 }
 std::string encode(SceneDocument document, const PropertyValidationContext& context) {

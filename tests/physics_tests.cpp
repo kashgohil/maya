@@ -114,7 +114,7 @@ bool contains(const std::string& text, const char* part) {
 uint64_t pose_hash(const World& world) {
     auto hash = uint64_t{14695981039346656037ull};
     world.for_each<TransformComponent>([&](EntityHandle, const TransformComponent& value) {
-        const float words[] = {value.translation.x, value.translation.y, value.translation.z,
+        const float words[] = {float(value.translation.x), float(value.translation.y), float(value.translation.z),
                                value.rotation.x, value.rotation.y, value.rotation.z, value.rotation.w};
         for (const auto word : words) {
             auto bits = uint32_t{};

@@ -7,6 +7,7 @@
 #include "maya/renderer/renderer.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
 #include "support/png.hpp"
+#include "support/poses.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
 #include <filesystem>
@@ -35,9 +36,11 @@ struct Gpu {
         CHECK(device.take_gpu_errors().empty());
         device.shutdown();
     }
-    /// Renders a World through a view and reads the image back as RGB.
-    RgbImage render(const World& world, AssetRegistry& assets, const RenderView& view, const RenderExtractOptions& options = {}) {
+    /// Renders a World through a view and reads the image back as RGB, camera-relative as the editor and
+    /// the player draw (#1065).
+    RgbImage render(const World& world, AssetRegistry& assets, const RenderView& view, RenderExtractOptions options = {}) {
         REQUIRE_FALSE(target->resize(view.width, view.height));
+        options.origin = view.position;
         const auto snapshot = extract_render_snapshot(world, assets, options);
         REQUIRE(snapshot.diagnostics.empty());
         REQUIRE_FALSE(device.begin_frame());
@@ -94,6 +97,25 @@ inline void compare_with_references(const std::filesystem::path& references, con
         }
         CHECK(fraction <= 0.005);
     }
+}
+
+/// Checks that `image` matches `expected` within the references' tolerance (each channel within 6 on at
+/// least 99.5% of pixels): the same view far from the origin against the origin's (#1065).
+inline void compare_images(const std::string& name, const RgbImage& expected, const RgbImage& image) {
+    INFO(name);
+    REQUIRE(expected.width == image.width);
+    REQUIRE(expected.height == image.height);
+    auto outside = size_t{0};
+    auto worst = 0;
+    for (size_t i = 0; i < image.rgb.size(); i += 3) {
+        auto largest = 0;
+        for (size_t c = 0; c < 3; ++c) largest = std::max(largest, std::abs(int(image.rgb[i + c]) - int(expected.rgb[i + c])));
+        worst = std::max(worst, largest);
+        if (largest > 6) ++outside;
+    }
+    const auto fraction = double(outside) / double(image.width * image.height);
+    INFO("pixels outside tolerance " << fraction * 100.0 << "%, largest channel difference " << worst);
+    CHECK(fraction <= 0.005);
 }
 
 } // namespace maya::test

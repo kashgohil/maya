@@ -316,7 +316,7 @@ TEST_CASE("Normal matrices keep lighting normals perpendicular under nonuniform 
     const auto snapshot = extract_render_snapshot(world, *project.registry);
     REQUIRE(snapshot.instances.size() == 1);
     const auto& instance = snapshot.instances[0];
-    CHECK(same(instance.world, *world.world_matrix(created[1])));
+    CHECK(same(instance.world, world.world_matrix(created[1])->matrix()));
     // A slanted surface: normal n with tangents t1, t2 in object space.
     const auto n = math::Vec3(0.0f, 1.0f, 1.0f).normalized();
     const auto t1 = math::Vec3(1.0f, 0.0f, 0.0f), t2 = math::Vec3(0.0f, 1.0f, -1.0f).normalized();
@@ -498,8 +498,9 @@ TEST_CASE("One snapshot renders several views of different sizes without another
     CHECK(device.tone_maps[1].texture == editor_target.scene_color().slot);
     CHECK(device.tone_maps[0].constants.exposure == Approx(exposure_scale(0.0f)));
     CHECK(device.tone_maps[0].constants.tone_mapping == uint32_t(ToneMapping::agx));
-    CHECK(same(device.draws[0].view.view_projection, player->matrices.view_projection));
-    CHECK(same(device.draws[3].view.view_projection, editor->matrices.view_projection));
+    // Each in the snapshot's frame (#1065): the camera at its offset from the snapshot's origin.
+    CHECK(same(device.draws[0].view.view_projection, view_frame(snapshot, *player).matrices.view_projection));
+    CHECK(same(device.draws[3].view.view_projection, view_frame(snapshot, *editor).matrices.view_projection));
     for (size_t i = 0; i < 3; ++i) CHECK(same(device.draws[i].constants.model, device.draws[i + 3].constants.model));
     // Aspect comes from each view's own size.
     CHECK(player->matrices.projection.at(0, 0) == Approx(player->matrices.projection.at(1, 1)));
@@ -713,9 +714,9 @@ TEST_CASE("Debug lines and outlines cost nothing when there are none, and draw e
     auto debug = DebugDraw{};
     debug.line({0, 0, 0}, {1, 2, 3}, {1, 0, 0, 1});
     debug.cross({0, 1, 0}, 0.5f, {0, 1, 0, 1});
-    debug.box(math::Mat4::translate({2, 0, 0}), {0.5f, 1.0f, 1.5f}, {0, 0, 1, 1});
-    debug.box(math::Mat4::identity(), {1, 1, 1}, {0, 0, 1, 1});
-    debug.capsule(math::Mat4::identity(), 0.25f, 0.75f, {1, 1, 0, 0.5f});
+    debug.box(math::Affine::from_matrix(math::Mat4::translate({2, 0, 0})), {0.5f, 1.0f, 1.5f}, {0, 0, 1, 1});
+    debug.box(math::Affine::from_matrix(math::Mat4::identity()), {1, 1, 1}, {0, 0, 1, 1});
+    debug.capsule(math::Affine::from_matrix(math::Mat4::identity()), 0.25f, 0.75f, {1, 1, 0, 0.5f});
     options.debug = &debug;
     const auto snapshot = extract_render_snapshot(world, *project.registry, options);
     debug.clear(); // the snapshot keeps its own copy
@@ -776,10 +777,10 @@ TEST_CASE("Sphere and capsule outlines take fewer segments the smaller they are 
     auto target = RenderTarget(device, {Format::rgba8_unorm, true, "view"});
     const auto view = view_of(640, 360); // from (0, 0, 5), looking at the origin
     auto debug = DebugDraw{};
-    debug.sphere(math::Mat4::identity(), 1.0f, {1, 1, 1, 1}); // tens of pixels across
-    debug.sphere(math::Mat4::translate({0, 0, -80}), 1.0f, {1, 1, 1, 1}); // a few pixels
-    debug.sphere(math::Mat4::scale(math::Vec3(0.2f)), 1.0f, {1, 1, 1, 1}); // its matrix's scale counts
-    debug.capsule(math::Mat4::identity(), 0.5f, 1.0f, {1, 1, 1, 1});
+    debug.sphere(math::Affine::from_matrix(math::Mat4::identity()), 1.0f, {1, 1, 1, 1}); // tens of pixels across
+    debug.sphere(math::Affine::from_matrix(math::Mat4::translate({0, 0, -80})), 1.0f, {1, 1, 1, 1}); // a few pixels
+    debug.sphere(math::Affine::from_matrix(math::Mat4::scale(math::Vec3(0.2f))), 1.0f, {1, 1, 1, 1}); // its matrix's scale counts
+    debug.capsule(math::Affine::from_matrix(math::Mat4::identity()), 0.5f, 1.0f, {1, 1, 1, 1});
     auto options = RenderExtractOptions{};
     options.debug = &debug;
     REQUIRE_FALSE(target.resize(640, 360));
@@ -817,7 +818,7 @@ TEST_CASE("Debug helpers make the lines they promise", "[renderer][debug]") {
     }
     debug.arrow({0, 0, 0}, {0, 0, 0}, {1, 1, 1, 1}); // no length: no head
     CHECK(debug.lines.size() == 9);
-    debug.sphere(math::Mat4::identity(), 2.0f, {1, 1, 1, 1});
+    debug.sphere(math::Affine::from_matrix(math::Mat4::identity()), 2.0f, {1, 1, 1, 1});
     CHECK(debug.shapes.back().size.x == 2.0f);
     CHECK(debug_template_lines(DebugShapeKind::box) == 12);
     CHECK(debug_template_lines(DebugShapeKind::sphere) == 96);
