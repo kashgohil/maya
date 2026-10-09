@@ -82,7 +82,7 @@ Repeated work must return to these states, with no stale handles and no unbounde
 | Evicting and reloading an asset | Its old handle resolves as stale; the reload is a new generation | `acceptance_tests.cpp` |
 | 25 play resets | No handle from one session's World is alive in the next; no outside leases once the sessions end | `acceptance_tests.cpp` |
 
-**Process footprint.** In the load and play cycles, the footprint rises by about 200 MiB during the first cycle, then levels off. Since #1024 the cycles run 300 times and the slope is fitted over cycles 101–300: over cycles 11–100 it had failed intermittently near its limit (116 and 108 KB/cycle in #1016) while the footprint was still settling, though it levels off by cycle 200 with no later growth. All tracked counts are back at the empty session after every cycle. The retained memory is not attributed to engine allocations; it is consistent with allocator and driver retention. It is recorded as a plateau, not called a leak.
+**Process footprint.** In the load and play cycles, the footprint rises by about 200 MiB during the first cycle, then levels off. Since #1024 the cycles run 300 times and the slope is fitted over cycles 101–300: over cycles 11–100 it had failed intermittently near its limit (116 and 108 KB/cycle in #1016) while the footprint was still settling, though it levels off by cycle 200 with no later growth. All tracked counts are back at the empty session after every cycle. The retained memory is not attributed to engine allocations; it is consistent with allocator and driver retention. It is recorded as a plateau, not called a leak; #1063 has since attributed it ([performance](performance.md#first-observations)).
 
 ## Regression scenes
 
@@ -195,7 +195,7 @@ The benchmarks are not part of CTest, so the timing and slope budgets are checke
   - On this machine, the full 100k protocol can run into thermal throttling, and an idle machine's sleep spoils long unattended runs: keep it awake (`caffeinate -dimsu`).
 - **Not implemented at #1005, so not measured:** per-pass GPU timing, streaming (S1), physics, scripting, texture and PBR/shadow quality, import and cook times, and edit-to-preview latency. Physics and scripting are measured for milestone 2 below.
 - **Present pacing** is not measured: benchmarks render offscreen. The editor's live display shows the frame interval, but it is not a controlled measurement.
-- **Retained footprint.** The ~200 MiB footprint plateau after the first load cycle is unattributed. Attributing it needs Instruments on the reference hardware.
+- **Retained footprint.** The ~200 MiB footprint plateau after the first load cycle was unattributed here; #1063 attributed it to Metal's memory charged to the process and memory the allocator keeps, with 0 leaks ([performance](performance.md#first-observations)).
 - **Cold-cache loads.** The OS file cache is not controlled, so every load time is a warm-cache time.
 
 ## Milestone 2: physics and behavior

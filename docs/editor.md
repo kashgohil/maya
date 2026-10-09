@@ -42,15 +42,16 @@ Numbers that change every frame are sampled four times a second in the Diagnosti
 
 ## Panels and layout
 
-On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets and Diagnostics as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. Each panel's title carries an icon; the part after `###` in its name (for example `###Viewport`) is its stable ID for layout and tests. The mouse cursor changes over splitters and text fields.
+On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets, Diagnostics, and Residency as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. Each panel's title carries an icon; the part after `###` in its name (for example `###Viewport`) is its stable ID for layout and tests. The mouse cursor changes over splitters and text fields.
 
 - **Hierarchy:** the scene's entities in display order, each marked by type. Select, rename, create, duplicate, delete, and drag to reparent or reorder, all undoable; see [scene editing](editing.md).
 - **Viewport:** the scene from the editor camera, with a tool bar for gizmo modes, the transform gizmo, camera and light icons, selection outlines, click-to-select, and a small hint about the controls; see [inspector, gizmos, and picking](inspector.md).
 - **Inspector:** the selection's name and components, with controls generated from the property schemas, plus the editor camera's settings; see [inspector, gizmos, and picking](inspector.md).
 - **Assets:** the project's scenes, meshes, materials, scripts, and textures, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
 - **Diagnostics:** see [diagnostics](#diagnostics).
+- **Residency:** see [residency](#residency).
 
-The top bar shows the project and the open scene. The project's name opens a menu with its settings (the [collision groups](projects.md#collision-groups)); the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
+The top bar shows the project and the open scene. The project's name opens a menu with its settings (the [collision groups](projects.md#collision-groups)) and **Prune cook cache** ([cook cache](assets.md#cook-cache)), which prunes in the background and logs what it removed; the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
 
 ## Viewport size and display scale
 
@@ -214,9 +215,23 @@ It also lists this frame's extraction problems, such as missing meshes and mater
 - UI pass errors;
 - script logs and script errors while playing, under **script** ([scripting](scripting.md#errors)); an error also shows the notice "A script stopped";
 - script compile errors and missing script files, when a project opens and whenever a script file changes, and each reload during play, also under **script** ([reload](scripting.md#reload));
-- minimize and restore.
+- minimize and restore;
+- (#1063) content released after a scene closes, Play stops, or Release unused, with its size; a budget that content in use exceeds, once, naming the largest holders; and what pruning the cook cache removed.
 
 Repeated messages are merged with a count, and the log keeps at most 200 entries. Viewport and renderer problems do not stop the editor: the rest of the UI keeps drawing, and a later frame recovers once the cause is gone. Only a failure of the UI pass itself is returned to the Engine.
+
+## Residency
+
+The Residency panel ([#1063](https://work.rezee.app/kash/issues/1063), [residency_panel.cpp](../apps/editor/residency_panel.cpp)) shows [resident memory](assets.md#residency), refreshed four times a second:
+
+- **Release unused**, at the top: releases every resident version nothing has used since, once a frame has been drawn.
+- **Resident:** each category as a bar against its budget (in the warning color when over it), with its GPU and CPU bytes and the part in use in a tooltip; `other` and `renderer` show their bytes only. The renderer's share in the editor is the renderer's shadow maps and tables, the viewport's target, and the editor's own font atlas and thumbnails.
+- **Device:** the tracked GPU bytes and the part no category explains, what is retiring and the upload memory, and Metal's allocated size and the process's footprint, which overlap on unified memory.
+- **Largest:** the eight largest resident versions, and whether something holds them.
+- **Leases:** what the viewport's snapshot holds, and what is held elsewhere (a play session's scripts and clips, editing tools, thumbnails being drawn).
+- **Releasing:** loads in flight and ready, versions released (and of those, by the budgets), the last maintenance's time, and categories over budget with everything in use.
+
+The editor releases content [at boundaries](assets.md#residency): when a scene closes or Play stops, it notes the registry's use clock and, once a frame has been drawn, releases what nothing has used since, so what the new frame draws stays. The Assets panel shows a texture's thumbnail from the version it was made of, without holding the texture, so browsing does not keep textures resident. When a project opens with its cook cache over its limit, it is pruned in the background.
 
 ## Runtime isolation
 
@@ -254,6 +269,7 @@ Repeated messages are merged with a count, and the log keeps at most 200 entries
 - [editor_material_tests.cpp](../tests/editor_material_tests.cpp) (#1033) and [editor_environment_tests.cpp](../tests/editor_environment_tests.cpp) (#1035) cover [material editing](#materials) and [environments](#environments): using an environment by double-click and by dropping it in the viewport, as one undo step that sets the scene's one Environment component; the Inspector's environment fields; the material scene lit by its environment; and [watched files](#watched-files), with a changed environment file or source image cooked again and a broken file keeping the last version. [editor_texture_tests.cpp](../tests/editor_texture_tests.cpp) checks the same for a texture's source image and file, and that Reload from its menu is not read again by the watcher.
 - [editor_lighting_tests.cpp](../tests/editor_lighting_tests.cpp) (#1034) covers [lights](#lights): point and spot lights from the **+** menu, the Inspector's settings for each kind and for shadows on and off, and Diagnostics' counts and problems for 26 lights, cleared when there are fewer.
 - [editor_debug_view_tests.cpp](../tests/editor_debug_view_tests.cpp) (#1037) covers the [debug views](renderer.md#debug-views) in the eye menu: every view's name and preference line round-trips; each is chosen from the menu in turn, one at a time; the exposure views build no debug pipelines and the others build them only once chosen; and a new editor starts with the last one.
+- [editor_residency_tests.cpp](../tests/editor_residency_tests.cpp) (#1063) covers [residency](#residency): closing a scene releasing what nothing used since once a frame is drawn, and opening it again; the Residency panel's rows and Release unused releasing a texture loaded and dropped while keeping what is drawn; a budget that content in use exceeds, reported once; and Prune cook cache reporting from its background job. [editor_gpu_tests.cpp](../tests/editor_gpu_tests.cpp) compares the panel, with fixed figures, against [its reference](../tests/references/editor/residency.png) (`maya_visual_reference`); [r1_tests.cpp](../tests/r1_tests.cpp) opens and closes R1's scene (3 times; `MAYA_R1_CYCLES=50` for the soak) and checks each close leaves no meshes or textures and each opening returns to the same bytes, and that Play and Stop return to what was shown.
 - [editor_import_tests.cpp](../tests/editor_import_tests.cpp) (#1036) covers [importing models](#importing-models): from the Scene menu, by dropping a file from inside and outside the project, refusing other files and broken ones, dragging an imported scene into the viewport, part labels, reimports when a source or a file it names changes (and waiting for a half-written one), a scene that keeps its moves and overrides through a reimport that changes geometry, and a reload into a running Play.
 
 #999 validation on 24 September 2026:

@@ -199,7 +199,7 @@ The JSON holds:
 - the manifest;
 - the environment, build, and quality settings (resolution, formats, antialiasing, lighting, shadows, presentation, simulation), including the thermal state at the start and at the end and the measuring thread's quality of service. The text summary warns when either thermal state is not nominal;
 - counters, including (since #1062) `skipped`, `pending`, and `pending_textures`: the most instances in any sampled frame that could not be drawn or were still loading, and textures drawn as their materials' factors while loading (0 behind a loading screen); `centers_in_view`: the instances the view drew, inside its frustum by their bounds (since #1025; before, those whose origin projected into the view); and (#1034) the last view's point and spot lights drawn, left out, and drawn without shadows, and shadow maps and shadow draws per view; and (#1038) the clips playing, the instances drawn skinned, and the joints uploaded per view;
-- baseline and resident memory, tracked and reported;
+- baseline and resident memory, tracked and reported, and (since #1063) under `residency` each [category](assets.md#residency)'s CPU, GPU, leased, and budget bytes, the total, and the tracked GPU bytes and the part no category explains. With `MAYA_BENCHMARK_FOOTPRINT=<folder>`, the load and play cycles also write the `footprint` tool's account of the process by kind of memory at the warmed baseline and after cycles 1, 10, 100, and the last (`footprint-<moment>.json`): what attributes their plateau;
 - for each run: throughput, summaries of the frame, of each CPU scope (and, since #1038, of each play system's time in the frame's tick, `cpu_ms.systems`), and of GPU time, the number of GPU samples missing, and the raw samples, with `null` for a missing GPU sample;
 - for each run, per pass name: a summary of the GPU time of that frame's passes with the name (`gpu_pass_ms`), with the raw values; `gpu_pass_mismatches`, timed passes outside their frame's GPU time, which must be 0; and `untimed_passes`;
 - for presenting runs, under `presentation`: frames `shown`, `not_shown`, and `unreported`, the display's `refresh_hz`, a summary of present-to-present intervals of consecutive shown frames (`interval_ms`, raw in `present_interval_ms`), and `missed_deadlines`, intervals longer than 1.5 refresh periods. A frame that was never shown makes the interval across it two periods, so it counts as missed. `null` when the refresh rate is unknown. ProMotion displays may run below their maximum rate when the system chooses; the rate recorded is the maximum;
@@ -259,11 +259,19 @@ Ranges are across the three runs.
 - **Refusals.** The malformed and missing-asset scenes were refused, with their line and asset ID, and nothing was left behind.
 - **Authored scene.** It was unchanged after 100 play sessions.
 - **Load times vary between invocations.** An earlier run of the same binary measured 30.8 ms per load.
-- **Retained footprint, not attributed.**
-  - The footprint rises by about 200 MiB during the first cycle and then stays flat; its slope over cycles 11–100 is slightly negative.
-  - The tracked counters are back at their baseline after every cycle: no buffers, no leases, and no resident meshes.
-  - The retained memory is therefore not engine allocations the counters know about. It is consistent with allocator and driver retention.
-  - Attributing it needs a memory profiler; it is recorded here, not called a leak or ignored.
+- **Retained footprint, attributed (#1063).** The footprint rises by about 200 MiB during the first cycle and then stays flat. A Release run of 300 cycles each on 9 October 2026, with `MAYA_BENCHMARK_FOOTPRINT` snapshots:
+
+  | MiB | Baseline | Cycle 1 | Cycle 10 | Cycle 100 | Cycle 300 |
+  | --- | --- | --- | --- | --- | --- |
+  | `l1_load` footprint (tool's total) | 444.8 | 513.6 | 429.8 | 441.7 | 446.2 |
+  | Metal memory owned by the process (graphics) | 234.7 | 248.0 | 160.0 | 160.0 | 160.0 |
+  | Metal driver (IOAccelerator, graphics) | 195.9 | 200.2 | 200.0 | 200.0 | 200.0 |
+  | Small allocations (MALLOC_SMALL) | 6.8 | 35.9 | 39.3 | 52.5 | 57.1 |
+  | Large allocations (MALLOC_LARGE) | 0.0 | 15.7 | 15.7 | 15.7 | 15.7 |
+
+  - The benchmark's own baseline sample (292 MiB, and 218 MiB in earlier runs) is read before Metal charges the warm-up frame's memory to the process; the tool's snapshot a moment later already reads 445 MiB. Most of the "plateau" is that memory, not something the cycles add: Metal's memory owned by the process (the engine's 192 MiB of upload memory and its 32 MiB view target, then 160 MiB once Metal has trimmed it) and the driver's own (200 MiB).
+  - The rest is the allocator: 46–57 MiB of small and 14–16 MiB of large allocations retained after the first cycles, still creeping by 15–23 KB a cycle over cycles 101–300 (`l1_load` 17.7 KB/cycle, `l1_play` 11.5 KB/cycle; 427–446 MiB). `leaks` at exit after 30 cycles finds 0 leaks (716 KB still allocated): it is freed memory the allocator keeps, not engine allocations.
+  - Resident memory by category returns to the empty session after every cycle (31.7 MiB: the renderer's view target, shadow tables, and placeholder), with nothing unattributed on the device.
 - **Results files.** The JSON files, with raw samples, are not committed; the manifests are, and running them reproduces the files.
 
 ### Pass times and pacing (#1026)
