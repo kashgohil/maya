@@ -162,7 +162,9 @@ public:
         options.poses = &poses;
         options.skins = &m_skins;
         options.loading = AssetLoading::stream; // frames never wait for assets
+        options.origin = view->position; // camera-relative (#1065)
         m_debug.clear(); // debug views are never drawn unless asked for
+        m_debug.origin = view->position;
         if (m_options.debug_physics) play_physics_debug(world, m_session->physics(), {all_physics_debug, all_collision_groups}, &poses, m_debug);
         if (m_options.debug_skeletons) skeleton_debug(world, *m_assets, &poses, m_debug, &m_skins);
         if (!m_debug.empty()) options.debug = &m_debug;

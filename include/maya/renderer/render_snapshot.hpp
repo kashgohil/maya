@@ -65,12 +65,12 @@ struct RenderMaterial {
 struct RenderInstance {
     EntityId entity{}; // identity for picking and diagnostics; resolve it again before touching a World
     uint32_t mesh = 0; // index into RenderSnapshot::meshes
-    math::Mat4 world = math::Mat4::identity();
+    math::Mat4 world = math::Mat4::identity(); // relative to RenderSnapshot::origin (#1065)
     /// Columns of the inverse transpose of world's linear part, so nonuniform scale keeps normals
     /// perpendicular to surfaces. The shader renormalizes, so only its direction matters.
     std::array<math::Vec3, 3> normal_matrix{math::Vec3{1, 0, 0}, math::Vec3{0, 1, 0}, math::Vec3{0, 0, 1}};
     uint32_t material = 0; // index into RenderSnapshot::materials, which instances share (#1025)
-    /// A world-space sphere around the mesh, for culling views and shadow casters; infinite when the mesh
+    /// A sphere around the mesh (relative to RenderSnapshot::origin), for culling views and shadow casters; infinite when the mesh
     /// has no CPU geometry. A skinned mesh's encloses its bounds carried by every joint's skin matrix.
     math::Vec3 bounds_center{0.0f};
     float bounds_radius = std::numeric_limits<float>::infinity();
@@ -144,6 +144,9 @@ struct RenderExtractOptions {
     /// searches for them again.
     SkinBindingCache* skins = nullptr;
     AssetLoading loading = AssetLoading::wait;
+    /// The snapshot's origin (RenderSnapshot::origin): the camera's position for the view it is drawn for,
+    /// so what is near the camera is precise however far from the world's origin it is.
+    math::DVec3 origin{};
 };
 /// Loads everything `world` draws now: its meshes, materials and their textures, skins, and environment.
 /// An explicit wait (docs/assets.md#asynchronous-loading), for a loading screen before streaming frames.
@@ -167,6 +170,9 @@ struct RenderSnapshotStats {
 /// the graphics device keeps the GPU buffers alive until those frames complete.
 struct RenderSnapshot {
     uint64_t world = 0; // World::token() of the source
+    /// Every position in the snapshot (instances, bounds, joints, lights, debug lines) is relative to this
+    /// world position, in float (#1065): extraction subtracts it in double. Usually the view camera's.
+    math::DVec3 origin{};
     std::vector<AssetLease<MeshAsset>> meshes; // one per distinct mesh asset
     std::vector<AssetLease<TextureAsset>> textures; // one per distinct texture the materials use
     std::vector<RenderMaterial> materials; // copied once each, and shared by the instances that use them
@@ -235,8 +241,8 @@ float exposure_scale(float ev100) noexcept;
 struct RenderView {
     uint32_t width = 0; // framebuffer pixels; must match the target
     uint32_t height = 0;
-    CameraMatrices matrices{};
-    math::Vec3 position{0.0f};
+    CameraMatrices matrices{}; // camera-relative: the view has no translation (#1065)
+    math::DVec3 position{}; // the camera's world position (matrices.origin)
     std::array<double, 4> clear_color{0.1, 0.1, 0.1, 1.0}; // scene light where nothing is drawn, before exposure
     float debug_line_width = 1.5f; // framebuffer pixels
     float exposure = exposure_scale(0.0f); // the camera's, as a scale
@@ -245,10 +251,19 @@ struct RenderView {
 };
 /// A view from camera data and a rigid world pose, e.g. an editor camera that is tool state.
 /// Returns nullopt for a zero size or an invalid camera/pose.
-std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Mat4& pose,
+std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Affine& pose,
                                            uint32_t width, uint32_t height);
 /// A view from a camera entity, at its pose in `poses` when it has one there. Returns nullopt for a
 /// zero size, a missing camera component, or an invalid pose (see World::camera).
 std::optional<RenderView> extract_render_view(const World& world, EntityHandle camera,
                                               uint32_t width, uint32_t height, const PresentationPoses* poses = nullptr);
+
+/// A view placed in a snapshot's frame (#1065): its camera's offset from the snapshot's origin (`eye`),
+/// and its matrices with that offset applied. The renderer, its light plan, and its batches work in
+/// this frame; for the camera the snapshot was extracted for, `eye` is zero.
+struct ViewFrame {
+    CameraMatrices matrices;
+    math::Vec3 eye{0.0f};
+};
+ViewFrame view_frame(const RenderSnapshot& snapshot, const RenderView& view) noexcept;
 } // namespace maya

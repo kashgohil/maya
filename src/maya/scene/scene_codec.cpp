@@ -29,6 +29,11 @@ void append_float(std::string& output, float value) {
     const auto end = std::to_chars(text, text + sizeof(text), value).ptr; // shortest exact round trip
     output.append(text, end);
 }
+void append_double(std::string& output, double value) {
+    char text[32];
+    const auto end = std::to_chars(text, text + sizeof(text), value).ptr; // shortest exact round trip
+    output.append(text, end);
+}
 void append_quoted(std::string& output, std::string_view text) {
     constexpr auto digits = "0123456789abcdef";
     output += '"';
@@ -60,6 +65,12 @@ void append_value(std::string& output, const PropertyValue& value, const Propert
         else if constexpr (std::same_as<T, math::Vec3>) {
             for (const auto component : {typed.x, typed.y, typed.z}) {
                 append_float(output, component);
+                output += ' ';
+            }
+            output.pop_back();
+        } else if constexpr (std::same_as<T, math::DVec3>) {
+            for (const auto component : {typed.x, typed.y, typed.z}) {
+                append_double(output, component);
                 output += ' ';
             }
             output.pop_back();
@@ -205,6 +216,12 @@ bool parse_float(const Token& token, float& value) {
     return !token.quoted && !text.empty() && parsed.ec == std::errc{} &&
         parsed.ptr == text.data() + text.size() && std::isfinite(value);
 }
+bool parse_double(const Token& token, double& value) {
+    const auto& text = token.text;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::general);
+    return !token.quoted && !text.empty() && parsed.ec == std::errc{} &&
+        parsed.ptr == text.data() + text.size() && std::isfinite(value);
+}
 template<class Tag> bool parse_id(std::span<const Token> tokens, PersistentId<Tag>& id) {
     return tokens.size() == 2 && parse_word(tokens[0], id.high) && parse_word(tokens[1], id.low) && id.valid();
 }
@@ -289,7 +306,8 @@ std::string expectation(const PropertyDescriptor& property) {
     case PropertyType::text: return "one quoted string";
     case PropertyType::boolean: return "true or false";
     case PropertyType::scalar: return "one finite number";
-    case PropertyType::vector3: return "three finite numbers";
+    case PropertyType::vector3:
+    case PropertyType::position: return "three finite numbers";
     case PropertyType::vector2: return "two finite numbers";
     case PropertyType::quaternion: return "four finite numbers (x y z w)";
     case PropertyType::choice: {
@@ -312,7 +330,9 @@ std::string expectation(const PropertyDescriptor& property) {
     }
     return "a value";
 }
-std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::span<const Token> tokens) {
+/// `narrow`: a position written before it was double (maya.transform 1) is read as the float it was,
+/// so older scenes load exactly as they did.
+std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::span<const Token> tokens, bool narrow = false) {
     const auto floats = [&](auto&... values) -> bool {
         if (tokens.size() != sizeof...(values)) return false;
         size_t i = 0;
@@ -334,6 +354,14 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::spa
         return std::nullopt;
     case PropertyType::vector2:
         if (math::Vec2 value; floats(value.x, value.y)) return value;
+        return std::nullopt;
+    case PropertyType::position:
+        if (narrow) {
+            if (math::Vec3 value; floats(value.x, value.y, value.z)) return math::DVec3(value);
+        } else if (math::DVec3 value; tokens.size() == 3 && parse_double(tokens[0], value.x) &&
+                                      parse_double(tokens[1], value.y) && parse_double(tokens[2], value.z)) {
+            return value;
+        }
         return std::nullopt;
     case PropertyType::quaternion:
         if (math::Quat value; floats(value.x, value.y, value.z, value.w)) return value;
@@ -554,8 +582,10 @@ private:
         const auto index = m_document.entities.size() - 1;
         auto& entity = m_document.entities.back();
         auto edits = std::vector<PropertyEdit>{};
+        // maya.transform 1 -> 2 (#1065): the translation became double; version 1 wrote it as a float.
+        const auto narrow = schema->id == ComponentId::transform && m_component_version < 2;
         for (auto& raw : m_properties) {
-            auto value = decode(*raw.descriptor, raw.tokens);
+            auto value = decode(*raw.descriptor, raw.tokens, narrow);
             if (!value) {
                 m_line = raw.line;
                 return stop(SceneError::malformed, std::string(schema->name) + "." +

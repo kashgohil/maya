@@ -67,7 +67,8 @@ std::vector<DrawBatch> group(const RenderSnapshot& snapshot, const std::vector<u
 
 ViewBatches plan_view_batches(const RenderSnapshot& snapshot, const RenderView& view, DrawList& list, BatchScratch& scratch) {
     auto result = ViewBatches{};
-    const auto frustum = Frustum::from(view.matrices.view_projection);
+    const auto frame = view_frame(snapshot, view); // the snapshot's frame (#1065)
+    const auto frustum = Frustum::from(frame.matrices.view_projection);
     auto& visible = scratch.candidates;
     visible.clear();
     auto& blended = scratch.blended;
@@ -90,7 +91,7 @@ ViewBatches plan_view_batches(const RenderSnapshot& snapshot, const RenderView& 
     distance.resize(snapshot.instances.size());
     for (const auto i : blended) {
         const auto& world = snapshot.instances[i].world;
-        distance[i] = (math::Vec3{world.at(0, 3), world.at(1, 3), world.at(2, 3)} - view.position).length_squared();
+        distance[i] = (math::Vec3{world.at(0, 3), world.at(1, 3), world.at(2, 3)} - frame.eye).length_squared();
     }
     std::ranges::stable_sort(blended, [&](uint32_t a, uint32_t b) { return distance[a] > distance[b]; });
     for (const auto i : blended) {

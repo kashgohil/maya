@@ -344,9 +344,13 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
     auto snapshot = RenderSnapshot{};
     snapshot.world = world.token();
     snapshot.ambient = options.ambient;
+    snapshot.origin = options.origin;
     auto extraction = Extraction(assets, snapshot, options.loading == AssetLoading::stream);
-    const auto world_matrix = [&](EntityHandle entity) {
-        return options.poses ? options.poses->world_matrix(world, entity) : world.world_matrix(entity);
+    // Every pose relative to the snapshot's origin (#1065), subtracted in double: what follows is in float.
+    const auto world_matrix = [&](EntityHandle entity) -> std::optional<math::Mat4> {
+        const auto pose = options.poses ? options.poses->world_matrix(world, entity) : world.world_matrix(entity);
+        if (!pose) return std::nullopt;
+        return pose->relative_to(options.origin);
     };
 
     auto resolver = SkinResolver(world, options.skins);
@@ -499,7 +503,10 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
                 id_text(component.environment.id) + " is unavailable, so the ambient light is used: " +
                 (acquired.diagnostic ? acquired.diagnostic.message : std::string("its GPU textures are gone")));
     }
-    if (options.debug) snapshot.debug = *options.debug;
+    if (options.debug) {
+        snapshot.debug = *options.debug;
+        snapshot.debug.rebase(snapshot.origin);
+    }
     return snapshot;
 }
 
@@ -522,12 +529,12 @@ void skeleton_debug(const World& world, AssetRegistry& assets, const Presentatio
         if (!binding.root || !drawn.insert({binding.root->slot, component.skin.id}).second) return;
         const auto& joints = binding.joints;
         auto index = std::unordered_map<uint32_t, size_t>{}; // joints by entity slot
-        auto pose = std::vector<std::optional<math::Mat4>>(joints.size());
+        auto pose = std::vector<std::optional<math::Affine>>(joints.size());
         for (size_t j = 0; j < joints.size(); ++j) {
             index.emplace(joints[j].slot, j);
             pose[j] = poses ? poses->world_matrix(world, joints[j]) : world.world_matrix(joints[j]);
         }
-        const auto origin = [&](size_t j) { return math::Vec3{pose[j]->at(0, 3), pose[j]->at(1, 3), pose[j]->at(2, 3)}; };
+        const auto origin = [&](size_t j) { return pose[j]->translation; };
         auto total = 0.0f;
         auto bones = 0;
         for (size_t j = 0; j < joints.size(); ++j) {
@@ -535,18 +542,17 @@ void skeleton_debug(const World& world, AssetRegistry& assets, const Presentatio
             const auto found = parent ? index.find(parent->slot) : index.end();
             if (found == index.end() || !pose[j] || !pose[found->second]) continue;
             out.xray_line(origin(found->second), origin(j), skeleton_bone_color);
-            total += (origin(j) - origin(found->second)).length();
+            total += float((origin(j) - origin(found->second)).length());
             ++bones;
         }
         const auto axis = bones > 0 ? total / float(bones) / 3.0f : 0.0f;
         if (axis > 0.0f)
             for (size_t j = 0; j < joints.size(); ++j) {
                 if (!pose[j]) continue;
-                const auto& m = *pose[j];
                 for (int c = 0; c < 3; ++c) {
-                    const auto direction = math::Vec3{m.at(0, c), m.at(1, c), m.at(2, c)}.normalized();
+                    const auto direction = pose[j]->axis(c).normalized();
                     const auto color = DebugColor{c == 0 ? 0.95f : 0.25f, c == 1 ? 0.85f : 0.25f, c == 2 ? 1.0f : 0.25f, 1.0f};
-                    out.xray_line(origin(j), origin(j) + direction * axis, color);
+                    out.xray_line(origin(j), origin(j) + math::DVec3(direction * axis), color);
                 }
             }
     });
@@ -568,12 +574,12 @@ std::optional<DebugView> debug_view_named(std::string_view name) noexcept {
     return DebugView(found - debug_view_names.begin());
 }
 
-std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Mat4& pose,
+std::optional<RenderView> make_render_view(const CameraComponent& camera, const math::Affine& pose,
                                            uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return std::nullopt;
     const auto matrices = camera_matrices(camera, pose, float(width) / float(height));
     if (!matrices) return std::nullopt;
-    auto view = RenderView{width, height, *matrices, {pose.at(0, 3), pose.at(1, 3), pose.at(2, 3)}};
+    auto view = RenderView{width, height, *matrices, pose.translation};
     view.exposure = exposure_scale(camera.exposure);
     view.tone_mapping = camera.tone_mapping;
     return view;
@@ -589,12 +595,19 @@ std::optional<RenderView> extract_render_view(const World& world, EntityHandle c
     }
     const auto matrices = world.camera(camera, float(width) / float(height));
     if (!matrices) return std::nullopt;
-    const auto pose = *world.world_matrix(camera);
-    auto view = RenderView{width, height, *matrices, {pose.at(0, 3), pose.at(1, 3), pose.at(2, 3)}};
+    auto view = RenderView{width, height, *matrices, matrices->origin};
     world.with<CameraComponent>(camera, [&](const CameraComponent& value) {
         view.exposure = exposure_scale(value.exposure);
         view.tone_mapping = value.tone_mapping;
     });
     return view;
+}
+
+ViewFrame view_frame(const RenderSnapshot& snapshot, const RenderView& view) noexcept {
+    auto frame = ViewFrame{view.matrices, (view.position - snapshot.origin).to_float()};
+    frame.matrices.view = view.matrices.view * math::Mat4::translate(-frame.eye);
+    frame.matrices.view_projection = view.matrices.projection * frame.matrices.view;
+    frame.matrices.origin = snapshot.origin;
+    return frame;
 }
 } // namespace maya

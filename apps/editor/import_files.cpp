@@ -118,12 +118,12 @@ GltfImportResult EditorShell::import_model(const std::filesystem::path& path, bo
     if (place && m_scene) {
         const auto center = ImVec2{(m_layout.viewport_min.x + m_layout.viewport_max.x) * 0.5f,
                                    (m_layout.viewport_min.y + m_layout.viewport_max.y) * 0.5f};
-        report(place_scene(result.scene, drop_point(center).value_or(math::Vec3{0.0f})), "Place " + result.scene.stem().string());
+        report(place_scene(result.scene, drop_point(center).value_or(math::DVec3{})), "Place " + result.scene.stem().string());
     }
     return result;
 }
 
-EditResult EditorShell::place_scene(const std::filesystem::path& relative, math::Vec3 at) {
+EditResult EditorShell::place_scene(const std::filesystem::path& relative, math::DVec3 at) {
     if (!m_scene || !m_assets || !m_project) return {false, "No scene is open"};
     const auto file = m_project->resolve(relative);
     if (!file) return {false, relative.generic_string() + " is outside the project's content"};

@@ -46,7 +46,8 @@ bool casts_into(const RenderLocalLight& light, const RenderInstance& instance) n
 
 LightPlan plan_lights(const RenderSnapshot& snapshot, const RenderView& view) {
     auto plan = LightPlan{};
-    const auto& matrices = view.matrices;
+    const auto frame = view_frame(snapshot, view); // the snapshot's frame (#1065)
+    const auto& matrices = frame.matrices;
     plan.view_forward = math::Vec3{-matrices.view.at(2, 0), -matrices.view.at(2, 1), -matrices.view.at(2, 2)}.normalized();
 
     // Point and spot lights: those reaching the frustum, most light at the view's position first.
@@ -57,7 +58,7 @@ LightPlan plan_lights(const RenderSnapshot& snapshot, const RenderView& view) {
         const auto& light = snapshot.local_lights[i];
         if (!frustum.reaches(light.position, light.range)) continue;
         const auto brightest = std::max({light.intensity.x, light.intensity.y, light.intensity.z});
-        const auto distance2 = std::max((light.position - view.position).length_squared(), 0.25f);
+        const auto distance2 = std::max((light.position - frame.eye).length_squared(), 0.25f);
         candidates.push_back({i, brightest / distance2});
     }
     std::ranges::stable_sort(candidates, [&](const Candidate& a, const Candidate& b) {
@@ -135,9 +136,18 @@ LightPlan plan_lights(const RenderSnapshot& snapshot, const RenderView& view) {
         const auto centre_world = transform_point(*camera, centre_view);
         auto centre_light = transform_point(light_view, centre_world);
         // Whole texels in the light's view, so the map's texels stay put on the ground as the view moves.
+        // The grid is the world's, not the snapshot's: the snapshot's origin moves with the camera, so it is
+        // added back in double before snapping (the light's view has no translation).
         const auto texel = 2.0f * radius / float(sun_cascade_size);
-        centre_light.x = std::floor(centre_light.x / texel) * texel;
-        centre_light.y = std::floor(centre_light.y / texel) * texel;
+        const auto& o = snapshot.origin;
+        const auto& r = light_view;
+        const double origin_light[] = {double(r.at(0, 0)) * o.x + double(r.at(0, 1)) * o.y + double(r.at(0, 2)) * o.z,
+                                       double(r.at(1, 0)) * o.x + double(r.at(1, 1)) * o.y + double(r.at(1, 2)) * o.z};
+        const auto snap = [&](float value, double offset) {
+            return float(std::floor((double(value) + offset) / texel) * texel - offset);
+        };
+        centre_light.x = snap(centre_light.x, origin_light[0]);
+        centre_light.y = snap(centre_light.y, origin_light[1]);
         const auto bottom = centre_light.z - radius;
         auto top = centre_light.z + radius;
         if (unbounded) top = std::max(top, centre_light.z + radius + 2.0f * sun->shadow_distance);

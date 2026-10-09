@@ -93,7 +93,7 @@ void World::dirty_subtree(uint32_t slot) noexcept {
     }
 }
 
-std::optional<math::Mat4> World::world_matrix(EntityHandle entity) const {
+std::optional<math::Affine> World::world_matrix(EntityHandle entity) const {
     if (!has<TransformComponent>(entity)) return std::nullopt;
     m_spatial_work.clear();
     auto current = entity.slot;
@@ -107,12 +107,12 @@ std::optional<math::Mat4> World::world_matrix(EntityHandle entity) const {
         m_spatial_work.pop_back();
         auto& node = m_spatial[current];
         const auto& local = pool.value(current);
-        const auto matrix = local_matrix(local);
+        const auto matrix = local_pose(local);
         auto world = std::optional{matrix};
         node.rigid_ancestry = unit_scale(local.scale);
         if (node.parent != invalid_entity_slot) {
             const auto& ancestor = m_spatial[node.parent];
-            world = ancestor.valid ? compose_affine(ancestor.world, matrix) : std::nullopt;
+            world = ancestor.valid ? compose_pose(ancestor.world, matrix) : std::nullopt;
             node.rigid_ancestry = node.rigid_ancestry && ancestor.rigid_ancestry;
         }
         node.valid = world.has_value();
@@ -207,15 +207,15 @@ WorldCommitResult World::commit(WorldCommands& commands) {
         if (node.next != invalid_entity_slot) edit(node.next).node.previous = node.previous;
         node.parent = node.previous = node.next = invalid_entity_slot;
     };
-    const auto staged_matrix = [&](uint32_t slot) -> std::optional<math::Mat4> {
+    const auto staged_matrix = [&](uint32_t slot) -> std::optional<math::Affine> {
         auto path = std::vector<uint32_t>{};
         for (auto current = slot; current != invalid_entity_slot; current = edit(current).node.parent)
             path.push_back(current);
-        auto matrix = math::Mat4::identity();
+        auto matrix = math::Affine{};
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             const auto& local = edit(*it).local;
             if (!local) return std::nullopt;
-            auto composed = compose_affine(matrix, local_matrix(*local));
+            auto composed = compose_pose(matrix, local_pose(*local));
             if (!composed) return std::nullopt;
             matrix = *composed;
         }
@@ -302,8 +302,8 @@ WorldCommitResult World::commit(WorldCommands& commands) {
                 const auto old_world = staged_matrix(slot);
                 const auto parent_world = staged_matrix(parent_slot);
                 if (!old_world || !parent_world) return fail(WorldError::unrepresentable_transform);
-                const auto inverse = inverse_affine(*parent_world);
-                const auto local = inverse ? compose_affine(*inverse, *old_world) : std::nullopt;
+                const auto inverse = inverse_pose(*parent_world);
+                const auto local = inverse ? compose_pose(*inverse, *old_world) : std::nullopt;
                 transforms[index] = local ? decompose_transform(*local) : std::nullopt;
                 if (!transforms[index]) return fail(WorldError::unrepresentable_transform);
                 edit(slot).local = transforms[index];

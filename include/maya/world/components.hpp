@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/assets/asset_ref.hpp"
+#include "maya/math/affine.hpp"
 #include "maya/math/quaternion.hpp"
 #include <string>
 #include <variant>
@@ -13,7 +14,7 @@ struct NameComponent {
 
 /// Authoritative local TRS. World queries expose const values; edit via set_transform.
 struct TransformComponent {
-    math::Vec3 translation{0.0f}; // metres
+    math::DVec3 translation{}; // metres, in double (#1065): world positions reach kilometres from the origin
     math::Quat rotation{};
     math::Vec3 scale{1.0f};
 };

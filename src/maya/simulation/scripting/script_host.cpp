@@ -213,7 +213,7 @@ public:
         m_writers[writer] = m_current_index;
     }
 
-    EntityId create(std::string name, math::Vec3 position, std::optional<EntityId> parent) override {
+    EntityId create(std::string name, math::DVec3 position, std::optional<EntityId> parent) override {
         if (!m_commands) throw ScriptError("the world cannot change at the end of play");
         auto parent_handle = std::optional<EntityHandle>{};
         if (parent) {
@@ -351,7 +351,7 @@ private:
         call_hook_with(instance, hooks[size_t(event.kind)], mode, [&](lua_State* L) {
             push_entity(L, other);
             lua_createtable(L, 0, 4);
-            push_script_value(L, {"point", ScriptValueType::vector, event.point});
+            push_position(L, event.point);
             lua_setfield(L, -2, "point");
             push_script_value(L, {"normal", ScriptValueType::vector, event.normal * sign});
             lua_setfield(L, -2, "normal");

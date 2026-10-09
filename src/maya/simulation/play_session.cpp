@@ -184,7 +184,9 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
     for (const auto& e : events) {
         const uint64_t words[] = {uint64_t(e.kind), e.tick, e.first.high, e.first.low, e.second.high, e.second.low, uint64_t(e.removed)};
         fold(words, sizeof words);
-        const float values[] = {e.point.x, e.point.y, e.point.z, e.normal.x, e.normal.y, e.normal.z, e.speed};
+        const double point[] = {e.point.x, e.point.y, e.point.z};
+        fold(point, sizeof point);
+        const float values[] = {e.normal.x, e.normal.y, e.normal.z, e.speed};
         fold(values, sizeof values);
     }
     auto late = std::make_unique<BodyCommands>(*m_physics, *m_world);
@@ -315,14 +317,14 @@ PresentationPoses PlaySession::presentation() const {
         const auto index = entity.slot < m_history_index.size() ? m_history_index[entity.slot] : 0;
         return index != 0 && m_previous[index - 1].entity == entity && between[index - 1] ? &between[index - 1] : nullptr;
     };
-    // World matrices composed down the hierarchy from each moved entity, never by blending matrices:
+    // World poses composed down the hierarchy from each moved entity, never by blending matrices:
     // a child keeps its place relative to its parent's shown pose.
-    const auto descend = [&](auto&& self, EntityHandle entity, const math::Mat4& parent) -> void {
+    const auto descend = [&](auto&& self, EntityHandle entity, const math::Affine& parent) -> void {
         auto local = std::optional<TransformComponent>{};
         if (const auto* found = shown_local(entity)) local = **found;
         else m_world->with<TransformComponent>(entity, [&](const TransformComponent& value) { local = value; });
         if (!local) return;
-        const auto shown = compose_affine(parent, local_matrix(*local));
+        const auto shown = compose_pose(parent, local_pose(*local));
         if (!shown) return;
         poses.set(entity, *shown);
         for (const auto child : m_world->children(entity)) self(self, child, *shown);
@@ -333,7 +335,7 @@ PresentationPoses PlaySession::presentation() const {
         const auto parent = m_world->parent(entity);
         if (!parent) {
             // A root's shown pose is its local one; both ends were valid poses, so the one between is.
-            const auto shown = local_matrix(*between[i]);
+            const auto shown = local_pose(*between[i]);
             poses.set(entity, shown);
             for (const auto child : m_world->children(entity)) descend(descend, child, shown);
             continue;
@@ -376,12 +378,15 @@ uint64_t PlaySession::state_hash() const {
         const uint64_t words[] = {id.high, id.low};
         fold(words, sizeof words);
         m_world->with<TransformComponent>(entity, [&](const TransformComponent& t) {
-            const float values[] = {t.translation.x, t.translation.y, t.translation.z, t.rotation.x, t.rotation.y,
-                                    t.rotation.z, t.rotation.w, t.scale.x, t.scale.y, t.scale.z};
+            const double position[] = {t.translation.x, t.translation.y, t.translation.z}; // double since #1065
+            fold(position, sizeof position);
+            const float values[] = {t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w, t.scale.x, t.scale.y, t.scale.z};
             fold(values, sizeof values);
         });
         if (const auto body = m_physics->state(entity)) {
-            const float values[] = {body->position.x, body->position.y, body->position.z, body->rotation.x, body->rotation.y,
+            const double position[] = {body->position.x, body->position.y, body->position.z};
+            fold(position, sizeof position);
+            const float values[] = {body->rotation.x, body->rotation.y,
                                     body->rotation.z, body->rotation.w, body->linear_velocity.x, body->linear_velocity.y,
                                     body->linear_velocity.z, body->angular_velocity.x, body->angular_velocity.y,
                                     body->angular_velocity.z};

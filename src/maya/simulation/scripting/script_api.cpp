@@ -3,6 +3,7 @@
 #include "luau.hpp"
 
 #include <atomic>
+#include <charconv>
 
 #include <array>
 #include <cmath>
@@ -73,6 +74,21 @@ void push_vector(lua_State* L, const math::Vec3& v) {
     lua_pushvector(L, v.x, v.y, v.z);
 }
 
+const PositionBox* to_position_box(lua_State* L, int index) {
+    return static_cast<const PositionBox*>(lua_touserdatatagged(L, index, position_tag));
+}
+/// A position, or a vector taken as one (it widens exactly); nullopt for anything else.
+std::optional<math::DVec3> to_position(lua_State* L, int index) {
+    if (const auto* p = to_position_box(L, index)) return math::DVec3{p->x, p->y, p->z};
+    if (const auto* v = lua_tovector(L, index)) return math::DVec3{v[0], v[1], v[2]};
+    return std::nullopt;
+}
+math::DVec3 check_position(lua_State* L, int index) {
+    const auto position = to_position(L, index);
+    if (!position) luaL_typeerrorL(L, index, "position or vector");
+    return *position;
+}
+
 QuaternionBox* to_quaternion(lua_State* L, int index) {
     return static_cast<QuaternionBox*>(lua_touserdatatagged(L, index, quaternion_tag));
 }
@@ -114,6 +130,7 @@ void push_property(lua_State* L, const PropertyDescriptor& property, const Prope
         else if constexpr (std::same_as<T, math::Vec3>) push_vector(L, typed);
         else if constexpr (std::same_as<T, math::Vec2>) push_vector(L, math::Vec3{typed.x, typed.y, 0.0f});
         else if constexpr (std::same_as<T, math::Quat>) push_quaternion(L, typed);
+        else if constexpr (std::same_as<T, math::DVec3>) push_position(L, typed);
         else if constexpr (std::same_as<T, ChoiceValue>) {
             for (const auto& option : property.choices)
                 if (option.value == typed.value) {
@@ -153,6 +170,11 @@ PropertyValue to_property(lua_State* L, int index, const PropertyDescriptor& pro
     case PropertyType::vector3:
         if (!lua_isvector(L, index)) throw wrong("a vector");
         return check_vector(L, index);
+    case PropertyType::position: {
+        const auto position = to_position(L, index);
+        if (!position) throw wrong("a position or vector");
+        return *position;
+    }
     case PropertyType::vector2: { // a Luau vector whose z is ignored
         if (!lua_isvector(L, index)) throw wrong("a vector");
         const auto v = check_vector(L, index);
@@ -242,7 +264,7 @@ int maya_find(lua_State* L, ScriptApi& api) {
 int maya_create(lua_State* L, ScriptApi& api) {
     require_writable(api, "create entities");
     const auto name = std::string(luaL_checkstring(L, 1));
-    const auto position = lua_isnoneornil(L, 2) ? math::Vec3(0.0f) : check_vector(L, 2);
+    const auto position = lua_isnoneornil(L, 2) ? math::DVec3{} : check_position(L, 2);
     const auto parent = lua_isnoneornil(L, 3) ? std::nullopt : std::optional(check_entity(L, 3));
     push_entity(L, api.create(name, position, parent));
     return 1;
@@ -371,6 +393,72 @@ int quaternion_tostring(lua_State* L) {
     return 1;
 }
 
+// --- Positions (#1065) -----------------------------------------------------------------------------
+// World positions in double. position - position is the offset between them, a (float) vector; position
+// + or - vector is a position. Calls that take a position also take a vector.
+
+math::DVec3 check_position_box(lua_State* L, int index) {
+    const auto* p = static_cast<const PositionBox*>(luaL_checkudatatagged(L, index, position_tag));
+    return {p->x, p->y, p->z};
+}
+int position_new(lua_State* L) {
+    push_position(L, {luaL_checknumber(L, 1), luaL_checknumber(L, 2), luaL_checknumber(L, 3)});
+    return 1;
+}
+int position_index(lua_State* L) {
+    const auto p = check_position_box(L, 1);
+    const auto key = std::string_view(luaL_checkstring(L, 2));
+    if (key.size() == 1) {
+        const auto* component = key == "x" ? &p.x : key == "y" ? &p.y : key == "z" ? &p.z : nullptr;
+        if (component) {
+            lua_pushnumber(L, *component);
+            return 1;
+        }
+    }
+    lua_getuserdatametatable(L, position_tag);
+    lua_rawgetfield(L, -1, "methods");
+    lua_rawgetfield(L, -1, std::string(key).c_str());
+    return 1;
+}
+int position_to_vector(lua_State* L) { // narrowed: for the vector library, near the origin
+    push_vector(L, check_position_box(L, 1).to_float());
+    return 1;
+}
+int position_add(lua_State* L) {
+    // position + vector, or vector + position
+    const auto first = to_position_box(L, 1) != nullptr;
+    const auto at = check_position(L, first ? 1 : 2);
+    const auto offset = check_vector(L, first ? 2 : 1);
+    push_position(L, at + math::DVec3(offset));
+    return 1;
+}
+int position_sub(lua_State* L) {
+    const auto a = check_position_box(L, 1); // vector - position has no meaning
+    if (to_position_box(L, 2)) {
+        push_vector(L, (a - check_position_box(L, 2)).to_float()); // the offset between them
+        return 1;
+    }
+    push_position(L, a - math::DVec3(check_vector(L, 2)));
+    return 1;
+}
+int position_eq(lua_State* L) {
+    lua_pushboolean(L, check_position_box(L, 1) == check_position_box(L, 2));
+    return 1;
+}
+int position_tostring(lua_State* L) {
+    const auto p = check_position_box(L, 1);
+    auto text = std::string("position(");
+    for (const auto value : {p.x, p.y, p.z}) {
+        char digits[32];
+        text.append(digits, std::to_chars(digits, digits + sizeof digits, value).ptr); // shortest exact
+        text += ", ";
+    }
+    text.resize(text.size() - 2);
+    text += ')';
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
 // --- Entities --------------------------------------------------------------------------------------
 
 template<class T>
@@ -419,7 +507,7 @@ int entity_children(lua_State* L, ScriptApi& api) {
     return 1;
 }
 int entity_position(lua_State* L, ScriptApi& api) {
-    push_vector(L, transform(api, check_entity(L, 1)).translation);
+    push_position(L, transform(api, check_entity(L, 1)).translation);
     return 1;
 }
 int entity_rotation(lua_State* L, ScriptApi& api) {
@@ -437,7 +525,7 @@ TransformComponent world_pose(const ScriptApi& api, EntityId id) {
     return *pose;
 }
 int entity_world_position(lua_State* L, ScriptApi& api) {
-    push_vector(L, world_pose(api, check_entity(L, 1)).translation);
+    push_position(L, world_pose(api, check_entity(L, 1)).translation);
     return 1;
 }
 int entity_world_rotation(lua_State* L, ScriptApi& api) {
@@ -446,7 +534,7 @@ int entity_world_rotation(lua_State* L, ScriptApi& api) {
 }
 int entity_set_position(lua_State* L, ScriptApi& api) {
     require_writable(api, "move entities");
-    api.edit(check_entity(L, 1), ComponentId::transform, 1, check_vector(L, 2));
+    api.edit(check_entity(L, 1), ComponentId::transform, 1, check_position(L, 2));
     return 0;
 }
 int entity_set_rotation(lua_State* L, ScriptApi& api) {
@@ -531,7 +619,7 @@ int entity_move_kinematic(lua_State* L, ScriptApi& api) {
     const auto handle = live(api, check_entity(L, 1));
     const auto state = body(api, check_entity(L, 1));
     const auto rotation = lua_isnoneornil(L, 3) ? (state ? state->rotation : math::Quat{}) : check_quaternion(L, 3);
-    api.bodies().set_kinematic_target(handle, check_vector(L, 2), rotation);
+    api.bodies().set_kinematic_target(handle, check_position(L, 2), rotation);
     return 0;
 }
 int entity_teleport(lua_State* L, ScriptApi& api) {
@@ -539,7 +627,7 @@ int entity_teleport(lua_State* L, ScriptApi& api) {
     const auto handle = live(api, check_entity(L, 1));
     const auto state = body(api, check_entity(L, 1));
     const auto rotation = lua_isnoneornil(L, 3) ? (state ? state->rotation : math::Quat{}) : check_quaternion(L, 3);
-    api.bodies().teleport(handle, check_vector(L, 2), rotation);
+    api.bodies().teleport(handle, check_position(L, 2), rotation);
     return 0;
 }
 int entity_wake(lua_State* L, ScriptApi& api) {
@@ -611,7 +699,7 @@ void push_hit(lua_State* L, const QueryHit& hit) {
     lua_createtable(L, 0, 4);
     push_entity(L, hit.id);
     lua_setfield(L, -2, "entity");
-    push_vector(L, hit.point);
+    push_position(L, hit.point);
     lua_setfield(L, -2, "point");
     push_vector(L, hit.normal);
     lua_setfield(L, -2, "normal");
@@ -633,7 +721,7 @@ int push_hits(lua_State* L, const std::vector<QueryHit>& hits, bool all) {
 }
 template<bool All>
 int maya_raycast(lua_State* L, ScriptApi& api) {
-    const auto origin = check_vector(L, 1);
+    const auto origin = check_position(L, 1);
     const auto direction = check_vector(L, 2);
     const auto distance = float(luaL_checknumber(L, 3));
     const auto filter = check_filter(L, 4, api);
@@ -646,14 +734,14 @@ template<bool All>
 int maya_shape_cast(lua_State* L, ScriptApi& api) {
     auto rotation = math::Quat{};
     const auto filter = check_filter(L, 5, api, &rotation);
-    const auto hits = query_physics(api).shape_cast(check_shape(L, 1), check_vector(L, 2), rotation, check_vector(L, 3),
+    const auto hits = query_physics(api).shape_cast(check_shape(L, 1), check_position(L, 2), rotation, check_vector(L, 3),
                                                      float(luaL_checknumber(L, 4)), filter);
     return push_hits(L, hits, All);
 }
 int maya_overlap(lua_State* L, ScriptApi& api) {
     auto rotation = math::Quat{};
     const auto filter = check_filter(L, 3, api, &rotation);
-    const auto hits = query_physics(api).overlap(check_shape(L, 1), check_vector(L, 2), rotation, filter);
+    const auto hits = query_physics(api).overlap(check_shape(L, 1), check_position(L, 2), rotation, filter);
     lua_createtable(L, int(hits.size()), 0);
     for (size_t i = 0; i < hits.size(); ++i) {
         push_entity(L, hits[i].id);
@@ -687,7 +775,8 @@ void set_functions(lua_State* L, std::initializer_list<luaL_Reg> functions) {
 }
 
 void make_metatable(lua_State* L, int tag, lua_CFunction index, lua_CFunction eq, lua_CFunction to_string,
-                    std::initializer_list<luaL_Reg> methods, lua_CFunction mul = nullptr) {
+                    std::initializer_list<luaL_Reg> methods, lua_CFunction mul = nullptr, lua_CFunction add = nullptr,
+                    lua_CFunction sub = nullptr) {
     lua_newtable(L);
     lua_pushcfunction(L, index, "__index");
     lua_setfield(L, -2, "__index");
@@ -698,6 +787,14 @@ void make_metatable(lua_State* L, int tag, lua_CFunction index, lua_CFunction eq
     if (mul) {
         lua_pushcfunction(L, mul, "__mul");
         lua_setfield(L, -2, "__mul");
+    }
+    if (add) {
+        lua_pushcfunction(L, add, "__add");
+        lua_setfield(L, -2, "__add");
+    }
+    if (sub) {
+        lua_pushcfunction(L, sub, "__sub");
+        lua_setfield(L, -2, "__sub");
     }
     lua_pushboolean(L, false);
     lua_setfield(L, -2, "__metatable");
@@ -890,6 +987,11 @@ void push_entity(lua_State* L, EntityId id) {
     box->id = id;
 }
 
+void push_position(lua_State* L, const math::DVec3& value) {
+    auto* box = static_cast<PositionBox*>(lua_newuserdatataggedwithmetatable(L, sizeof(PositionBox), position_tag));
+    *box = {value.x, value.y, value.z};
+}
+
 void push_quaternion(lua_State* L, const math::Quat& value) {
     auto* box = static_cast<QuaternionBox*>(lua_newuserdatataggedwithmetatable(L, sizeof(QuaternionBox), quaternion_tag));
     *box = {value.x, value.y, value.z, value.w};
@@ -965,6 +1067,8 @@ void open_maya_library(lua_State* L) {
                    {{"rotate", pure<quaternion_rotate>}, {"normalized", pure<quaternion_normalized>},
                     {"inverse", pure<quaternion_inverse>}},
                    quaternion_mul);
+    make_metatable(L, position_tag, position_index, position_eq, position_tostring, {{"to_vector", pure<position_to_vector>}},
+                   nullptr, position_add, position_sub);
     lua_newtable(L);
     set_functions(L, {{"log", guarded<maya_log>}, {"tick", guarded<maya_tick>}, {"time", guarded<maya_time>},
                       {"delta", guarded<maya_delta>}, {"find", guarded<maya_find>}, {"create", guarded<maya_create>},
@@ -979,6 +1083,9 @@ void open_maya_library(lua_State* L) {
     set_functions(L, {{"new", pure<quaternion_new>}, {"identity", pure<quaternion_identity>},
                       {"from_axis_angle", pure<quaternion_from_axis_angle>}});
     lua_setfield(L, -2, "quaternion");
+    lua_newtable(L);
+    set_functions(L, {{"new", pure<position_new>}});
+    lua_setfield(L, -2, "position");
     lua_setglobal(L, "maya");
 }
 

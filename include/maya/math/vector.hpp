@@ -98,6 +98,34 @@ struct Vec3 {
 };
 
 // -----------------------------------------------------------------------------
+// DVec3
+// -----------------------------------------------------------------------------
+/// A position in metres in double precision (#1065): world translations, which reach kilometres from the
+/// origin, where a float's spacing is a millimetre. An offset between two positions is small, so it is a
+/// float Vec3 again (`(a - b).to_float()`). A Vec3 widens to a DVec3 exactly; narrowing is explicit.
+struct DVec3 {
+    double x, y, z;
+
+    constexpr DVec3() : x(0.0), y(0.0), z(0.0) {}
+    constexpr DVec3(double x, double y, double z) : x(x), y(y), z(z) {}
+    constexpr DVec3(const Vec3& v) : x(v.x), y(v.y), z(v.z) {} // NOLINT: widening is exact
+
+    DVec3 operator+(const DVec3& other) const { return {x + other.x, y + other.y, z + other.z}; }
+    DVec3 operator-(const DVec3& other) const { return {x - other.x, y - other.y, z - other.z}; }
+    DVec3 operator*(double scalar) const { return {x * scalar, y * scalar, z * scalar}; }
+    DVec3 operator/(double scalar) const { return {x / scalar, y / scalar, z / scalar}; }
+    DVec3 operator-() const { return {-x, -y, -z}; }
+    DVec3& operator+=(const DVec3& other) { x += other.x; y += other.y; z += other.z; return *this; }
+    DVec3& operator-=(const DVec3& other) { x -= other.x; y -= other.y; z -= other.z; return *this; }
+    bool operator==(const DVec3&) const = default;
+
+    double length_squared() const { return x * x + y * y + z * z; }
+    double length() const { return std::sqrt(length_squared()); }
+    /// Narrowed to float: for offsets and values near the origin.
+    Vec3 to_float() const { return {float(x), float(y), float(z)}; }
+};
+
+// -----------------------------------------------------------------------------
 // Vec4
 // -----------------------------------------------------------------------------
 struct Vec4 {

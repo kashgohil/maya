@@ -281,7 +281,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
         start_navigation(m_router.navigation(), {routed.navigation_point->x, routed.navigation_point->y});
     m_camera.update(routed.navigation, io.DeltaTime);
     if (const auto mode = m_router.navigation(); mode == NavigationMode::orbit || mode == NavigationMode::pan || mode == NavigationMode::zoom)
-        m_pivot_distance = std::max((m_camera.pivot - m_camera.position).length(), 0.05f);
+        m_pivot_distance = std::max(float((m_camera.pivot - m_camera.position).length()), 0.05f);
     update_play(routed, io.DeltaTime); // before the UI, so it shows this frame's ticks
 
     ImGui::NewFrame();
@@ -1074,9 +1074,11 @@ void EditorShell::render_viewport() {
     options.loading = AssetLoading::stream; // frames never wait for assets
     options.poses = &poses;
     options.skins = &m_skin_bindings;
+    options.origin = view->position; // camera-relative (#1065): what is near the camera is precise
     // Physics debug views: from the play session's physics world while playing, else from the collider
     // components. Contacts and queries are captured only while they are shown.
     m_debug_draw.clear();
+    m_debug_draw.origin = view->position;
     const auto& debug = m_preferences.physics_debug;
     if (m_play) {
         m_play->set_physics_debug_capture(debug.needs_capture());

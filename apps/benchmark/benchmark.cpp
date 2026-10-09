@@ -187,6 +187,7 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     auto options = RenderExtractOptions{};
     options.skins = &stage.skins;
     options.loading = AssetLoading::stream; // frames never wait for assets
+    options.origin = view->position; // camera-relative (#1065)
     const auto snapshot = extract_render_snapshot(world, stage.registry, options);
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
     sample.loading = snapshot.stats.pending > 0 || snapshot.stats.pending_textures > 0 || snapshot.stats.environment_pending;

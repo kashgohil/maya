@@ -20,12 +20,17 @@ namespace maya::scripting {
 // Userdata tags; each has its metatable registered in the VM.
 constexpr int entity_tag = 1;
 constexpr int quaternion_tag = 2;
+constexpr int position_tag = 3;
 
 struct EntityBox {
     EntityId id;
 };
 struct QuaternionBox {
     float x, y, z, w;
+};
+/// A world position in double (#1065, docs/scripting.md#positions); Luau's vectors are float.
+struct PositionBox {
+    double x, y, z;
 };
 
 /// What the hook being called may do.
@@ -56,7 +61,7 @@ public:
     /// Queues a property edit, validated like an Inspector edit. Visible from the next tick.
     virtual void edit(EntityId entity, ComponentId component, PropertyId property, PropertyValue value) = 0;
     /// Queues a new entity with a name and position, below `parent` when given. Returns its ID.
-    virtual EntityId create(std::string name, math::Vec3 position, std::optional<EntityId> parent) = 0;
+    virtual EntityId create(std::string name, math::DVec3 position, std::optional<EntityId> parent) = 0;
     virtual void destroy(EntityId entity) = 0;
 };
 
@@ -134,11 +139,12 @@ ScriptDescription describe_module(lua_State* L, int index, std::string_view name
 /// The script system (script_host.cpp).
 std::unique_ptr<SimulationSystem> make_script_system(ScriptSources sources, ScriptSettings settings);
 
-/// Registers the `maya` table and the entity and quaternion metatables in a fresh VM (script_api.cpp).
+/// Registers the `maya` table and the entity, quaternion, and position metatables in a fresh VM (script_api.cpp).
 void open_maya_library(lua_State* L);
 
 void push_entity(lua_State* L, EntityId id);
 void push_quaternion(lua_State* L, const math::Quat& value);
+void push_position(lua_State* L, const math::DVec3& value);
 /// A script value (a property value from a maya.script component) as a Lua value.
 void push_script_value(lua_State* L, const ScriptValue& value);
 /// The Lua value at `index` as data of `type`, or nullopt when it has another type.

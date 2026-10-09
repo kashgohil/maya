@@ -621,7 +621,7 @@ std::string EditorShell::asset_name(AssetId asset) const {
     return info ? asset_label(info->record) : std::string("asset");
 }
 
-EditResult EditorShell::place_mesh(AssetId mesh, const math::Vec3& position) {
+EditResult EditorShell::place_mesh(AssetId mesh, const math::DVec3& position) {
     if (!m_scene || !m_assets) return {false, "No scene is open"};
     const auto info = m_assets->info(mesh);
     if (!info || info->record.kind != AssetKind::mesh) return {false, "That is not a mesh in the project's catalog"};
@@ -700,16 +700,16 @@ std::optional<Ray> EditorShell::viewport_ray(ImVec2 point) const {
     return view_ray(*view, m_camera.pose(), m_camera.camera.vertical_fov, x, y);
 }
 
-std::optional<math::Vec3> EditorShell::drop_point(ImVec2 point, AssetId mesh) const {
+std::optional<math::DVec3> EditorShell::drop_point(ImVec2 point, AssetId mesh) const {
     const auto ray = viewport_ray(point);
     if (!ray) return std::nullopt;
     auto distance = std::optional<float>{};
     if (m_snapshot)
         if (const auto hits = pick_meshes(*m_snapshot, *ray); !hits.empty()) distance = hits.front().distance;
     if (!distance && ray->direction.y < -1e-3f) // the ground plane, y = 0, within reach
-        if (const auto t = -ray->origin.y / ray->direction.y; t > 0.0f && t < 500.0f) distance = t;
-    if (!distance) return ray->origin + ray->direction * 5.0f; // in front of the camera
-    auto position = ray->origin + ray->direction * *distance;
+        if (const auto t = float(-ray->origin.y / ray->direction.y); t > 0.0f && t < 500.0f) distance = t;
+    if (!distance) return ray->at(5.0f); // in front of the camera
+    auto position = ray->at(*distance);
     // Rest the mesh on the surface: lift it by how far its geometry reaches below its origin.
     if (mesh.valid() && m_assets)
         if (const auto wait = AssetRegistry::ExplicitWait(*m_assets); const auto loaded = m_assets->acquire(AssetRef<MeshAsset>{mesh})) // a drop: the user waits for it
@@ -727,7 +727,7 @@ std::optional<EntityId> EditorShell::mesh_at(ImVec2 point) const {
 void EditorShell::place_in_view(AssetId mesh) {
     const auto center = ImVec2{(m_layout.viewport_min.x + m_layout.viewport_max.x) * 0.5f,
                                (m_layout.viewport_min.y + m_layout.viewport_max.y) * 0.5f};
-    const auto at = drop_point(center, mesh).value_or(math::Vec3{0.0f});
+    const auto at = drop_point(center, mesh).value_or(math::DVec3{});
     const auto name = asset_name(mesh);
     if (const auto placed = place_mesh(mesh, at); !placed) report(placed, "Place " + name);
     else m_reveal = m_scene->primary(); // show it in the hierarchy
@@ -778,7 +778,7 @@ void EditorShell::accept_viewport_drop() {
     if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_SCENE")) {
         const auto relative = std::filesystem::path(static_cast<const char*>(dragged->Data));
         if (ImGui::AcceptDragDropPayload("MAYA_SCENE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
-            report(place_scene(relative, drop_point(ImGui::GetIO().MousePos).value_or(math::Vec3{0.0f})), "Place " + relative.stem().string());
+            report(place_scene(relative, drop_point(ImGui::GetIO().MousePos).value_or(math::DVec3{})), "Place " + relative.stem().string());
         ImGui::GetWindowDrawList()->AddRect(m_layout.viewport_min, m_layout.viewport_max, theme::color::accent, 0.0f, 0, 2.0f);
     }
     if (const auto* dragged = ImGui::GetDragDropPayload(); dragged && dragged->IsDataType("MAYA_ASSET")) {
@@ -1073,7 +1073,7 @@ void EditorShell::draw_assets() {
                     if (ImGui::MenuItem((std::string(icon::plus) + "  Place in scene").c_str(), nullptr, false, !current && m_scene)) {
                         const auto center = ImVec2{(m_layout.viewport_min.x + m_layout.viewport_max.x) * 0.5f,
                                                    (m_layout.viewport_min.y + m_layout.viewport_max.y) * 0.5f};
-                        report(place_scene(relative, drop_point(center).value_or(math::Vec3{0.0f})), "Place " + relative.stem().string());
+                        report(place_scene(relative, drop_point(center).value_or(math::DVec3{})), "Place " + relative.stem().string());
                     }
                     ImGui::EndPopup();
                 }

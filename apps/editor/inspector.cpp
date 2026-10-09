@@ -6,6 +6,7 @@
 #include "maya/assets/property_context.hpp"
 #include <imgui_internal.h>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 
@@ -77,10 +78,12 @@ void limits(const NumericRange& range, float scale, float& minimum, float& maxim
     if (range.maximum && !range.maximum_inclusive) maximum = std::nextafter(maximum, -FLT_MAX) - 1e-4f * scale;
 }
 
-/// Three axis-labelled drag fields on one row. Returns true when any changed.
-/// Two or three number fields on one row, one per axis.
-bool axis_fields(const char* id, float values[], float speed, float minimum, float maximum, const char* format,
+/// Two or three number fields on one row, one per axis: floats, or doubles for positions (#1065), which
+/// keep the stored value's precision when typed. Returns true when any changed.
+template<class T>
+bool axis_fields(const char* id, T values[], float speed, T minimum, T maximum, const char* format,
                  EditorLayout& layout, const std::string& key, bool& activated, bool& deactivated, int axes = 3) {
+    constexpr auto type = std::is_same_v<T, double> ? ImGuiDataType_Double : ImGuiDataType_Float;
     static constexpr ImU32 axis_colors[] = {theme::color::rgb(0xF2616B), theme::color::rgb(0x4ADE80), theme::color::rgb(0x7B8CFF)};
     static constexpr const char* axis_names[] = {"x", "y", "z"};
     auto changed = false;
@@ -92,7 +95,7 @@ bool axis_fields(const char* id, float values[], float speed, float minimum, flo
         ImGui::PushID(axis);
         ImGui::SetNextItemWidth(width);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::text);
-        const auto moved = ImGui::DragFloat("##axis", &values[axis], speed, minimum, maximum, format, ImGuiSliderFlags_AlwaysClamp);
+        const auto moved = ImGui::DragScalar("##axis", type, &values[axis], speed, &minimum, &maximum, format, ImGuiSliderFlags_AlwaysClamp);
         changed |= moved && !typing_into_last_item();
         ImGui::PopStyleColor();
         activated |= ImGui::IsItemActivated();
@@ -199,6 +202,17 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
                                          activated, deactivated);
         if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
         if (changed) edit(math::Vec3{values[0], values[1], values[2]});
+        if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
+        break;
+    }
+    case PropertyType::position: {
+        // A world position, in double: dragged in millimetres like a vector, and typed exactly.
+        const auto position = std::get<math::DVec3>(value);
+        double values[3] = {position.x, position.y, position.z};
+        auto activated = false, deactivated = false;
+        const auto changed = axis_fields("position", values, 0.01f, -DBL_MAX, DBL_MAX, "%.3f", m_layout, key, activated, deactivated);
+        if (activated && !m_edit_group_open) { m_scene->begin_group(group); m_edit_group_open = true; }
+        if (changed) edit(math::DVec3{values[0], values[1], values[2]});
         if (deactivated && m_edit_group_open) { m_scene->end_group(); m_edit_group_open = false; }
         break;
     }

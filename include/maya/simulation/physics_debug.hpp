@@ -45,7 +45,7 @@ inline constexpr DebugColor query_hit{1.00f, 0.42f, 0.80f, 1.0f};
 } // namespace physics_debug_color
 
 /// Outlines one collider at `body_world` (its body entity's world matrix, scale included).
-void debug_collider(DebugDraw& out, const math::Mat4& body_world, const ColliderDesc& collider, const DebugColor& color);
+void debug_collider(DebugDraw& out, const math::Affine& body_world, const ColliderDesc& collider, const DebugColor& color);
 
 /// An authoring World: each collider component at its entity's world pose. Body state is the authored
 /// motion (a rigid body on the entity or above it, else static); contacts and queries have none.

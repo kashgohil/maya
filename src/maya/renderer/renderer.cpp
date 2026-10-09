@@ -384,15 +384,18 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
     if (!plan.spot_shadows.empty())
         if (auto error = encode_shadow_atlas(*m_spot_atlas, snapshot, "spot shadows", spot_maps, spot_batches)) return error;
 
+    // Everything is drawn in the snapshot's frame (#1065): positions relative to its origin, and the
+    // camera at its offset from it.
+    const auto frame = view_frame(snapshot, view);
     auto constants = ViewConstants{};
-    constants.view_projection = view.matrices.view_projection;
-    constants.camera_position = {view.position, 1.0f};
+    constants.view_projection = frame.matrices.view_projection;
+    constants.camera_position = {frame.eye, 1.0f};
     constants.ambient = {snapshot.ambient, 0.0f};
     const auto lights = std::min(snapshot.lights.size(), max_directional_lights);
     constants.light_count[0] = static_cast<uint32_t>(lights);
     for (size_t i = 0; i < lights; ++i)
         constants.lights[i] = {{snapshot.lights[i].direction_to_light, 0.0f}, {snapshot.lights[i].radiance, 0.0f}};
-    constants.inverse_view_projection = inverse(view.matrices.view_projection);
+    constants.inverse_view_projection = inverse(frame.matrices.view_projection);
     if (environment) {
         const auto& asset = environment->asset.value();
         constants.environment = {environment->intensity, std::cos(environment->rotation), std::sin(environment->rotation),
@@ -563,6 +566,7 @@ RhiDiagnostic Renderer::encode_debug(const DebugDraw& debug, const RenderView& v
         batches[used++] = {kind, segments, count, vertices, uploaded.slice, xray};
         return {};
     };
+    const auto eye = (view.position - debug.origin).to_float(); // the camera in the debug lines' frame
     // How many pixels a world length at a distance covers: the projection's vertical scale.
     const auto pixels_per_unit = view.matrices.projection.elements[5] * float(view.height) * 0.5f;
     const auto segments_of = [&](const DebugShape& shape) {
@@ -572,7 +576,7 @@ RhiDiagnostic Renderer::encode_debug(const DebugDraw& debug, const RenderView& v
         const auto scale = std::max({math::Vec3{m[0], m[1], m[2]}.length(), math::Vec3{m[4], m[5], m[6]}.length(),
                                      math::Vec3{m[8], m[9], m[10]}.length()});
         const auto extent = (shape.size.x + (shape.kind == DebugShapeKind::capsule ? shape.size.y : 0.0f)) * scale;
-        const auto distance = std::max((centre - view.position).length() - extent, 1e-3f);
+        const auto distance = std::max((centre - eye).length() - extent, 1e-3f);
         return debug_segments_for(extent * pixels_per_unit / distance);
     };
     const auto push = [&](const math::Vec3& v, float w) { m_debug_data.insert(m_debug_data.end(), {v.x, v.y, v.z, w}); };

@@ -15,11 +15,11 @@ math::Vec3 transform_direction(const math::Mat4& m, const math::Vec3& d) {
 }
 } // namespace
 
-Ray view_ray(const RenderView& view, const math::Mat4& camera_pose, float vertical_fov, float x_ndc, float y_ndc) {
+Ray view_ray(const RenderView& view, const math::Affine& camera_pose, float vertical_fov, float x_ndc, float y_ndc) {
     const auto tangent = std::tan(vertical_fov * 0.5f);
     const auto aspect = view.height ? float(view.width) / float(view.height) : 1.0f;
     const auto local = math::Vec3(x_ndc * tangent * aspect, y_ndc * tangent, -1.0f); // the camera looks along -Z
-    return {transform_point(camera_pose, {0.0f, 0.0f, 0.0f}), transform_direction(camera_pose, local).normalized()};
+    return {camera_pose.translation, camera_pose.vector(local).normalized()};
 }
 
 std::optional<float> ray_box(const math::Vec3& origin, const math::Vec3& direction, const math::Vec3& min,
@@ -66,8 +66,9 @@ std::vector<PickHit> pick_meshes(const RenderSnapshot& snapshot, const Ray& ray)
         if (geometry.empty()) continue;
         const auto inverse = inverse_affine(instance.world);
         if (!inverse) continue;
-        // The local ray keeps the world ray's parameter: t is the same distance in both spaces.
-        const auto origin = transform_point(*inverse, ray.origin);
+        // The local ray keeps the world ray's parameter: t is the same distance in both spaces. Instances
+        // are relative to the snapshot's origin (#1065), so the ray is moved there in double first.
+        const auto origin = transform_point(*inverse, (ray.origin - snapshot.origin).to_float());
         const auto direction = transform_direction(*inverse, ray.direction);
         if (!ray_box(origin, direction, geometry.min, geometry.max)) continue;
         auto nearest = std::optional<float>{};

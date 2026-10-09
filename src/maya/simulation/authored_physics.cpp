@@ -52,7 +52,7 @@ public:
         m_first.reset();
         if (const auto own = component<ColliderComponent>(m_world, entity))
             if (auto error = add(entity, *own, ColliderDesc{geometry(*own), own->offset, own->rotation}, body)) return error;
-        const auto inverse = m_world.world_matrix(entity) ? inverse_affine(*m_world.world_matrix(entity)) : std::nullopt;
+        const auto inverse = m_world.world_matrix(entity) ? inverse_pose(*m_world.world_matrix(entity)) : std::nullopt;
         if (!inverse) return entity_text(m_world, entity) + ": its world transform cannot be inverted";
         if (auto error = below(entity, entity, *inverse, body)) return error;
         if (body.colliders.empty())
@@ -86,12 +86,14 @@ private:
     }
 
     /// Adds the colliders on entities below `parent` that have no rigid body, placed in `body_entity`'s space.
-    std::optional<std::string> below(EntityHandle body_entity, EntityHandle parent, const math::Mat4& to_body, BodyDesc& body) {
+    std::optional<std::string> below(EntityHandle body_entity, EntityHandle parent, const math::Affine& to_body, BodyDesc& body) {
         for (const auto child : m_world.children(parent)) {
             if (m_world.has<RigidBodyComponent>(child)) continue; // its own body; creating it reports the conflict
             if (const auto collider = component<ColliderComponent>(m_world, child)) {
                 const auto world = m_world.world_matrix(child);
-                const auto relative = world ? decompose_transform(to_body * *world) : std::nullopt;
+                // Relative to the body in double, so the large world translations cancel exactly (#1065).
+                const auto pose = world ? compose_pose(to_body, *world) : std::nullopt;
+                const auto relative = pose ? decompose_transform(pose->matrix()) : std::nullopt;
                 if (!relative)
                     return entity_text(m_world, child) + ": its collider cannot be placed in the body of " +
                            entity_text(m_world, body_entity) + ": its transform relative to the body has shear";
@@ -101,7 +103,7 @@ private:
                 if (!uniform && std::abs(std::abs(r.w) - 1.0f) > spatial_tolerance)
                     return entity_text(m_world, child) + ": a rotated collider cannot take its entity's nonuniform scale";
                 auto desc = ColliderDesc{geometry(*collider)};
-                desc.offset = relative->translation +
+                desc.offset = relative->translation.to_float() +
                               relative->rotation.rotate({collider->offset.x * s.x, collider->offset.y * s.y, collider->offset.z * s.z});
                 desc.rotation = relative->rotation * collider->rotation;
                 desc.scale = s;

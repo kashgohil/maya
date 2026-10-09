@@ -29,6 +29,7 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, bool>) return PropertyType::boolean;
     else if constexpr (std::same_as<T, float>) return PropertyType::scalar;
     else if constexpr (std::same_as<T, math::Vec3>) return PropertyType::vector3;
+    else if constexpr (std::same_as<T, math::DVec3>) return PropertyType::position;
     else if constexpr (std::same_as<T, math::Vec2>) return PropertyType::vector2;
     else if constexpr (std::same_as<T, math::Quat>) return PropertyType::quaternion;
     else if constexpr (std::is_enum_v<T>) return PropertyType::choice;
@@ -67,6 +68,11 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
                 if (!choice) return false;
                 std::get<C>(value).*Member = static_cast<V>(choice->value); // validation checks the choices
             } else {
+                if constexpr (std::same_as<V, math::DVec3>) // a float vector widens to a position exactly
+                    if (const auto vector = std::get_if<math::Vec3>(&input)) {
+                        std::get<C>(value).*Member = *vector;
+                        return true;
+                    }
                 const auto typed = std::get_if<V>(&input);
                 if (!typed) return false;
                 std::get<C>(value).*Member = *typed;
@@ -443,6 +449,10 @@ std::optional<PropertyResult> check(const PropertyDescriptor& d, const PropertyV
         if (!in_range(*scalar, d.range)) return invalid();
     } else if (const auto vector = std::get_if<math::Vec3>(&input)) {
         if (!in_range(vector->x, d.range) || !in_range(vector->y, d.range) || !in_range(vector->z, d.range)) return invalid();
+    } else if (const auto position = std::get_if<math::DVec3>(&input)) {
+        // A range bounds a position too (in float); without one it need only be finite.
+        for (const auto value : {position->x, position->y, position->z})
+            if (!std::isfinite(value) || (d.range.minimum && value < *d.range.minimum) || (d.range.maximum && value > *d.range.maximum)) return invalid();
     } else if (const auto pair = std::get_if<math::Vec2>(&input)) {
         if (!in_range(pair->x, d.range) || !in_range(pair->y, d.range)) return invalid();
     } else if (const auto choice = std::get_if<ChoiceValue>(&input)) {
@@ -522,7 +532,7 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto animations = descriptors(animation_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
-        ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 1, transforms},
+        ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 2, transforms}, // 2: double translation (#1065)
         ComponentDescriptor{ComponentId::mesh_renderer, "maya.mesh_renderer", "Mesh renderer", 1, meshes},
         ComponentDescriptor{ComponentId::camera, "maya.camera", "Camera", 2, cameras}, // 2: exposure, tone mapping (#1032)
         ComponentDescriptor{ComponentId::light, "maya.light", "Light", 2, lights}, // 2: candela, shadows (#1034)

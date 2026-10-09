@@ -8,6 +8,9 @@ namespace {
 bool finite(const math::Vec3& v) noexcept {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
+bool finite(const math::DVec3& v) noexcept {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
 bool finite(const math::Mat4& m) noexcept {
     for (const auto v : m.elements) if (!std::isfinite(v)) return false;
     return true;
@@ -41,13 +44,13 @@ TransformComponent interpolate_transform(const TransformComponent& a, const Tran
         wb = std::sin(t * angle) / sine;
     }
     auto result = TransformComponent{};
-    result.translation = a.translation + (b.translation - a.translation) * t;
+    result.translation = a.translation + (b.translation - a.translation) * double(t);
     result.scale = a.scale + (b.scale - a.scale) * t;
     result.rotation = unit(math::Quat(from.x * wa + to.x * wb, from.y * wa + to.y * wb, from.z * wa + to.z * wb, from.w * wa + to.w * wb));
     return result;
 }
 
-math::Mat4 local_matrix(const TransformComponent& v) noexcept {
+math::Affine local_pose(const TransformComponent& v) noexcept {
     // Scale the basis directly to avoid intermediate products for TRS.
     auto m = v.rotation.to_mat4();
     for (int r = 0; r < 3; ++r) {
@@ -55,10 +58,7 @@ math::Mat4 local_matrix(const TransformComponent& v) noexcept {
         m.at(r,1) *= v.scale.y;
         m.at(r,2) *= v.scale.z;
     }
-    m.at(0,3) = v.translation.x;
-    m.at(1,3) = v.translation.y;
-    m.at(2,3) = v.translation.z;
-    return m;
+    return {m, v.translation};
 }
 
 std::optional<TransformComponent> validated_transform(TransformComponent v) noexcept {
@@ -71,7 +71,7 @@ std::optional<TransformComponent> validated_transform(TransformComponent v) noex
     if (std::abs(length - 1.0) > quaternion_unit_tolerance)
         v.rotation = {float(q.x / length), float(q.y / length),
                       float(q.z / length), float(q.w / length)};
-    if (!inverse_affine(local_matrix(v))) return std::nullopt;
+    if (!inverse_affine(local_pose(v).linear)) return std::nullopt;
     return v;
 }
 
@@ -161,10 +161,42 @@ std::optional<TransformComponent> decompose_transform(const math::Mat4& m) noexc
     auto result = validated_transform({{m.at(0,3),m.at(1,3),m.at(2,3)},
         {float(q[0]),float(q[1]),float(q[2]),float(q[3])}, {scales[0],scales[1],scales[2]}});
     if (!result) return std::nullopt;
-    const auto rebuilt = local_matrix(*result);
+    const auto rebuilt = local_pose(*result).linear;
     for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r)
         if (std::abs(double(rebuilt.at(r,c))-m.at(r,c)) > spatial_tolerance*scales[c])
             return std::nullopt;
+    return result;
+}
+
+std::optional<math::Affine> inverse_pose(const math::Affine& value) noexcept {
+    if (!finite(value.translation)) return std::nullopt;
+    const auto linear = inverse_affine(value.linear); // no translation in, none out
+    if (!linear) return std::nullopt;
+    auto result = math::Affine{*linear, {}};
+    result.translation = -math::DVec3{
+        double(linear->at(0,0))*value.translation.x + double(linear->at(0,1))*value.translation.y + double(linear->at(0,2))*value.translation.z,
+        double(linear->at(1,0))*value.translation.x + double(linear->at(1,1))*value.translation.y + double(linear->at(1,2))*value.translation.z,
+        double(linear->at(2,0))*value.translation.x + double(linear->at(2,1))*value.translation.y + double(linear->at(2,2))*value.translation.z};
+    if (!finite(result.translation)) return std::nullopt;
+    return result;
+}
+
+std::optional<math::Affine> compose_pose(const math::Affine& parent, const math::Affine& local) noexcept {
+    const auto linear = compose_affine(parent.linear, local.linear);
+    if (!linear) return std::nullopt;
+    const auto translation = parent.point({}) + math::DVec3{
+        double(parent.linear.at(0,0))*local.translation.x + double(parent.linear.at(0,1))*local.translation.y + double(parent.linear.at(0,2))*local.translation.z,
+        double(parent.linear.at(1,0))*local.translation.x + double(parent.linear.at(1,1))*local.translation.y + double(parent.linear.at(1,2))*local.translation.z,
+        double(parent.linear.at(2,0))*local.translation.x + double(parent.linear.at(2,1))*local.translation.y + double(parent.linear.at(2,2))*local.translation.z};
+    if (!finite(translation)) return std::nullopt;
+    return math::Affine{*linear, translation};
+}
+
+std::optional<TransformComponent> decompose_transform(const math::Affine& value) noexcept {
+    if (!finite(value.translation)) return std::nullopt;
+    auto result = decompose_transform(value.linear);
+    if (!result) return std::nullopt;
+    result->translation = value.translation;
     return result;
 }
 
@@ -174,14 +206,14 @@ bool unit_scale(const math::Vec3& v) noexcept {
 }
 
 std::optional<CameraMatrices> camera_matrices(const CameraComponent& camera,
-                                            const math::Mat4& pose, float aspect) noexcept {
+                                            const math::Affine& pose, float aspect) noexcept {
     if (!std::isfinite(camera.vertical_fov) || !std::isfinite(aspect) ||
         !std::isfinite(camera.near_clip) || !std::isfinite(camera.far_clip) ||
         camera.vertical_fov <= 0 || camera.vertical_fov >= math::PI || aspect <= 0 ||
         camera.near_clip <= 0 || camera.far_clip <= camera.near_clip) return std::nullopt;
     const auto trs = decompose_transform(pose);
     if (!trs || !unit_scale(trs->scale)) return std::nullopt;
-    const auto view = inverse_affine(pose);
+    const auto view = inverse_affine(pose.linear); // camera-relative: rotation only
     if (!view) return std::nullopt;
     auto projection = math::Mat4{};
     const auto cot = 1.0 / std::tan(double(camera.vertical_fov)*0.5);
@@ -198,6 +230,6 @@ std::optional<CameraMatrices> camera_matrices(const CameraComponent& camera,
         return std::nullopt;
     const auto combined = projection * *view;
     if (!finite(combined)) return std::nullopt;
-    return CameraMatrices{*view, projection, combined};
+    return CameraMatrices{*view, projection, combined, pose.translation};
 }
 } // namespace maya

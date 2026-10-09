@@ -186,7 +186,7 @@ public:
     bool game_has_input() const noexcept { return m_router.game_has_input(); }
 
     /// Places an instance of a mesh asset at a world position, named after its file, as one undo step.
-    EditResult place_mesh(AssetId mesh, const math::Vec3& position);
+    EditResult place_mesh(AssetId mesh, const math::DVec3& position);
     /// Assigns a mesh or material asset to an entity's mesh renderer, adding one to an entity with a
     /// transform when it has none, or a script to its script component, as one undo step.
     EditResult assign_asset(EntityId entity, AssetId asset);
@@ -196,7 +196,7 @@ public:
     /// Where a mesh dropped at a viewport point lands: on the surface under it, else on the ground
     /// plane, else in front of the camera. Null when the viewport is not shown.
     /// `mesh`, when given, rests on the surface: it is lifted by how far it reaches below its origin.
-    std::optional<math::Vec3> drop_point(ImVec2 point, AssetId mesh = {}) const;
+    std::optional<math::DVec3> drop_point(ImVec2 point, AssetId mesh = {}) const;
 
     /// Imports a glTF file inside the content root (docs/editor.md#importing-models), logs what it made
     /// and any warnings, and refreshes the project; a failure shows why and changes nothing. With
@@ -204,7 +204,7 @@ public:
     GltfImportResult import_model(const std::filesystem::path& path, bool place, bool notify = true);
     /// Places a copy of a scene file's entities (content-relative) in the open scene at a world
     /// position, with new IDs, as one undo step: dragging an imported model into the viewport.
-    EditResult place_scene(const std::filesystem::path& relative, math::Vec3 at);
+    EditResult place_scene(const std::filesystem::path& relative, math::DVec3 at);
     /// glTF files in the content root, content-relative and sorted, as of the last scan.
     const std::vector<std::filesystem::path>& model_files() const noexcept { return m_model_files; }
     /// The open project's cook cache, or null when no project is open.
@@ -229,7 +229,7 @@ public:
     EditorCamera& camera() noexcept { return m_camera; }
     /// What orbit and zoom turn around, chosen when they start at a viewport point: the selection's
     /// centre; else the surface or ground under the point; else a point ahead at the last distance.
-    math::Vec3 navigation_pivot(ImVec2 point) const;
+    math::DVec3 navigation_pivot(ImVec2 point) const;
     PixelSize viewport_request() const noexcept { return m_viewport_request; }
     const RenderTarget& viewport() const noexcept { return m_viewport; }
     const EditorLayout& layout() const noexcept { return m_layout; }
@@ -288,7 +288,7 @@ public:
     size_t play_script_memory() const noexcept { return m_play_reloads ? m_play_reloads->memory() : 0; }
     /// Applies a gizmo's new world matrix to an entity as a validated local transform. Returns false
     /// (and changes nothing) when the parent cannot represent the pose, e.g. it would need shear.
-    bool apply_world_matrix(EntityId id, const math::Mat4& world);
+    bool apply_world_matrix(EntityId id, const math::Affine& world);
     uint64_t frames() const noexcept { return m_frame; }
     /// The host's timing of the frame just submitted (Application::on_frame_timing), for the
     /// Performance section of Diagnostics.

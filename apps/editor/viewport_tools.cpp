@@ -18,10 +18,7 @@ ImVec4 v(ImU32 color, float alpha = 1.0f) {
     return value;
 }
 
-math::Vec3 transform_point(const math::Mat4& m, const math::Vec3& p) {
-    const auto r = m * math::Vec4(p, 1.0f);
-    return {r.x, r.y, r.z};
-}
+math::DVec3 transform_point(const math::Affine& m, const math::Vec3& p) { return m.point(p); }
 } // namespace
 
 void detail::style_gizmo() {
@@ -51,7 +48,7 @@ void detail::style_gizmo() {
     c[ImGuizmo::TEXT_SHADOW] = v(theme::color::background, 0.8f);
 }
 
-bool EditorShell::apply_world_matrix(EntityId id, const math::Mat4& world) {
+bool EditorShell::apply_world_matrix(EntityId id, const math::Affine& world) {
     auto& scene = *m_scene;
     const auto* entity = scene.record(id);
     if (!entity) return false;
@@ -60,8 +57,8 @@ bool EditorShell::apply_world_matrix(EntityId id, const math::Mat4& world) {
     if (entity->parent) {
         const auto parent = scene.world().find(*entity->parent);
         const auto parent_world = parent ? scene.world().world_matrix(*parent) : std::nullopt;
-        const auto inverse = parent_world ? inverse_affine(*parent_world) : std::nullopt;
-        local = inverse ? compose_affine(*inverse, world) : std::nullopt;
+        const auto inverse = parent_world ? inverse_pose(*parent_world) : std::nullopt;
+        local = inverse ? compose_pose(*inverse, world) : std::nullopt;
     }
     const auto transform = local ? decompose_transform(*local) : std::nullopt;
     if (!transform) {
@@ -79,11 +76,11 @@ bool EditorShell::apply_world_matrix(EntityId id, const math::Mat4& world) {
     return true;
 }
 
-math::Vec3 EditorShell::navigation_pivot(ImVec2 point) const {
+math::DVec3 EditorShell::navigation_pivot(ImVec2 point) const {
     // While playing, the Scene view shows the play World; the selection's IDs name entities in both.
     const auto* world = m_play ? &m_play->world() : m_scene ? &m_scene->world() : nullptr;
     if (world && m_scene && !m_scene->selection().empty()) {
-        auto sum = math::Vec3(0.0f);
+        auto sum = math::DVec3{};
         auto count = 0;
         for (const auto id : m_scene->selection()) {
             const auto handle = world->find(id);
@@ -94,26 +91,26 @@ math::Vec3 EditorShell::navigation_pivot(ImVec2 point) const {
                 for (const auto& instance : m_snapshot->instances)
                     if (instance.entity == id)
                         if (const auto& geometry = m_snapshot->meshes[instance.mesh].value().geometry(); !geometry.empty())
-                            center = (transform_point(*matrix, geometry.min) + transform_point(*matrix, geometry.max)) * 0.5f;
+                            center = (transform_point(*matrix, geometry.min) + transform_point(*matrix, geometry.max)) * 0.5;
             sum += center;
             ++count;
         }
-        if (count > 0) return sum * (1.0f / float(count));
+        if (count > 0) return sum / double(count);
     }
     if (const auto ray = viewport_ray(point)) {
         if (m_snapshot && !m_play)
-            if (const auto hits = pick_meshes(*m_snapshot, *ray); !hits.empty()) return ray->origin + ray->direction * hits.front().distance;
+            if (const auto hits = pick_meshes(*m_snapshot, *ray); !hits.empty()) return ray->at(hits.front().distance);
         if (ray->direction.y < -1e-3f) // the ground plane, y = 0, within reach
-            if (const auto t = -ray->origin.y / ray->direction.y; t > 0.0f && t < 500.0f) return ray->origin + ray->direction * t;
+            if (const auto t = float(-ray->origin.y / ray->direction.y); t > 0.0f && t < 500.0f) return ray->at(t);
     }
-    return m_camera.position + m_camera.forward() * m_pivot_distance;
+    return m_camera.position + math::DVec3(m_camera.forward() * m_pivot_distance);
 }
 
 void EditorShell::start_navigation(NavigationMode mode, ImVec2 point) {
     if (mode == NavigationMode::fly || mode == NavigationMode::none) return;
     m_camera.pivot = navigation_pivot(point);
     // A pan moves what is at the pivot's depth exactly with the pointer.
-    const auto depth = std::max(math::Vec3::dot(m_camera.pivot - m_camera.position, m_camera.forward()), 0.05f);
+    const auto depth = std::max(math::Vec3::dot((m_camera.pivot - m_camera.position).to_float(), m_camera.forward()), 0.05f);
     const auto height = m_layout.viewport_max.y - m_layout.viewport_min.y;
     m_camera.pan_scale = height > 0.0f ? 2.0f * depth * std::tan(m_camera.camera.vertical_fov * 0.5f) / height : 0.01f;
 }
@@ -133,11 +130,11 @@ void EditorShell::frame_selection() {
                 const auto& geometry = m_snapshot->meshes[instance.mesh].value().geometry();
                 if (geometry.empty()) break;
                 const auto low = transform_point(*world, geometry.min), high = transform_point(*world, geometry.max);
-                center = (low + high) * 0.5f;
-                radius = std::max((high - low).length() * 0.5f, 0.1f);
+                center = (low + high) * 0.5;
+                radius = std::max(float((high - low).length()) * 0.5f, 0.1f);
             }
     const auto distance = radius / std::sin(m_camera.camera.vertical_fov * 0.5f) * 1.1f;
-    m_camera.position = center - m_camera.forward() * distance;
+    m_camera.position = center - math::DVec3(m_camera.forward() * distance);
     m_pivot_distance = distance;
 }
 
@@ -173,9 +170,10 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     auto& scene = *m_scene;
     auto* draw = ImGui::GetWindowDrawList();
     const auto& io = ImGui::GetIO();
+    // The view is camera-relative (#1065): points are moved to the camera in double first.
     const auto view_projection = view.matrices.view_projection;
-    const auto project = [&](const math::Vec3& p) -> std::optional<ImVec2> {
-        const auto clip = view_projection * math::Vec4(p, 1.0f);
+    const auto project = [&](const math::DVec3& p) -> std::optional<ImVec2> {
+        const auto clip = view_projection * math::Vec4((p - view.position).to_float(), 1.0f);
         if (clip.w <= 1e-4f) return std::nullopt; // behind the camera
         return ImVec2{min.x + (clip.x / clip.w * 0.5f + 0.5f) * (max.x - min.x),
                       min.y + (0.5f - clip.y / clip.w * 0.5f) * (max.y - min.y)};
@@ -278,8 +276,11 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
         const auto world = handle ? scene.world().world_matrix(*handle) : std::nullopt;
         if (world) {
             shown = true;
+            // ImGuizmo works in float, so it gets the pose relative to the camera, as the view is; moves
+            // and snapping are relative to where the drag began, so nothing depends on that frame.
+            const auto relative = world->relative_to(view.position);
             float matrix[16];
-            std::memcpy(matrix, world->elements, sizeof(matrix));
+            std::memcpy(matrix, relative.elements, sizeof(matrix));
             const auto operation = m_gizmo == GizmoOperation::translate ? ImGuizmo::TRANSLATE
                 : m_gizmo == GizmoOperation::rotate ? ImGuizmo::ROTATE : ImGuizmo::SCALE;
             const auto mode = m_gizmo_local || m_gizmo == GizmoOperation::scale ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
@@ -297,7 +298,9 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
             if (changed) {
                 auto moved = math::Mat4{};
                 std::memcpy(moved.elements, matrix, sizeof(matrix));
-                apply_world_matrix(*primary, moved);
+                auto pose = math::Affine::from_matrix(moved);
+                pose.translation += view.position;
+                apply_world_matrix(*primary, pose);
             }
             if (!using_now && m_gizmo_using) scene.end_group();
             m_gizmo_using = using_now;
@@ -436,7 +439,7 @@ bool EditorShell::draw_collider_handles(const RenderView& view, ImVec2 min, ImVe
     const auto primary = scene.primary();
     const auto entity = primary ? scene.world().find(*primary) : std::nullopt;
     const auto world = entity ? scene.world().world_matrix(*entity) : std::nullopt;
-    const auto inverse = world ? inverse_affine(*world) : std::nullopt;
+    const auto inverse = world ? inverse_pose(*world) : std::nullopt;
     auto collider = std::optional<ColliderComponent>{};
     if (inverse) scene.world().with<ColliderComponent>(*entity, [&](const ColliderComponent& value) { collider = value; });
     if (!collider || (m_collider_drag && m_collider_drag->entity != *primary)) {
@@ -465,21 +468,22 @@ bool EditorShell::draw_collider_handles(const RenderView& view, ImVec2 min, ImVe
 
     const auto& io = ImGui::GetIO();
     const auto project = [&](const math::Vec3& local) -> std::optional<ImVec2> {
-        const auto p = transform_point(*world, local);
+        const auto p = (transform_point(*world, local) - view.position).to_float(); // camera-relative (#1065)
         const auto clip = view.matrices.view_projection * math::Vec4(p, 1.0f);
         if (clip.w <= 1e-4f) return std::nullopt;
         return ImVec2{min.x + (clip.x / clip.w * 0.5f + 0.5f) * (max.x - min.x), min.y + (0.5f - clip.y / clip.w * 0.5f) * (max.y - min.y)};
     };
-    // The pointer as a ray in entity space.
-    const auto local_ray = [&]() -> std::optional<Ray> {
+    // The pointer as a ray in entity space, where everything is small: in float.
+    struct LocalRay {
+        math::Vec3 origin, direction;
+    };
+    const auto local_ray = [&]() -> std::optional<LocalRay> {
         const auto ray = viewport_ray(io.MousePos);
         if (!ray) return std::nullopt;
-        const auto o = *inverse * math::Vec4(ray->origin, 1.0f);
-        const auto d = *inverse * math::Vec4(ray->direction, 0.0f);
-        return Ray{{o.x, o.y, o.z}, {d.x, d.y, d.z}};
+        return LocalRay{inverse->vector((ray->origin - world->translation).to_float()), inverse->vector(ray->direction)};
     };
     // Where the pointer is along a handle's line through `centre` (the offset when the drag began).
-    const auto along_line = [&](const Ray& ray, const math::Vec3& centre, const math::Vec3& axis) -> std::optional<float> {
+    const auto along_line = [&](const LocalRay& ray, const math::Vec3& centre, const math::Vec3& axis) -> std::optional<float> {
         const auto w = centre - ray.origin;
         const auto a = math::Vec3::dot(axis, axis), b = math::Vec3::dot(axis, ray.direction), c = math::Vec3::dot(ray.direction, ray.direction);
         const auto denominator = a * c - b * b;
@@ -487,9 +491,9 @@ bool EditorShell::draw_collider_handles(const RenderView& view, ImVec2 min, ImVe
         return (b * math::Vec3::dot(ray.direction, w) - c * math::Vec3::dot(axis, w)) / denominator;
     };
     // Where the pointer meets the plane through the centre that faces the camera.
-    const auto forward = *inverse * math::Vec4(m_camera.forward(), 0.0f);
-    const auto on_plane = [&](const Ray& ray, const math::Vec3& centre) -> std::optional<math::Vec3> {
-        const auto normal = math::Vec3{forward.x, forward.y, forward.z};
+    const auto forward = inverse->vector(m_camera.forward());
+    const auto on_plane = [&](const LocalRay& ray, const math::Vec3& centre) -> std::optional<math::Vec3> {
+        const auto normal = forward;
         const auto facing = math::Vec3::dot(normal, ray.direction);
         if (std::abs(facing) < 1e-8f) return std::nullopt;
         const auto t = math::Vec3::dot(normal, centre - ray.origin) / facing;

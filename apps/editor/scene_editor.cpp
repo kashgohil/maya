@@ -545,7 +545,7 @@ EditResult SceneEditor::duplicate_selection() {
     return commit(copies.size() == 1 ? "Duplicate " + display_name(originals.front()) : "Duplicate", change.take(), copies);
 }
 
-EditResult SceneEditor::insert(const SceneDocument& document, std::string label, math::Vec3 offset) {
+EditResult SceneEditor::insert(const SceneDocument& document, std::string label, math::DVec3 offset) {
     if (document.entities.empty()) return {false, "The scene has no entities"};
     auto remap = std::unordered_map<EntityId, EntityId, PersistentIdHash>{};
     for (const auto& entity : document.entities) remap.emplace(entity.id, m_new_id());
@@ -629,8 +629,8 @@ EditResult SceneEditor::move(EntityId id, std::optional<EntityId> anchor, Placem
         auto local = std::optional{*world_pose};
         if (parent) {
             const auto parent_pose = m_world->world_matrix(*m_world->find(*parent));
-            const auto inverse = parent_pose ? inverse_affine(*parent_pose) : std::nullopt;
-            local = inverse ? compose_affine(*inverse, *world_pose) : std::nullopt;
+            const auto inverse = parent_pose ? inverse_pose(*parent_pose) : std::nullopt;
+            local = inverse ? compose_pose(*inverse, *world_pose) : std::nullopt;
         }
         const auto transform = local ? decompose_transform(*local) : std::nullopt;
         if (!transform) return {false, "The new parent's transform cannot represent this entity's pose (it would need shear)"};

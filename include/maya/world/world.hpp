@@ -52,8 +52,9 @@ public:
     /// Root/invalid/no-transform returns nullopt; use has/alive to distinguish.
     std::optional<EntityHandle> parent(EntityHandle entity) const;
     std::vector<EntityHandle> children(EntityHandle entity) const;
-    /// Returns a copy. Lazily updates dirty ancestors; invalid/overflowing poses fail.
-    std::optional<math::Mat4> world_matrix(EntityHandle entity) const;
+    /// The entity's world pose (translation in double, #1065), as a copy. Lazily updates dirty ancestors;
+    /// invalid/overflowing poses fail.
+    std::optional<math::Affine> world_matrix(EntityHandle entity) const;
     std::optional<CameraMatrices> camera(EntityHandle entity, float aspect) const;
 
     template<Component T> bool has(EntityHandle entity) const {
@@ -101,7 +102,7 @@ private:
         bool dirty = true;
         bool valid = false;
         bool rigid_ancestry = true;
-        math::Mat4 world{};
+        math::Affine world{};
     };
     template<Component T, class Self, class Pool>
     static decltype(auto) query_value(Self&, Pool& pool, uint32_t slot) {

@@ -23,7 +23,7 @@ const DebugColor* body_color(const PhysicsDebugOptions& options, bool sensor, ui
     return options.has(PhysicsDebugCategory::colliders) ? &physics_debug_color::collider : nullptr;
 }
 
-void debug_shape(DebugDraw& out, const math::Mat4& world, const ShapeGeometry& shape, const DebugColor& color) {
+void debug_shape(DebugDraw& out, const math::Affine& world, const ShapeGeometry& shape, const DebugColor& color) {
     std::visit([&](const auto& value) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, BoxShape>) {
@@ -36,23 +36,24 @@ void debug_shape(DebugDraw& out, const math::Mat4& world, const ShapeGeometry& s
             if (!pose) return;
             auto rigid = *pose;
             rigid.scale = math::Vec3(1.0f);
-            out.capsule(local_matrix(rigid), value.radius * pose->scale.x, value.half_height * pose->scale.y, color);
+            out.capsule(local_pose(rigid), value.radius * pose->scale.x, value.half_height * pose->scale.y, color);
         }
     }, shape);
 }
 
-math::Mat4 placement(const math::Vec3& offset, const math::Quat& rotation, const math::Vec3& scale) {
+math::Affine placement(const math::DVec3& offset, const math::Quat& rotation, const math::Vec3& scale) {
     auto local = TransformComponent{};
     local.translation = offset;
     local.rotation = rotation;
     local.scale = scale;
-    return local_matrix(local);
+    return local_pose(local);
 }
 
 } // namespace
 
-void debug_collider(DebugDraw& out, const math::Mat4& body_world, const ColliderDesc& collider, const DebugColor& color) {
-    debug_shape(out, body_world * placement(collider.offset, collider.rotation, collider.scale), collider.shape, color);
+void debug_collider(DebugDraw& out, const math::Affine& body_world, const ColliderDesc& collider, const DebugColor& color) {
+    if (const auto world = compose_pose(body_world, placement(collider.offset, collider.rotation, collider.scale)))
+        debug_shape(out, *world, collider.shape, color);
 }
 
 void authored_physics_debug(const World& world, const PhysicsDebugOptions& options, DebugDraw& out) {
@@ -97,11 +98,11 @@ void play_physics_debug(const World& world, const PhysicsWorld& physics, const P
         for (const auto& contact : physics.debug_contacts()) {
             if ((contact.groups & options.groups) == 0) continue;
             out.cross(contact.point, contact_size, physics_debug_color::contact);
-            out.arrow(contact.point, contact.point + contact.normal * normal_length, physics_debug_color::normal);
+            out.arrow(contact.point, contact.point + math::DVec3(contact.normal * normal_length), physics_debug_color::normal);
         }
     if (options.has(PhysicsDebugCategory::queries))
         for (const auto& query : physics.debug_queries()) {
-            const auto end = query.origin + query.direction * query.distance;
+            const auto end = query.origin + math::DVec3(query.direction * query.distance);
             if (query.kind == PhysicsQueryKind::raycast) {
                 out.line(query.origin, end, physics_debug_color::query);
             } else if (query.shape) {

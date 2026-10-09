@@ -84,7 +84,7 @@ struct PhysicsSettings {
 /// A body's state after the last completed step.
 struct BodyState {
     MotionType motion = MotionType::dynamic;
-    math::Vec3 position{0.0f}; // of the entity, in world space
+    math::DVec3 position{}; // of the entity, in world space (double since #1065)
     math::Quat rotation{};
     math::Vec3 linear_velocity{0.0f};
     math::Vec3 angular_velocity{0.0f};
@@ -102,7 +102,7 @@ struct QueryFilter {
 struct QueryHit {
     EntityHandle entity;
     EntityId id;
-    math::Vec3 point{0.0f}; // world space; for an overlap, a point where they touch
+    math::DVec3 point{}; // world space; for an overlap, a point where they touch
     math::Vec3 normal{0.0f}; // the hit surface's outward normal
     float distance = 0.0f; // along the ray or cast; 0 for an overlap, or a cast that starts touching
 };
@@ -119,7 +119,7 @@ struct PhysicsEvent {
     /// The two entities, when they are still in the World and not being destroyed in this tick's
     /// batch; a recipient without one is skipped (and counted in PhysicsStats::event_recipients_skipped).
     std::optional<EntityHandle> first_entity, second_entity;
-    math::Vec3 point{0.0f}; // begin and enter: where they touched
+    math::DVec3 point{}; // begin and enter: where they touched
     math::Vec3 normal{0.0f}; // begin and enter: from first toward second
     float speed = 0.0f; // begin and enter: how fast they approached along the normal, m/s
     /// End and exit: because a body was removed (its entity destroyed, its body removed, or the
@@ -176,7 +176,7 @@ struct PhysicsDebugBody {
 };
 /// A contact point in the last step between two solid bodies (sensors report no points).
 struct PhysicsDebugContact {
-    math::Vec3 point{0.0f};
+    math::DVec3 point{};
     math::Vec3 normal{0.0f}; // from the lower body ID toward the other
     uint16_t groups = 0; // bit n: one of the two bodies is in group n
 };
@@ -184,12 +184,12 @@ enum class PhysicsQueryKind : uint8_t { raycast, shape_cast, overlap };
 /// A query as it was asked, and where it hit.
 struct PhysicsDebugQuery {
     PhysicsQueryKind kind = PhysicsQueryKind::raycast;
-    math::Vec3 origin{0.0f}; // an overlap's position
+    math::DVec3 origin{}; // an overlap's position
     math::Quat rotation{}; // shape casts and overlaps
     math::Vec3 direction{0.0f}; // unit; raycasts and shape casts
     float distance = 0.0f;
     std::optional<ShapeGeometry> shape; // shape casts and overlaps
-    std::vector<math::Vec3> hits; // each hit body's nearest point
+    std::vector<math::DVec3> hits; // each hit body's nearest point
 };
 
 class PhysicsWorld;
@@ -213,9 +213,9 @@ public:
     void set_linear_velocity(EntityHandle entity, math::Vec3 velocity);
     void set_angular_velocity(EntityHandle entity, math::Vec3 velocity);
     /// Where a kinematic body should be at the end of this step. Without a target, it stops.
-    void set_kinematic_target(EntityHandle entity, math::Vec3 position, math::Quat rotation);
+    void set_kinematic_target(EntityHandle entity, math::DVec3 position, math::Quat rotation);
     /// Moves a kinematic or dynamic body directly; velocities are kept.
-    void teleport(EntityHandle entity, math::Vec3 position, math::Quat rotation);
+    void teleport(EntityHandle entity, math::DVec3 position, math::Quat rotation);
     void wake(EntityHandle entity);
 
     /// Names the system making the following requests, for errors reported after the step.
@@ -243,13 +243,13 @@ private:
     struct Request {
         Kind kind;
         EntityTarget entity;
-        math::Vec3 vector{0.0f};
+        math::DVec3 vector{}; // a position, or a force, impulse, or velocity (narrowed when applied)
         math::Quat rotation{};
         std::unique_ptr<BodyDesc> body; // create only
         std::string source; // create only
     };
     EntityHandle require_body(EntityHandle entity, const char* action, bool kinematic, bool dynamic) const;
-    void push(Kind kind, EntityHandle entity, math::Vec3 vector, math::Quat rotation = {});
+    void push(Kind kind, EntityHandle entity, math::DVec3 vector, math::Quat rotation = {});
 
     const PhysicsWorld& m_physics;
     const World& m_world;
@@ -311,14 +311,14 @@ public:
     /// body, sorted by distance and then EntityId, and repeat exactly for the same state. They throw
     /// std::invalid_argument for a direction that is zero or not finite, a negative distance, or a
     /// shape a collider could not have.
-    std::vector<QueryHit> raycast(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
+    std::vector<QueryHit> raycast(math::DVec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
     /// The nearest hit of the same ray, exactly raycast(...).front(), without collecting the others.
-    std::optional<QueryHit> raycast_nearest(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
+    std::optional<QueryHit> raycast_nearest(math::DVec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter = {}) const;
     /// Sweeps a shape from `origin` along `direction` for `distance`.
-    std::vector<QueryHit> shape_cast(const ShapeGeometry& shape, math::Vec3 origin, math::Quat rotation, math::Vec3 direction,
+    std::vector<QueryHit> shape_cast(const ShapeGeometry& shape, math::DVec3 origin, math::Quat rotation, math::Vec3 direction,
                                      float distance, const QueryFilter& filter = {}) const;
     /// The bodies a shape at `position` touches, sorted by EntityId.
-    std::vector<QueryHit> overlap(const ShapeGeometry& shape, math::Vec3 position, math::Quat rotation,
+    std::vector<QueryHit> overlap(const ShapeGeometry& shape, math::DVec3 position, math::Quat rotation,
                                   const QueryFilter& filter = {}) const;
     /// Creates every body in order, or none: returns why the first refused one cannot be created,
     /// naming its entity, or empty. Play sessions use it for the bodies authored in a scene.

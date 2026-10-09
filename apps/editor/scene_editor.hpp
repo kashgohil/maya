@@ -102,7 +102,7 @@ public:
     /// Copies a scene document's entities in with new IDs, after the existing roots, its roots moved by
     /// `offset` and renamed when their names are taken, and selects the copied roots: placing an
     /// imported model (docs/editor.md#importing-models).
-    EditResult insert(const SceneDocument& document, std::string label, math::Vec3 offset = math::Vec3{0.0f});
+    EditResult insert(const SceneDocument& document, std::string label, math::DVec3 offset = {});
     /// Moves `id` into, before, or after `target`, or to the end of the roots when `target` is empty,
     /// keeping its world pose. Rejects cycles, entities without transforms, and poses that the new
     /// parent cannot represent (e.g. shear from a rotated, nonuniformly scaled parent).

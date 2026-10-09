@@ -7,8 +7,10 @@
 namespace maya::editor {
 
 struct Ray {
-    math::Vec3 origin{0.0f};
+    math::DVec3 origin{}; // world position, in double (#1065)
     math::Vec3 direction{0.0f, 0.0f, -1.0f}; // unit length
+    /// The point `t` metres along the ray.
+    math::DVec3 at(float t) const { return origin + math::DVec3(direction * t); }
 };
 struct PickHit {
     EntityId entity{};
@@ -17,7 +19,7 @@ struct PickHit {
 
 /// The ray through a point of a view, given in normalized device coordinates (x right, y up, -1..1),
 /// from a camera's rigid pose and vertical field of view. The view's aspect comes from its size.
-Ray view_ray(const RenderView& view, const math::Mat4& camera_pose, float vertical_fov, float x_ndc, float y_ndc);
+Ray view_ray(const RenderView& view, const math::Affine& camera_pose, float vertical_fov, float x_ndc, float y_ndc);
 
 /// Mesh instances the ray hits, nearest first, at most one hit per instance. This is the bounded
 /// initial technique: a linear pass over the snapshot's instances with a local bounding-box test,

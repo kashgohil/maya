@@ -89,6 +89,9 @@ JPH::Vec3 jolt(const math::Vec3& value) noexcept { return {value.x, value.y, val
 JPH::Quat jolt(const math::Quat& value) noexcept { return {value.x, value.y, value.z, value.w}; }
 math::Vec3 maya_vector(JPH::Vec3Arg value) noexcept { return {value.GetX(), value.GetY(), value.GetZ()}; }
 math::Quat maya_quat(JPH::QuatArg value) noexcept { return {value.GetX(), value.GetY(), value.GetZ(), value.GetW()}; }
+// Positions cross as doubles: Jolt is built with JPH_DOUBLE_PRECISION (#1065), so RVec3 is double.
+JPH::RVec3 jolt_position(const math::DVec3& value) noexcept { return {value.x, value.y, value.z}; }
+math::DVec3 maya_position(JPH::RVec3Arg value) noexcept { return {value.GetX(), value.GetY(), value.GetZ()}; }
 
 // Object layers: bits 0-3 the collision group, bit 4 set for kinematic and dynamic bodies, and
 // bits 16-31 the mask. Static and moving bodies go to separate broad-phase trees.
@@ -243,7 +246,8 @@ struct ContactRecord {
     bool added = false;
     JPH::BodyID a, b; // a < b
     JPH::SubShapeID sub_a, sub_b;
-    math::Vec3 point{0.0f}, normal{0.0f}; // added: normal from a toward b
+    math::DVec3 point{};
+    math::Vec3 normal{0.0f}; // added: normal from a toward b
     float speed = 0.0f; // added: approach speed along the normal
     bool sensor = false; // added: either body is a sensor
 };
@@ -256,7 +260,7 @@ public:
         auto record = ContactRecord{true, a.GetID(), b.GetID(), manifold.mSubShapeID1, manifold.mSubShapeID2};
         const auto point = manifold.GetWorldSpaceContactPointOn1(0);
         const auto normal = manifold.mWorldSpaceNormal;
-        record.point = maya_vector(JPH::Vec3(point));
+        record.point = maya_position(point);
         record.normal = maya_vector(normal);
         record.speed = (a.GetPointVelocity(point) - b.GetPointVelocity(point)).Dot(normal);
         record.sensor = a.IsSensor() || b.IsSensor();
@@ -272,7 +276,8 @@ public:
     /// Debug views: every contact point of the step's solid contacts, while capture is on.
     struct Point {
         JPH::BodyID a, b;
-        math::Vec3 point{0.0f}, normal{0.0f};
+        math::DVec3 point{};
+        math::Vec3 normal{0.0f};
     };
     void set_capture(bool on) noexcept { m_capture = on; }
     bool capturing() const noexcept { return m_capture; }
@@ -302,7 +307,7 @@ private:
         try {
             const auto lock = std::scoped_lock(m_mutex);
             for (JPH::uint i = 0; i < manifold.mRelativeContactPointsOn1.size(); ++i)
-                m_points.push_back({a.GetID(), b.GetID(), maya_vector(JPH::Vec3(manifold.GetWorldSpaceContactPointOn1(i))),
+                m_points.push_back({a.GetID(), b.GetID(), maya_position(manifold.GetWorldSpaceContactPointOn1(i)),
                                     maya_vector(manifold.mWorldSpaceNormal)});
         } catch (...) {
             // out of memory: a debug view misses a point
@@ -396,9 +401,9 @@ struct PhysicsWorld::Impl {
         bool alive = true;
         bool targeted = false; // kinematic: received a target this tick
         bool coasting = false; // kinematic: moved toward a target last tick
-        math::Vec3 position{0.0f}; // moving bodies: the pose last written to the World
+        math::DVec3 position{}; // moving bodies: the pose last written to the World
         math::Quat rotation{};
-        math::Mat4 world{}; // static bodies: the world matrix the shape was built for
+        math::Affine world{}; // static bodies: the world pose the shape was built for
         math::Vec3 scale{1.0f};
         std::vector<ColliderDesc> colliders; // to rebuild static bodies when their scale changes, and for debug views
         float density = 1000.0f;
@@ -581,8 +586,8 @@ struct PhysicsWorld::Impl {
         dead = 0;
     }
 
-    std::string refuse_create(const World& world, EntityHandle entity, const BodyDesc& body, math::Vec3& position,
-                              math::Quat& rotation, math::Vec3& scale, math::Mat4& matrix) const;
+    std::string refuse_create(const World& world, EntityHandle entity, const BodyDesc& body, math::DVec3& position,
+                              math::Quat& rotation, math::Vec3& scale, math::Affine& matrix) const;
     void create(const World& world, EntityHandle entity, const BodyDesc& body, const std::string& source,
                 std::vector<JPH::BodyID>& activate, std::vector<JPH::BodyID>& resting);
 
@@ -636,8 +641,8 @@ struct PhysicsWorld::Impl {
 };
 
 std::string PhysicsWorld::Impl::refuse_create(const World& world, EntityHandle entity, const BodyDesc& body,
-                                              math::Vec3& position, math::Quat& rotation, math::Vec3& scale,
-                                              math::Mat4& matrix) const {
+                                              math::DVec3& position, math::Quat& rotation, math::Vec3& scale,
+                                              math::Affine& matrix) const {
     if (!world.alive(entity)) return "the entity no longer exists";
     auto transform = std::optional<TransformComponent>{};
     world.with<TransformComponent>(entity, [&](const TransformComponent& value) { transform = value; });
@@ -672,16 +677,16 @@ std::string PhysicsWorld::Impl::refuse_create(const World& world, EntityHandle e
 
 void PhysicsWorld::Impl::create(const World& world, EntityHandle entity, const BodyDesc& body, const std::string& source,
                                 std::vector<JPH::BodyID>& activate, std::vector<JPH::BodyID>& resting) {
-    auto position = math::Vec3(0.0f);
+    auto position = math::DVec3{};
     auto rotation = math::Quat{};
     auto scale = math::Vec3(1.0f);
-    auto matrix = math::Mat4{};
+    auto matrix = math::Affine{};
     const auto fail = [&](const std::string& reason) {
         throw std::runtime_error((source.empty() ? std::string() : source + ": ") + "cannot create a " +
                                  motion_type_name(body.motion) + " body for " + entity_text(world, entity) + ": " + reason);
     };
     if (auto reason = refuse_create(world, entity, body, position, rotation, scale, matrix); !reason.empty()) fail(reason);
-    auto creation = JPH::BodyCreationSettings(make_shape(body.colliders, scale, body.density), JPH::RVec3(jolt(position)),
+    auto creation = JPH::BodyCreationSettings(make_shape(body.colliders, scale, body.density), jolt_position(position),
                                               jolt(rotation), jolt_motion(body.motion), object_layer(body));
     creation.mUserData = records.size();
     creation.mFriction = body.friction;
@@ -745,8 +750,8 @@ EntityHandle BodyCommands::require_body(EntityHandle entity, const char* action,
     return entity;
 }
 
-void BodyCommands::push(Kind kind, EntityHandle entity, math::Vec3 vector, math::Quat rotation) {
-    if (!finite(vector)) throw std::invalid_argument("A physics request for " + entity_text(m_world, entity) + " is not finite");
+void BodyCommands::push(Kind kind, EntityHandle entity, math::DVec3 vector, math::Quat rotation) {
+    if (!std::isfinite(vector.x) || !std::isfinite(vector.y) || !std::isfinite(vector.z)) throw std::invalid_argument("A physics request for " + entity_text(m_world, entity) + " is not finite");
     m_requests.push_back({kind, entity, vector, rotation, nullptr, {}});
 }
 
@@ -791,7 +796,7 @@ void BodyCommands::set_linear_velocity(EntityHandle entity, math::Vec3 velocity)
 void BodyCommands::set_angular_velocity(EntityHandle entity, math::Vec3 velocity) {
     push(Kind::angular_velocity, require_body(entity, "set the velocity of", false, true), velocity);
 }
-void BodyCommands::set_kinematic_target(EntityHandle entity, math::Vec3 position, math::Quat rotation) {
+void BodyCommands::set_kinematic_target(EntityHandle entity, math::DVec3 position, math::Quat rotation) {
     require_body(entity, "set a kinematic target for", true, false);
     const auto unit = normalized(rotation);
     if (!unit) throw std::invalid_argument("A kinematic target rotation must be a finite, nonzero quaternion");
@@ -800,7 +805,7 @@ void BodyCommands::set_kinematic_target(EntityHandle entity, math::Vec3 position
             throw std::invalid_argument("A kinematic target for " + entity_text(m_world, entity) + " was already set in this tick");
     push(Kind::kinematic_target, entity, position, *unit);
 }
-void BodyCommands::teleport(EntityHandle entity, math::Vec3 position, math::Quat rotation) {
+void BodyCommands::teleport(EntityHandle entity, math::DVec3 position, math::Quat rotation) {
     require_body(entity, "teleport", true, true);
     const auto unit = normalized(rotation);
     if (!unit) throw std::invalid_argument("A teleport rotation must be a finite, nonzero quaternion");
@@ -839,7 +844,7 @@ std::optional<BodyState> PhysicsWorld::state(EntityHandle entity) const {
     auto position = JPH::RVec3();
     auto rotation = JPH::Quat();
     bodies.GetPositionAndRotation(record->body, position, rotation);
-    auto state = BodyState{record->motion, maya_vector(JPH::Vec3(position)), maya_quat(rotation)};
+    auto state = BodyState{record->motion, maya_position(position), maya_quat(rotation)};
     if (record->motion != MotionType::static_body) {
         state.linear_velocity = maya_vector(bodies.GetLinearVelocity(record->body));
         state.angular_velocity = maya_vector(bodies.GetAngularVelocity(record->body));
@@ -943,7 +948,7 @@ void PhysicsWorld::prepare(const World& world, std::span<const BodyCommands* con
         for (auto& record : impl.records) {
             if (!record.alive || record.motion != MotionType::static_body) continue;
             const auto matrix = world.world_matrix(record.entity);
-            if (matrix && std::equal(std::begin(matrix->elements), std::end(matrix->elements), std::begin(record.world.elements))) continue;
+            if (matrix && *matrix == record.world) continue;
             const auto pose = matrix ? decompose_transform(*matrix) : std::nullopt;
             if (!pose) throw std::runtime_error("the static collider of " + entity_text(world, record.entity) +
                                                 " can no longer be placed: its world transform has shear or cannot be represented");
@@ -955,7 +960,7 @@ void PhysicsWorld::prepare(const World& world, std::span<const BodyCommands* con
                 bodies.SetShape(record.body, make_shape(record.colliders, pose->scale, record.density), false, JPH::EActivation::DontActivate);
                 record.scale = pose->scale;
             }
-            bodies.SetPositionAndRotation(record.body, JPH::RVec3(jolt(pose->translation)), jolt(pose->rotation),
+            bodies.SetPositionAndRotation(record.body, jolt_position(pose->translation), jolt(pose->rotation),
                                           JPH::EActivation::DontActivate);
             record.world = *matrix;
         }
@@ -968,7 +973,7 @@ void PhysicsWorld::prepare(const World& world, std::span<const BodyCommands* con
         auto* record = impl.find(std::get<EntityHandle>(request.entity));
         if (!record) continue; // checked when requested; nothing removes bodies before the commit
         const auto id = record->body;
-        const auto vector = jolt(request.vector);
+        const auto vector = jolt(request.vector.to_float()); // forces, impulses, and velocities
         switch (request.kind) {
         case Kind::force: bodies.AddForce(id, vector); break;
         case Kind::torque: bodies.AddTorque(id, vector); break;
@@ -977,11 +982,11 @@ void PhysicsWorld::prepare(const World& world, std::span<const BodyCommands* con
         case Kind::linear_velocity: bodies.SetLinearVelocity(id, vector); break;
         case Kind::angular_velocity: bodies.SetAngularVelocity(id, vector); break;
         case Kind::kinematic_target:
-            bodies.MoveKinematic(id, JPH::RVec3(vector), jolt(request.rotation), interval);
+            bodies.MoveKinematic(id, jolt_position(request.vector), jolt(request.rotation), interval);
             record->targeted = true;
             break;
         case Kind::teleport:
-            bodies.SetPositionAndRotation(id, JPH::RVec3(vector), jolt(request.rotation), JPH::EActivation::Activate);
+            bodies.SetPositionAndRotation(id, jolt_position(request.vector), jolt(request.rotation), JPH::EActivation::Activate);
             break;
         case Kind::wake: bodies.ActivateBody(id); break;
         case Kind::create:
@@ -1026,7 +1031,7 @@ void PhysicsWorld::synchronize(const World& world, WorldCommands& commands) {
         auto position = JPH::RVec3();
         auto rotation = JPH::Quat();
         bodies.GetPositionAndRotation(record.body, position, rotation);
-        const auto moved = maya_vector(JPH::Vec3(position));
+        const auto moved = maya_position(position);
         const auto turned = maya_quat(rotation);
         if (moved.x == record.position.x && moved.y == record.position.y && moved.z == record.position.z &&
             turned.x == record.rotation.x && turned.y == record.rotation.y && turned.z == record.rotation.z &&
@@ -1121,11 +1126,11 @@ std::vector<PhysicsEvent> PhysicsWorld::end_contacts(const World& world, uint64_
     return impl.finish(std::move(events), tick, world, {});
 }
 
-std::optional<QueryHit> PhysicsWorld::raycast_nearest(math::Vec3 origin, math::Vec3 direction, float distance,
+std::optional<QueryHit> PhysicsWorld::raycast_nearest(math::DVec3 origin, math::Vec3 direction, float distance,
                                                       const QueryFilter& filter) const {
     const auto& impl = *m_impl;
     const auto along = unit(direction);
-    if (!along || !finite(origin)) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
+    if (!along || !finite(origin.to_float())) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
     if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A raycast's distance must be finite and not negative");
     auto logged = PhysicsDebugQuery{PhysicsQueryKind::raycast, origin, {}, *along, distance, std::nullopt, {}};
     if (distance == 0.0f) {
@@ -1151,7 +1156,7 @@ std::optional<QueryHit> PhysicsWorld::raycast_nearest(math::Vec3 origin, math::V
     private:
         const Impl& m_impl;
     } collector(impl);
-    const auto ray = JPH::RRayCast(JPH::RVec3(jolt(origin)), jolt(*along * distance));
+    const auto ray = JPH::RRayCast(jolt_position(origin), jolt(*along * distance));
     const auto groups = QueryGroups(filter.groups);
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
     impl.query().CastRay(ray, JPH::RayCastSettings(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
@@ -1163,23 +1168,23 @@ std::optional<QueryHit> PhysicsWorld::raycast_nearest(math::Vec3 origin, math::V
         result->distance = hit.mFraction * distance;
         result->point = origin + *along * result->distance;
         const auto lock = JPH::BodyLockRead(impl.system.GetBodyLockInterfaceNoLock(), hit.mBodyID);
-        if (lock.Succeeded()) result->normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, JPH::RVec3(jolt(result->point))));
+        if (lock.Succeeded()) result->normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, jolt_position(result->point)));
     }
     impl.log_query(std::move(logged), result ? std::vector<QueryHit>{*result} : std::vector<QueryHit>{});
     return result;
 }
 
-std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter) const {
+std::vector<QueryHit> PhysicsWorld::raycast(math::DVec3 origin, math::Vec3 direction, float distance, const QueryFilter& filter) const {
     const auto& impl = *m_impl;
     const auto along = unit(direction);
-    if (!along || !finite(origin)) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
+    if (!along || !finite(origin.to_float())) throw std::invalid_argument("A raycast needs a finite origin and a finite, nonzero direction");
     if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A raycast's distance must be finite and not negative");
     auto logged = PhysicsDebugQuery{PhysicsQueryKind::raycast, origin, {}, *along, distance, std::nullopt, {}};
     if (distance == 0.0f) {
         impl.log_query(std::move(logged), {});
         return {};
     }
-    const auto ray = JPH::RRayCast(JPH::RVec3(jolt(origin)), jolt(*along * distance));
+    const auto ray = JPH::RRayCast(jolt_position(origin), jolt(*along * distance));
     auto collector = JPH::AllHitCollisionCollector<JPH::CastRayCollector>{};
     const auto groups = QueryGroups(filter.groups);
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
@@ -1199,19 +1204,19 @@ std::vector<QueryHit> PhysicsWorld::raycast(math::Vec3 origin, math::Vec3 direct
         result.distance = hit.fraction * distance;
         result.point = origin + *along * result.distance;
         const auto lock = JPH::BodyLockRead(impl.system.GetBodyLockInterfaceNoLock(), hit.mBodyID2);
-        if (lock.Succeeded()) result.normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.sub, JPH::RVec3(jolt(result.point))));
+        if (lock.Succeeded()) result.normal = maya_vector(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.sub, jolt_position(result.point)));
         return result;
     });
     impl.log_query(std::move(logged), results);
     return results;
 }
 
-std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math::Vec3 origin, math::Quat rotation, math::Vec3 direction,
+std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math::DVec3 origin, math::Quat rotation, math::Vec3 direction,
                                                float distance, const QueryFilter& filter) const {
     const auto& impl = *m_impl;
     const auto along = unit(direction);
     const auto turned = normalized(rotation);
-    if (!along || !finite(origin) || !turned)
+    if (!along || !finite(origin.to_float()) || !turned)
         throw std::invalid_argument("A shape cast needs a finite origin and rotation, and a finite, nonzero direction");
     if (!(std::isfinite(distance) && distance >= 0.0f)) throw std::invalid_argument("A shape cast's distance must be finite and not negative");
     const auto collider = ColliderDesc{shape};
@@ -1219,18 +1224,19 @@ std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math:
     if (distance == 0.0f) return overlap(shape, origin, rotation, filter);
     const auto swept = make_shape({collider}, math::Vec3(1.0f), 1000.0f);
     const auto cast = JPH::RShapeCast::sFromWorldTransform(swept, JPH::Vec3::sReplicate(1.0f),
-                                                           JPH::RMat44::sRotationTranslation(jolt(*turned), JPH::RVec3(jolt(origin))),
+                                                           JPH::RMat44::sRotationTranslation(jolt(*turned), jolt_position(origin)),
                                                            jolt(*along * distance));
     auto settings = JPH::ShapeCastSettings();
     settings.mReturnDeepestPoint = true;
     auto collector = JPH::AllHitCollisionCollector<JPH::CastShapeCollector>{};
     const auto groups = QueryGroups(filter.groups);
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
-    impl.query().CastShape(cast, settings, JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
+    // Contact points come back relative to the base offset, in float: the cast's own origin keeps them precise.
+    impl.query().CastShape(cast, settings, jolt_position(origin), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
     auto results = impl.hits(collector, [](const JPH::ShapeCastResult& hit) { return hit.mFraction; }, [&](const JPH::ShapeCastResult& hit) {
         auto result = QueryHit{};
         result.distance = hit.mFraction * distance;
-        result.point = maya_vector(hit.mContactPointOn2);
+        result.point = origin + maya_vector(hit.mContactPointOn2);
         if (const auto axis = maya_vector(hit.mPenetrationAxis); const auto normal = unit(axis)) result.normal = *normal * -1.0f;
         return result;
     });
@@ -1238,22 +1244,22 @@ std::vector<QueryHit> PhysicsWorld::shape_cast(const ShapeGeometry& shape, math:
     return results;
 }
 
-std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::Vec3 position, math::Quat rotation,
+std::vector<QueryHit> PhysicsWorld::overlap(const ShapeGeometry& shape, math::DVec3 position, math::Quat rotation,
                                             const QueryFilter& filter) const {
     const auto& impl = *m_impl;
     const auto turned = normalized(rotation);
-    if (!finite(position) || !turned) throw std::invalid_argument("An overlap needs a finite position and rotation");
+    if (!finite(position.to_float()) || !turned) throw std::invalid_argument("An overlap needs a finite position and rotation");
     const auto collider = ColliderDesc{shape};
     if (auto reason = validate_collider(collider); !reason.empty()) throw std::invalid_argument("An overlap's shape is invalid: " + reason);
     const auto probe = make_shape({collider}, math::Vec3(1.0f), 1000.0f);
     auto collector = JPH::AllHitCollisionCollector<JPH::CollideShapeCollector>{};
     const auto groups = QueryGroups(filter.groups);
     const auto bodies = QueryBodies(filter.sensors, impl.ignored(filter));
-    impl.query().CollideShape(probe, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sRotationTranslation(jolt(*turned), JPH::RVec3(jolt(position))),
-                              JPH::CollideShapeSettings(), JPH::RVec3::sZero(), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
+    impl.query().CollideShape(probe, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sRotationTranslation(jolt(*turned), jolt_position(position)),
+                              JPH::CollideShapeSettings(), jolt_position(position), collector, JPH::BroadPhaseLayerFilter(), groups, bodies);
     auto results = impl.hits(collector, [](const JPH::CollideShapeResult&) { return 0.0f; }, [&](const JPH::CollideShapeResult& hit) {
         auto result = QueryHit{};
-        result.point = maya_vector(hit.mContactPointOn2);
+        result.point = position + maya_vector(hit.mContactPointOn2); // relative to the base offset
         if (const auto normal = unit(maya_vector(hit.mPenetrationAxis))) result.normal = *normal * -1.0f;
         return result;
     });

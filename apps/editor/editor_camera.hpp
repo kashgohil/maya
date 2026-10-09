@@ -22,15 +22,15 @@ struct NavigationInput {
 class EditorCamera {
 public:
     /// Radians: yaw 0 looks along -Z; positive yaw turns left, positive pitch looks up.
-    EditorCamera(const math::Vec3& position = {0.0f, 0.0f, 0.0f}, float yaw = 0.0f, float pitch = 0.0f);
-    static EditorCamera looking_at(const math::Vec3& eye, const math::Vec3& target);
+    EditorCamera(const math::DVec3& position = {}, float yaw = 0.0f, float pitch = 0.0f);
+    static EditorCamera looking_at(const math::DVec3& eye, const math::DVec3& target);
 
     void update(const NavigationInput& input, float delta_time);
     /// Rigid world pose: camera looks along its local -Z.
-    math::Mat4 pose() const;
+    math::Affine pose() const;
     math::Vec3 forward() const;
 
-    math::Vec3 position;
+    math::DVec3 position; // in double, as world positions are (#1065)
     float yaw;
     float pitch;
     CameraComponent camera{};
@@ -38,7 +38,7 @@ public:
     float look_sensitivity = 0.003f; // radians per point
     /// The point orbit and zoom turn around and move toward, set when that navigation starts. Pan
     /// moves it with the camera.
-    math::Vec3 pivot{0.0f, 0.0f, 0.0f};
+    math::DVec3 pivot{};
     float pan_scale = 0.01f; // metres the camera pans per point of pointer movement
     float zoom_sensitivity = 0.005f; // zoom per point: drag right or up to move closer
 };

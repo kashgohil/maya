@@ -165,7 +165,8 @@ add_library(Maya::Metrics ALIAS MayaMetrics)
 target_include_directories(MayaMetrics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaMetrics)
 
-# Jolt Physics (MIT), pinned (docs/architecture/physics-scripting-decision.md). Single precision,
+# Jolt Physics (MIT), pinned (docs/architecture/physics-scripting-decision.md). Double precision
+# positions (#1065, docs/architecture/world-scale-decision.md#coordinates-double-positions),
 # 32-bit object layers, no GPU compute, no serialization, no install rules. Jolt builds without
 # exceptions and with its own warnings. RTTI is on so UndefinedBehaviorSanitizer's vptr check can see
 # Jolt's classes, as in the rest of Maya. Only the Jolt library itself is part of `all`.
@@ -174,7 +175,7 @@ FetchContent_Declare(jolt
     GIT_TAG v5.6.0
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR Build)
-set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+set(DOUBLE_PRECISION ON CACHE BOOL "" FORCE)
 set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
 set(CPP_RTTI_ENABLED ON CACHE BOOL "" FORCE)
 set(OBJECT_LAYER_BITS 32 CACHE STRING "" FORCE)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "maya/math/matrix.hpp"
+#include "maya/math/affine.hpp"
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -20,42 +20,65 @@ enum class DebugShapeKind : uint8_t {
 };
 struct DebugShape {
     DebugShapeKind kind = DebugShapeKind::box;
-    math::Mat4 world = math::Mat4::identity(); // for a capsule, rotation and translation only
+    math::Mat4 world = math::Mat4::identity(); // relative to DebugDraw::origin; for a capsule, rotation and translation only
     math::Vec3 size{0.5f};
     DebugColor color{1.0f, 1.0f, 1.0f, 1.0f};
 };
 struct DebugLine {
-    math::Vec3 from{0.0f};
+    math::Vec3 from{0.0f}; // relative to DebugDraw::origin
     math::Vec3 to{0.0f};
     DebugColor color{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
 /// World-space lines and shape outlines for debug views: plain data from any producer (physics debug
 /// views, tools) that extraction copies into a render snapshot. Nothing here refers to a World.
+/// Producers pass world positions (in double, #1065); they are stored relative to `origin` in float,
+/// so set `origin` near what is drawn (the camera) before adding to it.
 struct DebugDraw {
+    math::DVec3 origin{};
     std::vector<DebugShape> shapes;
     std::vector<DebugLine> lines; // bright in front of the scene, faint where it hides them
     std::vector<DebugLine> xray_lines; // as bright where the scene hides them: what is inside things, such as skeletons
 
     bool empty() const noexcept { return shapes.empty() && lines.empty() && xray_lines.empty(); }
+    /// The same lines and shapes, stored relative to `to` instead (a render snapshot's origin).
+    void rebase(const math::DVec3& to) {
+        const auto shift = (origin - to).to_float();
+        origin = to;
+        if (shift.x == 0.0f && shift.y == 0.0f && shift.z == 0.0f) return;
+        for (auto* list : {&lines, &xray_lines})
+            for (auto& line : *list) {
+                line.from += shift;
+                line.to += shift;
+            }
+        for (auto& shape : shapes) {
+            shape.world.at(0, 3) += shift.x;
+            shape.world.at(1, 3) += shift.y;
+            shape.world.at(2, 3) += shift.z;
+        }
+    }
     void clear() noexcept {
         shapes.clear();
         lines.clear();
         xray_lines.clear();
     }
-    void line(const math::Vec3& from, const math::Vec3& to, const DebugColor& color) { lines.push_back({from, to, color}); }
-    void xray_line(const math::Vec3& from, const math::Vec3& to, const DebugColor& color) { xray_lines.push_back({from, to, color}); }
+    void line(const math::DVec3& from, const math::DVec3& to, const DebugColor& color) {
+        lines.push_back({(from - origin).to_float(), (to - origin).to_float(), color});
+    }
+    void xray_line(const math::DVec3& from, const math::DVec3& to, const DebugColor& color) {
+        xray_lines.push_back({(from - origin).to_float(), (to - origin).to_float(), color});
+    }
     /// Three short axis-aligned lines through `at`, `size` long.
-    void cross(const math::Vec3& at, float size, const DebugColor& color) {
-        const auto h = size * 0.5f;
-        line(at - math::Vec3{h, 0, 0}, at + math::Vec3{h, 0, 0}, color);
-        line(at - math::Vec3{0, h, 0}, at + math::Vec3{0, h, 0}, color);
-        line(at - math::Vec3{0, 0, h}, at + math::Vec3{0, 0, h}, color);
+    void cross(const math::DVec3& at, float size, const DebugColor& color) {
+        const auto h = double(size) * 0.5;
+        line(at - math::DVec3{h, 0, 0}, at + math::DVec3{h, 0, 0}, color);
+        line(at - math::DVec3{0, h, 0}, at + math::DVec3{0, h, 0}, color);
+        line(at - math::DVec3{0, 0, h}, at + math::DVec3{0, 0, h}, color);
     }
     /// A line with a four-sided head at `to`, a fifth of its length.
-    void arrow(const math::Vec3& from, const math::Vec3& to, const DebugColor& color) {
+    void arrow(const math::DVec3& from, const math::DVec3& to, const DebugColor& color) {
         line(from, to, color);
-        const auto along = to - from;
+        const auto along = (to - from).to_float();
         const auto length = along.length();
         if (!(length > 1e-6f)) return;
         const auto d = along * (1.0f / length);
@@ -63,19 +86,19 @@ struct DebugDraw {
         const auto axis = std::abs(d.x) < 0.9f ? math::Vec3{1, 0, 0} : math::Vec3{0, 1, 0};
         const auto u = math::Vec3::cross(d, axis).normalized();
         const auto v = math::Vec3::cross(d, u);
-        const auto back = to - d * (length * 0.2f);
+        const auto back = to - math::DVec3(d * (length * 0.2f));
         const auto spread = length * 0.07f;
-        for (const auto& side : {u, u * -1.0f, v, v * -1.0f}) line(to, back + side * spread, color);
+        for (const auto& side : {u, u * -1.0f, v, v * -1.0f}) line(to, back + math::DVec3(side * spread), color);
     }
-    void box(const math::Mat4& world, const math::Vec3& half_extents, const DebugColor& color) {
-        shapes.push_back({DebugShapeKind::box, world, half_extents, color});
+    void box(const math::Affine& world, const math::Vec3& half_extents, const DebugColor& color) {
+        shapes.push_back({DebugShapeKind::box, world.relative_to(origin), half_extents, color});
     }
-    void sphere(const math::Mat4& world, float radius, const DebugColor& color) {
-        shapes.push_back({DebugShapeKind::sphere, world, math::Vec3(radius), color});
+    void sphere(const math::Affine& world, float radius, const DebugColor& color) {
+        shapes.push_back({DebugShapeKind::sphere, world.relative_to(origin), math::Vec3(radius), color});
     }
     /// `world` must be rigid (rotation and translation): the caps stay round.
-    void capsule(const math::Mat4& world, float radius, float half_height, const DebugColor& color) {
-        shapes.push_back({DebugShapeKind::capsule, world, {radius, half_height, radius}, color});
+    void capsule(const math::Affine& world, float radius, float half_height, const DebugColor& color) {
+        shapes.push_back({DebugShapeKind::capsule, world.relative_to(origin), {radius, half_height, radius}, color});
     }
 };
 
