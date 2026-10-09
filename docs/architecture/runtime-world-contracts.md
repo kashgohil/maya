@@ -212,7 +212,7 @@ return Mover
 - **Reporting.** The editor shows a notice and a "script" entry in Diagnostics; the player logs it. Scripts never crash the editor or the player.
 - **Native systems.** A failing native `SimulationSystem` still stops the session, as in [play](../play.md#play-sessions).
 
-## Future streaming boundary
+## Streaming boundary
 
 A cell is a residency/activation unit, not an identity namespace or a second World implementation. Cell content and generated content enter the same entity, asset, mutation, and persistence APIs. Persist generator seed, parameters, and version; regeneration cannot silently change the identity of surviving authored entities.
 
@@ -220,4 +220,6 @@ Use explicit unloaded → loading → ready → active → unloading states, plu
 
 Every request carries a world lifetime token and monotonically changing request generation. Unload/cancel invalidates that generation; late completion is discarded and releases its temporary leases. Unload commits removal from simulation and extraction, invalidates runtime handles, and releases cell leases. A later reload preserves persistent IDs but creates fresh handles. A weak cross-cell entity reference becomes unresolved while absent; it does not silently pin the cell. Explicit pinning must be visible in residency diagnostics and subject to policy.
 
-Initial transform hierarchies cannot cross independently unloadable cells. Move a whole subtree together, retain it in an explicitly persistent unit, or use a non-owning entity reference. Save dirty state or record an explicit discard decision before unloading; a load failure must not erase authored data. #1060 decided the coordinates (double-precision world positions, no origin shifting) and the cells (a uniform 128 m grid, authored as scene text and cooked to binary); the save-delta format is [#1064](https://work.rezee.app/kash/issues/1064)'s.
+#1064 implements this boundary ([worlds and cells](../world.md#worlds-and-cells)): stage groups hold a cell committed over several frames until one publish, loads carry the cell's generation and are discarded when given up, unloading hides a cell in one step and keeps play's changes as a delta against the cooked cell, and weak references resolve by persistent ID.
+
+Initial transform hierarchies cannot cross independently unloadable cells. Move a whole subtree together, retain it in an explicitly persistent unit, or use a non-owning entity reference. Save dirty state or record an explicit discard decision before unloading; a load failure must not erase authored data. #1060 decided the coordinates (double-precision world positions, no origin shifting) and the cells (a uniform 128 m grid, authored as scene text and cooked to binary); the save delta is [#1064](https://work.rezee.app/kash/issues/1064)'s `CellDelta`: destroyed entities and the components that keep state of changed ones, held by the streamer for the play session.

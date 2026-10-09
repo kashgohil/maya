@@ -114,11 +114,11 @@ Destroying an entity removes its body when the tick commits. A handle to a destr
 
 1. **Input** (phase 2).
 2. **Systems** (phase 3), in order. After each one, its World commands are checked against the bodies.
-3. **Preparation** (phase 4). Static bodies whose committed world transforms changed move first. Then the tick's requests apply in the order they were made. Kinematic bodies without a target stop.
+3. **Preparation** (phase 4). Static bodies whose committed world transforms changed move first: those below the entities the World's transform journal names, not a check of every static body (#1064). The journal's moving bodies (last tick's write-backs) are skipped first: nothing with a body is below a moving body, so this costs about 15 ns a moved body. Then the tick's requests apply in the order they were made. Kinematic bodies without a target stop.
 4. **Step** (phase 5). One `PhysicsSystem::Update` of the fixed interval, with `collision_steps` collision iterations (default 1).
 5. **Synchronize** (phase 6). Each kinematic and dynamic body whose pose changed has its transform added to the tick's World batch, in body creation order. Bodies whose entities this batch destroys are skipped.
 6. **Events and post-physics** (phase 7, #1021). The step's contact and trigger events are resolved and sorted ([events](#contact-and-trigger-events)). Then each system's `late_fixed_update` runs in order, with the events in `TickContext::events` and `physics` showing the completed step. Their World commands join the tick's batch and are checked like phase 3's. Their body requests wait: creations and removals apply at this commit, and everything else applies first in the next tick's phase 4, so the completed step cannot change.
-7. **Commit.** The World batch commits as one transaction. Then bodies of destroyed entities are removed, and requested bodies are created and removed in request order, phase 3's and then phase 7's. This is the next tick's phase 1.
+7. **Commit.** The World batch commits as one transaction. Then bodies of the entities it destroyed are removed (from the batch's own list since #1064, not a check of every body), and requested bodies are created and removed in request order, phase 3's and then phase 7's. This is the next tick's phase 1.
 
 During phase 7 the World is still as the previous tick committed it, since the batch commits after it: a moving body's transform there lags its `state`, which is the completed step's.
 

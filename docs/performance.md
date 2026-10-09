@@ -109,7 +109,7 @@ A manifest is a small versioned text file. Its keys may appear in any order, eac
 ```text
 maya-benchmark 1
 name "i1-10k"
-workload instances           # instances, scene, load_cycles, play_cycles, physics, import, or animation
+workload instances           # instances, scene, load_cycles, play_cycles, physics, import, animation, or stream
 project "../samples/basic_scene"
 mesh 6d617961 2              # catalog IDs of the shared mesh and material
 material 6d617961 11
@@ -137,6 +137,7 @@ stream_load off              # scene: on loads by streaming frames instead of a 
 | `play_cycles` | L1 play reset. Starts and stops play sessions from the same authored scene. The authored World must be unchanged afterwards. |
 | `physics` | P1 physics stress ([recipe](architecture/performance-baseline.md#p1-physics-stress), #1024). Generates the P1 scene and ticks it back to back, headless: no project, views, or device work. Each worker configuration runs `runs` times. |
 | `import` | glTF import and cooking ([below](#import), #1036). No project or views: each model is imported into a new project and loaded into the device, cold and warm. |
+| `stream` | A generated grid world crossed while its cells stream ([below](#stream), #1064): headless, frames paced at 60 Hz. |
 | `animation` | A1 skeletal animation ([below](#animation), #1038): copies of an imported skinned model playing their clips under a sun that casts shadows, with every system of play. |
 
 Cycle workloads take `cycles`, `ticks` (frames per cycle), and `slope_from`, the first cycle of the footprint slope's fit (default 11). The L1 manifests run 300 cycles and fit from cycle 101, once allocator warm-up has finished (#1024).
@@ -184,6 +185,12 @@ skinning on                  # off: drawn as authored, unskinned, for skinning's
 It imports the model into a new project in the temporary folder, then lays out `count` copies of its scene, each starting its clip at a seeded time so their poses differ, with a camera and a sun casting four cascades. Every run plays them with `play_systems` (the [animation system](animation.md#playing) among them), one tick and one view a frame. Besides the frame's usual measures, each instrumented run records **each system's time in the tick** (`cpu_ms.systems`, such as `Animation`), and the counters give the clips playing, the instances drawn skinned, and the joints uploaded per view. The GPU's per-pass times (`view`, `sun shadows`) with `skinning on`, against the same scene with `skinning off`, give skinning's cost per pass. [a1_animation](../benchmarks/a1_animation.benchmark) and [a1_unskinned](../benchmarks/a1_unskinned.benchmark) run 100 CesiumMen; their results are in the [animation doc](animation.md#cost).
 
 The seed selection uses SplitMix64, so it is the same on every machine. Generated scenes are built with the same World, scene, and asset APIs as authored content. Before a run, the generated scene is validated against the project's catalog, just as a scene file is.
+
+### Stream
+
+The stream workload ([stream_workload.cpp](../apps/benchmark/stream_workload.cpp), #1064) needs no project: it generates a world of `grid` × `grid` cells of 128 m around the origin, each with a ground box and `count` entities (roots with a child each, one root in ten a static collider, placed by the seed), and a persistent camera and physics settings. It saves it as a [world](world.md#worlds-on-disk) in a temporary folder, then in each run plays the persistent part, settles the cells around the start, and crosses the world `cycles` times through the middle of a row at `speed` m/s, back and forth, with the streaming radii `radii <load> <activate> <hysteresis>`. Frames are paced at 60 Hz, as a game's are, so loads have the time between frames they would have; each frame streams, then runs one tick. The first run cooks the cells through a cook cache; later ones decode them.
+
+It records, under `streaming`, per run: the world's cells and entities; summaries and the raw samples of each frame's work (`frame_ms`: streaming and the tick) and of the streaming alone (`streaming_ms`); loads started, cancelled, and failed, completions discarded, activations, and deactivations; and for each crossing, its time, its longest streaming frame, the active entities and cooked bytes loaded at its end, and the process's footprint. A failed load fails the benchmark. [stream](../benchmarks/stream.benchmark) is 16 × 16 cells of 2,000 entities (512,000) at 60 m/s with W1's radii.
 
 ### Results
 

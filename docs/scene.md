@@ -109,6 +109,10 @@ The format is `maya-scene 1`. Component schemas are version 1, except `maya.came
 
 When a schema changes, [its version increments](properties.md#persistence-and-schema-evolution) and a migration keyed by component and source version is added where the parser checks component versions. A migration rewrites the raw property list into the current shape. The result is then validated through the same schema APIs, so a failed migration produces diagnostics and publishes nothing. Loading an older file never rewrites it. The next explicit save writes current versions, and editors should confirm or back up before overwriting an older file. The #1002 editor writes a scene only on an explicit Save. Unknown data is rejected, not dropped; a preservation mode would need to be designed explicitly.
 
+## Cooked cells
+
+A world's cells are cooked to a packed binary ([scene_binary.hpp](../include/maya/scene/scene_binary.hpp), #1064), so loading one costs decoding, not parsing ([worlds](world.md#worlds-on-disk)). It holds every entity's ID and parent and every property of every component, as typed values, at this build's schema versions, after a header ("mayacel1") and a fingerprint of those schemas (names, versions, property IDs and types). It is a cache format, never authored: a cook made by a build with other schemas is refused and cooked again from the text. Decoding validates as reading text does (`decode_scene_binary` returns the same diagnostics), and a truncated or damaged buffer is a diagnostic, never a crash. In the cook cache an entry's kind is `cell`; in a package, a `.cell` file in the cook cache's checked envelope.
+
 ## Numerical stability
 
 Save/reopen preserves float values, and translations' doubles, exactly. [Transform validation](spatial.md) now keeps quaternions within `quaternion_unit_tolerance` (4e-7) of unit length bit-exact instead of renormalizing them again. Renormalization had shifted about 1.4% of already-normalized rotations by one ulp on each pass. Each save/load cycle revalidates, so rotations would otherwise drift. Hand-written non-unit quaternions are still normalized on load.

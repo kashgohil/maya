@@ -34,7 +34,7 @@ The tiers are separate threads, so a worker busy with a 2 ms decode never holds 
 
 A `CompletionQueue` belongs to an owner (#1062's registry, #1064's streamer). Jobs post through its `Sink` with a request and a generation, and the owner calls `drain(budget, current)` in its finalize phase.
 - Completions are applied in the order they were posted, until the budget is spent; at least one is applied each call, so a queue never stalls.
-- `current(request, generation)` decides whether a completion is still wanted. One for a request that was replaced, cancelled, or whose world closed is discarded without running, as the [streaming contract](architecture/runtime-world-contracts.md#future-streaming-boundary) requires.
+- `current(request, generation)` decides whether a completion is still wanted. One for a request that was replaced, cancelled, or whose world closed is discarded without running, as the [streaming contract](architecture/runtime-world-contracts.md#streaming-boundary) requires.
 - A sink outlives its queue safely: what it posts after the queue is gone is dropped.
 
 ## Physics

@@ -93,7 +93,7 @@ Contracts for [#1064](https://work.rezee.app/kash/issues/1064):
 - An entity belongs to the cell of its root's translation when the world is saved; a whole subtree moves with its root, and hierarchies across cells are refused.
 - Streaming radii are project settings; W1 uses 640 m to load, 384 m to activate, and 64 m of hysteresis.
 - Activation spends at most 1 ms a frame on owner-thread commits. A cell larger than one frame's budget is committed over several frames with its entities excluded from systems, extraction, and queries, and is published in one final commit. Each cell's bodies join and leave Jolt in batches.
-- The scheduling contract's state machine, tokens, and generations apply as written in [Future streaming boundary](runtime-world-contracts.md#future-streaming-boundary).
+- The scheduling contract's state machine, tokens, and generations apply as written in [Streaming boundary](runtime-world-contracts.md#streaming-boundary).
 
 ## Visibility: a loose grid
 

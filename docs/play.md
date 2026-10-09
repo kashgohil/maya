@@ -107,6 +107,7 @@ maya_player [project [scene]] [--record file | --replay file] [--debug-physics] 
 
 - **Project.** The project is a `project.maya` file or its folder, relative to where the player starts. Without one, the player uses the sample project. A [packaged](projects.md#packages) player runs its own project and takes no project argument: its one argument, when given, is one of its scenes.
 - **Scene.** The scene is relative to the project's content root. Without one, the player uses the project's startup scene.
+- **Worlds** (#1064). A `.world` plays as a scene does: its persistent part is the scene, and its [cells stream](world.md#streaming) around the camera, settled behind the loading screen (`[Player] streamed 9 cells in around the camera`) and then every frame before the tick, with the project's streaming radii. A cell that fails to load, or that play keeps active, is reported. Recording and replaying a world are refused for now.
 - **View.** The player shows the scene's first camera, in document order, at the window's size.
 - **Input.** Every window event goes to the game, and the cursor is captured. Escape closes the window.
 - **`--record file`** records the session and writes it to `file` when the window closes ([recording and replay](#recording-and-replay)).
