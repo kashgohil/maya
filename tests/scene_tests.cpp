@@ -643,7 +643,7 @@ TEST_CASE("Physics components round-trip as readable scene text", "[scene][physi
 
 TEST_CASE("The sample project's scenes load, including the physics scene", "[scene][physics]") {
     const auto assets = fs::path(MAYA_SAMPLE_ASSETS);
-    for (const auto* name : {"basic.scene", "v1_reference.scene", "physics.scene"}) {
+    for (const auto* name : {"basic.scene", "v1_reference.scene", "physics.scene", "terrain.scene"}) {
         INFO(name);
         const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
         const auto loaded = read_scene(std::string_view(read_file(assets / name)), any);

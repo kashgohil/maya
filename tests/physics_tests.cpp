@@ -1,4 +1,5 @@
 #include "maya/jobs/jobs.hpp"
+#include "maya/procedural/height_field.hpp"
 #include "maya/simulation/play_session.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -1155,4 +1156,68 @@ TEST_CASE("Events in one tick are ordered by kind and EntityId, not by when bodi
     // In the tick box 7 met the sensor, the contacts (if any) come first, then the trigger.
     for (size_t i = 1; i < events.size(); ++i)
         if (events[i].tick == events[i - 1].tick) CHECK(events[i - 1].kind <= events[i].kind);
+}
+
+TEST_CASE("Height fields collide, answer queries for their owner, and leave in a batch", "[physics][terrain]") {
+    // A tile of W1's terrain, far from the origin (#1065), and a sphere dropped onto it.
+    const auto tile = generate_height_tile(HeightfieldNoise{}, {40, 33});
+    REQUIRE(tile);
+    const auto origin = math::DVec3{40.0 * 128.0, 0.0, 33.0 * 128.0};
+    World world;
+    auto commands = world.commands();
+    auto terrain = commands.create();
+    commands.add(terrain, TransformComponent{});
+    auto ball = commands.create();
+    const auto drop = math::DVec3{origin.x + 50.25, double(tile->height(50, 70)) + 3.0, origin.z + 70.25};
+    commands.add(ball, TransformComponent{drop, {}, {1.0f}});
+    const auto created = world.commit(commands);
+    REQUIRE(created);
+    PhysicsWorld physics;
+    auto desc = HeightFieldDesc{origin, tile_samples, 1.0f, tile->heights};
+    const auto prepared = PhysicsWorld::prepare_height_field(desc);
+    const auto field = physics.add_height_field(world, created.created[0], prepared);
+    CHECK(physics.height_fields() == 1);
+    CHECK(physics.stats().static_bodies == 1);
+
+    // Rays down land on the sampled surface (8 bits a sample over 4 x 4 blocks: within a centimetre) and
+    // name the owner.
+    for (const auto& [x, z] : {std::pair{0u, 0u}, {10u, 100u}, {64u, 64u}, {128u, 128u}, {127u, 3u}}) {
+        INFO(x << ", " << z);
+        const auto from = math::DVec3{origin.x + x, 500.0, origin.z + z};
+        const auto hit = physics.raycast_nearest(from, {0, -1, 0}, 1000.0f);
+        REQUIRE(hit);
+        CHECK(hit->entity == created.created[0]);
+        CHECK(std::abs(hit->point.y - double(tile->height(x, z))) < 0.01);
+        CHECK(hit->normal.y > 0.0f);
+    }
+    CHECK_FALSE(physics.raycast_nearest({origin.x - 10.0, 500.0, origin.z - 10.0}, {0, -1, 0}, 1000.0f)); // off the tile
+    // A sphere swept down stops on it.
+    const auto swept = physics.shape_cast(SphereShape{0.5f}, {origin.x + 64.0, 400.0, origin.z + 64.0}, {}, {0, -1, 0}, 1000.0f);
+    REQUIRE_FALSE(swept.empty());
+    CHECK(swept.front().entity == created.created[0]);
+
+    // A dynamic sphere comes to rest on the ground beneath it.
+    REQUIRE(physics.create_bodies(world, std::array{std::pair{created.created[1], sphere(MotionType::dynamic, 0.5f)}}).empty());
+    for (int i = 0; i < 300; ++i) physics.step(float(frame));
+    const auto rested = physics.state(created.created[1]);
+    REQUIRE(rested);
+    const auto below = physics.raycast_nearest({rested->position.x, rested->position.y, rested->position.z}, {0, -1, 0}, 10.0f,
+                                               QueryFilter{.ignore = created.created[1]});
+    REQUIRE(below);
+    CHECK(below->entity == created.created[0]);
+    CHECK(rested->position.y - below->point.y == Approx(0.5).margin(0.06)); // its radius, on a slope it may still roll down
+
+    // Removing it takes it out of queries; the ball's contact with it ends.
+    const auto fields = std::array{field};
+    physics.remove_height_fields(fields);
+    CHECK(physics.height_fields() == 0);
+    CHECK_FALSE(physics.raycast_nearest({origin.x + 64.0, 500.0, origin.z + 64.0}, {0, -1, 0}, 1000.0f,
+                                        QueryFilter{.ignore = created.created[1]}));
+    physics.remove_height_fields(fields); // again: ignored
+    // A grid that is not square, or holds a NaN, is refused before Jolt sees it.
+    desc.samples = 128;
+    CHECK_THROWS_AS(PhysicsWorld::prepare_height_field(desc), std::invalid_argument);
+    auto bad = tile->heights;
+    bad[5] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_THROWS_AS(PhysicsWorld::prepare_height_field({origin, tile_samples, 1.0f, bad}), std::invalid_argument);
 }

@@ -134,6 +134,10 @@ TEST_CASE("A package holds its scenes and exactly the assets they reach, cooked,
         REQUIRE(source != source_catalog.end());
         const auto payload = unwrap_cooked(read_bytes(packaged));
         switch (record.kind) {
+        case AssetKind::generator: // authored text, as materials are
+            CHECK(record.path.extension() == ".generator");
+            CHECK(read_bytes(packaged) == read_bytes(project / "assets" / source->path));
+            break;
         case AssetKind::mesh: {
             CHECK(record.path.extension() == cooked_mesh_extension);
             REQUIRE(payload);

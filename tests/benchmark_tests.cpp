@@ -602,3 +602,34 @@ runs 1
     CHECK(has(to_text(result), "crossing 2:"));
     CHECK_FALSE(parse("maya-benchmark 1\nname \"x\"\nworkload stream\nradii 100 200 0\n")); // activation beyond loading
 }
+
+TEST_CASE("The scene workload streams a scene's terrain as the player does and counts it", "[benchmark][terrain]") {
+    Device device;
+    auto loaded = load_manifest(fs::path(MAYA_SOURCE_DIR) / "benchmarks/terrain.benchmark");
+    INFO(loaded.error);
+    REQUIRE(loaded);
+    auto manifest = loaded.manifest;
+    manifest.width = 64;
+    manifest.height = 36;
+    manifest.warmup = 2;
+    manifest.samples = 6;
+    manifest.runs = 2;
+    const auto result = run(manifest, device, "shader");
+    INFO(result.failure);
+    REQUIRE(result.failure.empty());
+    REQUIRE(result.runs.size() == 2);
+    // Behind the loading screen of each run: every tile within reach drawn, those near the camera collided with.
+    const auto& c = result.counters;
+    CHECK(c.terrain_tiles == 16); // the generator's whole 4 × 4 region is within 896 m
+    CHECK(c.height_fields > 0);
+    CHECK(c.height_fields <= c.terrain_tiles);
+    CHECK(c.terrain_patches > 0.0);
+    CHECK(c.terrain_draws > 0.0);
+    CHECK(c.terrain_shadow_patches > 0.0);
+    CHECK(c.terrain_generated + c.terrain_cached >= 16);
+    CHECK(c.terrain_cpu_bytes > 0);
+    CHECK(c.terrain_gpu_bytes > 0);
+    const auto json = to_json(result);
+    for (const auto* key : {"\"terrain_tiles\"", "\"height_fields\"", "\"terrain_patches_per_view\"", "\"terrain_longest_generate_ms\""})
+        CHECK(has(json, key));
+}

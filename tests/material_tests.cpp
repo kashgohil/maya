@@ -135,7 +135,7 @@ TEST_CASE("Version 1 material files still load as before, and are written as ver
     CHECK(has(read("maya-material 1\nmetallic 0\nbase_color 1 1 1 1\nroughness 1\n").error, "Expected maya-material 1, base_color RGBA"));
     CHECK(has(read("maya-material 1\nbase_color 2 0 0 1\nmetallic 0\nroughness 1\n").error, "finite in [0,1]"));
     CHECK(has(read("maya-material 1\nbase_color 1 1 1 1\nmetallic 0\nroughness 1\nextra\n").error, "Expected maya-material 1"));
-    // Every sample material still loads; the ones made for #1033 are version 2.
+    // Every sample material still loads; the ones made for #1033 and the terrain's (#1068) are version 2.
     const auto materials = fs::path(MAYA_SOURCE_DIR) / "samples/basic_scene/assets/materials";
     auto versions = std::map<uint32_t, int>{};
     for (const auto& entry : fs::recursive_directory_iterator(materials)) {
@@ -147,7 +147,7 @@ TEST_CASE("Version 1 material files still load as before, and are written as ver
         ++versions[loaded.version];
     }
     CHECK(versions[1] == 4);
-    CHECK(versions[2] == 16);
+    CHECK(versions[2] == 18);
 }
 
 TEST_CASE("Saving a material replaces its file whole, and a failed save leaves it alone", "[assets][materials]") {

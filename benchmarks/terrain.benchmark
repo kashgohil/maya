@@ -1,0 +1,14 @@
+maya-benchmark 1
+# Terrain (#1068, docs/procedural.md#streaming): the sample project's terrain scene, as the player runs it.
+# A 4 × 4-cell heightfield generator under a shadowed sun, its tiles generated (or read from the cook cache)
+# and collided with around the camera behind a loading screen, then drawn by CDLOD selection every frame.
+# Load it once (any run) so the cook cache is warm before measuring; a cold run needs
+# `rm -rf samples/basic_scene/.maya` first.
+name "terrain"
+workload scene
+project "../samples/basic_scene"
+scene "terrain.scene"
+resolution 1920 1080
+warmup 300
+samples 3000
+runs 3

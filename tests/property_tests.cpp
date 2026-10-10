@@ -56,7 +56,7 @@ public:
 }
 
 TEST_CASE("Property schemas have stable identities, discoverable defaults, and typed access", "[properties]") {
-    REQUIRE(component_schemas().size() == 14);
+    REQUIRE(component_schemas().size() == 15); // maya.terrain since #1068
     auto ids = std::set<ComponentId>{};
     auto names = std::set<std::string_view>{};
     for (const auto& schema : component_schemas()) {

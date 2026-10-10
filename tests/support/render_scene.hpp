@@ -153,6 +153,8 @@ public:
     TestProject& operator=(const TestProject&) = delete;
 
     void touch(const std::string& name) { std::ofstream(m_root / name) << "inline\n"; }
+    void write(const std::string& name, const std::string& text) { std::ofstream(m_root / name, std::ios::binary) << text; }
+    const std::filesystem::path& root() const noexcept { return m_root; }
     void remove(const std::string& name) { std::filesystem::remove(m_root / name); }
     template<Asset T> AssetRef<T> add(uint64_t id, const std::string& name) {
         const auto ref = AssetRef<T>{{0x7465, id}};
