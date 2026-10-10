@@ -35,6 +35,8 @@ struct RendererStats {
     uint64_t shadow_draws = 0; // instanced draws into them, one per batch
     uint64_t shadow_instances = 0; // instances drawn into them
     uint64_t joints = 0; // skin matrices uploaded, once per view (docs/animation.md#skinning)
+    uint64_t terrain_patches = 0, terrain_draws = 0; // terrain patches drawn in views and their instanced draws (#1068)
+    uint64_t terrain_shadow_patches = 0; // ... and into shadow maps
 };
 /// What the last view drew (docs/renderer.md#culling-and-batching).
 struct RenderViewReport {
@@ -90,7 +92,7 @@ public:
 private:
     // Lit surfaces by alpha mode (blend or not) and sidedness; masks discard in the opaque pipelines.
     enum class PipelineKind : uint8_t { lit, present, debug_front, debug_behind, tone_map, lit_double_sided, lit_blend,
-                                        lit_blend_double_sided, sky, shadow, shadow_masked };
+                                        lit_blend_double_sided, sky, shadow, shadow_masked, terrain, terrain_shadow };
     struct CachedPipeline {
         Format format = Format::undefined;
         PipelineKind kind = PipelineKind::lit;
@@ -104,12 +106,19 @@ private:
                                PipelineHandle front, PipelineHandle behind);
     /// Renders one atlas of 2 x 2 shadow maps: each from its view-projection, drawing its batches.
     RhiDiagnostic encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
-                                      const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches);
+                                      const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches,
+                                      const math::DVec3& eye);
     /// Binds the frame's instances, draw order, and joint palette (buffers 1, 4, and 6) in the open pass.
     RhiDiagnostic bind_instances();
     RhiDiagnostic prepare_shadows(const LightPlan& plan);
     bool session_changed() noexcept;
     void release() noexcept;
+    /// Terrain (#1068, docs/renderer.md#terrain): selects a terrain's patches for an eye, cut to `volume`,
+    /// and draws them, one instanced draw per tile they read and one for the overview's. The terrain's
+    /// pipeline is bound; buffers 1, 3, 5, and 6 are left bound to it.
+    RhiDiagnostic draw_terrain(const RenderTerrain& terrain, const RenderSnapshot& snapshot, const math::DVec3& eye, const Frustum& volume,
+                               bool shadow, uint64_t& patches);
+    RhiDiagnostic terrain_grid();
 
     GraphicsDevice& m_device;
     std::string m_shader_source;
@@ -137,6 +146,11 @@ private:
     RendererStats m_stats{};
     std::vector<float> m_debug_data; // packed debug lines or outlines of one kind, reused
     std::vector<uint32_t> m_debug_segments; // each outline's circle segments, reused
+    BufferHandle m_terrain_grid; // the indices of a patch's 32 x 32 quads, made on first use
+    std::vector<TerrainPatchChoice> m_terrain_choices; // reused
+    std::vector<TerrainPatchConstants> m_terrain_patches;
+    std::vector<TileIndex> m_terrain_tiles;
+    std::vector<std::pair<float, float>> m_terrain_ranges;
 };
 
 } // namespace maya

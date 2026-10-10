@@ -7,6 +7,7 @@
 #include "maya/renderer/visibility_index.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "maya/simulation/script_assets.hpp"
+#include "maya/streaming/terrain_streamer.hpp"
 #include "maya/world/spatial.hpp"
 #include <algorithm>
 #include <charconv>
@@ -141,7 +142,32 @@ struct Stage {
     SkinBindingCache& skins; // skins' joints between frames, as the player keeps them
     std::unique_ptr<VisibilityIndex>& visibility; // of the World being drawn, as the player keeps one (#1066)
     float lod_pixels = 1.0f, cull_pixels = 2.0f; // the project's, as the player reads them (docs/projects.md)
+    std::unique_ptr<TerrainStreamer>& terrain; // when the scene has terrain, as the player streams it (#1068)
 };
+math::DVec3 camera_position(const World& world, EntityId camera) {
+    const auto handle = world.find(camera);
+    const auto pose = handle ? world.world_matrix(*handle) : std::nullopt;
+    if (!pose) throw std::runtime_error("The camera entity is missing");
+    return pose->translation;
+}
+/// Whether the terrain around the camera is all drawn and collided with: nothing loading, uploading, or activating.
+bool terrain_settled(const Stage& stage) {
+    if (!stage.terrain) return true;
+    const auto& stats = stage.terrain->stats();
+    return stats.loading == 0 && stats.uploaded == 0 && stats.activated == 0 && stats.terrains == stage.terrain->terrains().size() &&
+           std::ranges::all_of(stage.terrain->terrains(), [](const TerrainView& view) { return view.overview != nullptr; });
+}
+bool has_terrain(const SceneDocument& document) {
+    return std::ranges::any_of(document.entities, [](const SceneEntity& entity) {
+        return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<TerrainComponent>(value); });
+    });
+}
+/// The terrain's tiles around the camera, drawn and collided with in the session's physics: a loading screen.
+void settle_terrain(const Stage& stage, PlaySession& session, EntityId camera) {
+    if (!stage.terrain) return;
+    stage.terrain->set_sources({camera_position(session.world(), camera)});
+    stage.terrain->settle(session.world(), stage.registry, &session.physics());
+}
 
 struct FrameSample {
     double frame = 0.0, simulation = 0.0, wait = 0.0, extract = 0.0, encode = 0.0, submit = 0.0;
@@ -181,6 +207,10 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
         AssetRegistry& assets;
         ~EndFrame() { assets.end_frame(); }
     } end_frame{stage.registry};
+    if (stage.terrain) { // its tiles around the camera, before the tick steps physics, as the player does
+        stage.terrain->set_sources({camera_position(session.world(), camera)});
+        stage.terrain->update(session.world(), stage.registry, &session.physics());
+    }
     if (const auto played = session.update(session.clock().interval()); !played.error.empty())
         throw std::runtime_error(played.error);
     lap(sample.simulation);
@@ -202,6 +232,7 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     options.index = stage.visibility.get();
     options.lod_pixels = stage.lod_pixels;
     options.cull_pixels = stage.cull_pixels;
+    if (stage.terrain) options.terrains = stage.terrain->terrains();
     const auto snapshot = extract_render_snapshot(world, stage.registry, options);
     if (!snapshot.diagnostics.empty()) throw std::runtime_error(snapshot.diagnostics.front().message);
     sample.loading = snapshot.stats.pending > 0 || snapshot.stats.pending_textures > 0 || snapshot.stats.environment_pending;
@@ -248,6 +279,15 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
     auto started = PlaySession::start(document, context, systems_for(manifest, stage.registry));
     if (!started) throw std::runtime_error(started.error.empty() ? started.diagnostics.front().message : started.error);
     auto& session = *started.session;
+    // The terrain's height fields belong to this session's physics until the run ends.
+    struct ClearTerrain {
+        const Stage& stage;
+        PlaySession& session;
+        ~ClearTerrain() {
+            if (stage.terrain) stage.terrain->clear(&session.physics());
+        }
+    } clear_terrain{stage, session};
+    settle_terrain(stage, session, camera);
     preload_render_assets(session.world(), stage.registry); // a loading screen: nothing streams in while measured
     for (uint32_t i = 0; i < manifest.warmup; ++i) run_frame(stage, session, camera, instrumented);
     auto samples = RunSamples{};
@@ -343,6 +383,20 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
             counters.shadow_maps = double(rendered.shadow_maps) / double(rendered.views);
             counters.shadow_draws = double(rendered.shadow_draws) / double(rendered.views);
             counters.joints = size_t(rendered.joints / rendered.views);
+            counters.terrain_patches = double(rendered.terrain_patches) / double(rendered.views);
+            counters.terrain_draws = double(rendered.terrain_draws) / double(rendered.views);
+            counters.terrain_shadow_patches = double(rendered.terrain_shadow_patches) / double(rendered.views);
+        }
+        if (stage.terrain) {
+            const auto& terrain = stage.terrain->stats();
+            counters.terrain_tiles = terrain.drawn;
+            counters.height_fields = terrain.height_fields;
+            counters.terrain_cpu_bytes = terrain.cpu_bytes;
+            counters.terrain_gpu_bytes = terrain.gpu_bytes;
+            counters.terrain_generated = terrain.generated;
+            counters.terrain_cached = terrain.cached;
+            counters.terrain_longest_update_ms = terrain.longest_update_ms;
+            counters.terrain_longest_generate_ms = terrain.longest_generate_ms;
         }
         counters.animated = world.component_count<AnimationComponent>();
         const auto last = extract_render_snapshot(world, stage.registry);
@@ -947,8 +1001,15 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
             throw std::runtime_error("'present on' needs a window; this device has no surface");
         auto skins = SkinBindingCache{};
         auto visibility = std::unique_ptr<VisibilityIndex>{};
+        auto terrain = std::unique_ptr<TerrainStreamer>{};
+        if (has_terrain(document)) { // as the player streams it: through the project's cook cache, collided with
+            auto settings = TerrainSettings{};
+            settings.streaming = project_streaming_settings(opened.project.settings);
+            settings.collide = true;
+            terrain = std::make_unique<TerrainStreamer>(&device, cache, settings);
+        }
         const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view, skins,
-                                 visibility, project_lod_pixels(opened.project.settings), project_cull_pixels(opened.project.settings)};
+                                 visibility, project_lod_pixels(opened.project.settings), project_cull_pixels(opened.project.settings), terrain};
         // The warmed empty session: the device, the project's catalog, the view target, and what the
         // renderer keeps (its texture placeholder), with no content.
         if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
@@ -981,7 +1042,7 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
                     load.longest_finalize_ms = std::max(load.longest_finalize_ms, sample.finalize);
                     if (sample.finalize > budget) ++load.over_budget;
                     const auto stats = registry.load_stats();
-                    if (!sample.loading && stats.in_flight == 0 && stats.prepared == 0) {
+                    if (!sample.loading && stats.in_flight == 0 && stats.prepared == 0 && terrain_settled(stage)) {
                         load.resident_ms = elapsed;
                         break;
                     }
@@ -989,10 +1050,12 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
                     device.take_gpu_timings();
                 }
             } else {
+                settle_terrain(stage, *probe.session, camera); // generating or reading its tiles is part of loading
                 preload_render_assets(probe.session->world(), registry);
                 result.load->first_frame_ms = clock.milliseconds() + run_frame(stage, *probe.session, camera, false).frame;
             }
             device.take_gpu_timings();
+            if (terrain) terrain->clear(&probe.session->physics());
         }
 
         if (manifest.workload == Workload::instances || manifest.workload == Workload::scene || manifest.workload == Workload::animation) {
@@ -1246,6 +1309,17 @@ std::string to_json(const Result& r) {
     json.field("animated", c.animated);
     json.field("skinned_instances", c.skinned);
     json.field("joints_per_view", c.joints);
+    json.field("terrain_tiles", c.terrain_tiles);
+    json.field("height_fields", c.height_fields);
+    json.field("terrain_cpu_bytes", c.terrain_cpu_bytes);
+    json.field("terrain_gpu_bytes", c.terrain_gpu_bytes);
+    json.field("terrain_patches_per_view", c.terrain_patches);
+    json.field("terrain_draws_per_view", c.terrain_draws);
+    json.field("terrain_shadow_patches_per_view", c.terrain_shadow_patches);
+    json.field("terrain_generated", c.terrain_generated);
+    json.field("terrain_cached", c.terrain_cached);
+    json.field("terrain_longest_update_ms", c.terrain_longest_update_ms);
+    json.field("terrain_longest_generate_ms", c.terrain_longest_generate_ms);
     json.close('}');
     write_jobs(json, r.jobs);
     // The registry's loading (docs/assets.md#asynchronous-loading): waited_in_frames must be 0.
@@ -1558,6 +1632,13 @@ std::string to_text(const Result& r) {
         out << "  " << r.counters.local_lights << " point and spot lights drawn, " << r.counters.dropped_lights << " left out, "
             << r.counters.unshadowed_lights << " without shadows; " << r.counters.shadow_maps << " shadow maps and "
             << r.counters.shadow_draws << " shadow draws per view\n";
+    if (!r.runs.empty() && r.counters.terrain_tiles > 0)
+        out << "  terrain: " << r.counters.terrain_tiles << " tiles drawn, " << r.counters.height_fields << " collided with; "
+            << r.counters.terrain_patches << " patches in " << r.counters.terrain_draws << " draws and " << r.counters.terrain_shadow_patches
+            << " shadow patches per view; " << r.counters.terrain_generated << " tiles generated, " << r.counters.terrain_cached
+            << " read from the cook cache; longest update " << r.counters.terrain_longest_update_ms << " ms, longest tile "
+            << r.counters.terrain_longest_generate_ms << " ms; " << r.counters.terrain_cpu_bytes / 1024 << " KiB held, "
+            << r.counters.terrain_gpu_bytes / 1024 << " KiB on the device\n";
     if (r.load && r.load->streamed)
         out << "  load: scene " << r.load->scene_ms << " ms, start " << r.load->start_ms << " ms; streamed: first frame " << r.load->first_frame_ms
             << " ms, resident after " << r.load->resident_ms << " ms and " << r.load->frames << " frames, longest frame "

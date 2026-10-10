@@ -7,6 +7,7 @@
 #include "maya/core/sha256.hpp"
 #include <cstddef>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -56,7 +57,12 @@ public:
     struct Stats {
         size_t hits = 0, misses = 0, writes = 0, failures = 0, damaged = 0;
     };
-    const Stats& stats() const noexcept { return m_stats; }
+    /// Since #1068 the cache may be used from several jobs at once: its counts and remembered digests are
+    /// guarded, and entries are written atomically.
+    Stats stats() const {
+        const auto lock = std::lock_guard(m_mutex);
+        return m_stats;
+    }
     std::filesystem::path entry_path(const CookKey& key) const;
 
     /// The entries on disk and their bytes, walking the folder.
@@ -83,6 +89,7 @@ private:
         Sha256Digest digest{};
     };
     std::filesystem::path m_folder;
+    mutable std::mutex m_mutex; // m_stats and m_sources
     Stats m_stats;
     std::vector<std::pair<std::filesystem::path, Remembered>> m_sources;
 };

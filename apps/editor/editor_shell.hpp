@@ -18,6 +18,7 @@
 #include "maya/platform/input.hpp"
 #include "maya/renderer/renderer.hpp"
 #include "maya/renderer/visibility_index.hpp"
+#include "maya/streaming/terrain_streamer.hpp"
 #include "maya/simulation/play_session.hpp"
 #include <array>
 #include <deque>
@@ -269,6 +270,8 @@ public:
     const std::vector<RenderDiagnostic>& frame_problems() const noexcept { return m_frame_problems; }
     /// The open scene's editing session, or null when no scene is open.
     SceneEditor* scene() noexcept { return m_scene.get(); }
+    /// The drawn World's terrain streamer (#1068), when it has terrain.
+    const TerrainStreamer* terrain() const noexcept { return m_terrain.get(); }
     std::optional<EntityId> renaming() const noexcept { return m_renaming; }
     GizmoOperation gizmo_operation() const noexcept { return m_gizmo; }
     bool gizmo_local() const noexcept { return m_gizmo_local; }
@@ -370,8 +373,10 @@ private:
     /// `folded` starts it closed under a header that opens it.
     void draw_material(AssetId id, bool folded);
     bool edit_material(AssetId id, PropertyId property, PropertyValue input);
+    void draw_generator(AssetId id, bool folded);
+    bool edit_generator(AssetId id, PropertyId property, PropertyValue input);
     /// Writes each edited material to its file. Returns why one could not be written, or empty.
-    std::string save_materials();
+    std::string save_materials(); // and generators
     /// Puts the files' values back into the registry for materials edited but not saved, as the editor
     /// that holds the edits closes.
     void discard_material_edits();
@@ -459,9 +464,9 @@ private:
     // Inspector
     std::string m_edit_error;
     EntityId m_edit_error_entity{};
-    std::string m_material_error;
+    std::string m_material_error; // a material's or generator's last refused edit
     AssetId m_material_error_id{};
-    // A material chosen in the Assets panel, shown until the scene selection changes.
+    // A material or generator chosen in the Assets panel, shown until the scene selection changes.
     std::optional<AssetId> m_inspected_material;
     std::vector<EntityId> m_inspected_selection;
     EntityId m_euler_entity{}; // rotation shown as Euler angles, kept stable while dragging
@@ -580,6 +585,9 @@ private:
     /// must go before its World does (it reads the World's change log), so it is declared after both and
     /// reset whenever the scene is replaced or Play stops.
     std::unique_ptr<VisibilityIndex> m_visibility;
+    /// The drawn World's terrain (#1068): tiles around the view, and in Play, height fields in its physics.
+    std::unique_ptr<TerrainStreamer> m_terrain;
+    void update_terrain(const World& world, const math::DVec3& source);
     std::shared_ptr<ScriptReloads> m_play_reloads; // changed scripts for the play session
     std::optional<PlayRecording> m_play_recording; // the running Play's, finished at Stop
     std::optional<PlayRecording> m_last_recording;
@@ -598,7 +606,7 @@ private:
     std::vector<std::string> m_dropped_files; // dropped on the window this frame
     std::vector<AssetId> m_missing_files; // catalog entries whose source file does not exist
     std::vector<AssetRow> m_asset_rows; // the catalog in the Assets panel, read on open and refresh
-    std::array<std::vector<size_t>, 7> m_shown_rows; // scenes, meshes, materials, scripts, textures, environments, and skins and clips passing the filter
+    std::array<std::vector<size_t>, 8> m_shown_rows; // scenes, meshes, materials, scripts, textures, environments, skins and clips, and generators passing the filter
     std::string m_shown_filter;
     bool m_shown_stale = true; // the rows or scene files changed
     bool m_rescan = false; // recheck the rows once they are drawn

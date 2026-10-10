@@ -48,6 +48,19 @@ struct ColliderDesc {
     math::Vec3 scale{1.0f};
 };
 
+/// A static height field (#1068, docs/physics.md#height-fields): a square grid of heights, `spacing` metres
+/// apart, its sample (0, 0) at `origin`; rows run along +X, one per step along +Z. Terrain makes one per tile.
+struct HeightFieldDesc {
+    math::DVec3 origin{};
+    uint32_t samples = 0; // per side, at least 2
+    float spacing = 1.0f; // metres
+    std::span<const float> heights; // samples x samples metres, finite
+    float friction = 0.5f;
+    float restitution = 0.0f;
+};
+/// A height field's collision shape, built off the owner thread (prepare_height_field), added later.
+struct PreparedHeightField;
+
 inline constexpr uint32_t collision_group_count = 16;
 inline constexpr uint16_t all_collision_groups = 0xFFFF;
 
@@ -329,6 +342,18 @@ public:
     /// removed bodies in request order. Throws std::runtime_error naming the source and the entity if
     /// a body cannot be created; bodies created before it stay.
     void commit(const World& world, const BodyCommands& requests, const WorldCommitResult& result);
+
+    /// Height fields (#1068): static bodies that belong to `owner` (hits, contacts, and events name it) but
+    /// are placed by their description, not the owner's transform, and are not removed with it. Building
+    /// the shape is the cost (0.2 ms for a 129 x 129 tile): prepare it on a job, any thread; adding it is
+    /// cheap. Throws std::invalid_argument for a description that is not a finite square grid.
+    static std::shared_ptr<const PreparedHeightField> prepare_height_field(const HeightFieldDesc& desc);
+    /// Adds a prepared height field, between ticks on the owner thread. Returns its number; throws
+    /// std::runtime_error when the world is full.
+    uint64_t add_height_field(const World& world, EntityHandle owner, const std::shared_ptr<const PreparedHeightField>& prepared);
+    /// Removes height fields in one batch; their contacts end as a removed body's do. Unknown numbers are ignored.
+    void remove_height_fields(std::span<const uint64_t> fields);
+    size_t height_fields() const noexcept;
 
 private:
     friend class BodyCommands;

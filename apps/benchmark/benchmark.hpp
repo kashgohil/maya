@@ -146,6 +146,13 @@ struct Counters {
     double shadow_maps = 0.0, shadow_draws = 0.0; // per view, over the whole run
     size_t animated = 0, skinned = 0; // entities playing a clip; instances drawn skinned
     size_t joints = 0; // skin matrices uploaded per view
+    // Terrain, as the player streams it (#1068, docs/procedural.md#streaming): at the end of the first run,
+    // its tiles drawn and collided with and the memory they hold; patches and draws per view over the run;
+    // tiles generated and read from the cook cache since loading; its longest update and tile job.
+    size_t terrain_tiles = 0, height_fields = 0, terrain_cpu_bytes = 0, terrain_gpu_bytes = 0;
+    double terrain_patches = 0.0, terrain_draws = 0.0, terrain_shadow_patches = 0.0;
+    size_t terrain_generated = 0, terrain_cached = 0;
+    double terrain_longest_update_ms = 0.0, terrain_longest_generate_ms = 0.0;
 };
 
 /// Scene workload: loading the scene, once before the runs, in milliseconds.

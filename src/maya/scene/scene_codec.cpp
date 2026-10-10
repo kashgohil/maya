@@ -323,7 +323,8 @@ std::string expectation(const PropertyDescriptor& property) {
     case PropertyType::texture_ref:
     case PropertyType::environment_ref:
     case PropertyType::skin_ref:
-    case PropertyType::animation_ref: return "'none' or two hexadecimal asset ID words";
+    case PropertyType::animation_ref:
+    case PropertyType::generator_ref: return "'none' or two hexadecimal asset ID words";
     case PropertyType::script_values:
         return "a count, then for each value a name, a type (number integer boolean string vector color entity), and "
                "its data";
@@ -402,6 +403,11 @@ std::optional<PropertyValue> decode(const PropertyDescriptor& property, std::spa
         auto id = AssetId{};
         if (!(single_word && tokens[0].text == "none") && !parse_id(tokens, id)) return std::nullopt;
         return AssetRef<AnimationAsset>{id};
+    }
+    case PropertyType::generator_ref: {
+        auto id = AssetId{};
+        if (!(single_word && tokens[0].text == "none") && !parse_id(tokens, id)) return std::nullopt;
+        return AssetRef<GeneratorAsset>{id};
     }
     case PropertyType::script_values: return decode_script_values(tokens);
     case PropertyType::flags: {

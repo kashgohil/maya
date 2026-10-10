@@ -1,0 +1,97 @@
+maya-scene 1
+
+entity 6d617961 600
+  component maya.name 1
+    value "Camera"
+  component maya.transform 2
+    translation 0 60 120
+    rotation -0.173648 0 0 0.984808
+    scale 1 1 1
+  component maya.camera 2
+    vertical_fov 1.0471976
+    near_clip 0.1
+    far_clip 2000
+    exposure 0
+    tone_mapping agx
+  component maya.fly_control 1
+    speed 12
+    look_sensitivity 0.0025
+end
+
+entity 6d617961 601
+  component maya.name 1
+    value "Sun"
+  component maya.transform 2
+    translation 0 30 0
+    rotation -0.5 0.2 0.1 0.836660
+    scale 1 1 1
+  component maya.light 2
+    kind directional
+    color 1 0.96 0.9
+    intensity 3.14159
+    range 10
+    inner_cone 0.523599
+    outer_cone 0.785398
+    enabled true
+    cast_shadows true
+    shadow_bias 1
+    shadow_normal_bias 1
+    shadow_distance 300
+end
+
+entity 6d617961 602
+  component maya.name 1
+    value "Terrain"
+  component maya.transform 2
+    translation 0 0 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.terrain 1
+    heights 6d617961 90
+    layer0 6d617961 91
+    layer1 6d617961 92
+    layer1_slope 20 32
+    layer1_height -10000 -10000
+    layer2 none
+    layer2_slope 90 90
+    layer2_height -10000 -10000
+    layer3 none
+    layer3_slope 90 90
+    layer3_height -10000 -10000
+    texture_size 4
+end
+
+entity 6d617961 603
+  component maya.name 1
+    value "Boulder"
+  component maya.transform 2
+    translation 0 60 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.mesh_renderer 2
+    mesh 6d617961 5
+    material 6d617961 11
+    visible true
+    max_distance 0
+  component maya.collider 1
+    shape sphere
+    half_extents 0.5 0.5 0.5
+    radius 1
+    half_height 0.5
+    offset 0 0 0
+    rotation 0 0 0 1
+    friction 0.5
+    restitution 0
+    sensor false
+    group 0
+    mask 0xffff
+  component maya.rigid_body 1
+    motion dynamic
+    mass 0
+    density 1000
+    linear_damping 0.05
+    angular_damping 0.05
+    gravity_factor 1
+    linear_velocity 0 0 0
+    angular_velocity 0 0 0
+end

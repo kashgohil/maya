@@ -232,13 +232,15 @@ PackageReport package_project(const PackageOptions& options) {
             break;
         }
         case AssetKind::material:
-        case AssetKind::script: {
-            // Authored text, as the player reads it.
+        case AssetKind::script:
+        case AssetKind::generator: {
+            // Authored text, as the player reads it: a generator's output is generated where it is played
+            // (docs/procedural.md#packages).
             auto bytes = read_file(source);
             if (!bytes) problem = {AssetError::missing_file, source.string() + ": cannot be read"};
             else payload = std::move(*bytes);
             path = record.path;
-            ++(record.kind == AssetKind::material ? report.materials : report.scripts);
+            ++(record.kind == AssetKind::material ? report.materials : record.kind == AssetKind::script ? report.scripts : report.generators);
             break;
         }
         }
@@ -250,7 +252,7 @@ PackageReport package_project(const PackageOptions& options) {
             return abandon(std::string(asset_kind_name(record.kind)) + " " + record.path.generic_string() + ": " + reason);
         }
         // Cooked files go in the cook cache's checked envelope, so the player refuses a damaged one.
-        const auto authored = record.kind == AssetKind::material || record.kind == AssetKind::script;
+        const auto authored = record.kind == AssetKind::material || record.kind == AssetKind::script || record.kind == AssetKind::generator;
         if (!write_file(content / path, authored ? payload : wrap_cooked(payload))) return abandon("cannot write " + (content / path).string());
         packaged.push_back({id, record.kind, path});
     }

@@ -324,6 +324,143 @@ constant uint debug_base_color = 3, debug_normals = 4, debug_shading_normals = 5
               debug_cascades = 13, debug_texels = 14, debug_lod = 15; // DebugView
 #endif
 
+/// What a surface is made of where a fragment lands: the material's inputs (a mesh's, or a terrain's blended
+/// layers), its normals facing the viewer, and where it is.
+struct Surface {
+    float4 base; // rgb, and alpha
+    float metallic, roughness; // as authored, before clamping
+    float3 N; // shading normal
+    float3 Ng; // geometric normal, for shadow offsets
+    float occlusion;
+    float3 emitted;
+    float3 world_position;
+    uint alpha_mode;
+    uint level; // of detail, for the LOD view
+};
+
+/// Lights a surface: the surroundings, the lights, and what it emits; or, in the debug pipelines, the view
+/// chosen. Mesh and terrain fragments share it (#1068).
+float4 shade(Surface s, constant ViewConstants& view, texturecube<float> specular_cube, sampler environment_sampler,
+             texture2d<float> brdf_table, sampler table_sampler, depth2d<float> sun_shadows, depth2d<float> spot_shadows,
+             sampler shadow_sampler) {
+#ifdef MAYA_DEBUG_VIEWS
+    const uint debug_view = uint(view.shadows.view_forward.w);
+    float3 base_rgb = s.base.rgb;
+    float metallic = s.metallic, roughness = s.roughness;
+    const float authored_roughness = roughness;
+    // Lighting without albedo: white, fully rough, and not metallic; the LOD view tints that.
+    if (debug_view == debug_lighting || debug_view == debug_lod) {
+        base_rgb = float3(1.0);
+        metallic = 0.0;
+        roughness = 1.0;
+    }
+    const bool with_surroundings = debug_view != debug_direct, with_direct = debug_view != debug_environment;
+    const bool with_emitted = (debug_view < debug_direct || debug_view > debug_lighting) && debug_view != debug_lod;
+#else
+    float3 base_rgb = s.base.rgb;
+    float metallic = s.metallic, roughness = s.roughness;
+    constexpr bool with_surroundings = true, with_direct = true, with_emitted = true;
+#endif
+    metallic = saturate(metallic);
+    roughness = clamp(roughness, min_roughness, 1.0);
+    const float alpha = roughness * roughness;
+
+    const float3 N = s.N, Ng = s.Ng;
+    const float3 base = base_rgb;
+    const float3 c_diff = base * (1.0 - metallic);
+    const float3 f0 = mix(float3(0.04), base, metallic);
+    const float3 V = normalize(view.camera_position.xyz - s.world_position);
+    const float NdotV = max(dot(N, V), 1e-4);
+
+    // Light from the surroundings: the environment's, or the uniform ambient light. As glTF defines a
+    // material, a dielectric's result (diffuse, less the specular's share, plus that share of the specular)
+    // and a metal's are mixed by metallic. Occlusion darkens both.
+    const float occlusion = s.occlusion;
+    const float2 scale_bias = brdf_table.sample(table_sampler, table_uv(float2(NdotV, roughness))).rg;
+    float3 diffuse_light = view.ambient.rgb, specular_light = view.ambient.rgb;
+    if (view.environment_flags.x != 0) {
+        const float intensity = view.environment.x;
+        diffuse_light = environment_irradiance(view, to_environment(view, N)) / M_PI_F * intensity;
+        const float3 R = to_environment(view, reflect(-V, N));
+        specular_light = specular_cube.sample(environment_sampler, R, level(roughness * view.environment.w)).rgb * intensity;
+    }
+    const float3 dielectric_share = surroundings_share(float3(0.04), scale_bias, NdotV, roughness);
+    const float3 metal_share = surroundings_share(base, scale_bias, NdotV, roughness);
+    const float3 dielectric = (1.0 - dielectric_share) * base * diffuse_light + dielectric_share * specular_light;
+    float3 rgb = with_surroundings ? mix(dielectric, metal_share * specular_light, metallic) * occlusion : float3(0.0);
+
+    // Directional lights: illuminance in lux; the sun is shadowed by its cascades.
+    const uint lights = min(view.light_count.x, 4u);
+    const uint sun = uint(view.shadows.sun.w);
+    for (uint i = 0; with_direct && i < lights; ++i) {
+        const float3 L = view.lights[i].direction_to_light.xyz;
+        float lit = 1.0;
+        if (i + 1 == sun && dot(N, L) > 0.0) lit = sun_lit(view, sun_shadows, shadow_sampler, s.world_position, Ng, L);
+        rgb += view.lights[i].radiance.rgb * lit * direct_light(N, V, L, f0, c_diff, alpha, NdotV);
+    }
+    // Point and spot lights (docs/renderer.md#lights): candela / d^2, faded to nothing at the range as glTF
+    // recommends, and a spot's between its cones.
+    const uint locals = min(view.local_count.x, 16u);
+    for (uint i = 0; with_direct && i < locals; ++i) {
+        const LocalLight light = view.local_lights[i];
+        float3 L = light.position_range.xyz - s.world_position;
+        const float distance = length(L);
+        L /= max(distance, 1e-6);
+        const float window = saturate(1.0 - pow(distance / light.position_range.w, 4.0));
+        float falloff = window / max(distance * distance, 1e-8);
+        if (light.direction_spot.w > 0.0) {
+            const float t = saturate((dot(-L, light.direction_spot.xyz) - light.cone.x) * light.cone.y);
+            falloff *= t * t;
+        }
+        if (falloff <= 0.0 || dot(N, L) <= 0.0) continue;
+        if (light.intensity.w > 0.0)
+            falloff *= spot_lit(view, spot_shadows, shadow_sampler, uint(light.intensity.w) - 1, s.world_position, Ng, L,
+                                distance, light.cone.z, light.cone.w);
+        rgb += light.intensity.rgb * falloff * direct_light(N, V, L, f0, c_diff, alpha, NdotV);
+    }
+
+    const float3 emitted = s.emitted;
+    if (with_emitted) rgb += emitted;
+
+#ifdef MAYA_DEBUG_VIEWS
+    // Material inputs are written as display values, which the tone-mapping pass shows unchanged: colors
+    // sRGB-encoded as authored, and data as grey or as 0.5 + 0.5 n.
+    const float out_alpha = s.alpha_mode == 2 ? s.base.a : 1.0;
+    switch (debug_view) {
+    case debug_base_color: return float4(srgb_encode(base), out_alpha);
+    case debug_normals: return float4(Ng * 0.5 + 0.5, out_alpha);
+    case debug_shading_normals: return float4(N * 0.5 + 0.5, out_alpha);
+    case debug_metallic: return float4(float3(metallic), out_alpha);
+    case debug_roughness: return float4(float3(saturate(authored_roughness)), out_alpha);
+    case debug_occlusion: return float4(float3(occlusion), out_alpha);
+    case debug_emissive: return float4(srgb_encode(emitted), out_alpha);
+    default: break;
+    }
+    // Shadow views: the sun's cascade tints each surface, and a checker shows its shadow-map texels.
+    if ((debug_view == debug_cascades || debug_view == debug_texels) && sun != 0) {
+        const float depth = dot(s.world_position - view.camera_position.xyz, view.shadows.view_forward.xyz);
+        if (depth < view.shadows.cascade_far[3]) {
+            float blend;
+            const uint c = cascade_at(view, depth, blend);
+            const float3 tints[4] = {float3(1.0, 0.35, 0.35), float3(0.35, 1.0, 0.35), float3(0.35, 0.5, 1.0), float3(1.0, 1.0, 0.35)};
+            rgb *= tints[c] * 1.5;
+            if (debug_view == debug_texels) {
+                const float4 clip = view.shadows.cascades[c] * float4(s.world_position, 1.0);
+                const float2 texel = floor(atlas_uv(clip, c) * 4096.0);
+                if ((int(texel.x) + int(texel.y)) & 1) rgb *= 0.55;
+            }
+        }
+    }
+    // Levels of detail (#1066): the finest green, then yellow, orange, red, magenta, and blue the coarsest.
+    if (debug_view == debug_lod) {
+        const float3 tints[6] = {float3(0.35, 1.0, 0.35), float3(1.0, 1.0, 0.3), float3(1.0, 0.6, 0.25),
+                                 float3(1.0, 0.3, 0.3), float3(1.0, 0.35, 1.0), float3(0.4, 0.5, 1.0)};
+        rgb *= tints[min(s.level, 5u)] * 1.5;
+    }
+#endif
+    return float4(rgb, s.alpha_mode == 2 ? s.base.a : 1.0);
+}
+
 fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
                             constant ViewConstants& view [[buffer(2)]],
                             constant MaterialConstants& material [[buffer(3)]],
@@ -348,24 +485,6 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
         roughness *= sample.g;
         metallic *= sample.b;
     }
-#ifdef MAYA_DEBUG_VIEWS
-    const uint debug_view = uint(view.shadows.view_forward.w);
-    const float authored_roughness = roughness;
-    // Lighting without albedo: white, fully rough, and not metallic; the LOD view tints that.
-    if (debug_view == debug_lighting || debug_view == debug_lod) {
-        base.rgb = float3(1.0);
-        metallic = 0.0;
-        roughness = 1.0;
-    }
-    const bool with_surroundings = debug_view != debug_direct, with_direct = debug_view != debug_environment;
-    const bool with_emitted = (debug_view < debug_direct || debug_view > debug_lighting) && debug_view != debug_lod;
-#else
-    constexpr bool with_surroundings = true, with_direct = true, with_emitted = true;
-#endif
-    metallic = saturate(metallic);
-    roughness = clamp(roughness, min_roughness, 1.0);
-    const float alpha = roughness * roughness;
-
     // The geometric frame; a double-sided surface seen from behind turns all of it around, as glTF says.
     float3 N = normalize(in.world_normal);
     if (has_map(material, slot_normal)) {
@@ -378,102 +497,247 @@ fragment float4 litFragment(LitOut in [[stage_in]], bool front [[front_facing]],
         N = normalize(T * tangent_normal.x + B * tangent_normal.y + N * tangent_normal.z);
     }
     if (!front) N = -N;
-    const float3 Ng = normalize(in.world_normal) * (front ? 1.0 : -1.0); // for shadow offsets
 
-    const float3 c_diff = base.rgb * (1.0 - metallic);
-    const float3 f0 = mix(float3(0.04), base.rgb, metallic);
-    const float3 V = normalize(view.camera_position.xyz - in.world_position);
-    const float NdotV = max(dot(N, V), 1e-4);
-
-    // Light from the surroundings: the environment's, or the uniform ambient light. As glTF defines a
-    // material, a dielectric's result (diffuse, less the specular's share, plus that share of the specular)
-    // and a metal's are mixed by metallic. Occlusion darkens both.
-    float occlusion = 1.0;
-    if (has_map(material, slot_occlusion)) occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, uv).r - 1.0);
-    const float2 scale_bias = brdf_table.sample(table_sampler, table_uv(float2(NdotV, roughness))).rg;
-    float3 diffuse_light = view.ambient.rgb, specular_light = view.ambient.rgb;
-    if (view.environment_flags.x != 0) {
-        const float intensity = view.environment.x;
-        diffuse_light = environment_irradiance(view, to_environment(view, N)) / M_PI_F * intensity;
-        const float3 R = to_environment(view, reflect(-V, N));
-        specular_light = specular_cube.sample(environment_sampler, R, level(roughness * view.environment.w)).rgb * intensity;
-    }
-    const float3 dielectric_share = surroundings_share(float3(0.04), scale_bias, NdotV, roughness);
-    const float3 metal_share = surroundings_share(base.rgb, scale_bias, NdotV, roughness);
-    const float3 dielectric = (1.0 - dielectric_share) * base.rgb * diffuse_light + dielectric_share * specular_light;
-    float3 rgb = with_surroundings ? mix(dielectric, metal_share * specular_light, metallic) * occlusion : float3(0.0);
-
-    // Directional lights: illuminance in lux; the sun is shadowed by its cascades.
-    const uint lights = min(view.light_count.x, 4u);
-    const uint sun = uint(view.shadows.sun.w);
-    for (uint i = 0; with_direct && i < lights; ++i) {
-        const float3 L = view.lights[i].direction_to_light.xyz;
-        float lit = 1.0;
-        if (i + 1 == sun && dot(N, L) > 0.0) lit = sun_lit(view, sun_shadows, shadow_sampler, in.world_position, Ng, L);
-        rgb += view.lights[i].radiance.rgb * lit * direct_light(N, V, L, f0, c_diff, alpha, NdotV);
-    }
-    // Point and spot lights (docs/renderer.md#lights): candela / d^2, faded to nothing at the range as glTF
-    // recommends, and a spot's between its cones.
-    const uint locals = min(view.local_count.x, 16u);
-    for (uint i = 0; with_direct && i < locals; ++i) {
-        const LocalLight light = view.local_lights[i];
-        float3 L = light.position_range.xyz - in.world_position;
-        const float distance = length(L);
-        L /= max(distance, 1e-6);
-        const float window = saturate(1.0 - pow(distance / light.position_range.w, 4.0));
-        float falloff = window / max(distance * distance, 1e-8);
-        if (light.direction_spot.w > 0.0) {
-            const float t = saturate((dot(-L, light.direction_spot.xyz) - light.cone.x) * light.cone.y);
-            falloff *= t * t;
-        }
-        if (falloff <= 0.0 || dot(N, L) <= 0.0) continue;
-        if (light.intensity.w > 0.0)
-            falloff *= spot_lit(view, spot_shadows, shadow_sampler, uint(light.intensity.w) - 1, in.world_position, Ng, L,
-                                distance, light.cone.z, light.cone.w);
-        rgb += light.intensity.rgb * falloff * direct_light(N, V, L, f0, c_diff, alpha, NdotV);
-    }
-
-    float3 emitted = material.emissive.rgb;
-    if (has_map(material, slot_emissive)) emitted *= emissive_map.sample(emissive_sampler, uv).rgb;
-    if (with_emitted) rgb += emitted;
-
+    Surface surface;
+    surface.base = base;
+    surface.metallic = metallic;
+    surface.roughness = roughness;
+    surface.N = N;
+    surface.Ng = normalize(in.world_normal) * (front ? 1.0 : -1.0); // for shadow offsets
+    surface.occlusion = 1.0;
+    if (has_map(material, slot_occlusion))
+        surface.occlusion = 1.0 + material.factors.w * (occlusion_map.sample(occlusion_sampler, uv).r - 1.0);
+    surface.emitted = material.emissive.rgb;
+    if (has_map(material, slot_emissive)) surface.emitted *= emissive_map.sample(emissive_sampler, uv).rgb;
+    surface.world_position = in.world_position;
+    surface.alpha_mode = alpha_mode;
 #ifdef MAYA_DEBUG_VIEWS
-    // Material inputs are written as display values, which the tone-mapping pass shows unchanged: colors
-    // sRGB-encoded as authored, and data as grey or as 0.5 + 0.5 n.
-    const float out_alpha = alpha_mode == 2 ? base.a : 1.0;
-    switch (debug_view) {
-    case debug_base_color: return float4(srgb_encode(base.rgb), out_alpha);
-    case debug_normals: return float4(Ng * 0.5 + 0.5, out_alpha);
-    case debug_shading_normals: return float4(N * 0.5 + 0.5, out_alpha);
-    case debug_metallic: return float4(float3(metallic), out_alpha);
-    case debug_roughness: return float4(float3(saturate(authored_roughness)), out_alpha);
-    case debug_occlusion: return float4(float3(occlusion), out_alpha);
-    case debug_emissive: return float4(srgb_encode(emitted), out_alpha);
-    default: break;
-    }
-    // Shadow views: the sun's cascade tints each surface, and a checker shows its shadow-map texels.
-    if ((debug_view == debug_cascades || debug_view == debug_texels) && sun != 0) {
-        const float depth = dot(in.world_position - view.camera_position.xyz, view.shadows.view_forward.xyz);
-        if (depth < view.shadows.cascade_far[3]) {
-            float blend;
-            const uint c = cascade_at(view, depth, blend);
-            const float3 tints[4] = {float3(1.0, 0.35, 0.35), float3(0.35, 1.0, 0.35), float3(0.35, 0.5, 1.0), float3(1.0, 1.0, 0.35)};
-            rgb *= tints[c] * 1.5;
-            if (debug_view == debug_texels) {
-                const float4 clip = view.shadows.cascades[c] * float4(in.world_position, 1.0);
-                const float2 texel = floor(atlas_uv(clip, c) * 4096.0);
-                if ((int(texel.x) + int(texel.y)) & 1) rgb *= 0.55;
-            }
-        }
-    }
-    // Levels of detail (#1066): the finest green, then yellow, orange, red, magenta, and blue the coarsest.
-    if (debug_view == debug_lod) {
-        const float3 tints[6] = {float3(0.35, 1.0, 0.35), float3(1.0, 1.0, 0.3), float3(1.0, 0.6, 0.25),
-                                 float3(1.0, 0.3, 0.3), float3(1.0, 0.35, 1.0), float3(0.4, 0.5, 1.0)};
-        rgb *= tints[min(in.level, 5u)] * 1.5;
-    }
+    surface.level = in.level;
+#else
+    surface.level = 0;
 #endif
-    return float4(rgb, alpha_mode == 2 ? base.a : 1.0);
+    return shade(surface, view, specular_cube, environment_sampler, brdf_table, table_sampler, sun_shadows, spot_shadows, shadow_sampler);
+}
+
+// Terrain (#1068, docs/renderer.md#terrain) -------------------------------------------------------------------
+// CDLOD patches of 32 x 32 quads, placed by instance; each vertex reads its height from a tile's packed
+// heights (buffer 5) or the terrain's overview (buffer 6), and morphs toward the next coarser grid near the
+// end of its level's range, so neighbouring levels meet without cracks. Layout matches TerrainConstants and
+// TerrainPatch in include/maya/renderer/shader_constants.hpp.
+struct TerrainLayer {
+    float4 base_color;
+    float4 factors; // x metallic, y roughness, z normal scale, w occlusion strength
+    uint4 flags; // x a bit per map in use (slot_*), y 1 when the layer is used
+};
+struct TerrainConstants {
+    TerrainLayer layers[4];
+    float4 slope[3]; // layers 1 to 3: x the slope (degrees) where it starts, y where it is whole
+    float4 height[3]; // ... and the same by height (metres)
+    float4 params; // x 1 / texture size, yz the texture coordinates of the anchor, w tile samples a side
+    float4 overview; // xy the anchor (the region's low corner, the overview's sample (0, 0)) in the snapshot's frame, z what moves a stored height into it
+    float4 overview_size; // x samples along x, y along z, z spacing (metres)
+    float4 camera; // xyz the view's camera (shadow passes measure from it too); w its height above or below the terrain's band
+    float4 region; // xy its low corner and zw its high one, in the snapshot's frame: outside, nothing is drawn
+};
+// Patches and tiles are placed in whole metres from the anchor, so a vertex two patches share has the same
+// bits in both before the anchor's offset is added: there are no pinholes along their edge.
+struct TerrainPatch {
+    float4 origin_size; // xy its corner in metres from the anchor, z its size (metres), w its level
+    float4 morph; // x the distance its morph starts, y ends, z its quad (metres), w 1 when its heights blend to the overview
+    float4 source; // xy the tile's sample (0, 0) in metres from the anchor
+    uint4 flags; // x 1 when it reads a tile (buffer 5), 0 for the overview
+};
+constant uint terrain_quads = 32;
+
+// Packed heights: two words a sample, the height (a float) and the normal (octahedral, 8 bits of x and of z).
+float tile_height(const device uint* tile, uint samples, int2 at) {
+    const int2 c = clamp(at, int2(0), int2(int(samples) - 1));
+    return as_type<float>(tile[2 * (uint(c.y) * samples + uint(c.x))]);
+}
+float3 decode_normal(uint word) {
+    const float2 p = float2(float(word & 0xffu), float((word >> 8) & 0xffu)) / 255.0 * 2.0 - 1.0;
+    float3 n = float3(p.x, 1.0 - abs(p.x) - abs(p.y), p.y);
+    if (n.y < 0.0) n.xz = (1.0 - abs(n.zx)) * select(float2(-1.0), float2(1.0), n.xz >= 0.0);
+    return normalize(n);
+}
+/// Bilinear over a grid of packed samples, `spacing` metres apart from `origin`.
+struct GridSample {
+    uint i00, i10, i01, i11;
+    float2 f;
+};
+GridSample grid_at(float2 xz, float2 origin, float spacing, uint width, uint depth) {
+    const float2 g = clamp((xz - origin) / spacing, float2(0.0), float2(float(width - 1), float(depth - 1)));
+    const uint2 i = min(uint2(floor(g)), uint2(width - 2, depth - 2));
+    GridSample s;
+    s.f = g - float2(i);
+    s.i00 = i.y * width + i.x;
+    s.i10 = s.i00 + 1;
+    s.i01 = s.i00 + width;
+    s.i11 = s.i01 + 1;
+    return s;
+}
+float overview_height(const device uint* overview, constant TerrainConstants& t, float2 local) {
+    const GridSample s = grid_at(local, float2(0.0), t.overview_size.z, uint(t.overview_size.x), uint(t.overview_size.y));
+    const float h00 = as_type<float>(overview[2 * s.i00]), h10 = as_type<float>(overview[2 * s.i10]);
+    const float h01 = as_type<float>(overview[2 * s.i01]), h11 = as_type<float>(overview[2 * s.i11]);
+    return mix(mix(h00, h10, s.f.x), mix(h01, h11, s.f.x), s.f.y);
+}
+float3 grid_normal(const device uint* words, GridSample s) {
+    return normalize(mix(mix(decode_normal(words[2 * s.i00 + 1]), decode_normal(words[2 * s.i10 + 1]), s.f.x),
+                         mix(decode_normal(words[2 * s.i01 + 1]), decode_normal(words[2 * s.i11 + 1]), s.f.x), s.f.y));
+}
+/// A patch's height at a point (metres from the anchor): its tile's sample there (patches lie on whole metres),
+/// or the overview's.
+float patch_height(TerrainPatch p, constant TerrainConstants& t, const device uint* tile, const device uint* overview, float2 local) {
+    if (p.flags.x != 0) return tile_height(tile, uint(t.params.w), int2(round(local - p.source.xy)));
+    return overview_height(overview, t, local);
+}
+/// A patch's vertex: where it lands after morphing (in the snapshot's frame, and from the anchor), and how far
+/// it has morphed.
+struct TerrainPoint {
+    float3 position;
+    float2 local;
+    float morph;
+};
+TerrainPoint terrain_point(uint id, TerrainPatch p, constant TerrainConstants& t, const device uint* tile, const device uint* overview) {
+    const uint2 g = uint2(id % (terrain_quads + 1), id / (terrain_quads + 1));
+    const float quad = p.morph.z;
+    float2 local = p.origin_size.xy + float2(g) * quad; // exact: whole metres
+    // The distance before morphing decides how far to morph: horizontal, with the terrain's height gap, as
+    // selection measures it, so both sides of an edge agree and the levels' ranges hold (docs/renderer.md#terrain).
+    const float2 across = local + t.overview.xy - t.camera.xz;
+    const float d = sqrt(dot(across, across) + t.camera.w * t.camera.w);
+    const float k = saturate((d - p.morph.x) / max(p.morph.y - p.morph.x, 1e-3));
+    // Odd vertices onto the coarser grid; fully there (k is exactly 1), exactly: whole metres again.
+    local -= fmod(float2(g), 2.0) * quad * k;
+    float h = patch_height(p, t, tile, overview, local);
+    if (p.morph.w != 0.0) { // toward the overview the next level reads; exactly it when fully morphed
+        const float coarse = overview_height(overview, t, local);
+        h = k >= 1.0 ? coarse : mix(h, coarse, k); // mix(h, coarse, 1) may round away from coarse
+    }
+    TerrainPoint point;
+    point.position = float3(local.x + t.overview.x, h + t.overview.z, local.y + t.overview.y);
+    point.local = local;
+    point.morph = p.morph.w != 0.0 ? k : 0.0;
+    return point;
+}
+
+struct TerrainOut {
+    float4 position [[position]];
+    float3 world_position;
+    float2 local; // metres from the anchor
+    float morph; // toward the overview's normals, where the heights blend
+    float4 source [[flat]];
+    uint from_tile [[flat]];
+    uint level [[flat]];
+};
+vertex TerrainOut terrainVertex(uint id [[vertex_id]], uint instance [[instance_id]], const device TerrainPatch* patches [[buffer(1)]],
+                                constant ViewConstants& view [[buffer(2)]], constant TerrainConstants& terrain [[buffer(3)]],
+                                const device uint* tile [[buffer(5)]], const device uint* overview [[buffer(6)]]) {
+    const TerrainPatch p = patches[instance];
+    const TerrainPoint point = terrain_point(id, p, terrain, tile, overview);
+    TerrainOut out;
+    out.position = view.view_projection * float4(point.position, 1.0);
+    out.world_position = point.position;
+    out.local = point.local;
+    out.morph = point.morph;
+    out.source = p.source;
+    out.from_tile = p.flags.x;
+    out.level = uint(p.origin_size.w);
+    return out;
+}
+
+struct TerrainShadowOut {
+    float4 position [[position]];
+    float2 xz;
+};
+vertex TerrainShadowOut terrainShadowVertex(uint id [[vertex_id]], uint instance [[instance_id]], const device TerrainPatch* patches [[buffer(1)]],
+                                            constant ShadowConstants& shadow [[buffer(2)]], constant TerrainConstants& terrain [[buffer(3)]],
+                                            const device uint* tile [[buffer(5)]], const device uint* overview [[buffer(6)]]) {
+    const TerrainPoint point = terrain_point(id, patches[instance], terrain, tile, overview);
+    TerrainShadowOut out;
+    out.position = shadow.view_projection * float4(point.position, 1.0);
+    out.xz = point.position.xz;
+    return out;
+}
+bool outside_region(constant TerrainConstants& t, float2 xz) {
+    return any(xz < t.region.xy) || any(xz > t.region.zw);
+}
+fragment void terrainShadowFragment(TerrainShadowOut in [[stage_in]], constant TerrainConstants& terrain [[buffer(3)]]) {
+    if (outside_region(terrain, in.xz)) discard_fragment();
+}
+
+/// From none of a layer at r.x to all of it at r.y (a step there when they are equal).
+float ramp(float value, float2 r) {
+    return r.x == r.y ? step(r.x, value) : saturate((value - r.x) / (r.y - r.x));
+}
+fragment float4 terrainFragment(TerrainOut in [[stage_in]], constant ViewConstants& view [[buffer(2)]],
+                                constant TerrainConstants& terrain [[buffer(3)]],
+                                const device uint* tile [[buffer(5)]], const device uint* overview [[buffer(6)]],
+                                array<texture2d<float>, 16> layer_maps [[texture(10)]], sampler layer_sampler [[sampler(9)]],
+                                texturecube<float> specular_cube [[texture(5)]], sampler environment_sampler [[sampler(5)]],
+                                texture2d<float> brdf_table [[texture(7)]], sampler table_sampler [[sampler(7)]],
+                                depth2d<float> sun_shadows [[texture(8)]], depth2d<float> spot_shadows [[texture(9)]],
+                                sampler shadow_sampler [[sampler(8)]]) {
+    const float2 xz = in.world_position.xz;
+    if (outside_region(terrain, xz)) discard_fragment();
+    // The surface's normal from the heights' normals: the tile's, blended toward the overview's where the
+    // heights blend; the overview's alone where it is drawn from.
+    const GridSample coarse = grid_at(in.local, float2(0.0), terrain.overview_size.z, uint(terrain.overview_size.x), uint(terrain.overview_size.y));
+    float3 Ng = grid_normal(overview, coarse);
+    if (in.from_tile != 0) {
+        const uint samples = uint(terrain.params.w);
+        const float3 fine = grid_normal(tile, grid_at(in.local, in.source.xy, 1.0, samples, samples));
+        Ng = normalize(mix(fine, Ng, in.morph));
+    }
+    // Layers over the ground by slope and height, each with its maps, mapped across x and z.
+    const float slope = acos(saturate(Ng.y)) * (180.0 / M_PI_F);
+    const float2 uv = in.local * terrain.params.x + terrain.params.yz;
+    const float3 T = normalize(float3(1.0, 0.0, 0.0) - Ng * Ng.x); // along +x, in the surface
+    const float3 B = cross(T, Ng); // along +z
+    float4 base = float4(0.0, 0.0, 0.0, 1.0);
+    float metallic = 0.0, roughness = 1.0, occlusion = 1.0;
+    float3 N = Ng;
+    for (uint i = 0; i < 4; ++i) {
+        const TerrainLayer layer = terrain.layers[i];
+        if (layer.flags.y == 0) continue;
+        const float weight = i == 0 ? 1.0 : ramp(slope, terrain.slope[i - 1].xy) * ramp(in.world_position.y, terrain.height[i - 1].xy);
+        if (weight <= 0.0) continue;
+        float4 color = layer.base_color;
+        if ((layer.flags.x >> slot_base_color & 1u) != 0) color *= layer_maps[i * 4 + 0].sample(layer_sampler, uv);
+        float m = layer.factors.x, r = layer.factors.y;
+        if ((layer.flags.x >> slot_metallic_roughness & 1u) != 0) {
+            const float4 sample = layer_maps[i * 4 + 1].sample(layer_sampler, uv);
+            r *= sample.g;
+            m *= sample.b;
+        }
+        float3 n = Ng;
+        if ((layer.flags.x >> slot_normal & 1u) != 0) {
+            const float4 sample = layer_maps[i * 4 + 2].sample(layer_sampler, uv);
+            const float2 v = float2(sample.r, sample.a) * 2.0 - 1.0;
+            const float3 t = normalize(float3(v * layer.factors.z, sqrt(saturate(1.0 - dot(v, v)))));
+            n = normalize(T * t.x + B * t.y + Ng * t.z);
+        }
+        float o = 1.0;
+        if ((layer.flags.x >> slot_occlusion & 1u) != 0) o = 1.0 + layer.factors.w * (layer_maps[i * 4 + 3].sample(layer_sampler, uv).r - 1.0);
+        base = mix(base, color, weight);
+        metallic = mix(metallic, m, weight);
+        roughness = mix(roughness, r, weight);
+        occlusion = mix(occlusion, o, weight);
+        N = normalize(mix(N, n, weight));
+    }
+    Surface surface;
+    surface.base = float4(base.rgb, 1.0);
+    surface.metallic = metallic;
+    surface.roughness = roughness;
+    surface.N = N;
+    surface.Ng = Ng;
+    surface.occlusion = occlusion;
+    surface.emitted = float3(0.0);
+    surface.world_position = in.world_position;
+    surface.alpha_mode = 0;
+    surface.level = in.level;
+    return shade(surface, view, specular_cube, environment_sampler, brdf_table, table_sampler, sun_shadows, spot_shadows, shadow_sampler);
 }
 
 // The sky: one triangle over the view at the far plane, behind every surface, showing the environment's

@@ -10,6 +10,7 @@ AssetKind reference_asset_kind(ReferenceKind kind) noexcept {
     case ReferenceKind::environment: return AssetKind::environment;
     case ReferenceKind::skin: return AssetKind::skin;
     case ReferenceKind::animation: return AssetKind::animation;
+    case ReferenceKind::generator: return AssetKind::generator;
     }
     return AssetKind::mesh;
 }

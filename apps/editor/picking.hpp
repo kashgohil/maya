@@ -2,6 +2,7 @@
 
 #include "maya/renderer/render_snapshot.hpp"
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace maya::editor {
@@ -27,6 +28,9 @@ Ray view_ray(const RenderView& view, const math::Affine& camera_pose, float vert
 /// O(instances + triangles of candidate meshes); there is no acceleration structure yet. Meshes
 /// without CPU geometry cannot be hit.
 std::vector<PickHit> pick_meshes(const RenderSnapshot& snapshot, const Ray& ray);
+/// Where the ray first meets a terrain's loaded tiles, as they are drawn at their finest (#1068), within
+/// `reach` metres: marched a metre at a time, then refined to a centimetre.
+std::optional<PickHit> pick_terrain(std::span<const TerrainView> terrains, const Ray& ray, float reach = 2000.0f);
 
 /// Where the ray enters an axis-aligned box, or nullopt when it misses (or the box is behind it).
 std::optional<float> ray_box(const math::Vec3& origin, const math::Vec3& direction, const math::Vec3& min,

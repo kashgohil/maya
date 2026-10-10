@@ -12,6 +12,7 @@
 #include "maya/renderer/visibility_index.hpp"
 #include "maya/simulation/physics_debug.hpp"
 #include "maya/simulation/play_session.hpp"
+#include "maya/streaming/terrain_streamer.hpp"
 #include "maya/streaming/world_streamer.hpp"
 #include <algorithm>
 #include <fstream>
@@ -104,6 +105,11 @@ public:
             }
             scene_name = project.relative(*scene_path).generic_string();
         }
+        // Terrain (#1068) joins physics frame by frame as it streams, not tick by tick: a recording could not replay.
+        const auto has_terrain = std::ranges::any_of(document.entities, [](const SceneEntity& entity) {
+            return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<TerrainComponent>(value); });
+        });
+        if (has_terrain && (m_options.record || m_options.replay)) return fail("recording and replaying a scene with terrain are not supported yet");
         if (m_options.record)
             m_recording = begin_recording(scene_name, document, recorded_assets(*m_assets, document), scripts.seed, {}, {});
         auto started = PlaySession::start(document, context, play_systems(registry_script_sources(*m_assets), registry_animation_clips(*m_assets), scripts));
@@ -133,6 +139,16 @@ public:
             std::cerr << "[Player] streamed " << streamed.cells[size_t(CellState::active)] << " cells in around the camera\n";
             if (!streamed.last_error.empty()) std::cerr << "[Player] " << streamed.last_error << '\n';
         }
+        if (has_terrain) { // its tiles around the camera, drawn and collided with, before the first frame
+            auto settings = TerrainSettings{};
+            settings.streaming = project_streaming_settings(project.settings);
+            settings.collide = true;
+            m_terrain = std::make_unique<TerrainStreamer>(&device, package ? nullptr : std::make_shared<CookCache>(cook_cache_folder(project)),
+                                                          settings);
+            m_terrain->set_sources({camera_position()});
+            const auto& terrain = m_terrain->settle(m_session->world(), *m_assets, &m_session->physics());
+            std::cerr << "[Player] generated " << terrain.generated << " terrain tiles and read " << terrain.cached << " from the cook cache\n";
+        }
         const auto loaded = preload_render_assets(m_session->world(), *m_assets);
         std::cerr << "[Player] loaded " << loaded << " assets in " << int(loading.milliseconds()) << " ms\n";
         m_renderer = std::make_unique<Renderer>(device, std::move(shader));
@@ -156,6 +172,10 @@ public:
             const auto errors = m_streamer->stats().loads_failed + m_streamer->stats().pinned;
             const auto& streamed = m_streamer->update(m_session->world(), &m_session->physics());
             if (streamed.loads_failed + streamed.pinned != errors) std::cerr << "[Player] " << streamed.last_error << '\n';
+        }
+        if (m_terrain) { // its tiles around the camera, before the tick steps physics
+            m_terrain->set_sources({camera_position()});
+            m_terrain->update(m_session->world(), *m_assets, &m_session->physics());
         }
         // Every window event belongs to the game in the player.
         if (input_enabled) m_session->input().feed(Input::instance().events());
@@ -202,6 +222,7 @@ public:
         if (!m_visibility || m_visibility->world() != world.token()) m_visibility = std::make_unique<VisibilityIndex>(world);
         options.view = &*view;
         options.index = m_visibility.get();
+        if (m_terrain) options.terrains = m_terrain->terrains();
         options.lod_pixels = m_lod_pixels;
         options.cull_pixels = m_cull_pixels;
         m_debug.clear(); // debug views are never drawn unless asked for
@@ -245,6 +266,8 @@ public:
             }
         }
         m_streamer.reset(); // its loads end before the session and the assets they use
+        if (m_terrain) m_terrain->clear(&m_session->physics()); // its height fields out of the session's physics
+        m_terrain.reset();
         m_visibility.reset(); // before the World it indexes
         // Device shutdown releases anything still pending after these owners are gone.
         m_renderer.reset();
@@ -273,6 +296,7 @@ private:
     std::unique_ptr<RenderTarget> m_view;
     std::unique_ptr<WorldStreamer> m_streamer; // when the scene is a world: its cells around the camera
     std::unique_ptr<VisibilityIndex> m_visibility; // of the session's World: declared after it, so it goes first
+    std::unique_ptr<TerrainStreamer> m_terrain; // when the scene has terrain (#1068): its tiles around the camera
     float m_lod_pixels = 1.0f, m_cull_pixels = 2.0f; // the project's (docs/renderer.md#visibility-and-levels-of-detail)
     math::DVec3 camera_position() const {
         const auto camera = m_session->world().find(*m_session->camera());

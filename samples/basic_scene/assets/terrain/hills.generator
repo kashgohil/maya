@@ -1,0 +1,13 @@
+maya-generator 1
+algorithm 1
+kind heightfield.noise
+seed 1068
+octaves 5
+wavelength 260
+amplitude 24
+warp 30
+base 0
+region_min_x -2
+region_min_z -2
+region_max_x 1
+region_max_z 1

@@ -100,6 +100,8 @@ math::DVec3 EditorShell::navigation_pivot(ImVec2 point) const {
     if (const auto ray = viewport_ray(point)) {
         if (m_snapshot && !m_play)
             if (const auto hits = pick_meshes(*m_snapshot, *ray); !hits.empty()) return ray->at(hits.front().distance);
+        if (m_terrain && !m_play)
+            if (const auto ground = pick_terrain(m_terrain->terrains(), *ray)) return ray->at(ground->distance);
         if (ray->direction.y < -1e-3f) // the ground plane, y = 0, within reach
             if (const auto t = float(-ray->origin.y / ray->direction.y); t > 0.0f && t < 500.0f) return ray->at(t);
     }
@@ -149,7 +151,11 @@ void EditorShell::pick_at(ImVec2 point, const RenderView& view, ImVec2 min, ImVe
         const auto x = (point.x - min.x) / (max.x - min.x) * 2.0f - 1.0f;
         const auto y = 1.0f - (point.y - min.y) / (max.y - min.y) * 2.0f;
         const auto ray = view_ray(view, m_camera.pose(), m_camera.camera.vertical_fov, x, y);
-        for (const auto& hit : pick_meshes(*m_snapshot, ray)) hits.push_back(hit.entity);
+        auto picked = pick_meshes(*m_snapshot, ray);
+        if (m_terrain) // the terrain, where nothing nearer is (#1068)
+            if (const auto ground = pick_terrain(m_terrain->terrains(), ray))
+                picked.insert(std::ranges::upper_bound(picked, ground->distance, {}, &PickHit::distance), *ground);
+        for (const auto& hit : picked) hits.push_back(hit.entity);
     }
     if (hits.empty()) {
         if (!additive) scene.clear_selection();

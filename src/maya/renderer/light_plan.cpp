@@ -113,6 +113,19 @@ LightPlan plan_lights(const RenderSnapshot& snapshot, const RenderView& view) {
         }
         casters_top = std::max(casters_top, transform_point(light_view, instance.bounds_center).z + instance.bounds_radius);
     }
+    // Terrain (#1068) casts from its highest point: its region's corners at the top of its heights (a peak
+    // between the overview's samples may stand a little above them).
+    for (const auto& terrain : snapshot.terrains) {
+        auto top = terrain.overview_max;
+        for (const auto& tile : terrain.tiles) top = std::max(top, tile.max);
+        top += 2.0f;
+        const auto& o = snapshot.origin;
+        for (const auto x : {double(terrain.low.x) * tile_size, double(terrain.high.x + 1) * tile_size})
+            for (const auto z : {double(terrain.low.z) * tile_size, double(terrain.high.z + 1) * tile_size}) {
+                const auto corner = math::Vec3{float(x - o.x), float(double(top) - o.y), float(z - o.z)};
+                casters_top = std::max(casters_top, transform_point(light_view, corner).z);
+            }
+    }
     auto split = [&](uint32_t i) {
         const auto t = float(i) / float(sun_cascades);
         const auto even = view_near + (far - view_near) * t, ratio = view_near * std::pow(far / view_near, t);

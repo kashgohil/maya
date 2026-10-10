@@ -15,7 +15,8 @@ using namespace detail;
 
 namespace {
 bool watched(AssetKind kind) {
-    return kind == AssetKind::material || kind == AssetKind::texture || kind == AssetKind::environment;
+    // Generators (#1068) too: a changed file regenerates the terrain that uses it.
+    return kind == AssetKind::material || kind == AssetKind::texture || kind == AssetKind::environment || kind == AssetKind::generator;
 }
 } // namespace
 
@@ -82,6 +83,7 @@ void EditorShell::check_asset_files() {
         auto request = AssetRequest{};
         if (record.kind == AssetKind::environment) request = m_assets->request_reload(AssetRef<EnvironmentAsset>{record.id});
         else if (record.kind == AssetKind::texture) request = m_assets->request_reload(AssetRef<TextureAsset>{record.id});
+        else if (record.kind == AssetKind::generator) request = m_assets->request_reload(AssetRef<GeneratorAsset>{record.id});
         else request = m_assets->request_reload(AssetRef<MaterialAsset>{record.id});
         m_reloads[record.id] = {std::move(request), record.kind, previous};
     }
@@ -111,6 +113,8 @@ void EditorShell::finish_reloads() {
             seen.error.clear();
             if (reload.kind == AssetKind::material && m_scene) // an edit not yet saved stays, and is shown again
                 if (const auto loaded = m_assets->try_acquire(AssetRef<MaterialAsset>{id})) m_scene->material_file_changed(id, loaded.lease.value());
+            if (reload.kind == AssetKind::generator && m_scene)
+                if (const auto loaded = m_assets->try_acquire(AssetRef<GeneratorAsset>{id})) m_scene->generator_file_changed(id, loaded.lease.value());
             m_log.add(DiagnosticSource::asset, "Reloaded " + path + (reload.previous_error.empty() ? "" : ", which loads again"), m_frame);
         }
         it = m_reloads.erase(it);

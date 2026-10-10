@@ -57,7 +57,7 @@ template<class T> bool number(const std::string& text, T& value) {
 /// Persistent: what the whole world needs, wherever it is.
 bool persistent(const ComponentValue& value) {
     if (std::holds_alternative<CameraComponent>(value) || std::holds_alternative<EnvironmentComponent>(value) ||
-        std::holds_alternative<PhysicsSettingsComponent>(value))
+        std::holds_alternative<PhysicsSettingsComponent>(value) || std::holds_alternative<TerrainComponent>(value))
         return true;
     const auto* light = std::get_if<LightComponent>(&value);
     return light && light->kind == LightKind::directional;

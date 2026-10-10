@@ -27,13 +27,14 @@ struct SceneState {
     const std::vector<EntityId>& children_of(EntityId parent) const;
 };
 
-/// A reversible change: the before and after states of just the entities, child lists, and material
-/// assets it touched.
+/// A reversible change: the before and after states of just the entities, child lists, and material and
+/// generator assets it touched.
 struct SceneChange {
     std::unordered_map<EntityId, std::optional<EntityRecord>, PersistentIdHash> before, after;
     std::unordered_map<EntityId, std::vector<EntityId>, PersistentIdHash> order_before, order_after;
     std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> materials_before, materials_after;
-    bool empty() const noexcept { return before.empty() && order_before.empty() && materials_before.empty(); }
+    std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> generators_before, generators_after;
+    bool empty() const noexcept { return before.empty() && order_before.empty() && materials_before.empty() && generators_before.empty(); }
 };
 /// Entities and child lists that differ between two states.
 SceneChange diff(const SceneState& before, const SceneState& after);
@@ -133,7 +134,7 @@ public:
     bool locked() const noexcept { return !m_lock_reason.empty(); }
 
     /// Unsaved changes: the history position differs from the one at the last save or open, or a
-    /// material differs from its file.
+    /// material or generator differs from its file.
     bool dirty() const noexcept;
     void mark_saved() noexcept { m_saved = m_position; }
 
@@ -153,6 +154,15 @@ public:
     std::vector<AssetId> dirty_materials() const;
     /// Called with each material value that edits, undo, and redo make current, e.g. to publish it.
     void set_material_publisher(std::function<void(AssetId, const MaterialAsset&)> publish) { m_publish_material = std::move(publish); }
+
+    // Generator assets (docs/editor.md#generators), edited as materials are: in the scene's history,
+    // published as they change (terrain made from them regenerates), and written to their files on save.
+    void open_generator(AssetId id, GeneratorAsset saved);
+    const GeneratorAsset* generator(AssetId id) const;
+    EditResult set_generator(AssetId id, GeneratorAsset value, std::string label);
+    void generator_file_changed(AssetId id, GeneratorAsset saved);
+    std::vector<AssetId> dirty_generators() const;
+    void set_generator_publisher(std::function<void(AssetId, const GeneratorAsset&)> publish) { m_publish_generator = std::move(publish); }
 
 private:
     struct Step {
@@ -182,6 +192,9 @@ private:
     std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> m_materials; // open materials, as edited
     std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> m_material_files; // what their files hold
     std::function<void(AssetId, const MaterialAsset&)> m_publish_material;
+    std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> m_generators; // open generators, as edited
+    std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> m_generator_files; // what their files hold
+    std::function<void(AssetId, const GeneratorAsset&)> m_publish_generator;
 };
 
 /// Reads a World's authored state (schema components and hierarchy). Roots are ordered by EntityId.

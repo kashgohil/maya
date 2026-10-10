@@ -15,6 +15,7 @@
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
@@ -409,6 +410,7 @@ struct PhysicsWorld::Impl {
         float density = 1000.0f;
         bool sensor = false;
         uint8_t group = 0;
+        uint64_t field = 0; // a height field's number (#1068): not in `index`, placed by itself, not by its entity
     };
 
     explicit Impl(PhysicsSettings value) : settings(value), temp(uint32_t(value.temp_allocator_bytes)) {
@@ -578,7 +580,8 @@ struct PhysicsWorld::Impl {
             if (!records[i].alive) continue;
             if (i != kept) {
                 records[kept] = std::move(records[i]);
-                index[records[kept].entity.slot] = kept;
+                if (records[kept].field != 0) fields[records[kept].field] = kept;
+                else index[records[kept].entity.slot] = kept;
                 by_body[records[kept].body.GetIndexAndSequenceNumber()] = kept;
                 bodies().SetUserData(records[kept].body, kept);
             }
@@ -603,6 +606,8 @@ struct PhysicsWorld::Impl {
     std::vector<Record> records; // creation order
     std::unordered_map<uint32_t, uint32_t> index; // entity slot -> record
     std::unordered_map<uint32_t, uint32_t> by_body; // Jolt body ID (index and sequence) -> record
+    std::unordered_map<uint64_t, uint32_t> fields; // height field number -> record (#1068)
+    uint64_t next_field = 1;
     std::unordered_map<PairKey, Pair, PairHash> pairs; // bodies in contact; events are sorted, so their order does not matter
     std::unordered_map<uint32_t, std::vector<PairKey>> pairs_of; // each body's pairs
     std::unordered_set<PairKey, PairHash> apart; // pairs touching nowhere now: held while asleep, or about to end
@@ -1396,4 +1401,88 @@ void PhysicsWorld::commit(const World& world, const BodyCommands& requests, cons
     impl.compact();
 }
 
+} // namespace maya
+
+namespace maya {
+// Height fields (#1068, docs/physics.md#height-fields) -------------------------------------------------------
+struct PreparedHeightField {
+    JPH::Ref<JPH::Shape> shape;
+    math::DVec3 origin;
+    float friction = 0.5f, restitution = 0.0f;
+};
+
+std::shared_ptr<const PreparedHeightField> PhysicsWorld::prepare_height_field(const HeightFieldDesc& desc) {
+    detail::initialize_jolt(); // it may run before any physics world, on any thread
+    if (desc.samples < 2 || desc.heights.size() != size_t(desc.samples) * desc.samples)
+        throw std::invalid_argument("A height field needs a square grid of at least 2 x 2 heights");
+    if (!(std::isfinite(desc.spacing) && desc.spacing > 0.0f)) throw std::invalid_argument("A height field's spacing must be finite and positive");
+    if (!finite(desc.origin.to_float()) || !std::ranges::all_of(desc.heights, [](float h) { return std::isfinite(h); }))
+        throw std::invalid_argument("A height field's origin and heights must be finite");
+    // #1060's record: blocks of 4 x 4 samples, each sample in 8 bits over its block's range.
+    auto settings = JPH::HeightFieldShapeSettings(desc.heights.data(), JPH::Vec3::sZero(), JPH::Vec3(desc.spacing, 1.0f, desc.spacing),
+                                                  desc.samples);
+    settings.mBlockSize = 4;
+    settings.mBitsPerSample = 8;
+    auto result = settings.Create();
+    if (result.HasError()) throw std::invalid_argument("The height field cannot be built: " + std::string(result.GetError().c_str()));
+    return std::make_shared<const PreparedHeightField>(PreparedHeightField{result.Get(), desc.origin, desc.friction, desc.restitution});
+}
+
+uint64_t PhysicsWorld::add_height_field(const World& world, EntityHandle owner, const std::shared_ptr<const PreparedHeightField>& prepared) {
+    auto& impl = *m_impl;
+    if (!prepared) throw std::invalid_argument("No height field to add");
+    if (!world.alive(owner)) throw std::invalid_argument("A height field's owner must be a live entity");
+    auto static_body = BodyDesc{};
+    static_body.motion = MotionType::static_body;
+    auto creation = JPH::BodyCreationSettings(prepared->shape, jolt_position(prepared->origin), JPH::Quat::sIdentity(),
+                                              JPH::EMotionType::Static, object_layer(static_body));
+    const auto record_index = uint32_t(impl.records.size());
+    creation.mUserData = record_index;
+    creation.mFriction = prepared->friction;
+    creation.mRestitution = prepared->restitution;
+    auto* created = impl.bodies().CreateBody(creation);
+    if (!created) throw std::runtime_error("the physics world is full (" + std::to_string(impl.settings.max_bodies) + " bodies)");
+    impl.bodies().AddBody(created->GetID(), JPH::EActivation::DontActivate);
+    auto record = Impl::Record{};
+    record.entity = owner;
+    record.id = world.persistent_id(owner).value_or(EntityId{});
+    record.body = created->GetID();
+    record.motion = MotionType::static_body;
+    record.position = prepared->origin;
+    record.field = impl.next_field++;
+    impl.records.push_back(std::move(record));
+    impl.fields[impl.records.back().field] = record_index;
+    impl.by_body[impl.records.back().body.GetIndexAndSequenceNumber()] = record_index;
+    ++impl.live_static;
+    ++impl.stats.bodies_created;
+    return impl.records.back().field;
+}
+
+void PhysicsWorld::remove_height_fields(std::span<const uint64_t> fields) {
+    auto& impl = *m_impl;
+    auto records = std::vector<Impl::Record*>{};
+    auto ids = std::vector<JPH::BodyID>{};
+    for (const auto field : fields)
+        if (const auto found = impl.fields.find(field); found != impl.fields.end()) {
+            auto& record = impl.records[found->second];
+            if (!record.alive) continue;
+            records.push_back(&record);
+            ids.push_back(record.body);
+            impl.fields.erase(found);
+        }
+    if (ids.empty()) return;
+    impl.bodies().RemoveBodies(ids.data(), int(ids.size()));
+    impl.bodies().DestroyBodies(ids.data(), int(ids.size()));
+    for (auto* record : records) {
+        impl.end_pairs_of(*record);
+        impl.by_body.erase(record->body.GetIndexAndSequenceNumber());
+        record->alive = false;
+        --impl.live_static;
+        ++impl.stats.bodies_removed;
+        ++impl.dead;
+    }
+    impl.compact();
+}
+
+size_t PhysicsWorld::height_fields() const noexcept { return m_impl->fields.size(); }
 } // namespace maya

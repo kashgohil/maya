@@ -31,6 +31,7 @@ const char* component_icon(ComponentId id) {
     case ComponentId::environment: return icon::sun_horizon;
     case ComponentId::skin: return icon::bone;
     case ComponentId::animation: return icon::film_strip;
+    case ComponentId::terrain: return icon::mountains;
     }
     return icon::circle_dashed;
 }
@@ -314,13 +315,15 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
     case PropertyType::texture_ref:
     case PropertyType::environment_ref:
     case PropertyType::skin_ref:
-    case PropertyType::animation_ref: {
+    case PropertyType::animation_ref:
+    case PropertyType::generator_ref: {
         const auto kind = property.type == PropertyType::mesh_ref ? AssetKind::mesh
                         : property.type == PropertyType::material_ref ? AssetKind::material
                         : property.type == PropertyType::script_ref ? AssetKind::script
                         : property.type == PropertyType::texture_ref ? AssetKind::texture
                         : property.type == PropertyType::skin_ref ? AssetKind::skin
-                        : property.type == PropertyType::animation_ref ? AssetKind::animation : AssetKind::environment;
+                        : property.type == PropertyType::animation_ref ? AssetKind::animation
+                        : property.type == PropertyType::generator_ref ? AssetKind::generator : AssetKind::environment;
         const auto asset = std::visit([]<class T>(const T& reference) -> AssetId {
             if constexpr (requires { reference.id; }) return reference.id;
             else return {};
@@ -332,6 +335,7 @@ void EditorShell::draw_property(const PropertyDescriptor& property, const Proper
             if (kind == AssetKind::environment) return AssetRef<EnvironmentAsset>{chosen};
             if (kind == AssetKind::skin) return AssetRef<SkinAsset>{chosen};
             if (kind == AssetKind::animation) return AssetRef<AnimationAsset>{chosen};
+            if (kind == AssetKind::generator) return AssetRef<GeneratorAsset>{chosen};
             return AssetRef<ScriptAsset>{chosen};
         };
         auto preview = std::string("None");
@@ -561,6 +565,101 @@ void EditorShell::draw_material(AssetId id, bool folded) {
     ImGui::PopID();
 }
 
+bool EditorShell::edit_generator(AssetId id, PropertyId property, PropertyValue input) {
+    const auto* current = m_scene ? m_scene->generator(id) : nullptr;
+    if (!current || !m_assets) return false;
+    auto edited = *current;
+    const auto edit = PropertyEdit{property, std::move(input)};
+    if (const auto result = edit_properties(edited, std::span(&edit, 1), asset_property_context(*m_assets)); !result) {
+        m_material_error = std::string(result.message);
+        m_material_error_id = id;
+        return false;
+    }
+    const auto info = m_assets->info(id);
+    const auto name = info ? asset_label(info->record) : std::string("generator");
+    const auto applied = m_scene->set_generator(id, std::move(edited), "Edit " + name);
+    if (!applied && applied.error != "Nothing to change") {
+        m_material_error = applied.error;
+        m_material_error_id = id;
+        return false;
+    }
+    m_material_error.clear();
+    return true;
+}
+
+void EditorShell::draw_generator(AssetId id, bool folded) {
+    if (!m_scene || !m_assets) return;
+    const auto info = m_assets->info(id);
+    const auto name = info ? asset_label(info->record) : "Missing " + id_text(id.high, id.low);
+    ImGui::PushID("generator");
+    ImGui::PushID(static_cast<int>(id.low ^ (id.high << 7)));
+    struct PopIds {
+        ~PopIds() {
+            ImGui::PopID();
+            ImGui::PopID();
+        }
+    } pop_ids;
+    ImGui::Separator();
+    ImGui::Dummy({0.0f, 4.0f});
+    if (folded) {
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once);
+        const auto open = ImGui::TreeNodeEx("##fold", ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_AllowOverlap);
+        m_layout.controls.push_back({"generator.fold", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        ImGui::SameLine();
+        if (!open) {
+            icon_text(icon::mountains, theme::color::muted);
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextUnformatted("Generator");
+            ImGui::PopStyleColor();
+            return;
+        }
+    }
+    icon_text(icon::mountains, theme::color::muted);
+    ImGui::PushFont(m_fonts.strong);
+    ImGui::TextUnformatted(name.c_str());
+    ImGui::PopFont();
+    if (!m_scene->generator(id)) { // opened on first use, at its file's value, once it has loaded
+        const auto loaded = m_assets->try_acquire(AssetRef<GeneratorAsset>{id});
+        if (!loaded) {
+            const auto loading = loaded.diagnostic.code == AssetError::loading;
+            ImGui::PushStyleColor(ImGuiCol_Text, loading ? theme::color::muted : theme::color::danger);
+            ImGui::TextWrapped("%s", loading ? "Loading..." : loaded.diagnostic.message.c_str());
+            ImGui::PopStyleColor();
+            return;
+        }
+        m_scene->open_generator(id, loaded.lease.value());
+    }
+    const auto generator = *m_scene->generator(id); // a copy, since an edit replaces it
+    const auto unsaved = m_scene->dirty_generators();
+    const auto dirty = std::ranges::find(unsaved, id) != unsaved.end();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+    ImGui::TextUnformatted(dirty ? "Generator, unsaved" : "Generator");
+    ImGui::PopStyleColor();
+    m_layout.controls.push_back({"generator." + name, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    const auto group = "Edit " + name;
+    if (theme::begin_properties("generator")) {
+        for (const auto& property : generator_properties()) {
+            theme::property(std::string(property.label).c_str());
+            ImGui::PushID(static_cast<int>(property.id));
+            draw_property(property, *read_property(generator, property.id), "generator." + std::string(property.name), group, {},
+                          [&](PropertyValue input) { edit_generator(id, property.id, std::move(input)); });
+            if (!property.description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                ImGui::SetTooltip("%s", std::string(property.description).c_str());
+            ImGui::PopID();
+        }
+        theme::end_properties();
+    }
+    if (!m_material_error.empty() && m_material_error_id == id) {
+        icon_text(icon::warning, theme::color::danger, 6.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::danger);
+        ImGui::TextWrapped("%s", m_material_error.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
 void EditorShell::draw_script_properties(EntityId id, const ComponentValue& value, const ScriptComponent& script) {
     const auto* description = script_description(script.script.id);
     if (!description || !*description) return;
@@ -742,9 +841,12 @@ void EditorShell::draw_inspector() {
         const auto primary = m_scene ? m_scene->primary() : std::nullopt;
         if (m_inspected_material && (!m_scene || m_scene->selection() != m_inspected_selection)) m_inspected_material.reset();
         if (m_inspected_material) {
-            theme::caption(m_fonts, "MATERIAL");
+            const auto info = m_assets ? m_assets->info(*m_inspected_material) : std::nullopt;
+            const auto generator = info && info->record.kind == AssetKind::generator;
+            theme::caption(m_fonts, generator ? "GENERATOR" : "MATERIAL");
             ImGui::BeginDisabled(m_play != nullptr);
-            draw_material(*m_inspected_material, false);
+            if (generator) draw_generator(*m_inspected_material, false);
+            else draw_material(*m_inspected_material, false);
             ImGui::EndDisabled();
         } else if (!primary) {
             theme::caption(m_fonts, "SELECTION");
@@ -802,6 +904,10 @@ void EditorShell::draw_inspector() {
             for (const auto& value : components)
                 if (const auto* renderer = std::get_if<MeshRendererComponent>(&value); renderer && renderer->material.valid())
                     draw_material(renderer->material.id, true);
+            // The terrain's generator, the same way: an edit regenerates the terrain (docs/editor.md#generators).
+            for (const auto& value : components)
+                if (const auto* terrain = std::get_if<TerrainComponent>(&value); terrain && terrain->heights.valid())
+                    draw_generator(terrain->heights.id, true);
             ImGui::Separator();
             ImGui::Dummy({0.0f, 4.0f});
             if (ImGui::Button((std::string(icon::plus) + "  Add component").c_str(), {-FLT_MIN, 0.0f})) ImGui::OpenPopup("add");

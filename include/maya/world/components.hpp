@@ -120,6 +120,18 @@ struct EnvironmentComponent {
     bool background = true; // drawn where no surface is, in place of the view's clear color
 };
 
+// Terrain (#1068, docs/procedural.md#terrain): heights from a height-field generator, drawn and collided with
+// per 128 m cell, and up to four material layers. Layer 0 covers everything; each later layer fades in over
+// the ones before by slope and by height, each a ramp from `.x` (none of it) to `.y` (all of it), so a ramp
+// whose `.y` is below its `.x` fades the layer out instead.
+struct TerrainComponent {
+    AssetRef<GeneratorAsset> heights{};
+    AssetRef<MaterialAsset> layer0{}, layer1{}, layer2{}, layer3{};
+    math::Vec2 layer1_slope{90.0f, 90.0f}, layer2_slope{90.0f, 90.0f}, layer3_slope{90.0f, 90.0f}; // degrees from level
+    math::Vec2 layer1_height{-10000.0f, -10000.0f}, layer2_height{-10000.0f, -10000.0f}, layer3_height{-10000.0f, -10000.0f}; // metres
+    float texture_size = 4.0f; // metres each layer's maps repeat over, along x and z
+};
+
 // Skeletal animation (docs/animation.md).
 
 /// Deforms the entity's mesh with the joints its skin names. They are entities below one of this

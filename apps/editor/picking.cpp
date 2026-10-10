@@ -84,4 +84,46 @@ std::vector<PickHit> pick_meshes(const RenderSnapshot& snapshot, const Ray& ray)
     return hits;
 }
 
+std::optional<PickHit> pick_terrain(std::span<const TerrainView> terrains, const Ray& ray, float reach) {
+    auto best = std::optional<PickHit>{};
+    for (const auto& terrain : terrains) {
+        // Its height at a point, on the triangles drawn at the finest level (TerrainStreamer::height_at's).
+        const auto height = [&](double x, double z) -> std::optional<float> {
+            const auto index = TileIndex{int32_t(std::floor(x / tile_size)), int32_t(std::floor(z / tile_size))};
+            const auto found = std::ranges::lower_bound(terrain.tiles, index, {}, &TerrainTileView::index);
+            if (found == terrain.tiles.end() || found->index != index || !found->heights) return std::nullopt;
+            const auto& tile = *found->heights;
+            const auto fx = x - double(index.x) * tile_size, fz = z - double(index.z) * tile_size;
+            const auto ix = std::min(uint32_t(fx), tile_samples - 2), iz = std::min(uint32_t(fz), tile_samples - 2);
+            const auto tx = float(fx - ix), tz = float(fz - iz);
+            const auto h00 = tile.height(ix, iz), h10 = tile.height(ix + 1, iz), h01 = tile.height(ix, iz + 1), h11 = tile.height(ix + 1, iz + 1);
+            return tx >= tz ? h00 + (h10 - h00) * tx + (h11 - h10) * tz : h00 + (h01 - h00) * tz + (h11 - h01) * tx;
+        };
+        const auto above = [&](float t) -> std::optional<bool> {
+            const auto p = ray.at(t);
+            const auto h = height(p.x, p.z);
+            if (!h) return std::nullopt;
+            return p.y > double(*h);
+        };
+        auto previous = 0.0f;
+        auto was_above = above(0.0f);
+        for (float t = 1.0f; t <= reach && (!best || t < best->distance); t += 1.0f) {
+            const auto now = above(t);
+            if (was_above && *was_above && now && !*now) { // crossed between previous and t: halve it to a centimetre
+                auto low = previous, high = t;
+                while (high - low > 0.01f) {
+                    const auto mid = (low + high) * 0.5f;
+                    const auto at_mid = above(mid);
+                    if (at_mid && *at_mid) low = mid;
+                    else high = mid;
+                }
+                best = PickHit{terrain.id, high};
+                break;
+            }
+            previous = t;
+            was_above = now;
+        }
+    }
+    return best;
+}
 } // namespace maya::editor

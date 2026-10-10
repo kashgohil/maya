@@ -56,6 +56,14 @@ add_library(Maya::Jobs ALIAS MayaJobs)
 target_include_directories(MayaJobs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 maya_target_options(MayaJobs)
 
+# Procedural content (#1068, docs/procedural.md): Maya's own seeded noise and the height tiles terrain draws
+# and collides with. CPU-only; generation runs on the job system.
+add_library(MayaProcedural STATIC src/maya/procedural/height_field.cpp)
+add_library(Maya::Procedural ALIAS MayaProcedural)
+target_include_directories(MayaProcedural PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(MayaProcedural PUBLIC MayaJobs)
+maya_target_options(MayaProcedural)
+
 # CPU-side graphics API: handle tables, validation, deferred retirement, and a null backend.
 add_library(MayaRHI STATIC
     src/maya/rhi/graphics_device.cpp
@@ -134,9 +142,10 @@ add_library(MayaAssets STATIC
     src/maya/core/tangents.cpp
     src/maya/assets/gltf.cpp
     src/maya/assets/import_file.cpp
-    src/maya/assets/cook_cache.cpp)
+    src/maya/assets/cook_cache.cpp
+    src/maya/assets/generator_file.cpp)
 add_library(Maya::Assets ALIAS MayaAssets)
-target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures PRIVATE MayaMikkTSpace meshoptimizer)
+target_link_libraries(MayaAssets PUBLIC MayaWorld MayaRHI MayaTextures MayaProcedural PRIVATE MayaMikkTSpace meshoptimizer)
 target_include_directories(MayaAssets SYSTEM PRIVATE ${cgltf_SOURCE_DIR})
 maya_target_options(MayaAssets)
 
@@ -163,6 +172,7 @@ add_library(MayaRenderer STATIC
     src/maya/renderer/light_plan.cpp
     src/maya/renderer/draw_batches.cpp
     src/maya/renderer/visibility_index.cpp
+    src/maya/renderer/terrain.cpp
     src/maya/renderer/render_target.cpp
     src/maya/renderer/renderer.cpp)
 add_library(Maya::Renderer ALIAS MayaRenderer)
@@ -262,10 +272,10 @@ maya_target_options(MayaSimulation)
 
 # World streaming (#1064, docs/world.md#streaming): cells load on jobs, cook to binary through the cook
 # cache, and activate into a play session's World within a frame budget.
-add_library(MayaStreaming STATIC src/maya/streaming/world_streamer.cpp)
+add_library(MayaStreaming STATIC src/maya/streaming/world_streamer.cpp src/maya/streaming/terrain_streamer.cpp)
 add_library(Maya::Streaming ALIAS MayaStreaming)
 target_include_directories(MayaStreaming PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(MayaStreaming PUBLIC MayaSimulation MayaAssets MayaJobs)
+target_link_libraries(MayaStreaming PUBLIC MayaSimulation MayaAssets MayaJobs MayaRenderer)
 maya_target_options(MayaStreaming)
 
 add_library(MayaRuntime STATIC

@@ -580,6 +580,32 @@ RenderSnapshot extract_render_snapshot(const World& world, AssetRegistry& assets
         });
     }
 
+    // Terrains (#1068): their layers' materials, as for meshes, and the heights drawn now. A layer still
+    // loading is left out meanwhile; one with no material assigned is not drawn.
+    for (const auto& view : options.terrains) {
+        if (!view.overview || !view.overview_buffer || !view.overview_buffer->valid()) continue; // drawn once its overview is
+        auto terrain = RenderTerrain{};
+        terrain.entity = view.id;
+        const std::array<AssetRef<MaterialAsset>, 4> layers{view.component.layer0, view.component.layer1, view.component.layer2,
+                                                           view.component.layer3};
+        for (size_t i = 0; i < layers.size(); ++i)
+            if (layers[i].valid() || i == 0)
+                if (const auto material = extraction.material(layers[i], view.id)) terrain.layers[i] = *material;
+        terrain.slope = {view.component.layer1_slope, view.component.layer2_slope, view.component.layer3_slope};
+        terrain.height = {view.component.layer1_height, view.component.layer2_height, view.component.layer3_height};
+        terrain.texture_size = view.component.texture_size;
+        terrain.low = {view.generator.region_min_x, view.generator.region_min_z};
+        terrain.high = {view.generator.region_max_x, view.generator.region_max_z};
+        terrain.overview = view.overview_buffer;
+        terrain.overview_min = view.overview->min;
+        terrain.overview_max = view.overview->max;
+        terrain.overview_width = view.overview->width;
+        terrain.overview_depth = view.overview->depth;
+        for (const auto& tile : view.tiles)
+            if (tile.buffer && tile.buffer->valid()) terrain.tiles.push_back({tile.index, tile.buffer, tile.heights->min, tile.heights->max});
+        snapshot.terrains.push_back(std::move(terrain));
+    }
+
     // At most one environment: the lowest EntityId's. An unassigned one lights nothing and says nothing.
     auto environments = std::vector<std::pair<EntityId, EnvironmentComponent>>{};
     world.for_each<EnvironmentComponent>([&](EntityHandle entity, const EnvironmentComponent& environment) {

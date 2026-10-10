@@ -1,4 +1,6 @@
 #include "maya/streaming/world_streamer.hpp"
+#include "maya/assets/generator_file.hpp"
+#include "maya/streaming/terrain_streamer.hpp"
 #include "maya/assets/cook_cache.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/physics/physics.hpp"
@@ -154,6 +156,11 @@ std::vector<CookKey> reachable_cook_keys(const Project& project, std::span<const
         const auto file = project.resolve(source.file);
         if (!file) continue;
         if (auto key = cooker.cook_key(record.kind, *file, source.part)) keys.push_back(std::move(*key));
+        // A generator's output (#1068): its overview and every tile its region could hold.
+        if (record.kind == AssetKind::generator) {
+            auto input = std::ifstream(*file);
+            if (const auto read = read_generator_file(input)) append_generator_cook_keys(read.generator, keys);
+        }
     }
     // Worlds' cells, wherever the content holds a world file (not inside the project's own .maya folder).
     std::error_code error;

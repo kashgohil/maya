@@ -1,6 +1,7 @@
 #pragma once
 #include "maya/assets/animation.hpp"
 #include "maya/assets/asset_ref.hpp"
+#include "maya/assets/generator.hpp"
 #include "maya/assets/material.hpp"
 #include "maya/assets/texture_data.hpp"
 #include "maya/core/mesh.hpp"
@@ -19,8 +20,8 @@
 #include <variant>
 
 namespace maya {
-enum class AssetKind { mesh, material, script, texture, environment, skin, animation };
-/// "mesh", "material", "script", "texture", "environment", "skin", or "animation".
+enum class AssetKind { mesh, material, script, texture, environment, skin, animation, generator };
+/// "mesh", "material", "script", "texture", "environment", "skin", "animation", or "generator".
 const char* asset_kind_name(AssetKind kind) noexcept;
 enum class AssetState { unloaded, loading, ready, failed };
 enum class AssetError {
@@ -100,11 +101,12 @@ private:
 };
 template<class T> concept Asset = std::same_as<T,MeshAsset> || std::same_as<T,MaterialAsset> || std::same_as<T,ScriptAsset> ||
                                   std::same_as<T,TextureAsset> || std::same_as<T,EnvironmentAsset> || std::same_as<T,SkinAsset> ||
-                                  std::same_as<T,AnimationAsset>;
+                                  std::same_as<T,AnimationAsset> || std::same_as<T,GeneratorAsset>;
 template<Asset T> inline constexpr AssetKind asset_kind =
     std::same_as<T,MeshAsset> ? AssetKind::mesh : std::same_as<T,MaterialAsset> ? AssetKind::material :
     std::same_as<T,ScriptAsset> ? AssetKind::script : std::same_as<T,TextureAsset> ? AssetKind::texture :
-    std::same_as<T,SkinAsset> ? AssetKind::skin : std::same_as<T,AnimationAsset> ? AssetKind::animation : AssetKind::environment;
+    std::same_as<T,SkinAsset> ? AssetKind::skin : std::same_as<T,AnimationAsset> ? AssetKind::animation :
+    std::same_as<T,GeneratorAsset> ? AssetKind::generator : AssetKind::environment;
 
 template<Asset T> struct AssetHandle {
     uint64_t registry = 0;
@@ -163,7 +165,7 @@ struct AssetInfo {
 using AssetValue = std::variant<std::shared_ptr<const MeshAsset>, std::shared_ptr<const MaterialAsset>,
                                 std::shared_ptr<const ScriptAsset>, std::shared_ptr<const TextureAsset>,
                                 std::shared_ptr<const EnvironmentAsset>, std::shared_ptr<const SkinAsset>,
-                                std::shared_ptr<const AnimationAsset>>;
+                                std::shared_ptr<const AnimationAsset>, std::shared_ptr<const GeneratorAsset>>;
 /// One load, as the registry asks a provider for it: the kind, the resolved file, the part inside an
 /// imported file (empty for a whole file), and the job tier its cooking may fan out on.
 struct AssetLoadRequest {
@@ -212,6 +214,8 @@ public:
     virtual AssetLoadResult<AnimationAsset> load_imported_animation(const std::filesystem::path& source, std::string_view part);
     virtual AssetLoadResult<SkinAsset> load_skin(const std::filesystem::path& absolute_path);
     virtual AssetLoadResult<AnimationAsset> load_animation(const std::filesystem::path& absolute_path);
+    /// A generator file (.generator, #1068): read as authored, in every provider (packages copy it too).
+    virtual AssetLoadResult<GeneratorAsset> load_generator(const std::filesystem::path& absolute_path);
 };
 class GltfFile;
 class CookCache;

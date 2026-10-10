@@ -1,4 +1,5 @@
 #include "maya/assets/registry.hpp"
+#include "maya/assets/generator_file.hpp"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -30,7 +31,8 @@ ResidencyCategory category_of(AssetKind kind) noexcept {
     case AssetKind::skin:
     case AssetKind::animation: return ResidencyCategory::animation;
     case AssetKind::material:
-    case AssetKind::script: break;
+    case AssetKind::script:
+    case AssetKind::generator: break;
     }
     return ResidencyCategory::other;
 }
@@ -99,6 +101,7 @@ const char* asset_kind_name(AssetKind kind) noexcept {
     case AssetKind::environment: return "environment";
     case AssetKind::skin: return "skin";
     case AssetKind::animation: return "animation";
+    case AssetKind::generator: return "generator";
     case AssetKind::script: break;
     }
     return "script";
@@ -145,6 +148,7 @@ std::pair<AssetValue, AssetDiagnostic> AssetProvider::load_now(const AssetLoadRe
     case AssetKind::material: return take(load_material(path));
     case AssetKind::environment: return take(load_environment(path));
     case AssetKind::script: return take(load_script(path));
+    case AssetKind::generator: return take(load_generator(path));
     }
     return {std::shared_ptr<const MeshAsset>{}, {AssetError::wrong_type, "Unsupported asset kind"}};
 }
@@ -163,6 +167,14 @@ AssetSourcePath split_asset_path(const std::filesystem::path& path) {
     return {std::filesystem::path(file), text.substr(mark + 1)};
 }
 
+AssetLoadResult<GeneratorAsset> AssetProvider::load_generator(const std::filesystem::path& path) {
+    auto file = std::ifstream(path, std::ios::binary);
+    if (!file) return {nullptr, {AssetError::missing_file, "Cannot read generator " + path.string()}};
+    auto read = read_generator_file(file);
+    if (!read) return {nullptr, {AssetError::invalid_data, path.string() + ": " + read.error}};
+    return {std::make_shared<const GeneratorAsset>(read.generator), {}};
+}
+
 AssetLoadResult<ScriptAsset> AssetProvider::load_script(const std::filesystem::path& path) {
     auto file = std::ifstream(path, std::ios::binary);
     if (!file) return {nullptr, {AssetError::missing_file, "Cannot read script " + path.string()}};
@@ -177,7 +189,7 @@ AssetDiagnostic AssetRegistry::register_asset(AssetRecord record) {
     if (!record.id.valid()) return {AssetError::invalid_id,"Asset ID must be nonzero"};
     if (record.kind != AssetKind::mesh && record.kind != AssetKind::material && record.kind != AssetKind::script &&
         record.kind != AssetKind::texture && record.kind != AssetKind::environment && record.kind != AssetKind::skin &&
-        record.kind != AssetKind::animation)
+        record.kind != AssetKind::animation && record.kind != AssetKind::generator)
         return {AssetError::wrong_type,"Unsupported asset kind"};
     if (m_ids.contains(record.id)) return {AssetError::duplicate_id,"Duplicate asset ID " + id_text(record.id)};
     const auto source = split_asset_path(record.path);
@@ -239,6 +251,8 @@ AssetResidency AssetRegistry::residency() const noexcept {
                 ++result.skins;
             } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const AnimationAsset>) {
                 ++result.animations;
+            } else if constexpr (std::same_as<typename std::decay_t<decltype(value)>::element_type, const GeneratorAsset>) {
+                ++result.generators;
             } else {
                 ++result.scripts;
             }
@@ -734,14 +748,22 @@ void AssetRegistry::wait_idle() {
 }
 
 AssetDiagnostic AssetRegistry::publish(AssetRef<MaterialAsset> ref, MaterialAsset value) {
-    const auto it = m_ids.find(ref.id);
-    if (it == m_ids.end()) return {AssetError::not_registered,"Asset " + id_text(ref.id) + " is not in the project catalog"};
+    return publish_value(ref.id, AssetKind::material, std::move(value));
+}
+
+AssetDiagnostic AssetRegistry::publish(AssetRef<GeneratorAsset> ref, GeneratorAsset value) {
+    return publish_value(ref.id, AssetKind::generator, std::move(value));
+}
+
+template <typename T> AssetDiagnostic AssetRegistry::publish_value(AssetId id, AssetKind kind, T value) {
+    const auto it = m_ids.find(id);
+    if (it == m_ids.end()) return {AssetError::not_registered,"Asset " + id_text(id) + " is not in the project catalog"};
     auto& entry = m_entries[it->second];
-    if (entry.record.kind != AssetKind::material) return {AssetError::wrong_type,"Asset type mismatch: " + entry.record.path.string()};
+    if (entry.record.kind != kind) return {AssetError::wrong_type,"Asset type mismatch: " + entry.record.path.string()};
     if (m_loading) return {AssetError::busy,"Nested asset loads are not supported; stage dependencies before publication"};
     if (entry.generation == std::numeric_limits<uint64_t>::max()) return {AssetError::load_failed,"Asset version counter exhausted"};
     if (entry.pending) cancel_load(it->second); // the edit wins over a load of the file in flight
-    set_payload(it->second, std::make_shared<const MaterialAsset>(std::move(value)));
+    set_payload(it->second, std::make_shared<const T>(std::move(value)));
     ++entry.generation;
     entry.diagnostic = {};
     entry.state = AssetState::ready;
@@ -781,14 +803,14 @@ AssetCatalogResult read_asset_catalog(std::istream& input) {
     while (input >> kind) {
         AssetId id;
         if ((kind != "mesh" && kind != "material" && kind != "script" && kind != "texture" && kind != "environment" && kind != "skin" &&
-             kind != "animation") ||
+             kind != "animation" && kind != "generator") ||
             !(input >> high >> low >> std::quoted(path)) ||
             !parse_word(high,id.high) || !parse_word(low,id.low) || !id.valid())
             return {{},{AssetError::invalid_data,"Invalid catalog entry " + std::to_string(records.size()+1)}};
         records.push_back({id,kind == "mesh" ? AssetKind::mesh : kind == "material" ? AssetKind::material :
                               kind == "script" ? AssetKind::script : kind == "texture" ? AssetKind::texture :
                               kind == "skin" ? AssetKind::skin : kind == "animation" ? AssetKind::animation :
-                              AssetKind::environment,path});
+                              kind == "generator" ? AssetKind::generator : AssetKind::environment,path});
     }
     if (input.bad() || !input.eof()) return {{},{AssetError::invalid_data,"I/O failure reading catalog"}};
     return {std::move(records),{}};

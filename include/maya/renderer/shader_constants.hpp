@@ -98,6 +98,30 @@ struct ToneMapConstants {
 inline constexpr size_t debug_line_floats = 12;
 inline constexpr size_t debug_shape_floats = 24;
 
+/// Terrain (#1068, docs/renderer.md#terrain): a layer's material factors and the maps it has.
+struct TerrainLayerConstants {
+    math::Vec4 base_color;
+    math::Vec4 factors; // x metallic, y roughness, z normal scale, w occlusion strength
+    uint32_t flags[4]; // x a bit per MaterialSlot with a texture, y 1 when the layer is used; the rest is padding
+};
+/// One terrain's constants, for both stages (buffer 3).
+struct TerrainConstants {
+    TerrainLayerConstants layers[4];
+    math::Vec4 slope[3]; // layers 1 to 3: x the slope (degrees) where it starts, y where it is whole
+    math::Vec4 height[3]; // ... by height (metres)
+    math::Vec4 params; // x 1 / texture size, yz the texture coordinates at the anchor, w tile samples a side
+    math::Vec4 overview; // xy the anchor (the region's low corner, the overview's sample (0, 0)) in the snapshot's frame, z what moves a stored height into it
+    math::Vec4 overview_size; // x samples along x, y along z, z spacing (metres)
+    math::Vec4 camera; // xyz the view's camera in the snapshot's frame, w its height above or below the terrain's band
+    math::Vec4 region; // xy the region's low corner and zw its high one, in the snapshot's frame
+};
+/// One patch (buffer 1): an instance of the 32 x 32-quad grid.
+struct TerrainPatchConstants {
+    math::Vec4 origin_size; // xy its corner in metres from the anchor (exact), z its size (metres), w its level
+    math::Vec4 morph; // x where its morph starts, y ends (metres from the camera), z its quad, w 1 when it blends to the overview
+    math::Vec4 source; // xy the tile's sample (0, 0) in metres from the anchor
+    uint32_t flags[4]; // x 1 when it reads a tile (buffer 5)
+};
 static_assert(offsetof(ViewConstants, camera_position) == 64 &&
               offsetof(ViewConstants, ambient) == 80 && offsetof(ViewConstants, light_count) == 96 &&
               offsetof(ViewConstants, lights) == 112 && offsetof(ViewConstants, inverse_view_projection) == 240 &&
@@ -113,6 +137,9 @@ static_assert(sizeof(MaterialConstants) == 96 && offsetof(MaterialConstants, fac
               offsetof(MaterialConstants, uv_transform) == 64 && offsetof(MaterialConstants, uv_offset) == 80,
               "MaterialConstants must match renderer.metal");
 static_assert(sizeof(PresentConstants) == 16, "PresentConstants must match renderer.metal");
+static_assert(sizeof(TerrainLayerConstants) == 48 && sizeof(TerrainConstants) == 4 * 48 + 6 * 16 + 5 * 16,
+              "TerrainConstants must match renderer.metal");
+static_assert(sizeof(TerrainPatchConstants) == 64, "TerrainPatchConstants must match renderer.metal");
 static_assert(sizeof(ToneMapConstants) == 16, "ToneMapConstants must match renderer.metal");
 static_assert(sizeof(DebugConstants) == 32 && offsetof(DebugConstants, kind) == 16, "DebugConstants must match renderer.metal");
 } // namespace maya

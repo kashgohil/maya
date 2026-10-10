@@ -18,7 +18,7 @@ namespace maya {
 struct AssetResidency {
     size_t entries = 0; // catalog entries
     size_t unloaded = 0, loading = 0, ready = 0, failed = 0; // entries by state
-    size_t meshes = 0, materials = 0, scripts = 0, textures = 0, environments = 0, skins = 0, animations = 0; // resident versions owned by the cache
+    size_t meshes = 0, materials = 0, scripts = 0, textures = 0, environments = 0, skins = 0, animations = 0, generators = 0; // resident versions owned by the cache
     size_t leased = 0; // resident versions also held by a lease outside the registry
     size_t mesh_gpu_bytes = 0; // vertex and index buffers of resident meshes
     size_t mesh_cpu_bytes = 0; // their picking geometry (MeshGeometry)
@@ -213,8 +213,11 @@ public:
     /// see it; leases of the previous version keep it; a load of it in flight is cancelled. Fails for an
     /// ID that is not a cataloged material.
     AssetDiagnostic publish(AssetRef<MaterialAsset> ref, MaterialAsset value);
+    /// The same for a generator (docs/procedural.md#editing): terrain made from it regenerates.
+    AssetDiagnostic publish(AssetRef<GeneratorAsset> ref, GeneratorAsset value);
 
 private:
+    template <typename T> AssetDiagnostic publish_value(AssetId id, AssetKind kind, T value);
     using Payload = AssetValue;
     struct PendingLoad {
         uint64_t generation = 0; // this load's request generation; completions of others are discarded

@@ -203,6 +203,7 @@ PreparedAsset PackageAssetProvider::prepare(const AssetLoadRequest& request) {
     }
     case AssetKind::material: return now(load_material(path));
     case AssetKind::script: return now(load_script(path));
+    case AssetKind::generator: return now(load_generator(path));
     case AssetKind::skin: return now(load_skin(path));
     case AssetKind::animation: return now(load_animation(path));
     }

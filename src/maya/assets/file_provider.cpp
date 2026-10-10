@@ -80,6 +80,7 @@ PreparedAsset FileAssetProvider::prepare(const AssetLoadRequest& request) {
     }
     case AssetKind::material: return ready_now(load_material(path));
     case AssetKind::script: return ready_now(load_script(path));
+    case AssetKind::generator: return ready_now(load_generator(path));
     case AssetKind::skin: return ready_now(request.part.empty() ? load_skin(path) : load_imported_skin(path, request.part));
     case AssetKind::animation: return ready_now(request.part.empty() ? load_animation(path) : load_imported_animation(path, request.part));
     }

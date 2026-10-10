@@ -10,6 +10,7 @@ class TextureAsset;
 class EnvironmentAsset;
 struct SkinAsset;
 struct AnimationAsset;
+struct GeneratorAsset;
 
 /// A serializable reference, not a residency lease. AssetRegistry issues explicit residency leases.
 template<class Asset>

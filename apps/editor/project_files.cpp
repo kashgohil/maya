@@ -3,6 +3,7 @@
 #include "editor_shell.hpp"
 #include "maya/assets/cook_cache.hpp"
 #include "shell_detail.hpp"
+#include "maya/assets/generator_file.hpp"
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
@@ -226,11 +227,15 @@ void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesys
     scene->set_material_publisher([this](AssetId id, const MaterialAsset& value) {
         if (m_assets) m_assets->publish(AssetRef<MaterialAsset>{id}, value);
     });
+    scene->set_generator_publisher([this](AssetId id, const GeneratorAsset& value) { // terrain made from it regenerates
+        if (m_assets) m_assets->publish(AssetRef<GeneratorAsset>{id}, value);
+    });
     // References are checked against whichever catalog is current, including after a refresh.
     scene->set_validation_context({[this](AssetId id, ReferenceKind kind) {
         return m_assets ? asset_property_context(*m_assets).resolve_asset(id, kind) : ReferenceStatus::missing;
     }});
     m_visibility.reset(); // before the World it indexes goes
+    m_terrain.reset();
     m_scene = std::move(scene);
     m_scene_path = std::move(path);
     m_renaming.reset();
@@ -393,6 +398,8 @@ void EditorShell::refresh_project() {
         m_assets = std::move(registry); // loaded versions are reloaded from their files on next use
         if (m_scene) // edits not yet saved stay shown
             for (const auto id : m_scene->dirty_materials()) m_assets->publish(AssetRef<MaterialAsset>{id}, *m_scene->material(id));
+        if (m_scene)
+            for (const auto id : m_scene->dirty_generators()) m_assets->publish(AssetRef<GeneratorAsset>{id}, *m_scene->generator(id));
         m_scripts.clear();
         m_watched_files.clear();
         check_script_files();
@@ -424,6 +431,16 @@ std::string EditorShell::save_materials() {
         note_watched_file(id); // the editor's own save is not an outside change
         m_log.add(DiagnosticSource::asset, "Saved " + info->record.path.generic_string(), m_frame);
     }
+    for (const auto id : m_scene->dirty_generators()) {
+        const auto info = m_assets->info(id);
+        const auto file = info ? m_project->resolve(info->record.path) : std::nullopt;
+        if (!file) return "Generator " + id_text(id.high, id.low) + " is no longer in the project's catalog, so its edits cannot be saved";
+        const auto& value = *m_scene->generator(id);
+        if (auto failed = save_generator_file(*file, value); !failed.empty()) return failed;
+        m_scene->generator_file_changed(id, value);
+        note_watched_file(id);
+        m_log.add(DiagnosticSource::asset, "Saved " + info->record.path.generic_string(), m_frame);
+    }
     return {};
 }
 
@@ -432,6 +449,10 @@ void EditorShell::discard_material_edits() {
     const auto wait = AssetRegistry::ExplicitWait(*m_assets); // the user asked: their files' values now
     for (const auto id : m_scene->dirty_materials()) {
         m_assets->reload(AssetRef<MaterialAsset>{id});
+        note_watched_file(id);
+    }
+    for (const auto id : m_scene->dirty_generators()) {
+        m_assets->reload(AssetRef<GeneratorAsset>{id});
         note_watched_file(id);
     }
 }
@@ -898,12 +919,12 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
     const auto state = info ? info->state : AssetState::unloaded;
     const auto failed = version ? !missing && !problem.empty() : state == AssetState::failed || (info && info->diagnostic);
     const auto* glyph = mesh ? icon::cube : script ? icon::file_code : texture ? icon::image : environment ? icon::sun_horizon
-                       : skin ? icon::bone : clip ? icon::film_strip : icon::circle_half;
+                       : skin ? icon::bone : clip ? icon::film_strip : record.kind == AssetKind::generator ? icon::mountains : icon::circle_half;
     ImGui::PushID(static_cast<int>(record.id.low ^ (record.id.high << 7)));
     const auto selected = m_selected_asset == record.id;
     if (ImGui::Selectable("##asset", selected, ImGuiSelectableFlags_AllowDoubleClick, {0.0f, ImGui::GetFrameHeight()})) {
         m_selected_asset = record.id;
-        if (record.kind == AssetKind::material && m_scene) { // the Inspector shows it until the selection changes
+        if ((record.kind == AssetKind::material || record.kind == AssetKind::generator) && m_scene) { // the Inspector shows it until the selection changes
             m_inspected_material = record.id;
             m_inspected_selection = m_scene->selection();
         }
@@ -952,7 +973,10 @@ void EditorShell::draw_asset_row(const AssetRow& row) {
             if (mesh) diagnostic = m_assets->reload(AssetRef<MeshAsset>{record.id}).diagnostic;
             else if (texture) diagnostic = m_assets->reload(AssetRef<TextureAsset>{record.id}).diagnostic;
             else if (environment) diagnostic = m_assets->reload(AssetRef<EnvironmentAsset>{record.id}).diagnostic;
-            else if (const auto material = m_assets->reload(AssetRef<MaterialAsset>{record.id}); !material)
+            else if (record.kind == AssetKind::generator) {
+                if (const auto generator = m_assets->reload(AssetRef<GeneratorAsset>{record.id}); !generator) diagnostic = generator.diagnostic;
+                else if (m_scene) m_scene->generator_file_changed(record.id, generator.lease.value());
+            } else if (const auto material = m_assets->reload(AssetRef<MaterialAsset>{record.id}); !material)
                 diagnostic = material.diagnostic;
             else if (m_scene) // an edit not yet saved stays, and is shown again
                 m_scene->material_file_changed(record.id, material.lease.value());
@@ -1076,13 +1100,14 @@ void EditorShell::draw_assets() {
                 const auto kind = m_asset_rows[i].record.kind;
                 if (passes(m_asset_rows[i].search))
                     m_shown_rows[kind == AssetKind::mesh ? 1 : kind == AssetKind::material ? 2 : kind == AssetKind::script ? 3
-                                 : kind == AssetKind::texture ? 4 : kind == AssetKind::environment ? 5 : 6].push_back(i);
+                                 : kind == AssetKind::texture ? 4 : kind == AssetKind::environment ? 5
+                                 : kind == AssetKind::generator ? 7 : 6].push_back(i);
             }
             m_shown_filter = std::move(filter);
             m_shown_stale = false;
         }
         constexpr auto table_flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame;
-        if (ImGui::BeginTable("asset_columns", 7, table_flags, ImGui::GetContentRegionAvail())) {
+        if (ImGui::BeginTable("asset_columns", 8, table_flags, ImGui::GetContentRegionAvail())) {
             // Each column scrolls on its own and draws only its visible rows.
             const auto column = [&](const char* id, const char* caption, const std::vector<size_t>& shown, auto&& row) {
                 ImGui::TableNextColumn();
@@ -1136,6 +1161,7 @@ void EditorShell::draw_assets() {
             column("textures", "TEXTURES", m_shown_rows[4], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("environments", "ENVIRONMENTS", m_shown_rows[5], [&](size_t index) { draw_asset_row(m_asset_rows[index]); });
             column("animation", "ANIMATION", m_shown_rows[6], [&](size_t index) { draw_asset_row(m_asset_rows[index]); }); // skins and clips
+            column("generators", "GENERATORS", m_shown_rows[7], [&](size_t index) { draw_asset_row(m_asset_rows[index]); }); // #1068
             ImGui::EndTable();
         }
         if (std::exchange(m_rescan, false)) scan_project();

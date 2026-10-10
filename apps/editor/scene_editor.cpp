@@ -60,6 +60,7 @@ void remove_command(WorldCommands& commands, EntityTarget target, ComponentId id
     case ComponentId::environment: commands.remove<EnvironmentComponent>(target); break;
     case ComponentId::skin: commands.remove<SkinComponent>(target); break;
     case ComponentId::animation: commands.remove<AnimationComponent>(target); break;
+    case ComponentId::terrain: commands.remove<TerrainComponent>(target); break;
     }
 }
 
@@ -338,6 +339,10 @@ EditResult SceneEditor::apply(const SceneChange& change, bool forward) {
         m_materials.insert_or_assign(id, value);
         if (m_publish_material) m_publish_material(id, value);
     }
+    for (const auto& [id, value] : forward ? change.generators_after : change.generators_before) {
+        m_generators.insert_or_assign(id, value);
+        if (m_publish_generator) m_publish_generator(id, value);
+    }
     ++m_revision; // callers then set the selection, which prunes missing entities
     return {true, {}};
 }
@@ -419,6 +424,14 @@ void drop_unchanged(SceneChange& change) {
             ++it;
         }
     }
+    for (auto it = change.generators_after.begin(); it != change.generators_after.end();) {
+        if (change.generators_before.at(it->first) == it->second) {
+            change.generators_before.erase(it->first);
+            it = change.generators_after.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 } // namespace
 
@@ -442,6 +455,10 @@ EditResult SceneEditor::commit(std::string label, SceneChange change, std::vecto
         for (auto& [id, after] : change.materials_after) {
             m_group_change.materials_before.try_emplace(id, change.materials_before.at(id));
             m_group_change.materials_after.insert_or_assign(id, std::move(after));
+        }
+        for (auto& [id, after] : change.generators_after) {
+            m_group_change.generators_before.try_emplace(id, change.generators_before.at(id));
+            m_group_change.generators_after.insert_or_assign(id, std::move(after));
         }
     } else {
         record({std::move(label), std::move(change), selection_before, m_selection});
@@ -719,9 +736,47 @@ void SceneEditor::material_file_changed(AssetId id, MaterialAsset saved) {
     file->second = std::move(saved);
 }
 
+void SceneEditor::open_generator(AssetId id, GeneratorAsset saved) {
+    if (m_generators.contains(id)) return;
+    m_generators.emplace(id, saved);
+    m_generator_files.emplace(id, std::move(saved));
+}
+
+const GeneratorAsset* SceneEditor::generator(AssetId id) const {
+    const auto found = m_generators.find(id);
+    return found == m_generators.end() ? nullptr : &found->second;
+}
+
+EditResult SceneEditor::set_generator(AssetId id, GeneratorAsset value, std::string label) {
+    const auto found = m_generators.find(id);
+    if (found == m_generators.end()) return {false, "The generator is not open for editing"};
+    auto change = SceneChange{};
+    change.generators_before.emplace(id, found->second);
+    change.generators_after.emplace(id, std::move(value));
+    return commit(std::move(label), std::move(change), m_selection);
+}
+
+void SceneEditor::generator_file_changed(AssetId id, GeneratorAsset saved) {
+    const auto file = m_generator_files.find(id);
+    if (file == m_generator_files.end()) return;
+    auto& current = m_generators.at(id);
+    if (current == file->second) current = saved;
+    else if (m_publish_generator) m_publish_generator(id, current); // a reload replaced the published edit
+    file->second = std::move(saved);
+}
+
+std::vector<AssetId> SceneEditor::dirty_generators() const {
+    auto result = std::vector<AssetId>{};
+    for (const auto& [id, value] : m_generators)
+        if (!(value == m_generator_files.at(id))) result.push_back(id);
+    std::ranges::sort(result);
+    return result;
+}
+
 bool SceneEditor::dirty() const noexcept {
     if (!m_saved || *m_saved != m_position) return true;
-    return std::ranges::any_of(m_materials, [&](const auto& entry) { return !(entry.second == m_material_files.at(entry.first)); });
+    return std::ranges::any_of(m_materials, [&](const auto& entry) { return !(entry.second == m_material_files.at(entry.first)); }) ||
+           std::ranges::any_of(m_generators, [&](const auto& entry) { return !(entry.second == m_generator_files.at(entry.first)); });
 }
 
 std::vector<AssetId> SceneEditor::dirty_materials() const {

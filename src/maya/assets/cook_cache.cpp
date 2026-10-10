@@ -69,10 +69,12 @@ std::optional<std::vector<std::byte>> unwrap_cooked(std::span<const std::byte> b
 std::optional<std::vector<std::byte>> CookCache::read(const CookKey& key) {
     auto bytes = read_file(entry_path(key));
     if (!bytes) {
+        const auto lock = std::lock_guard(m_mutex);
         ++m_stats.misses;
         return std::nullopt;
     }
     auto payload = unwrap_cooked(*bytes);
+    const auto lock = std::lock_guard(m_mutex);
     if (!payload) {
         ++m_stats.damaged;
         ++m_stats.misses;
@@ -89,11 +91,9 @@ void CookCache::write(const CookKey& key, std::span<const std::byte> payload) {
     if (!error && !std::filesystem::exists(m_folder / ".gitignore", error))
         replace_file(m_folder / ".gitignore", "# Maya's cook cache: cooked from the project's sources, never committed.\n*\n", "cache");
     const auto entry = wrap_cooked(payload);
-    if (error || !replace_file(path, std::string(reinterpret_cast<const char*>(entry.data()), entry.size()), "cache entry").empty()) {
-        ++m_stats.failures;
-        return;
-    }
-    ++m_stats.writes;
+    const auto failed = error || !replace_file(path, std::string(reinterpret_cast<const char*>(entry.data()), entry.size()), "cache entry").empty();
+    const auto lock = std::lock_guard(m_mutex);
+    ++(failed ? m_stats.failures : m_stats.writes);
 }
 
 Sha256Digest CookCache::source_digest(const std::filesystem::path& file, std::span<const std::byte> bytes) {
@@ -102,6 +102,7 @@ Sha256Digest CookCache::source_digest(const std::filesystem::path& file, std::sp
     const auto digest = sha256(bytes);
     if (error) return digest;
     const auto entry = Remembered{time, bytes.size(), digest};
+    const auto lock = std::lock_guard(m_mutex);
     const auto found = std::ranges::find(m_sources, file, &std::pair<std::filesystem::path, Remembered>::first);
     if (found != m_sources.end()) found->second = entry;
     else m_sources.emplace_back(file, entry);
@@ -113,8 +114,11 @@ std::optional<Sha256Digest> CookCache::source_digest(const std::filesystem::path
     const auto time = std::filesystem::last_write_time(file, error);
     const auto size = error ? 0 : std::filesystem::file_size(file, error);
     if (error) return std::nullopt;
-    const auto found = std::ranges::find(m_sources, file, &std::pair<std::filesystem::path, Remembered>::first);
-    if (found != m_sources.end() && found->second.time == time && found->second.size == size) return found->second.digest;
+    {
+        const auto lock = std::lock_guard(m_mutex);
+        const auto found = std::ranges::find(m_sources, file, &std::pair<std::filesystem::path, Remembered>::first);
+        if (found != m_sources.end() && found->second.time == time && found->second.size == size) return found->second.digest;
+    }
     const auto bytes = read_file(file);
     if (!bytes) return std::nullopt;
     return source_digest(file, *bytes);

@@ -42,6 +42,7 @@ template<class T> constexpr PropertyType property_type() {
     else if constexpr (std::same_as<T, AssetRef<EnvironmentAsset>>) return PropertyType::environment_ref;
     else if constexpr (std::same_as<T, AssetRef<SkinAsset>>) return PropertyType::skin_ref;
     else if constexpr (std::same_as<T, AssetRef<AnimationAsset>>) return PropertyType::animation_ref;
+    else if constexpr (std::same_as<T, AssetRef<GeneratorAsset>>) return PropertyType::generator_ref;
     else { static_assert(std::same_as<T, AssetRef<MaterialAsset>>); return PropertyType::material_ref; }
 }
 /// Enumerations are held in PropertyValue as ChoiceValue; everything else as itself.
@@ -58,7 +59,7 @@ Binding bind(PropertyId id, std::string_view name, std::string_view label,
     constexpr auto type = property_type<V>();
     constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::script_ref ||
                               type == PropertyType::texture_ref || type == PropertyType::environment_ref ||
-                              type == PropertyType::skin_ref || type == PropertyType::animation_ref
+                              type == PropertyType::skin_ref || type == PropertyType::animation_ref || type == PropertyType::generator_ref
         ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
     return {{id, name, label, type, property_value(C{}.*Member), range, units, presentation, encoding, choices, description},
         [](const ComponentValue& value) -> PropertyValue { return property_value(std::get<C>(value).*Member); },
@@ -222,6 +223,29 @@ const auto& physics_settings_bindings() {
     return values;
 }
 
+constexpr auto terrain_slope = NumericRange{0.0f, 90.0f, true, true};
+constexpr auto terrain_height = NumericRange{-10000.0f, 10000.0f, true, true};
+constexpr auto texture_repeat = NumericRange{0.01f, 1000.0f, true, true};
+const auto& terrain_bindings() {
+    static const auto values = std::array{
+        bind<&TerrainComponent::heights>(1, "heights", "Heights", Hint::asset, {}, {}, "A height-field generator: the terrain's shape and extent."),
+        bind<&TerrainComponent::layer0>(2, "layer0", "Ground", Hint::asset, {}, {}, "The material everywhere the other layers are not."),
+        bind<&TerrainComponent::layer1>(3, "layer1", "Layer 1", Hint::asset, {}, {}, "A material over the ground where its slope and height ramps allow."),
+        bind<&TerrainComponent::layer1_slope>(4, "layer1_slope", "Layer 1 slope", Hint::vector, terrain_slope, "\xC2\xB0",
+            "From none of the layer at the first slope to all of it at the second."),
+        bind<&TerrainComponent::layer1_height>(5, "layer1_height", "Layer 1 height", Hint::vector, terrain_height, "m",
+            "From none of the layer at the first height to all of it at the second."),
+        bind<&TerrainComponent::layer2>(6, "layer2", "Layer 2", Hint::asset, {}, {}, "A material over the layers before it."),
+        bind<&TerrainComponent::layer2_slope>(7, "layer2_slope", "Layer 2 slope", Hint::vector, terrain_slope, "\xC2\xB0"),
+        bind<&TerrainComponent::layer2_height>(8, "layer2_height", "Layer 2 height", Hint::vector, terrain_height, "m"),
+        bind<&TerrainComponent::layer3>(9, "layer3", "Layer 3", Hint::asset, {}, {}, "A material over the layers before it."),
+        bind<&TerrainComponent::layer3_slope>(10, "layer3_slope", "Layer 3 slope", Hint::vector, terrain_slope, "\xC2\xB0"),
+        bind<&TerrainComponent::layer3_height>(11, "layer3_height", "Layer 3 height", Hint::vector, terrain_height, "m"),
+        bind<&TerrainComponent::texture_size>(12, "texture_size", "Texture size", Hint::number, texture_repeat, "m",
+            "The ground distance each layer's maps repeat over.")};
+    return values;
+}
+
 constexpr auto environment_intensity = NumericRange{0.0f, 100000.0f, true, true};
 constexpr auto half_turn = NumericRange{-math::PI, math::PI, true, true};
 const auto& environment_bindings() {
@@ -358,6 +382,66 @@ const auto& material_bindings() {
     return values;
 }
 
+// Generator assets (#1068): the same descriptors again, read from and written to a GeneratorAsset.
+struct GeneratorBinding {
+    PropertyDescriptor descriptor;
+    PropertyValue (*read)(const GeneratorAsset&);
+    bool (*write)(GeneratorAsset&, const PropertyValue&);
+};
+template<auto Member>
+GeneratorBinding bind_generator(PropertyId id, std::string_view name, std::string_view label, PropertyPresentation presentation,
+                                NumericRange range = {}, std::string_view units = {}, std::string_view description = {},
+                                std::span<const EnumOption> choices = {}) {
+    using V = typename MemberTraits<decltype(Member)>::Value;
+    constexpr auto type = property_type<V>();
+    return {{id, name, label, type, property_value(GeneratorAsset{}.*Member), range, units, presentation, PropertyEncoding::value, choices,
+             description},
+        [](const GeneratorAsset& generator) -> PropertyValue { return property_value(generator.*Member); },
+        [](GeneratorAsset& generator, const PropertyValue& input) {
+            if constexpr (std::is_enum_v<V>) {
+                const auto choice = std::get_if<ChoiceValue>(&input);
+                if (!choice) return false;
+                generator.*Member = static_cast<V>(choice->value);
+            } else {
+                const auto typed = std::get_if<V>(&input);
+                if (!typed) return false;
+                generator.*Member = *typed;
+            }
+            return true;
+        }};
+}
+constexpr auto generator_kind_options = std::array{option(GeneratorKind::heightfield_noise, "heightfield.noise", "Noise height field")};
+constexpr auto seed_range = NumericRange{0.0f, 2147483520.0f, true, true}; // the largest float below 2^31
+constexpr auto octave_range = NumericRange{1.0f, 12.0f, true, true};
+constexpr auto wavelength_range = NumericRange{1.0f, 100000.0f, true, true};
+constexpr auto relief_range = NumericRange{0.0f, 10000.0f, true, true};
+constexpr auto base_range = NumericRange{-10000.0f, 10000.0f, true, true};
+constexpr auto region_range = NumericRange{-1024.0f, 1023.0f, true, true}; // 128 m cells: about 131 km either way
+const auto& generator_bindings() {
+    static const auto values = std::array{
+        bind_generator<&GeneratorAsset::kind>(1, "kind", "Kind", Hint::choice, {}, {}, "What the generator makes.", generator_kind_options),
+        bind_generator<&GeneratorAsset::seed>(2, "seed", "Seed", Hint::number, seed_range, {},
+            "Chooses the output; the same seed and parameters always give the same heights."),
+        bind_generator<&GeneratorAsset::octaves>(3, "octaves", "Octaves", Hint::number, octave_range, {},
+            "Layers of noise, each half the wavelength and half the height of the one before."),
+        bind_generator<&GeneratorAsset::wavelength>(4, "wavelength", "Wavelength", Hint::number, wavelength_range, "m",
+            "The size of the largest features."),
+        bind_generator<&GeneratorAsset::amplitude>(5, "amplitude", "Amplitude", Hint::number, relief_range, "m",
+            "How far the largest features rise and fall from the base height."),
+        bind_generator<&GeneratorAsset::warp>(6, "warp", "Warp", Hint::number, relief_range, "m",
+            "How far noise bends the features sideways, so ridges wander."),
+        bind_generator<&GeneratorAsset::base>(7, "base", "Base height", Hint::number, base_range, "m", "Added to every height."),
+        bind_generator<&GeneratorAsset::region_min_x>(8, "region_min_x", "Region from x", Hint::number, region_range, "cells",
+            "The first 128 m cell along x."),
+        bind_generator<&GeneratorAsset::region_min_z>(9, "region_min_z", "Region from z", Hint::number, region_range, "cells",
+            "The first 128 m cell along z."),
+        bind_generator<&GeneratorAsset::region_max_x>(10, "region_max_x", "Region to x", Hint::number, region_range, "cells",
+            "The last 128 m cell along x, included."),
+        bind_generator<&GeneratorAsset::region_max_z>(11, "region_max_z", "Region to z", Hint::number, region_range, "cells",
+            "The last 128 m cell along z, included.")};
+    return values;
+}
+
 } // namespace
 
 const char* script_value_type_name(ScriptValueType type) noexcept {
@@ -430,6 +514,7 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::physics_settings: return physics_settings_bindings();
     case ComponentId::script: return script_bindings();
     case ComponentId::environment: return environment_bindings();
+    case ComponentId::terrain: return terrain_bindings();
     case ComponentId::skin: return skin_bindings();
     case ComponentId::animation: return animation_bindings();
     }
@@ -479,6 +564,7 @@ std::optional<PropertyResult> check(const PropertyDescriptor& d, const PropertyV
             else if constexpr (std::same_as<T, AssetRef<EnvironmentAsset>>) return {reference.id, ReferenceKind::environment};
             else if constexpr (std::same_as<T, AssetRef<SkinAsset>>) return {reference.id, ReferenceKind::skin};
             else if constexpr (std::same_as<T, AssetRef<AnimationAsset>>) return {reference.id, ReferenceKind::animation};
+            else if constexpr (std::same_as<T, AssetRef<GeneratorAsset>>) return {reference.id, ReferenceKind::generator};
             else return {AssetId{}, ReferenceKind::mesh};
         }, input);
         if (!asset.valid()) return std::nullopt;
@@ -533,6 +619,7 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto environments = descriptors(environment_bindings());
     static const auto skins = descriptors(skin_bindings());
     static const auto animations = descriptors(animation_bindings());
+    static const auto terrains = descriptors(terrain_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 2, transforms}, // 2: double translation (#1065)
@@ -547,7 +634,8 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::script, "maya.script", "Script", 1, scripts},
         ComponentDescriptor{ComponentId::environment, "maya.environment", "Environment", 1, environments}, // #1035
         ComponentDescriptor{ComponentId::skin, "maya.skin", "Skin", 1, skins}, // #1038
-        ComponentDescriptor{ComponentId::animation, "maya.animation", "Animation", 1, animations}};
+        ComponentDescriptor{ComponentId::animation, "maya.animation", "Animation", 1, animations}, // #1038
+        ComponentDescriptor{ComponentId::terrain, "maya.terrain", "Terrain", 1, terrains}}; // #1068
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -583,7 +671,8 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, ScriptComponent>) return ComponentId::script;
         else if constexpr (std::same_as<T, EnvironmentComponent>) return ComponentId::environment;
         else if constexpr (std::same_as<T, SkinComponent>) return ComponentId::skin;
-        else { static_assert(std::same_as<T, AnimationComponent>); return ComponentId::animation; }
+        else if constexpr (std::same_as<T, AnimationComponent>) return ComponentId::animation;
+        else { static_assert(std::same_as<T, TerrainComponent>); return ComponentId::terrain; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -602,6 +691,7 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::environment: return EnvironmentComponent{};
     case ComponentId::skin: return SkinComponent{};
     case ComponentId::animation: return AnimationComponent{};
+    case ComponentId::terrain: return TerrainComponent{};
     }
     return std::nullopt;
 }
@@ -691,5 +781,50 @@ PropertyResult edit_properties(MaterialAsset& material, std::span<const Property
 }
 PropertyResult validate_material(MaterialAsset& material, const PropertyValidationContext& context) {
     return edit_properties(material, {}, context);
+}
+
+std::span<const PropertyDescriptor> generator_properties() {
+    static const auto values = [] {
+        const auto& bindings = generator_bindings();
+        auto result = std::array<PropertyDescriptor, std::tuple_size_v<std::remove_cvref_t<decltype(bindings)>>>{};
+        for (size_t i = 0; i < result.size(); ++i) result[i] = bindings[i].descriptor;
+        return result;
+    }();
+    return values;
+}
+const PropertyDescriptor* generator_property(PropertyId property) {
+    for (const auto& item : generator_properties()) if (item.id == property) return &item;
+    return nullptr;
+}
+const PropertyDescriptor* generator_property(std::string_view name) {
+    for (const auto& item : generator_properties()) if (item.name == name) return &item;
+    return nullptr;
+}
+std::optional<PropertyValue> read_property(const GeneratorAsset& generator, PropertyId property) {
+    for (const auto& item : generator_bindings()) if (item.descriptor.id == property) return item.read(generator);
+    return std::nullopt;
+}
+PropertyResult edit_properties(GeneratorAsset& generator, std::span<const PropertyEdit> edits, const PropertyValidationContext& context) {
+    auto candidate = generator;
+    for (size_t i = 0; i < edits.size(); ++i) {
+        const auto& edit = edits[i];
+        const auto item = std::ranges::find(generator_bindings(), edit.property, [](const GeneratorBinding& b) { return b.descriptor.id; });
+        if (item == generator_bindings().end()) return {PropertyError::unknown_property, edit.property, "Property ID is not a generator property"};
+        for (size_t j = 0; j < i; ++j) if (edits[j].property == edit.property)
+            return {PropertyError::duplicate_property, edit.property, "Property appears more than once in this edit"};
+        if (!item->write(candidate, edit.value))
+            return {PropertyError::type_mismatch, edit.property, "Value type does not match the property"};
+    }
+    for (const auto& item : generator_bindings())
+        if (auto error = check(item.descriptor, item.read(candidate), context)) return *error;
+    if (candidate.region_min_x > candidate.region_max_x)
+        return {PropertyError::invalid_value, 10, "The region's last cell along x comes before its first"};
+    if (candidate.region_min_z > candidate.region_max_z)
+        return {PropertyError::invalid_value, 11, "The region's last cell along z comes before its first"};
+    generator = candidate;
+    return {};
+}
+PropertyResult validate_generator(GeneratorAsset& generator, const PropertyValidationContext& context) {
+    return edit_properties(generator, {}, context);
 }
 } // namespace maya

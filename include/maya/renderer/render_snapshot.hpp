@@ -1,6 +1,7 @@
 #pragma once
 
 #include "maya/assets/registry.hpp"
+#include "maya/renderer/terrain.hpp"
 #include "maya/world/debug_draw.hpp"
 #include "maya/world/presentation.hpp"
 #include "maya/world/world.hpp"
@@ -8,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -160,6 +162,8 @@ struct RenderExtractOptions {
     /// With a view: the World's visibility index, which extraction updates and asks for what the view and
     /// its shadow maps may see, rather than visiting every mesh renderer. One per World and view.
     VisibilityIndex* index = nullptr;
+    /// Terrains to draw (#1068): a terrain streamer's (TerrainStreamer::terrains), with their tiles drawn now.
+    std::span<const TerrainView> terrains{};
     float lod_pixels = 1.0f; // a level's error on screen it accepts (a project's lod_bias scales it)
     float cull_pixels = 2.0f; // smaller instances are not drawn; 0 draws them all
 };
@@ -188,6 +192,26 @@ struct RenderSnapshotStats {
 /// evicting or reloading assets, or destroying the registry after extraction cannot invalidate it.
 /// Instances of one mesh, and materials using one texture, share a single lease and GPU allocation. Release a snapshot once its frames are encoded;
 /// the graphics device keeps the GPU buffers alive until those frames complete.
+/// A terrain to draw (#1068, docs/renderer.md#terrain): its layers' materials, how they blend, its region,
+/// and the packed heights of its overview and of its tiles drawn now.
+struct RenderTerrainTile {
+    TileIndex index;
+    std::shared_ptr<const HeightBuffer> buffer;
+    float min = 0.0f, max = 0.0f;
+};
+inline constexpr uint32_t no_material = UINT32_MAX;
+struct RenderTerrain {
+    EntityId entity;
+    std::array<uint32_t, 4> layers{no_material, no_material, no_material, no_material}; // into RenderSnapshot::materials
+    std::array<math::Vec2, 3> slope{}, height{}; // layers 1 to 3's ramps (TerrainComponent)
+    float texture_size = 4.0f;
+    TileIndex low, high; // the region, in cells
+    std::shared_ptr<const HeightBuffer> overview;
+    float overview_min = 0.0f, overview_max = 0.0f;
+    uint32_t overview_width = 0, overview_depth = 0;
+    std::vector<RenderTerrainTile> tiles; // sorted by index
+};
+
 struct RenderSnapshot {
     uint64_t world = 0; // World::token() of the source
     /// Every position in the snapshot (instances, bounds, joints, lights, debug lines) is relative to this
@@ -202,6 +226,7 @@ struct RenderSnapshot {
     std::vector<math::Mat4> joints;
     std::vector<RenderDirectionalLight> lights; // enabled directional lights in EntityId order
     std::vector<RenderLocalLight> local_lights; // enabled point and spot lights in EntityId order
+    std::vector<RenderTerrain> terrains; // since #1068
     math::Vec3 ambient{0.0f};
     /// The environment that lights the scene in place of the ambient light, when there is one.
     std::optional<RenderEnvironment> environment;

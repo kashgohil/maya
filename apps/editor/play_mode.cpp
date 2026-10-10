@@ -76,6 +76,14 @@ bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording*
         // Never compiled: the session gets the file as it is and reports why, under the script's name.
         return m_assets ? registry_script_sources(*m_assets)(script) : ScriptSourceResult{std::nullopt, version.error};
     };
+    // Terrain (#1068) joins physics frame by frame as it streams, not tick by tick: a recording could not replay.
+    const auto has_terrain = std::ranges::any_of(document.entities, [](const SceneEntity& entity) {
+        return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<TerrainComponent>(value); });
+    });
+    if (has_terrain && (replay || record)) {
+        notice("Couldn't play the scene", "Recording and replaying a scene with terrain are not supported yet");
+        return false;
+    }
     auto started = PlaySession::start(document, asset_property_context(*m_assets), play_systems(sources, registry_animation_clips(*m_assets), scripts));
     if (!started) {
         auto reason = started.error;
@@ -100,6 +108,13 @@ bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording*
         m_play_recording = begin_recording(name, document, played_assets(document), scripts.seed, {}, {});
         m_play->start_recording();
     }
+    if (has_terrain) { // the ground under the play camera collides before the first tick
+        m_terrain.reset(); // the authored World's
+        const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
+        const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
+        update_terrain(m_play->world(), pose ? pose->translation : math::DVec3{});
+        if (m_terrain) m_terrain->settle(m_play->world(), *m_assets, &m_play->physics());
+    }
     m_play_selection = m_scene->selection();
     m_scene->lock(play_lock);
     m_renaming.reset();
@@ -122,6 +137,8 @@ void EditorShell::stop_play() {
         m_play_recording.reset();
     }
     m_visibility.reset(); // before its World
+    if (m_terrain) m_terrain->clear(&m_play->physics()); // its height fields leave the play physics first
+    m_terrain.reset();
     m_play.reset(); // the play World, its systems, and the snapshot's leases on it go now
     m_play_reloads.reset();
     m_shown_physics.reset();

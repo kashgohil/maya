@@ -217,7 +217,8 @@ PropertyValue to_property(lua_State* L, int index, const PropertyDescriptor& pro
     case PropertyType::script_values:
     case PropertyType::texture_ref:
     case PropertyType::environment_ref:
-    case PropertyType::skin_ref: break;
+    case PropertyType::skin_ref:
+    case PropertyType::generator_ref: break;
     }
     throw ScriptError(std::string(property.name) + " cannot be set by scripts yet");
 }

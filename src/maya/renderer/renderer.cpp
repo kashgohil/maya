@@ -61,7 +61,9 @@ void Renderer::release() noexcept {
     if (!m_lifetime.expired()) {
         for (const auto& cached : m_pipelines) m_device.destroy(cached.handle);
         m_device.destroy(m_sampler);
+        if (m_terrain_grid.valid()) m_device.destroy(m_terrain_grid);
     }
+    m_terrain_grid = {};
     m_pipelines.clear();
     m_sampler = {};
     m_placeholder.reset(); // a lost session already retired its texture
@@ -105,6 +107,22 @@ RhiDiagnostic Renderer::pipeline(Format format, PipelineKind kind, PipelineHandl
         desc.depth = {true, true, CompareFunction::less};
         desc.cull = CullMode::none;
         desc.label = std::string(kind == PipelineKind::shadow_masked ? "masked shadow caster" : "shadow caster") + (skinned ? " (skinned)" : "");
+    } else if (kind == PipelineKind::terrain_shadow) {
+        // Terrain casts as it is drawn; outside its region nothing is (docs/renderer.md#terrain).
+        desc.color_formats.clear();
+        desc.vertex_entry = "terrainShadowVertex";
+        desc.fragment_entry = "terrainShadowFragment";
+        desc.depth_format = Format::depth32_float;
+        desc.depth = {true, true, CompareFunction::less};
+        desc.cull = CullMode::none;
+        desc.label = "terrain shadow caster";
+    } else if (kind == PipelineKind::terrain) {
+        desc.vertex_entry = "terrainVertex";
+        desc.fragment_entry = "terrainFragment";
+        desc.depth_format = Format::depth32_float;
+        desc.depth = {true, true, CompareFunction::less};
+        desc.cull = CullMode::none; // seen from below where the ground is open, it is still there
+        desc.label = std::string("terrain") + (debug ? " (debug view)" : "");
     } else if (kind == PipelineKind::present) {
         desc.vertex_entry = "presentVertex";
         desc.fragment_entry = "presentFragment";
@@ -189,7 +207,8 @@ RhiDiagnostic Renderer::bind_instances() {
 }
 
 RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSnapshot& snapshot, const char* label,
-                                            const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches) {
+                                            const std::vector<math::Mat4>& maps, const std::vector<std::vector<DrawBatch>>& batches,
+                                            const math::DVec3& eye) {
     // Opaque and masked casters, each unskinned and skinned; skinned ones only when a skinned mesh casts.
     auto casters = std::array<std::array<PipelineHandle, 2>, 2>{};
     for (const auto& list : batches)
@@ -200,6 +219,9 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
                 if (auto error = pipeline(Format::depth32_float, mask ? PipelineKind::shadow_masked : PipelineKind::shadow,
                                           casters[skinned][mask], false, skinned)) return error;
         }
+    auto terrain_caster = PipelineHandle{};
+    if (!snapshot.terrains.empty())
+        if (auto error = pipeline(Format::depth32_float, PipelineKind::terrain_shadow, terrain_caster)) return error;
     auto pass = RenderPassDesc{};
     pass.depth = DepthAttachment{atlas.handle(), LoadAction::clear, StoreAction::store, 1.0};
     pass.label = label;
@@ -239,6 +261,16 @@ RhiDiagnostic Renderer::encode_shadow_atlas(const Texture& atlas, const RenderSn
                 if (auto error = snapshot.meshes[batch.mesh].value().mesh().draw(batch.count, batch.first, batch.level)) return error;
                 ++m_stats.shadow_draws;
                 m_stats.shadow_instances += batch.count;
+            }
+            // Terrain casts too, chosen for the map's bounds with the view's levels of detail (#1068).
+            if (terrain_caster.valid()) {
+                if (auto error = m_device.set_pipeline(terrain_caster)) return error;
+                if (auto error = m_device.set_uniform_buffer(2, uploaded.slice)) return error;
+                const auto volume = Frustum::from(maps[map]);
+                for (const auto& terrain : snapshot.terrains)
+                    if (auto error = draw_terrain(terrain, snapshot, eye, volume, true, m_stats.terrain_shadow_patches)) return error;
+                if (m_order.size > 0)
+                    if (auto error = bind_instances()) return error; // terrain bound its patches where the instances go
             }
             ++m_stats.shadow_maps;
         }
@@ -295,6 +327,9 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         if (auto& slot = lit[skinned][lit_index(kind)]; !slot.valid())
             if (auto error = pipeline(target.scene_format(), kind, slot, debugging, skinned)) return error;
     }
+    auto terrain_pipeline = PipelineHandle{};
+    if (!snapshot.terrains.empty())
+        if (auto error = pipeline(target.scene_format(), PipelineKind::terrain, terrain_pipeline, debugging)) return error;
     auto tone_map = PipelineHandle{};
     if (auto error = pipeline(target.color_format(), PipelineKind::tone_map, tone_map)) return error;
     if (!m_placeholder) { // pipeline() above drops it when the device session changed
@@ -388,10 +423,12 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
         m_palette = palette.slice;
         m_stats.joints += snapshot.joints.size();
     }
+    const auto eye_offset = view_frame(snapshot, view).eye; // the camera in the snapshot's frame
+    const auto camera = math::DVec3{snapshot.origin.x + eye_offset.x, snapshot.origin.y + eye_offset.y, snapshot.origin.z + eye_offset.z};
     if (plan.sun)
-        if (auto error = encode_shadow_atlas(*m_sun_atlas, snapshot, "sun shadows", sun_maps, sun_batches)) return error;
+        if (auto error = encode_shadow_atlas(*m_sun_atlas, snapshot, "sun shadows", sun_maps, sun_batches, camera)) return error;
     if (!plan.spot_shadows.empty())
-        if (auto error = encode_shadow_atlas(*m_spot_atlas, snapshot, "spot shadows", spot_maps, spot_batches)) return error;
+        if (auto error = encode_shadow_atlas(*m_spot_atlas, snapshot, "spot shadows", spot_maps, spot_batches, camera)) return error;
 
     // Everything is drawn in the snapshot's frame (#1065): positions relative to its origin, and the
     // camera at its offset from it.
@@ -508,9 +545,19 @@ RhiDiagnostic Renderer::render(const RenderSnapshot& snapshot, const RenderView&
             m_stats.instances += batch.count;
             return {};
         };
-        // Opaque and masked surfaces, the sky where none was drawn, then blended surfaces back to front.
+        // Opaque and masked surfaces, terrain, the sky where none was drawn, then blended surfaces back to front.
         for (const auto& batch : view_batches.opaque)
             if (auto error = draw(batch)) return error;
+        if (terrain_pipeline.valid()) {
+            if (auto error = m_device.set_pipeline(terrain_pipeline)) return error;
+            const auto volume = Frustum::from(frame.matrices.view_projection);
+            for (const auto& terrain : snapshot.terrains)
+                if (auto error = draw_terrain(terrain, snapshot, camera, volume, false, m_stats.terrain_patches)) return error;
+            bound_pipeline = terrain_pipeline;
+            bound_material.reset(); // terrain's constants took buffer 3
+            if (m_order.size > 0)
+                if (auto error = bind_instances()) return error;
+        }
         if (!sky_drawn)
             if (auto error = draw_sky()) return error;
         for (const auto& batch : view_batches.blended)
@@ -694,4 +741,124 @@ size_t Renderer::table_bytes() const noexcept {
     return bytes(m_brdf_table) + bytes(m_empty_cube) + (m_placeholder ? m_placeholder->gpu_bytes() : 0);
 }
 
+// Terrain (#1068, docs/renderer.md#terrain) ------------------------------------------------------------------
+namespace {
+constexpr uint32_t terrain_grid_indices = terrain_quads * terrain_quads * 6;
+/// The fraction of `value / period`, in double: a texture coordinate that does not slide as the origin moves.
+float wrapped(double value, double period) {
+    const auto t = value / period;
+    return float(t - std::floor(t));
+}
+} // namespace
+
+RhiDiagnostic Renderer::terrain_grid() {
+    if (m_terrain_grid.valid()) return {};
+    auto indices = std::vector<uint32_t>{};
+    indices.reserve(terrain_grid_indices);
+    constexpr auto row = terrain_quads + 1;
+    for (uint32_t z = 0; z < terrain_quads; ++z)
+        for (uint32_t x = 0; x < terrain_quads; ++x) {
+            const auto a = z * row + x, b = a + 1, c = a + row, d = c + 1;
+            // Split along the diagonal from (x, z) to (x + 1, z + 1), as picking and height_at assume.
+            for (const auto i : {a, d, b, a, c, d}) indices.push_back(i);
+        }
+    auto created = m_device.create_buffer({indices.size() * sizeof(uint32_t), BufferUsage::index, "terrain grid"}, indices.data());
+    if (!created) return created.diagnostic;
+    m_terrain_grid = created.handle;
+    return {};
+}
+
+RhiDiagnostic Renderer::draw_terrain(const RenderTerrain& terrain, const RenderSnapshot& snapshot, const math::DVec3& eye,
+                                     const Frustum& volume, bool shadow, uint64_t& patches) {
+    if (!terrain.overview || !terrain.overview->valid()) return {};
+    if (auto error = terrain_grid()) return error;
+    const auto& origin = snapshot.origin;
+    m_terrain_tiles.clear();
+    m_terrain_ranges.clear();
+    for (const auto& tile : terrain.tiles) {
+        m_terrain_tiles.push_back(tile.index);
+        m_terrain_ranges.push_back({tile.min, tile.max});
+    }
+    m_terrain_choices.clear();
+    const auto extent = TerrainExtent{terrain.low, terrain.high, terrain.overview_min, terrain.overview_max, m_terrain_tiles, m_terrain_ranges};
+    select_terrain_patches(extent, eye, &volume, origin, m_terrain_choices);
+    if (m_terrain_choices.empty()) return {};
+
+    // Its constants, for both stages.
+    auto constants = TerrainConstants{};
+    for (size_t i = 0; i < 4; ++i) {
+        if (terrain.layers[i] == no_material) continue;
+        const auto& material = snapshot.materials[terrain.layers[i]];
+        auto& layer = constants.layers[i];
+        layer.base_color = material.base_color;
+        layer.factors = {material.metallic, material.roughness, material.normal_scale, material.occlusion_strength};
+        for (uint32_t slot = 0; slot < 4; ++slot)
+            if (material.textures[slot] < snapshot.textures.size()) layer.flags[0] |= 1u << slot;
+        layer.flags[1] = 1;
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        constants.slope[i] = {terrain.slope[i].x, terrain.slope[i].y, 0.0f, 0.0f};
+        constants.height[i] = {terrain.height[i].x - float(origin.y), terrain.height[i].y - float(origin.y), 0.0f, 0.0f};
+    }
+    const auto size = double(std::max(terrain.texture_size, 0.01f));
+    // Patches are placed in whole metres from the anchor, the region's low corner (no pinholes, #1068).
+    const auto anchor_x = double(terrain.low.x) * tile_size, anchor_z = double(terrain.low.z) * tile_size;
+    constants.params = {float(1.0 / size), wrapped(anchor_x, size), wrapped(anchor_z, size), float(tile_samples)};
+    constants.overview = {float(double(terrain.low.x) * tile_size - origin.x), float(double(terrain.low.z) * tile_size - origin.z),
+                          float(-origin.y), 0.0f}; // heights are stored in world metres: z moves them into the snapshot's frame
+    constants.overview_size = {float(terrain.overview_width), float(terrain.overview_depth), float(overview_spacing), 0.0f};
+    const auto camera = eye - origin;
+    const auto [lowest, highest] = terrain_band(extent);
+    constants.camera = {float(camera.x), float(camera.y), float(camera.z), float(terrain_height_gap(eye.y, lowest, highest))};
+    constants.region = {float(double(terrain.low.x) * tile_size - origin.x), float(double(terrain.low.z) * tile_size - origin.z),
+                        float(double(terrain.high.x + 1) * tile_size - origin.x), float(double(terrain.high.z + 1) * tile_size - origin.z)};
+    // The patches, in the snapshot's frame.
+    m_terrain_patches.clear();
+    for (const auto& choice : m_terrain_choices) {
+        auto patch = TerrainPatchConstants{};
+        const auto patch_size = choice.size();
+        patch.origin_size = {float(choice.x - anchor_x), float(choice.z - anchor_z), float(patch_size), float(choice.level)};
+        patch.morph = {float(terrain_morph_start(choice.level)), float(terrain_range(choice.level)), float(patch_size / terrain_quads),
+                       choice.blend ? 1.0f : 0.0f};
+        if (choice.tile >= 0) {
+            const auto& tile = terrain.tiles[size_t(choice.tile)];
+            patch.source = {float(double(tile.index.x) * tile_size - anchor_x), float(double(tile.index.z) * tile_size - anchor_z),
+                            0.0f, 0.0f};
+            patch.flags[0] = 1;
+        }
+        m_terrain_patches.push_back(patch);
+    }
+    const auto uploaded_constants = m_device.upload_transient(&constants, sizeof(constants));
+    if (!uploaded_constants) return uploaded_constants.diagnostic;
+    const auto uploaded_patches = m_device.upload_transient(m_terrain_patches.data(), m_terrain_patches.size() * sizeof(TerrainPatchConstants));
+    if (!uploaded_patches) return uploaded_patches.diagnostic;
+    if (auto error = m_device.set_uniform_buffer(1, uploaded_patches.slice)) return error;
+    if (auto error = m_device.set_uniform_buffer(3, uploaded_constants.slice)) return error;
+    if (auto error = m_device.set_uniform_buffer(6, terrain.overview->handle())) return error;
+    if (!shadow) { // the layers' maps, 10 + 4 x layer + slot, and one sampler for them all
+        const TextureAsset* sampled = nullptr;
+        for (uint32_t i = 0; i < 4; ++i)
+            for (uint32_t slot = 0; slot < 4; ++slot) {
+                const auto texture = terrain.layers[i] == no_material ? no_texture : snapshot.materials[terrain.layers[i]].textures[slot];
+                const auto* asset = texture < snapshot.textures.size() ? &snapshot.textures[texture].value() : m_placeholder.get();
+                if (!sampled && asset != m_placeholder.get()) sampled = asset;
+                if (auto error = m_device.set_texture(10 + 4 * i + slot, asset->texture().handle())) return error;
+            }
+        if (auto error = m_device.set_sampler(9, (sampled ? sampled : m_placeholder.get())->sampler().handle())) return error;
+    }
+    // One draw per tile the patches read, then the overview's.
+    for (size_t first = 0; first < m_terrain_choices.size();) {
+        auto last = first + 1;
+        while (last < m_terrain_choices.size() && m_terrain_choices[last].tile == m_terrain_choices[first].tile) ++last;
+        const auto tile = m_terrain_choices[first].tile;
+        const auto& source = tile >= 0 ? *terrain.tiles[size_t(tile)].buffer : *terrain.overview;
+        if (auto error = m_device.set_uniform_buffer(5, source.handle())) return error;
+        if (auto error = m_device.draw_indexed(m_terrain_grid, IndexType::uint32, terrain_grid_indices, 0, uint32_t(last - first), uint32_t(first)))
+            return error;
+        if (!shadow) ++m_stats.terrain_draws;
+        first = last;
+    }
+    patches += m_terrain_choices.size();
+    return {};
+}
 } // namespace maya
