@@ -106,7 +106,7 @@ levels/w1/cells/32_-64.scene ...
 ```
 
 - **The grid** is uniform, 128 m in x and z; a cell is a column, `cell_of(position)` = the floor of x and z over the cell size, as two 32-bit integers.
-- **The persistent part** is always loaded: what the whole world needs. `partition_world` puts a root entity and everything below it there when any of them is a camera, a directional light, an environment, or physics settings.
+- **The persistent part** is always loaded: what the whole world needs. `partition_world` puts a root entity and everything below it there when any of them is a camera, a directional light, an environment, physics settings, or (#1068) a [terrain](procedural.md#terrain), which spans many cells and streams by its own tiles.
 - **Cells.** Every other root goes, with its whole subtree, to the cell of its translation, so a hierarchy never crosses cells. A cell is listed with its entity count, and only occupied cells are listed.
 - **`save_world`** validates the scene, then writes the persistent scene and each cell's scene (ordinary [scene text](scene.md)), each atomically, removes the scenes of cells no longer occupied, and writes the world file last. `load_world` reads everything for tests and tools; play streams instead.
 - **Cooked cells.** When a cell is loaded, its scene text is cooked to a [packed binary](scene.md#cooked-cells) in the project's cook cache, keyed by the text's digest and the build's schemas, so later loads decode it (#1060 measured 0.25 µs an entity against 3.4 µs to parse). A package holds its cells only cooked (`.cell`).
@@ -148,6 +148,8 @@ Two journals let owners avoid scanning: commits return every entity they destroy
 - **Loading screens.** `settle` brings every cell to what the sources want now, waiting for loads and ignoring the frame budget: the player calls it before its first frame.
 - **Instruments** (`StreamingStats`): cells by state; loads started, finished, failed, and cancelled; completions discarded; activations, deactivations, and cells kept active; the last and longest frame's streaming time; bytes loading and loaded; active entities; and cells holding play's changes.
 
+**Terrain** streams beside the cells, by `TerrainStreamer` ([procedural](procedural.md#streaming), #1068), from the same sources and settings: its tiles load and are drawn within 896 m or the loading radius if farther, since the finest levels of detail reach that far, and are collided with within the activation radius, each tile a height field of the terrain entity, within a frame budget of their own (0.5 ms).
+
 ### Cross-cell references
 
 References to entities are by persistent ID (a script's entity values, an animation's clip targets by name path), so they are weak: one into an unloaded cell is unresolved (`find` returns nothing), never dangling, and resolves again, to a fresh handle, when the cell is active again. Nothing about a reference keeps its cell loaded; the streamer never looks at them. Play can join a cell's entities to others' hierarchies (reparenting across cells): such a cell cannot be hidden whole, so it is kept active (`pinned`), and the streamer reports it.
@@ -158,11 +160,11 @@ When an active cell goes out, the entities the edit journal named are compared w
 
 ### Physics
 
-A cell's bodies join Jolt in one batch when it is published (`authored_physics` over its entities, then `PhysicsWorld::create_bodies`), and leave in one batch when it is hidden (`PhysicsWorld::remove_bodies`). `PhysicsWorld::commit` removes the bodies of the entities the batch destroyed (`WorldCommitResult::destroyed`) instead of checking every body, and `prepare` re-places only the static bodies below entities the transform journal named, skipping the moving bodies' own write-backs, instead of checking every static body: per-tick cost no longer grows with the number of bodies ([measurements](#measurements)). Removed body records are compacted in place once they outnumber live ones, re-indexing only the records that move. Constraints do not exist yet; mesh and height-field shapes come with #1068.
+A cell's bodies join Jolt in one batch when it is published (`authored_physics` over its entities, then `PhysicsWorld::create_bodies`), and leave in one batch when it is hidden (`PhysicsWorld::remove_bodies`). `PhysicsWorld::commit` removes the bodies of the entities the batch destroyed (`WorldCommitResult::destroyed`) instead of checking every body, and `prepare` re-places only the static bodies below entities the transform journal named, skipping the moving bodies' own write-backs, instead of checking every static body: per-tick cost no longer grows with the number of bodies ([measurements](#measurements)). Removed body records are compacted in place once they outnumber live ones, re-indexing only the records that move. Constraints and mesh shapes do not exist yet. Terrain's height fields (#1068) join and leave tile by tile through the [terrain streamer](procedural.md#streaming), outside the cells' batches ([height fields](physics.md#height-fields)).
 
 ### Play and the player
 
-The [player](play.md#the-player) runs a `.world` as it runs a scene: its persistent part plays as the scene, the streamer settles the cells around the camera behind the loading screen, and every frame streams around the camera before the tick. Recording and replaying a streamed world are refused for now: streaming is not deterministic with respect to ticks. The editor's Play of a world comes with #1067, when the editor can open one. A [package](projects.md#packages) holds a world's file, its persistent scene, and its cells cooked.
+The [player](play.md#the-player) runs a `.world` as it runs a scene: its persistent part plays as the scene, the streamer settles the cells around the camera behind the loading screen, and every frame streams around the camera before the tick; a scene's or world's terrain streams the same way (#1068). Recording and replaying a streamed world are refused for now: streaming is not deterministic with respect to ticks. The editor's Play of a world comes with #1067, when the editor can open one. A [package](projects.md#packages) holds a world's file, its persistent scene, and its cells cooked.
 
 ### Tests
 

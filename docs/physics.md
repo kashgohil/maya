@@ -144,6 +144,16 @@ If creating a body fails at the commit (a refused entity, or a full world), the 
 - **Filter** (`QueryFilter`): `groups`, a bit set of the collision groups to hit (default all); `sensors`, whether to hit sensors (default not); `ignore`, an entity whose body is skipped.
 - **Refusals.** A zero or non-finite direction, a negative distance, or a shape a collider could not have throws `std::invalid_argument` with the reason.
 
+## Height fields
+
+[#1068](https://work.rezee.app/kash/issues/1068) collides with terrain ([procedural](procedural.md#collision)) through Jolt's `HeightFieldShape`, as [#1060's record](architecture/world-scale-decision.md#terrain-cdlod-over-cell-tiles) chose: blocks of 4 × 4 samples, each sample 8 bits over its block's range.
+
+- **Building** is the cost (0.21 ms for a 129 × 129 tile), so `PhysicsWorld::prepare_height_field(HeightFieldDesc)` is static and runs on any thread, such as a tile's job, before any physics world exists: it installs Jolt's process-wide setup first if nothing has. The description is the grid's world origin (its low corner, a double position), samples a side, spacing, the heights (row by row along x), friction, and restitution. A grid that is not square, has fewer than 2 × 2 samples, or holds a value that is not finite is refused with `std::invalid_argument` before Jolt sees it.
+- **Adding** (`add_height_field(world, owner, prepared)`, on the owner thread between ticks) makes a static body owned by `owner`: hits, contacts, and events name that entity. It is placed by its description, not the owner's transform, and is not removed with it. It returns the field's number, kept apart from the entities' bodies; a full world throws `std::runtime_error`.
+- **Removing** (`remove_height_fields(numbers)`) takes several out in one batch, ending their contacts as a removed body's end. Unknown numbers are ignored. `height_fields()` counts them.
+
+Bodies rest on height fields, and rays, shape casts, and overlaps hit them as any static body; rays land within a centimetre of the sampled heights. A prepared 129 × 129 field holds about 48 KiB of Jolt's memory.
+
 ## Contact and trigger events
 
 A Jolt contact listener runs on the worker threads during the step. It only appends plain records (the two bodies and sub-shapes, and for a new contact its point, normal, and approach speed) under a lock, and never throws; a record it cannot store is lost, never the step. In phase 7, `take_events` turns them into `PhysicsEvent`s on the owner thread:
@@ -159,7 +169,7 @@ A Jolt contact listener runs on the worker threads during the step. It only appe
 ## Process-wide state, memory, and limits
 
 Jolt's setup is global:
-- **Once per process.** The allocator hooks, trace and assert hooks, factory, and type registry are installed before the first physics world and kept until exit.
+- **Once per process.** The allocator hooks, trace and assert hooks, factory, and type registry are installed before the first physics world, or the first height field prepared (#1068), whichever comes first, and kept until exit.
 - **The job pool.** Since #1061, Jolt runs on the process's [job system](jobs.md#physics), on its frame tier, rather than a pool of its own. `set_physics_worker_threads(n)` limits how many frame workers a step uses at once: −1 is the default (the frame tier's workers, at most 7), 0 runs every job on the stepping thread, and larger counts are capped at the frame tier. The calling thread also runs jobs, and results do not depend on the count.
 - **Memory.** `physics_memory()` reports the bytes Jolt has allocated through the hooks, with the peak and the number of allocations.
 
@@ -237,6 +247,8 @@ The rest of the tick is the World commit of the moved poses. The events phase gr
 ## Tests
 
 [physics_debug_tests.cpp](../tests/physics_debug_tests.cpp) (`maya_simulation_tests`) covers the debug views (#1022): authoring outlines by category, motion, sensor, and group, with offsets and child colliders; a capsule on a scaled entity keeping round caps; play outlines from the physics world at shown poses, with sleeping and kinematic colors; capture only when asked, sorted contacts, queries with their hits, a new query list each tick, and identical state hashes over 300 ticks with and without capture. [physics_debug_gpu_tests.cpp](../tests/physics_debug_gpu_tests.cpp) renders each category on Metal and compares it with its [reference image](../tests/references/physics-debug), as the #1005 references are compared.
+
+[physics_tests.cpp](../tests/physics_tests.cpp)'s `[terrain]` case (#1068) prepares a tile of W1's terrain 5 km from the origin: rays down land within a centimetre of its samples and name the owner, a ray beside it misses, a swept sphere stops on it, a dynamic sphere comes to rest on it, removal in a batch takes it out of queries (twice is harmless), and grids that are not square or hold a NaN are refused.
 
 [physics_tests.cpp](../tests/physics_tests.cpp) (`maya_physics_tests`, CPU) covers queries and events (#1021), and that `raycast_nearest` equals the first of `raycast` in every field for filtered rays, an exact tie, and 400 rays into a settling pile (#1024):
 - **Queries:** raycasts, shape casts, and overlaps with group, sensor, and ignore filters; distances, points, and normals; one hit per body, nearest first; the same results on repeated calls; refused queries.

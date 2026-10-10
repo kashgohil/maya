@@ -22,8 +22,9 @@
 | 12 / `maya.environment` | 1 `environment` (an environment reference), 2 `intensity` (0 to 100,000), 3 `rotation` (rad, −π to π), 4 `background` — [environments](renderer.md#environments) (#1035) |
 | 13 / `maya.skin` | 1 `skin` (a skin reference) — [animation](animation.md#components) (#1038) |
 | 14 / `maya.animation` | 1 `clip` (a clip reference), 2 `playing`, 3 `loop`, 4 `speed` (−100 to 100), 5 `start` (s, at least 0) — [animation](animation.md#components) (#1038) |
+| 15 / `maya.terrain` | 1 `heights` (a generator reference), 2 `layer0`, 3 `layer1`, 6 `layer2`, 9 `layer3` (material references), 4 `layer1_slope`, 7 `layer2_slope`, 10 `layer3_slope` (° from level, 0 to 90), 5 `layer1_height`, 8 `layer2_height`, 11 `layer3_height` (m, −10,000 to 10,000), 12 `texture_size` (m, 0.01 to 1,000) — [terrain](procedural.md#terrain) (#1068) |
 
-Property values are one of: text, boolean, scalar (float), vector3, (since #1065, for a transform's translation) position (`math::DVec3`, double; a vector3 value is accepted for it and widens exactly), (since #1036, for [materials](#materials)) vector2, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh, material, (since #1033, for [materials](#materials)) texture, (since #1035) environment, or (since #1038) skin and animation reference, integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
+Property values are one of: text, boolean, scalar (float), vector3, (since #1065, for a transform's translation) position (`math::DVec3`, double; a vector3 value is accepted for it and widens exactly), (since #1036, for [materials](#materials)) vector2, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh, material, (since #1033, for [materials](#materials)) texture, (since #1035) environment, (since #1038) skin and animation, or (since #1068) generator reference (`PropertyType::generator_ref`, checked as `ReferenceKind::generator`), integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
 
 A persistent property identity is the pair `(ComponentId, PropertyId)`. Property IDs are scoped to their component; zero is reserved. Display labels, table order, RTTI, C++ layout, variant indices, and pointer addresses never identify saved data. Lookup returns null for unknown identities. The initial built-in schema set is deliberately closed; adding another component requires a typed variant alternative, schema bindings, default/snapshot dispatch, and validation tests. There is no dynamic plugin registration. A script's declared properties are not schema properties: they live inside the one `values` property, named rather than numbered, and the Inspector draws them from the script's [description](scripting.md#properties).
 
@@ -107,6 +108,22 @@ Pass `asset_property_context(registry)` when editing components with nonempty re
 Properties 17 to 19 (#1036) transform every map's texture coordinates as `KHR_texture_transform` does: uv′ = offset + R(rotation) × (scale ⊙ uv), where R turns +u toward −v: u′ = cos·u + sin·v and v′ = −sin·u + cos·v, before the offset. Imports set them from a glTF material's texture transform ([import](import.md#gltf)). Tangent frames are not turned with them, as in glTF.
 
 Texture references take a texture from the catalog; which role a slot needs is the renderer's to check ([materials](renderer.md#materials)), since a texture's role is known only once it loads.
+
+## Generators
+
+[#1068](https://work.rezee.app/kash/issues/1068) describes [generator assets](procedural.md#generator-assets) with the same descriptors, as materials are: `generator_properties()`, `generator_property` by ID or name, `read_property(generator, id)`, `edit_properties(generator, edits, context)`, and `validate_generator` work on a `GeneratorAsset`, on a copy, checking the whole result. The names are the [generator file](procedural.md#generator-files)'s keys.
+
+| ID / name | Type | Range |
+| --- | --- | --- |
+| 1 `kind` | choice: `heightfield.noise` | |
+| 2 `seed` | integer | 0 to 2,147,483,520 |
+| 3 `octaves` | integer | 1 to 12 |
+| 4 `wavelength` | scalar (m) | 1 to 100,000 |
+| 5 `amplitude`, 6 `warp` | scalar (m) | 0 to 10,000 |
+| 7 `base` | scalar (m) | −10,000 to 10,000 |
+| 8 `region_min_x`, 9 `region_min_z`, 10 `region_max_x`, 11 `region_max_z` | integer (128 m cells) | −1,024 to 1,023 |
+
+A region whose last cell along x or z comes before its first is refused, reported against property 10 or 11, whichever corner the edit changed: corners are checked together, so a region can be moved by editing both in one call.
 
 ## Persistence and schema evolution
 
