@@ -1,5 +1,6 @@
 #include "maya/assets/generator_file.hpp"
 #include "maya/streaming/terrain_streamer.hpp"
+#include "maya/streaming/scatter_streamer.hpp"
 #include "support/metal_view.hpp"
 #include "support/render_scene.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -132,4 +133,81 @@ TEST_CASE("Terrain is drawn in every debug view, with no holes", "[rhi][terrain]
         CHECK(holes == 0);
         if (shown.debug_view != DebugView::emissive) CHECK(image.rgb != lit.rgb); // the view's own image, not the lit one
     }
+}
+
+TEST_CASE("Terrain with scattered rocks matches its approved reference", "[rhi][terrain][visual][scatter]") {
+    // The same hills, with cubes scattered over them by a scatter generator (#1093), as the player streams them.
+    Gpu gpu;
+    TestProject project{gpu.device, {{"rock.obj", unit_cube({0.55f, 0.53f, 0.5f, 1.0f})}}, {{"grass.material", grass}, {"rock.material", rock}}};
+    auto heights_generator = GeneratorAsset{};
+    heights_generator.region_min_x = 40;
+    heights_generator.region_min_z = 33;
+    heights_generator.region_max_x = 45;
+    heights_generator.region_max_z = 38;
+    const auto heights = AssetRef<GeneratorAsset>{{0x7465, 0x900}}, rocks = AssetRef<GeneratorAsset>{{0x7465, 0x901}};
+    const auto cube = project.add<MeshAsset>(3, "rock.obj");
+    const auto ground = project.add<MaterialAsset>(1, "grass.material"), cliff = project.add<MaterialAsset>(2, "rock.material");
+    auto scatter = heights_generator;
+    scatter.kind = GeneratorKind::scatter;
+    scatter.version = scatter_version;
+    scatter.seed = 1093;
+    scatter.heights = heights;
+    scatter.spacing = 8.0f;
+    scatter.density = 0.35f;
+    scatter.max_slope = 25.0f;
+    scatter.min_scale = 1.5f;
+    scatter.max_scale = 3.5f;
+    scatter.mesh0 = cube;
+    scatter.material0 = cliff;
+    project.write("hills.generator", write_generator_file(heights_generator));
+    project.write("rocks.generator", write_generator_file(scatter));
+    REQUIRE_FALSE(project.registry->register_asset({heights.id, AssetKind::generator, "hills.generator"}));
+    REQUIRE_FALSE(project.registry->register_asset({rocks.id, AssetKind::generator, "rocks.generator"}));
+    World world;
+    build_world(world, [&](WorldCommands& commands) {
+        auto terrain = TerrainComponent{heights, ground, cliff};
+        terrain.layer1_slope = {18.0f, 28.0f};
+        auto entity = commands.create();
+        commands.add(entity, TransformComponent{});
+        commands.add(entity, terrain);
+        auto runner = commands.create();
+        commands.add(runner, GeneratorComponent{rocks});
+        auto sun = commands.create();
+        commands.add(sun, TransformComponent{{}, math::Quat::from_axis_angle(math::Vec3{1, 0.3f, 0.2f}.normalized(), -0.9f), {1.0f}});
+        commands.add(sun, LightComponent{});
+    });
+    const auto x = 41 * 128.0, z = 36 * 128.0;
+    auto terrain_settings = TerrainSettings{};
+    terrain_settings.streaming.load_radius = 2000.0;
+    terrain_settings.streaming.activate_radius = 2000.0;
+    auto terrain = TerrainStreamer(&gpu.device, nullptr, terrain_settings);
+    terrain.set_sources({{x, 0.0, z}});
+    terrain.settle(world, *project.registry, nullptr);
+    auto scatter_settings = ScatterSettings{};
+    scatter_settings.streaming.activate_radius = 400.0;
+    auto scattered = ScatterStreamer(nullptr, scatter_settings);
+    auto sink = WorldScatterSink(world, nullptr);
+    scattered.set_sources({{x, 0.0, z}});
+    scattered.settle(world, *project.registry, sink);
+    REQUIRE(scattered.stats().items > 100);
+    // Across the hills, as the terrain references' "hills" view, from 40 m above the ground.
+    const auto ground_height = terrain.height_at(x, z);
+    REQUIRE(ground_height);
+    auto pose = math::Affine{};
+    pose.translation = {x, double(*ground_height) + 40.0, z};
+    pose.linear = (math::Quat::from_axis_angle({0, 1, 0}, -math::PI * 0.5f) * math::Quat::from_axis_angle({1, 0, 0}, -0.4f)).to_mat4();
+    auto view = make_render_view(CameraComponent{}, pose, 640, 360);
+    REQUIRE(view);
+    view->clear_color = {0.45, 0.6, 0.85, 1.0};
+    auto options = RenderExtractOptions{};
+    options.terrains = terrain.terrains();
+    project.registry->update();
+    for (int i = 0; i < 3; ++i) { // the cube and its material, loaded
+        gpu.render(world, *project.registry, *view, options);
+        project.registry->wait_idle();
+        project.registry->update();
+    }
+    const auto image = gpu.render(world, *project.registry, *view, options);
+    CHECK(gpu.renderer->last_view().drawn > 50); // rocks in view
+    compare_with_references(std::filesystem::path(MAYA_SOURCE_DIR) / "tests/references/terrain", MAYA_VISUAL_DIFFS, {{"terrain-scatter", image}});
 }

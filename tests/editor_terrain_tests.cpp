@@ -47,7 +47,11 @@ TEST_CASE("The editor draws a scene's terrain, picks it, and Play collides with 
     CHECK(terrain->stats().terrains == 1);
     CHECK(terrain->stats().drawn == 16); // the 4 x 4-cell region, all within reach of the view
     CHECK(terrain->stats().height_fields == 0); // nothing collides while editing
-    CHECK(harness.shell.extraction().mesh_renderers == 1); // the boulder; terrain is drawn apart from mesh renderers
+    // The boulder and the sample's scattered rocks (#1093), outside the history; terrain is drawn apart from mesh renderers.
+    REQUIRE(harness.shell.scatter());
+    CHECK(harness.shell.extraction().mesh_renderers == 1 + harness.shell.scatter()->stats().items);
+    CHECK(harness.shell.scene()->transient_count() == harness.shell.scatter()->stats().items);
+    CHECK(harness.shell.scatter()->stats().items > 0);
 
     // A click on the ground selects the terrain.
     const auto ground = terrain->height_at(10.0, 20.0);

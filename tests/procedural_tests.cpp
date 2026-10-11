@@ -1,8 +1,11 @@
 #include "maya/assets/generator_file.hpp"
 #include "maya/procedural/height_field.hpp"
+#include "maya/procedural/scatter.hpp"
 #include "maya/properties/schema.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <atomic>
+#include <functional>
+#include <set>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -219,13 +222,20 @@ TEST_CASE("Generator files round-trip every property and refuse what this build 
     refused(header + "octaves 13\n", "line 3: 'octaves'");
     refused(header + "seed -1\n", "'seed'");
     refused(header + "wavelength nan\n", "'wavelength': Value is nonfinite");
-    refused(header + "kind scatter\n", "'kind' needs one of its choices");
+    refused(header + "kind rocks\n", "'kind' needs one of its choices");
+    refused(header + "kind scatter\noctaves 4\n", "line 4: 'octaves' is not a property of scatter generators");
+    refused(header + "spacing 2\n", "line 3: 'spacing' is not a property of heightfield.noise generators");
+    refused(header + "kind scatter\nspacing 3\n", "line 4: 'spacing': The spacing must be a power of two");
+    refused(header + "kind scatter\nmesh0 6d617961\n", "'mesh0' needs 'none' or two hexadecimal asset ID words");
+    refused(header + "kind scatter\nmin_scale 2\nmax_scale 1\n", "'max_scale': The largest scale is smaller than the smallest");
     refused(header + "region_max_x 4\nregion_min_x 5\n", "line 3: 'region_max_x': The region's last cell along x comes before its first");
     refused(header + "region_min_z 2000\n", "'region_min_z'");
 }
 
 TEST_CASE("Generator properties are described for the Inspector and edited atomically", "[procedural][generators]") {
-    REQUIRE(generator_properties().size() == 11);
+    REQUIRE(generator_properties().size() == 36);
+    CHECK(generator_properties(GeneratorKind::heightfield_noise).size() == 11);
+    CHECK(generator_properties(GeneratorKind::scatter).size() == 32);
     for (const auto& property : generator_properties()) {
         INFO(property.name);
         CHECK(generator_property(property.name) == &property);
@@ -243,4 +253,172 @@ TEST_CASE("Generator properties are described for the Inspector and edited atomi
     const auto good = std::array{PropertyEdit{generator_property("amplitude")->id, 30.0f}};
     REQUIRE(edit_properties(generator, good));
     CHECK(generator.amplitude == 30.0f);
+}
+
+// Scatter (#1093, docs/procedural.md#scatter).
+namespace {
+constexpr std::array<uint64_t, 2> scatter_generator{0x5ca7, 0x7e2};
+ScatterRules w1_rules() { // #1060's record: 4 m spacing, density 0.6, slopes up to 30 degrees
+    auto rules = ScatterRules{};
+    rules.seed = 1093;
+    rules.spacing = 4.0;
+    rules.density = 0.6f;
+    rules.max_slope = 30.0f;
+    rules.weights = {3.0f, 1.0f, 0.0f, 1.0f};
+    return rules;
+}
+std::set<EntityId> ids_of(const std::vector<ScatterItem>& items) {
+    auto ids = std::set<EntityId>{};
+    for (const auto& item : items) ids.insert(item.id);
+    return ids;
+}
+} // namespace
+
+TEST_CASE("Scatter is the same however it runs, and keeps its spacing and its rules", "[procedural][scatter]") {
+    const auto tile = generate_height_tile(HeightfieldNoise{}, {40, 33});
+    REQUIRE(tile);
+    const auto rules = w1_rules();
+    auto clearing = ScatterExclusion{};
+    clearing.shape = ScatterExclusion::Shape::sphere;
+    clearing.pose.translation = {40 * 128.0 + 64.0, 0.0, 33 * 128.0 + 64.0};
+    clearing.radius = 20.0f;
+    const auto exclusions = std::vector{clearing};
+    const auto items = scatter_cell(scatter_generator, rules, {40, 33}, &*tile, exclusions);
+    REQUIRE(items);
+    INFO(items->size() << " items");
+    CHECK(items->size() > 300);
+    CHECK(items->size() < 1024 * 6 / 10);
+    // On jobs, in parallel, it is the same, byte for byte.
+    auto results = std::vector<std::vector<std::byte>>(8);
+    job_system().parallel_for(JobTier::frame, 8, 1, [&](uint32_t begin, uint32_t end) {
+        for (auto i = begin; i < end; ++i) results[i] = encode_scatter_items(*scatter_cell(scatter_generator, rules, {40, 33}, &*tile, exclusions));
+    });
+    for (const auto& bytes : results) CHECK(bytes == encode_scatter_items(*items));
+    // Every rule holds: in the cell, on the ground, apart, within the slope, outside the clearing, never variant 2.
+    auto closest = 1e9;
+    for (size_t i = 0; i < items->size(); ++i) {
+        const auto& item = (*items)[i];
+        const auto local_x = item.position.x - 40 * 128.0, local_z = item.position.z - 33 * 128.0;
+        CHECK(local_x >= 0.0);
+        CHECK(local_x < 128.0);
+        CHECK(item.position.y == double(tile_height_at(*tile, local_x, local_z)));
+        CHECK(tile_slope_at(*tile, local_x, local_z) <= 30.0f);
+        CHECK_FALSE(clearing.contains(item.position));
+        CHECK(item.variant != 2);
+        CHECK(item.scale >= 0.8f);
+        CHECK(item.scale <= 1.2f);
+        for (size_t j = i + 1; j < items->size(); ++j)
+            closest = std::min(closest, std::hypot(item.position.x - (*items)[j].position.x, item.position.z - (*items)[j].position.z));
+    }
+    CHECK(closest >= rules.spacing * 0.5);
+    // A box clears too, in its own frame: rotated, it clears a rotated square.
+    auto box = ScatterExclusion{};
+    box.pose.translation = {40 * 128.0 + 30.0, 0.0, 33 * 128.0 + 30.0};
+    box.pose.linear = math::Quat::from_axis_angle({0, 1, 0}, 0.7f).to_mat4();
+    box.half_extents = {10.0f, 500.0f, 3.0f};
+    const auto boxed = scatter_cell(scatter_generator, rules, {40, 33}, &*tile, std::vector{box});
+    REQUIRE(boxed);
+    for (const auto& item : *boxed) CHECK_FALSE(box.contains(item.position));
+    CHECK(box.contains(box.pose.point({9.0f, 0.0f, 2.5f})));
+    CHECK_FALSE(box.contains(box.pose.point({9.0f, 0.0f, 3.5f})));
+    // Without a height tile, a flat ground at the base height.
+    auto flat = rules;
+    flat.base_height = 7.5f;
+    const auto ground = scatter_cell(scatter_generator, flat, {0, 0}, nullptr, {});
+    REQUIRE(ground);
+    CHECK_FALSE(ground->empty());
+    for (const auto& item : *ground) CHECK(item.position.y == 7.5);
+}
+
+TEST_CASE("Rules only remove scatter's items: the survivors keep their IDs and places, and IDs are never shared", "[procedural][scatter]") {
+    const auto tile = generate_height_tile(HeightfieldNoise{}, {40, 33});
+    REQUIRE(tile);
+    const auto rules = w1_rules();
+    const auto before = *scatter_cell(scatter_generator, rules, {40, 33}, &*tile, {});
+    auto clearing = ScatterExclusion{};
+    clearing.shape = ScatterExclusion::Shape::sphere;
+    clearing.pose.translation = {40 * 128.0 + 64.0, 0.0, 33 * 128.0 + 64.0};
+    clearing.radius = 40.0f;
+    for (const auto& [what, change] : std::vector<std::pair<std::string, std::function<void(ScatterRules&)>>>{
+             {"slope 30 to 20", [](ScatterRules& r) { r.max_slope = 20.0f; }},
+             {"density 0.6 to 0.3", [](ScatterRules& r) { r.density = 0.3f; }},
+             {"heights above 0", [](ScatterRules& r) { r.min_height = 0.0f; }}}) {
+        INFO(what);
+        auto changed = rules;
+        change(changed);
+        const auto after = *scatter_cell(scatter_generator, changed, {40, 33}, &*tile, {});
+        CHECK(after.size() < before.size());
+        for (const auto& item : after) CHECK(std::ranges::find(before, item) != before.end()); // same ID, place, yaw, scale, mesh
+    }
+    const auto cleared = *scatter_cell(scatter_generator, rules, {40, 33}, &*tile, std::vector{clearing});
+    for (const auto& item : cleared) CHECK(std::ranges::find(before, item) != before.end());
+    // A new seed moves the candidates but not their IDs: every ID is still one of the cell's squares'.
+    auto reseeded = rules;
+    reseeded.seed = 7;
+    reseeded.density = 1.0f;
+    reseeded.max_slope = 90.0f;
+    auto all = rules;
+    all.density = 1.0f;
+    all.max_slope = 90.0f;
+    CHECK(ids_of(*scatter_cell(scatter_generator, reseeded, {40, 33}, &*tile, {})) == ids_of(*scatter_cell(scatter_generator, all, {40, 33}, &*tile, {})));
+    // Neighbouring cells, and another generator in the same cell, share no ID.
+    const auto right = generate_height_tile(HeightfieldNoise{}, {41, 33});
+    const auto next = ids_of(*scatter_cell(scatter_generator, rules, {41, 33}, &*right, {}));
+    const auto other = ids_of(*scatter_cell({0x5ca7, 0x7e3}, rules, {40, 33}, &*tile, {}));
+    for (const auto& item : before) {
+        CHECK_FALSE(next.contains(item.id));
+        CHECK_FALSE(other.contains(item.id));
+    }
+    // Cooked items read back exactly; damaged bytes are refused.
+    const auto bytes = encode_scatter_items(before);
+    REQUIRE(decode_scatter_items(bytes));
+    CHECK(*decode_scatter_items(bytes) == before);
+    CHECK_FALSE(decode_scatter_items(std::span(bytes).first(bytes.size() - 1)));
+    auto damaged = bytes;
+    damaged[0] = std::byte{0};
+    CHECK_FALSE(decode_scatter_items(damaged));
+    auto meshless = rules;
+    meshless.weights = {};
+    CHECK(scatter_cell(scatter_generator, meshless, {40, 33}, &*tile, {})->empty()); // no meshes: nothing placed
+    CHECK(scatter_spacing_valid(4.0));
+    CHECK(scatter_spacing_valid(0.5));
+    CHECK_FALSE(scatter_spacing_valid(3.0));
+    CHECK_FALSE(scatter_spacing_valid(128.0));
+}
+
+TEST_CASE("A scatter generator file holds its kind's properties, its meshes, and its heights, and reads back exactly", "[procedural][generators][scatter]") {
+    auto generator = GeneratorAsset{};
+    generator.kind = GeneratorKind::scatter;
+    generator.version = scatter_version;
+    generator.seed = 77;
+    generator.heights = AssetRef<GeneratorAsset>{{0x6d617961, 0x90}};
+    generator.spacing = 2.0f;
+    generator.density = 0.35f;
+    generator.max_slope = 22.5f;
+    generator.min_height = -3.0f;
+    generator.random_yaw = false;
+    generator.mesh0 = AssetRef<MeshAsset>{{0x6d617961, 2}};
+    generator.material0 = AssetRef<MaterialAsset>{{0x6d617961, 0x11}};
+    generator.weight0 = 3.0f;
+    generator.mesh2 = AssetRef<MeshAsset>{{0x6d617961, 5}};
+    generator.collider2 = 0.75f;
+    const auto text = write_generator_file(generator);
+    INFO(text);
+    CHECK(text.find("heights 6d617961 90\n") != std::string::npos);
+    CHECK(text.find("mesh1 none\n") != std::string::npos);
+    CHECK(text.find("random_yaw false\n") != std::string::npos);
+    CHECK(text.find("octaves") == std::string::npos); // not a scatter property
+    auto input = std::istringstream(text);
+    const auto read = read_generator_file(input);
+    INFO(read.error);
+    REQUIRE(read);
+    CHECK(read.generator == generator);
+    // Its rules: variants without a mesh weigh nothing; the base is the flat ground's height.
+    const auto rules = scatter_rules(generator);
+    CHECK(rules.weights == std::array{3.0f, 0.0f, 1.0f, 0.0f});
+    CHECK(rules.spacing == 2.0);
+    CHECK(rules.seed == 77);
+    CHECK_FALSE(rules.random_yaw);
+    // A heights generator's file is as before: none of scatter's properties.
+    CHECK(write_generator_file(GeneratorAsset{}).find("spacing") == std::string::npos);
 }

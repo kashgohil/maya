@@ -369,7 +369,7 @@ TEST_CASE("Failed saves and loads explain why and change nothing", "[editor][pro
         auto catalog = copy.read("catalog.maya");
         copy.write("catalog.maya", catalog.erase(catalog.find("material 6d617961 11"), 46));
         harness.shell.refresh_project();
-        REQUIRE(harness.shell.assets()->records().size() == 32); // the sample's 33, less the removed material
+        REQUIRE(harness.shell.assets()->records().size() == 33); // the sample's 34, less the removed material
         const auto error = harness.shell.save_scene();
         INFO(error);
         CHECK(error.find("6d617961:11") != std::string::npos);
@@ -417,7 +417,7 @@ TEST_CASE("Missing asset files leave the project usable and say what is missing"
     copy.write("empty.scene", "maya-scene 1\n");
     harness.shell.refresh_project();
     CHECK(harness.shell.missing_asset_files().empty());
-    CHECK(harness.shell.assets()->records().size() == 34);
+    CHECK(harness.shell.assets()->records().size() == 35);
     CHECK(harness.shell.scene_files() == std::vector<fs::path>{"basic.scene", "empty.scene", "lights.scene", "materials.scene", "physics.scene", "terrain.scene", "v1_reference.scene"});
     harness.frames(3);
     CHECK(harness.shell.extraction().skipped == 0);
@@ -427,7 +427,7 @@ TEST_CASE("Missing asset files leave the project usable and say what is missing"
     copy.write("catalog.maya", "maya-assets 1\nmesh nonsense\n");
     harness.shell.refresh_project();
     CHECK(harness.shell.prompt() == EditorPrompt::notice);
-    CHECK(harness.shell.assets()->records().size() == 34);
+    CHECK(harness.shell.assets()->records().size() == 35);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::project, "catalog.maya"));
 }
 

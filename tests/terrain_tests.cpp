@@ -234,7 +234,15 @@ TEST_CASE("Terrain tiles come from the cook cache the second time, the same byte
     // A new seed, saved and reloaded: the terrain starts again from the new generator.
     fixture.project.write("hills.generator", write_generator_file(region_generator(4242)));
     REQUIRE(fixture.project.registry->reload(fixture.generator));
+    // Until its new tiles are ready, the terrain is drawn as it was (#1093): never a frame without it.
+    const auto drawn_before = streamer.terrains().front().tiles.size();
+    streamer.update(fixture.world, *fixture.project.registry, nullptr);
+    REQUIRE(streamer.terrains().size() == 1);
+    CHECK(streamer.terrains().front().generator.seed == 990);
+    CHECK(streamer.terrains().front().tiles.size() == drawn_before);
+    CHECK(streamer.stats().regenerating == 1);
     fixture.settle(streamer);
+    CHECK(streamer.stats().regenerating == 0);
     CHECK(streamer.terrains().front().generator.seed == 4242);
     CHECK(streamer.stats().generated == streamer.stats().loaded);
     const auto expected = generate_height_tile(heightfield_noise(region_generator(4242)), streamer.terrains().front().tiles.front().index);

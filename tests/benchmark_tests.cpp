@@ -629,7 +629,11 @@ TEST_CASE("The scene workload streams a scene's terrain as the player does and c
     CHECK(c.terrain_generated + c.terrain_cached >= 16);
     CHECK(c.terrain_cpu_bytes > 0);
     CHECK(c.terrain_gpu_bytes > 0);
+    // Its rocks (#1093), scattered as the player scatters them.
+    CHECK(c.scatter_items > 0);
+    CHECK(c.scatter_cells > 0);
+    CHECK(c.scatter_generated + c.scatter_cached >= c.scatter_cells);
     const auto json = to_json(result);
-    for (const auto* key : {"\"terrain_tiles\"", "\"height_fields\"", "\"terrain_patches_per_view\"", "\"terrain_longest_generate_ms\""})
+    for (const auto* key : {"\"terrain_tiles\"", "\"height_fields\"", "\"terrain_patches_per_view\"", "\"terrain_longest_generate_ms\"", "\"scatter_items\""})
         CHECK(has(json, key));
 }
