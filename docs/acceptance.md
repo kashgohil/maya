@@ -464,3 +464,21 @@ Approved on 7 October 2026 by the project owner, from the baselines above. They 
 - **Shimmer is reviewed, not measured.** The automated checks hold cascade stability in test scenes and compare R1 at four points along its path; a person watches the whole path.
 - **The editor's comparison** excludes its overlays (the Game view's tool bar and hint), which draw over the view.
 
+
+## Milestone 4: world scale
+
+The world-scale milestone ([#1059](https://work.rezee.app/kash/issues/1059)) adds checks as its issues land. The editor's side of worlds ([#1067](https://work.rezee.app/kash/issues/1067), [docs/editor.md](editor.md#worlds)) is covered automatically by [world_editor_tests.cpp](../tests/world_editor_tests.cpp): a world is created, filled across cells, linked across them, saved, reopened in part, and played. It is also covered by the overlay and Streaming panel references. A person checks what synthetic input cannot.
+
+### Manual script, world editing
+
+Run on the reference machine with a Release build, in a copy of the sample project (`cp -R samples/basic_scene ~/Desktop/Worlds`, then `maya_editor ~/Desktop/Worlds`).
+
+1. **Create a world.** From the scene menu, choose New world… and accept `levels/untitled.world`. The world opens with a camera and a sun, and the Hierarchy is headed WORLD. The Streaming panel shows its cells.
+2. **Fill it.** Drag `cube` into the viewport a few times. Then fly east with the right mouse button held and WASD for a few hundred metres, and drop more cubes there. Each root's cell shows at the right of its Hierarchy row.
+3. **Watch cells come and go.** Save with ⌘S, then press G for the Cells tool. Fly back west. The overlay shows the cells around the camera loaded, the far ones going, and Streaming's counts and frame times following. Nothing in the top bar says "modified".
+4. **Use the Cells tool.** Click a far cell and choose Load and lock: it loads and shows a lock, and stays when you fly away. Drag across several cells and choose Unload: they go. Choose Let the camera decide: they come back when near.
+5. **Edit across a boundary.** Select a cube and drag it with the gizmo into the next cell. Its row's cell changes, and both cells are outlined as changed. Fly far away: the changed cells stay loaded. ⌘Z moves it back, and the outlines go.
+6. **Keep a hierarchy together.** Drag a second cube onto the first cube's Hierarchy row to make it a child. Move the child far into another cell with the gizmo. The move stops at the boundary, and the Inspector says why, under the entity's name.
+7. **Follow a reference.** Give a cube a script with an entity property and choose, as its target, a cube in a cell that is not loaded, from that cell's list. The cell loads. Save, fly away until the target's cell unloads, then select the first cube: its target shows as unloaded, with its cell. Press the button beside it. The cell loads, the target is selected, and the view frames it.
+8. **Save and reopen.** Press ⌘S, quit, and open the world again from the scene menu. Only the cells near the camera load, and everything is as it was left.
+9. **Play and Stop.** Press ⌘P. Streaming shows the play World's cells around the play camera. Press ⌘P again: the editor's loaded cells are as they were, and nothing is unsaved.

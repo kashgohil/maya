@@ -109,6 +109,8 @@ levels/w1/cells/32_-64.scene ...
 - **The persistent part** is always loaded: what the whole world needs. `partition_world` puts a root entity and everything below it there when any of them is a camera, a directional light, an environment, physics settings, or (#1068) a [terrain](procedural.md#terrain), which spans many cells and streams by its own tiles.
 - **Cells.** Every other root goes, with its whole subtree, to the cell of its translation, so a hierarchy never crosses cells. A cell is listed with its entity count, and only occupied cells are listed.
 - **`save_world`** validates the scene, then writes the persistent scene and each cell's scene (ordinary [scene text](scene.md)), each atomically, removes the scenes of cells no longer occupied, and writes the world file last. `load_world` reads everything for tests and tools; play streams instead.
+- **`save_world_parts`** (#1067) saves some of an existing world's parts in place, as the editor does: the persistent scene when given, and each given cell's scene. A cell new to the world goes to `<world folder>/cells/<x_z>.scene`, and an empty one is removed, with its cell. Then the world file is written, last, with every cell's entity count, and the `WorldDocument` is updated to match. Every given part is validated first, and nothing is written when one fails; cells not given keep their files.
+- **`persistent_component(value)`** says whether a component puts its root's hierarchy in the persistent part. `partition_world` and the editor use the same rule.
 - **Cooked cells.** When a cell is loaded, its scene text is cooked to a [packed binary](scene.md#cooked-cells) in the project's cook cache, keyed by the text's digest and the build's schemas, so later loads decode it (#1060 measured 0.25 µs an entity against 3.4 µs to parse). A package holds its cells only cooked (`.cell`).
 
 ### Staged entities
@@ -164,7 +166,7 @@ A cell's bodies join Jolt in one batch when it is published (`authored_physics` 
 
 ### Play and the player
 
-The [player](play.md#the-player) runs a `.world` as it runs a scene: its persistent part plays as the scene, the streamer settles the cells around the camera behind the loading screen, and every frame streams around the camera before the tick; a scene's or world's terrain streams the same way (#1068). Recording and replaying a streamed world are refused for now: streaming is not deterministic with respect to ticks. The editor's Play of a world comes with #1067, when the editor can open one. A [package](projects.md#packages) holds a world's file, its persistent scene, and its cells cooked.
+The [player](play.md#the-player) runs a `.world` as it runs a scene: its persistent part plays as the scene, the streamer settles the cells around the camera behind the loading screen, and every frame streams around the camera before the tick; a scene's or world's terrain streams the same way (#1068). Recording and replaying a streamed world are refused for now: streaming is not deterministic with respect to ticks. The editor (#1067) opens and plays a world too ([worlds in the editor](editor.md#worlds)): Play streams the world as the editor has it, unsaved cells included, through a `WorldStreamer` around the play camera, settled before the first tick; recording a world is refused there as well. A [package](projects.md#packages) holds a world's file, its persistent scene, and its cells cooked.
 
 ### Tests
 

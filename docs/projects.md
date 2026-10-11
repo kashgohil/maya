@@ -22,6 +22,7 @@ group 1 "Player"
 | `script_work <n>` | Optional: the [scripts'](scripting.md#sandbox-and-limits) work budget, in safepoints per hook call, from 1,000 to 1,000,000,000. Without it, 1,000,000. |
 | `script_memory <n>` | Optional: the scripts' memory limit per play session, in MiB, from 1 to 4,096. Without it, 64. |
 | `stream_load <m>`, `stream_activate <m>`, `stream_hysteresis <m>` | Optional (#1064): a world's [streaming](world.md#streaming) radii in metres, from a source to a cell: to load it, to activate it, and how far beyond either before it goes back down. Without them, 640, 384, and 64 (W1's). |
+| `editor_stream_load <m>` | Optional (#1067): the editor's own radius in metres around its camera: cells within it are loaded for [editing](editor.md#worlds). Its hysteresis is `stream_hysteresis`'s. Without it, 256. |
 | `resident_meshes <n>`, `resident_textures <n>`, `resident_environments <n>`, `resident_animation <n>`, `resident_cells <n>`, `resident_total <n>` | Optional (#1063): [resident-memory budgets](assets.md#residency) in MiB, from 1 to 1,048,576. Without them, W1's: 256, 768, 128, 64, 64, and 1,536 in all. |
 | `lod_bias <x>` | Optional (#1066): the error on screen, in pixels, under which a coarser [level of detail](renderer.md#levels-of-detail) is drawn, from 0.25 to 8. Larger draws coarser levels nearer. Without it, 1. |
 | `cull_pixels <x>` | Optional (#1066): meshes whose bounds would cover fewer pixels across than this are [not drawn](renderer.md#distance-and-size), from 0 (off) to 64. Without it, 2. |

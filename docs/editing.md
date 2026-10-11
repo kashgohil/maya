@@ -36,6 +36,14 @@ Because history holds persistent IDs and values, never runtime handles, undo and
 - **Unsaved changes.** `dirty()` is true when the history position differs from the one at the last open or `mark_saved()`, or (since #1033) when an open material differs from its file. Undoing back to the saved position makes the scene clean again. Editing after an undo discards the redo steps. If the saved position was among them, the scene stays dirty until the next save. The top bar shows a "modified" tag.
 - **Selection.** Each step records the selection before and after it, so undo restores what was selected. The selection never holds a missing entity: every edit, undo, and redo prunes it.
 - **Scene replacement.** Opening a scene creates a new SceneEditor, so history, selection, and saved position start fresh. A failed open keeps the current session.
+- **Content outside the history** (#1067, [worlds](editor.md#worlds)). A world's cells come and go as the editor streams them, without being edits:
+  - `stage_entities(group, entities)` commits whole hierarchies (parents first) into a World stage group, invisible, over as many calls as the frame budget allows;
+  - `reveal(group)` shows them together and adds them to the mirror, their roots after the others;
+  - `discard_staged(group)` drops a cancelled load;
+  - `unload(roots)` takes roots and their hierarchies out of the World, the mirror, and the selection.
+
+  None of them is recorded or makes the scene unsaved. Because roots come and go this way, a step that set the root order applies it to the roots there are: those it lists, in its order, then the others, skipping roots that have gone.
+- **Listener and check.** `set_change_listener` is called with every change an edit, undo, or redo applies, and its direction. `set_change_check` is asked about each edit once applied: a reason refuses it, and the edit is taken back. The editor's cells use them to keep each entity's cell current and to keep hierarchies within one cell. `undo_change()` and `redo_change()` give the change the next undo or redo would apply, so the cells it touches can be loaded first.
 
 ## Cost
 

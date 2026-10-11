@@ -42,7 +42,7 @@ Numbers that change every frame are sampled four times a second in the Diagnosti
 
 ## Panels and layout
 
-On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets, Diagnostics, and Residency as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. Each panel's title carries an icon; the part after `###` in its name (for example `###Viewport`) is its stable ID for layout and tests. The mouse cursor changes over splitters and text fields.
+On its first frame the shell docks the panels: Hierarchy on the left, Inspector on the right, Assets, Diagnostics, Residency, and Streaming as tabs below, and the Viewport in the center. Panels can be resized by dragging their splitters, rearranged, undocked, or tabbed. Each panel's title carries an icon; the part after `###` in its name (for example `###Viewport`) is its stable ID for layout and tests. The mouse cursor changes over splitters and text fields.
 
 - **Hierarchy:** the scene's entities in display order, each marked by type. Select, rename, create, duplicate, delete, and drag to reparent or reorder, all undoable; see [scene editing](editing.md).
 - **Viewport:** the scene from the editor camera, with a tool bar for gizmo modes, the transform gizmo, camera and light icons, selection outlines, click-to-select, and a small hint about the controls; see [inspector, gizmos, and picking](inspector.md).
@@ -50,6 +50,7 @@ On its first frame the shell docks the panels: Hierarchy on the left, Inspector 
 - **Assets:** the project's scenes, meshes, materials, scripts, and textures, with a filter. Double-click a scene to open it; drag meshes and materials into the viewport, onto Hierarchy rows, or onto Inspector fields to place or assign them. Rows mark missing and failed files. See [projects, scene files, and assets](projects.md#the-assets-panel). It is the bottom tab shown first.
 - **Diagnostics:** see [diagnostics](#diagnostics).
 - **Residency:** see [residency](#residency).
+- **Streaming:** a world's cells; see [streaming](#streaming).
 
 The top bar shows the project and the open scene. The project's name opens a menu with its settings (the [collision groups](projects.md#collision-groups)) and **Prune cook cache** ([cook cache](assets.md#cook-cache)), which prunes in the background and logs what it removed; the scene's name opens a menu to open, create, and save scenes. Play, Pause, and Step in its middle play the open scene in a separate World ([play](play.md#play-in-the-editor)). `maya_editor [project]` opens a project file or folder, or the sample project when none is given ([projects](projects.md)). Without a project, the panels say how to open one. The editor starts with the viewport focused.
 
@@ -244,6 +245,72 @@ The Residency panel ([#1063](https://work.rezee.app/kash/issues/1063), [residenc
 
 The editor releases content [at boundaries](assets.md#residency): when a scene closes or Play stops, it notes the registry's use clock and, once a frame has been drawn, releases what nothing has used since, so what the new frame draws stays. The Assets panel shows a texture's thumbnail from the version it was made of, without holding the texture, so browsing does not keep textures resident. When a project opens with its cook cache over its limit, it is pruned in the background.
 
+## Worlds
+
+[#1067](https://work.rezee.app/kash/issues/1067) edits [worlds](world.md#worlds-and-cells) in the editor ([world_cells.hpp](../apps/editor/world_cells.hpp)). The editor holds a world as one `SceneEditor`. The persistent part is always in it. The cells near the editor camera, or kept by hand, come and go outside the history. A cell is whatever roots stand in it, with their hierarchies. Saving writes the persistent part and the changed cells only.
+
+- **Creating and opening.**
+  - The scene menu's **New world…** asks for a path inside the content folder, `levels/untitled.world` by default; `.world` is added when there is no extension, and an existing file is refused. It writes a world holding a camera and a sun (`new_world`, through `save_world`) and opens it.
+  - **Save as** with a `.world` path turns the open scene into a world: edited materials and generators are saved, `save_world` partitions the scene, and the world opens in its place.
+  - The scene list shows `.world` files beside scenes. The scenes inside a world's folder (`<name>/persistent.scene`, `<name>/cells/`) are hidden: they open through the world.
+  - Opening a world (`open_world`) reads the world file, builds the persistent part as the scene, and starts the cells around the camera. The grid is fixed at the world origin (decided 10 October 2026); the editor refuses a world whose cells are not 128 m.
+- **The persistent part and cells.** A root's part is decided as saving decides it (`persistent_component`, [world_io.hpp](../include/maya/scene/world_io.hpp)): the persistent part when anything in its hierarchy is a camera, a directional light, an environment, physics settings, or terrain, or when the root has no transform; otherwise the cell of the root's translation. An entity's cell is its root's, recomputed on every commit, undo, and redo.
+- **Following the camera.** Cells within `editor_stream_load` of the editor camera (a [project setting](projects.md#projects), 256 m by default) load, and those beyond it and the hysteresis (`stream_hysteresis`, 64 m by default) go. A cell loads on a background job through the project's cook cache (`cooked_cell_loader`), then goes into the scene staged, in chunks of 256 entities within a 2 ms frame budget, nearest first, and shows at once (`SceneEditor::stage_entities` and `reveal`). Loading and unloading are not edits: they are not in the history and never make the scene unsaved. While playing, the editor's cells stay as they are.
+- **Changed cells stay loaded until saved** (decided 10 October 2026). After each change, the cells it touched are compared with their text as saved (or as loaded), so undoing back to it makes a cell unchanged again. A changed cell is never unloaded, by the camera or by hand, until it is saved or its edits are undone. A cell locked by hand stays too, until it is released.
+- **A hierarchy stays in one cell** (decided 10 October 2026). An edit that would leave any descendant's world position in a different cell from its root's is refused and taken back, with the reason: "'Branch' would be in cell 1_0, but its root 'Tree' is in cell 0_0: a hierarchy stays in one cell". Persistent hierarchies are exempt.
+- **Edits across cells.**
+  - A root moved into a cell that is not loaded brings that cell in at once (its other content must be there before anything is saved); both cells are then changed.
+  - Undo and redo go through `EditorShell::undo_edit` and `redo_edit`, which first load, waiting for them, the cells the step touches, before and after (`EditorCells::load_for`). A step can therefore reach a saved cell that has since unloaded.
+  - A step that ordered the roots stored the root list of its time. Undo and redo order the roots there are now: those it lists, in its order, then any it does not know (cells that came in since); roots of cells that left are skipped.
+- **Saving** (⌘S) writes edited materials and generators, then the persistent part and every changed cell (`save_world_parts`): a cell with nothing left is removed from the world, a new one is added at `<name>/cells/<x_z>.scene`, and the world file is written last with every cell's count. Save as to another path is refused for a world ("A world saves in place; use Save").
+- **The index.** When a world opens, a background job reads every cell once and notes each entity's cell and name; loaded content and edits keep it current. References, undo, and the Hierarchy's filter look things up there (`EditorCells::find`).
+
+**Measurements** (Release, M4 Pro, 10 October 2026, the hidden `[world-benchmark]` case in world_cells_tests.cpp; observations, not budgets). The world is 20 × 20 cells of 250 roots with a child each, 200,000 entities in all. The editor's 256 m radius holds 21 to 24 cells, about 10,500 entities:
+
+| Operation | Cost |
+| --- | --- |
+| An idle update | mean 0.05 ms, worst 0.56 ms |
+| A rename (edit, then the update that compares its cell's text) | 0.05 ms + 0.47 ms |
+| A drag frame (one transform edit and the update) | mean 0.39 ms, worst 0.43 ms |
+| Saving one changed cell | 14 ms |
+| Crossing into the next column of cells | 6 frames, mean 0.76 ms, worst 1.87 ms (budget 2 ms); the longest cell 1.2 ms over its frames |
+| Opening cold, with every cell cooked and read for the index on jobs | 3.2 s, waited for by `settle`; the editor streams over frames instead |
+
+Staging, finishing, and unloading are each planned from their measured cost per entity, so a step starts only when it fits the frame. Before that, a crossing's frame reached 2.5 ms. Comparing a loaded cell's text, merging the index all at once, and freeing it on the owner thread each cost up to 10 ms in a frame, and were removed.
+
+### In the viewport
+
+- **The overlay** draws the cells around the camera on the ground (y = 0), filled by state: loaded cells in the accent, loading ones amber, failed ones red, unloaded cells of the world faintly. A changed cell is outlined in yellow. Cells of the world, and cells changed or decided by hand, are labelled with their name ("0_1  changed", "1_1  failed") where they are about 36 points or more across on screen; a lock marks a cell kept loaded by hand, and a cross one kept out.
+- **The Cells tool** (the grid button in the tool bar, or G) takes the viewport's clicks instead of picking: a click chooses the cell under the pointer, a drag a rectangle of cells. A menu then acts on them: **Load and lock** keeps them loaded, **Unload** keeps them out (refused for a changed cell, with the reason logged), and **Let the camera decide** releases them.
+
+### In the panels
+
+- **The Hierarchy** is headed WORLD and lists each root's part on its right ("persistent", or the cell, in the warning color while that cell is changed). A filter above the rows shows every loaded cell, the persistent part, or one loaded cell.
+- **References.** A script's entity property in the Inspector shows whether its target resolves: the target's name with a link, "(unloaded, 2_0)" with a broken link when its cell is not loaded, or "Missing" when the world does not know it. Its list offers the loaded entities and, once the index is read, the entities of each unloaded cell by cell; choosing one loads its cell first. The button beside it follows the reference (`follow_entity`): it loads the target's cell when needed, selects the target, shows it in the Hierarchy, and frames it.
+
+### Play of a world
+
+Play starts from the editor's state, unsaved edits included, without saving (decided 10 October 2026). Its persistent part starts the session, and a `WorldStreamer` over the world as the editor has it (`EditorCells::play_world`: changed cells from the editor, the rest from disk through the cook cache) streams cells around the play camera with the project's [streaming settings](world.md#streaming). It settles before the first tick, as the player's loading screen does, and updates each frame before the tick. Stop takes every cell out of the play World with its physics; the editor's loaded set is as it was. Recording a world is refused ("Recording a world is not supported yet: its cells join play frame by frame").
+
+### Limits
+
+- A cell leaves the scene in one commit, not over several frames: an update takes it out only when its measured cost fits what is left of the frame, so a cell bigger than the budget can still go over it once.
+- A gizmo drag that would carry a descendant into another cell before its root stops there: each frame's edit is refused.
+- Labels need about 36 points on screen; far cells are unlabelled.
+- Save as is refused for a world; recording a world is refused.
+- The index reads every cell when a world opens, on a background job.
+- An update's first step always goes, whatever its cost, so a slow machine or a debug build still makes progress (one step a frame).
+- The overlay does not yet tell generated items from authored ones: generated content arrives with [#1093](https://work.rezee.app/kash/issues/1093).
+
+## Streaming
+
+The Streaming panel ([#1067](https://work.rezee.app/kash/issues/1067), [streaming_panel.cpp](../apps/editor/streaming_panel.cpp)) shows a world's cells. With a scene open, it says so.
+
+- **Editing:** the cells loaded of the world's, **Follow the camera** (cells come and go with it) and the radius (for this session); the cells by state, how many are changed (kept loaded until saved) and how many are locked by hand; the frame's time putting cells in and taking them out against the 2 ms budget, and the longest; the last and the longest cell's time going in, over all its frames; loads in flight. **Release locks** lets the camera decide for every cell, and **Reset peaks** clears the longest times. Below, the cells' cooked bytes against their [residency](assets.md#residency) budget and the total resident, with **Open Residency**; the last error, if any.
+- **Playing:** the play World's streamer: its cells by state, the frame's time against its budget and the longest, loads started and failed and the bytes in flight, activations and deactivations, the bytes and entities loaded, and the radii.
+
+The [Residency panel](#residency) counts the cells' cooked bytes: the play World's while playing, else the editor's.
+
 ## Runtime isolation
 
 `MayaImGui` is fetched and built only when `MAYA_BUILD_EDITOR` is on; a player-only configuration never downloads it. CTest runs [check_no_editor_ui.cmake](../cmake/check_no_editor_ui.cmake) over `MayaRuntime`, `MayaRenderer`, `MayaDesktop`, `maya_player`, and `maya_sample`, and fails if any contains an ImGui symbol. The same check on `maya_editor` must fail, which proves it can detect the framework.
@@ -282,6 +349,21 @@ The editor releases content [at boundaries](assets.md#residency): when a scene c
 - [editor_lighting_tests.cpp](../tests/editor_lighting_tests.cpp) (#1034) covers [lights](#lights): point and spot lights from the **+** menu, the Inspector's settings for each kind and for shadows on and off, and Diagnostics' counts and problems for 26 lights, cleared when there are fewer.
 - [editor_debug_view_tests.cpp](../tests/editor_debug_view_tests.cpp) (#1037) covers the [debug views](renderer.md#debug-views) in the eye menu: every view's name and preference line round-trips; each is chosen from the menu in turn, one at a time; the exposure views build no debug pipelines and the others build them only once chosen; and a new editor starts with the last one.
 - [editor_residency_tests.cpp](../tests/editor_residency_tests.cpp) (#1063) covers [residency](#residency): closing a scene releasing what nothing used since once a frame is drawn, and opening it again; the Residency panel's rows and Release unused releasing a texture loaded and dropped while keeping what is drawn; a budget that content in use exceeds, reported once; and Prune cook cache reporting from its background job. [editor_gpu_tests.cpp](../tests/editor_gpu_tests.cpp) compares the panel, with fixed figures, against [its reference](../tests/references/editor/residency.png) (`maya_visual_reference`); [r1_tests.cpp](../tests/r1_tests.cpp) opens and closes R1's scene (3 times; `MAYA_R1_CYCLES=50` for the soak) and checks each close leaves no meshes or textures and each opening returns to the same bytes, and that Play and Stop return to what was shown.
+- **Worlds** (#1067):
+  - [world_cells_tests.cpp](../tests/world_cells_tests.cpp) (`[editor][worlds]`) drives `EditorCells` on a saved 5 × 5-cell world. Cells follow the camera outside the history, and the index knows every entity once read. A changed cell stays loaded until saved, and saving writes it and nothing else. A root moved into an unloaded cell brings that cell in, and the saved world equals the whole world as edited. A hierarchy leaving its cell is refused with its reason. Undo reaches a saved, unloaded cell by loading it first. Play's world gives changed cells from the editor and the rest from disk.
+  - The scene editor's `[worlds]` cases in [scene_editor_tests.cpp](../tests/scene_editor_tests.cpp) cover staging over several calls, reveal, discard, and unload outside the history; undo ordering only the roots there are; and the change check and listener.
+  - [world_editor_tests.cpp](../tests/world_editor_tests.cpp) runs the acceptance flow with synthetic input:
+    - creates a world from New world;
+    - places content in three cells;
+    - moves a crate across a boundary;
+    - refuses a hierarchy leaving its cell;
+    - saves, then follows a reference into a cell that unloaded;
+    - checks every saved entity's part against a whole-world reference;
+    - reopens with only the cells near the camera, and plays and stops with the loaded set unchanged.
+
+    A second case undoes and redoes a move across cells: the cell assignment, which cells are changed, and the saved state each time.
+  - [editor_gpu_tests.cpp](../tests/editor_gpu_tests.cpp) compares the overlay (loaded, unloaded, changed, failed, and locked cells) and the Streaming panel, with fixed figures, against [cells-overlay.png](../tests/references/editor/cells-overlay.png) and [streaming.png](../tests/references/editor/streaming.png), awaiting the owner's approval.
+  - A hidden case, `maya_editor_tests "[world-benchmark]"` (run it in Release), times opening, idle frames, an edit, a drag, a save, and a crossing on a 20 × 20-cell world of 200,000 entities.
 - [editor_import_tests.cpp](../tests/editor_import_tests.cpp) (#1036) covers [importing models](#importing-models): from the Scene menu, by dropping a file from inside and outside the project, refusing other files and broken ones, dragging an imported scene into the viewport, part labels, reimports when a source or a file it names changes (and waiting for a half-written one), a scene that keeps its moves and overrides through a reimport that changes geometry, and a reload into a running Play.
 
 #999 validation on 24 September 2026:
