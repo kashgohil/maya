@@ -6,6 +6,7 @@
 
 #include "scene_editor.hpp"
 #include "maya/jobs/jobs.hpp"
+#include "maya/streaming/scatter_streamer.hpp"
 #include "maya/streaming/world_streamer.hpp"
 #include <array>
 #include <chrono>
@@ -177,6 +178,32 @@ private:
     bool m_frame_worked = false; // this update has done a step: further ones must fit the budget
     EditorCellStats m_stats;
     JobScope m_jobs;
+};
+
+/// Scatter's items into the editor's scene (#1093, docs/editor.md#generated-content): transient, outside the
+/// history, so they are drawn and picked but never saved, until an edit makes one an override.
+class EditorScatterSink final : public ScatterSink {
+public:
+    explicit EditorScatterSink(SceneEditor& scene) : m_scene(scene) {}
+    std::string stage(StageGroup group, std::span<const SceneEntity> items) override {
+        const auto staged = m_scene.stage_entities(group, items, true);
+        return staged ? std::string{} : staged.error;
+    }
+    std::string reveal(StageGroup group) override {
+        const auto revealed = m_scene.reveal(group);
+        return revealed ? std::string{} : revealed.error;
+    }
+    void discard(StageGroup group) override { m_scene.discard_staged(group); }
+    void remove(std::span<const EntityId> items) override {
+        auto transient = std::vector<EntityId>{};
+        for (const auto id : items)
+            if (m_scene.transient(id)) transient.push_back(id); // an edited one is authored now: not the streamer's
+        m_scene.unload(transient);
+    }
+    bool exists(EntityId id) const override { return m_scene.record(id) != nullptr; }
+
+private:
+    SceneEditor& m_scene;
 };
 
 } // namespace maya::editor

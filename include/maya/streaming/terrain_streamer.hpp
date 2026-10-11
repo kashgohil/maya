@@ -54,6 +54,7 @@ struct TerrainStats {
     size_t generated = 0, cached = 0; // tiles made since the streamer started: by generating, and read from the cook cache
     size_t activated = 0, deactivated = 0, uploaded = 0; // in the last update (a tile joining a physics world it had none of is activated)
     size_t height_fields = 0;
+    size_t regenerating = 0; // terrains drawn as they were before their generator changed, until the new tiles are ready (#1093)
     size_t cpu_bytes = 0, gpu_bytes = 0; // held now: heights and normals, and device buffers
     double update_ms = 0.0, longest_update_ms = 0.0;
     double generate_ms = 0.0, longest_generate_ms = 0.0; // the last generated tile's job time, and the longest

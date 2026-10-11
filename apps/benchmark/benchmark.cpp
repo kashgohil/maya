@@ -8,6 +8,7 @@
 #include "maya/simulation/play_session.hpp"
 #include "maya/simulation/script_assets.hpp"
 #include "maya/streaming/terrain_streamer.hpp"
+#include "maya/streaming/scatter_streamer.hpp"
 #include "maya/world/spatial.hpp"
 #include <algorithm>
 #include <charconv>
@@ -143,6 +144,8 @@ struct Stage {
     std::unique_ptr<VisibilityIndex>& visibility; // of the World being drawn, as the player keeps one (#1066)
     float lod_pixels = 1.0f, cull_pixels = 2.0f; // the project's, as the player reads them (docs/projects.md)
     std::unique_ptr<TerrainStreamer>& terrain; // when the scene has terrain, as the player streams it (#1068)
+    std::unique_ptr<ScatterStreamer>& scatter; // when it runs generators (#1093), as the player streams them
+    std::unique_ptr<WorldScatterSink>& scatter_sink; // into the running session
 };
 math::DVec3 camera_position(const World& world, EntityId camera) {
     const auto handle = world.find(camera);
@@ -152,8 +155,9 @@ math::DVec3 camera_position(const World& world, EntityId camera) {
 }
 /// Whether the terrain around the camera is all drawn and collided with: nothing loading, uploading, or activating.
 bool terrain_settled(const Stage& stage) {
-    if (!stage.terrain) return true;
+    if (!stage.terrain) return !stage.scatter || (stage.scatter->stats().cells_loading == 0 && stage.scatter->stats().regenerating == 0);
     const auto& stats = stage.terrain->stats();
+    if (stage.scatter && (stage.scatter->stats().cells_loading > 0 || stage.scatter->stats().regenerating > 0)) return false;
     return stats.loading == 0 && stats.uploaded == 0 && stats.activated == 0 && stats.terrains == stage.terrain->terrains().size() &&
            std::ranges::all_of(stage.terrain->terrains(), [](const TerrainView& view) { return view.overview != nullptr; });
 }
@@ -164,9 +168,26 @@ bool has_terrain(const SceneDocument& document) {
 }
 /// The terrain's tiles around the camera, drawn and collided with in the session's physics: a loading screen.
 void settle_terrain(const Stage& stage, PlaySession& session, EntityId camera) {
-    if (!stage.terrain) return;
-    stage.terrain->set_sources({camera_position(session.world(), camera)});
-    stage.terrain->settle(session.world(), stage.registry, &session.physics());
+    if (stage.scatter) stage.scatter_sink = std::make_unique<WorldScatterSink>(session.world(), &session.physics());
+    if (stage.terrain) {
+        stage.terrain->set_sources({camera_position(session.world(), camera)});
+        stage.terrain->settle(session.world(), stage.registry, &session.physics());
+    }
+    if (stage.scatter) { // its items, as the player scatters them before the first frame
+        stage.scatter->set_sources({camera_position(session.world(), camera)});
+        stage.scatter->settle(session.world(), stage.registry, *stage.scatter_sink);
+    }
+}
+/// Takes the session's terrain height fields and scatter items out: the run is over.
+void clear_generated(const Stage& stage, PlaySession& session) {
+    if (stage.terrain) stage.terrain->clear(&session.physics());
+    if (stage.scatter && stage.scatter_sink) stage.scatter->clear(*stage.scatter_sink);
+    stage.scatter_sink.reset();
+}
+bool has_generators(const SceneDocument& document) {
+    return std::ranges::any_of(document.entities, [](const SceneEntity& entity) {
+        return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<GeneratorComponent>(value); });
+    });
 }
 
 struct FrameSample {
@@ -210,6 +231,10 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     if (stage.terrain) { // its tiles around the camera, before the tick steps physics, as the player does
         stage.terrain->set_sources({camera_position(session.world(), camera)});
         stage.terrain->update(session.world(), stage.registry, &session.physics());
+    }
+    if (stage.scatter && stage.scatter_sink) { // its items, as the player does
+        stage.scatter->set_sources({camera_position(session.world(), camera)});
+        stage.scatter->update(session.world(), stage.registry, *stage.scatter_sink);
     }
     if (const auto played = session.update(session.clock().interval()); !played.error.empty())
         throw std::runtime_error(played.error);
@@ -283,9 +308,7 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
     struct ClearTerrain {
         const Stage& stage;
         PlaySession& session;
-        ~ClearTerrain() {
-            if (stage.terrain) stage.terrain->clear(&session.physics());
-        }
+        ~ClearTerrain() { clear_generated(stage, session); }
     } clear_terrain{stage, session};
     settle_terrain(stage, session, camera);
     preload_render_assets(session.world(), stage.registry); // a loading screen: nothing streams in while measured
@@ -397,6 +420,16 @@ RunSamples measure(const Manifest& manifest, const Stage& stage, const SceneDocu
             counters.terrain_cached = terrain.cached;
             counters.terrain_longest_update_ms = terrain.longest_update_ms;
             counters.terrain_longest_generate_ms = terrain.longest_generate_ms;
+        }
+        if (stage.scatter) {
+            const auto& scatter = stage.scatter->stats();
+            counters.scatter_items = scatter.items;
+            counters.scatter_cells = scatter.cells_active;
+            counters.scatter_generated = scatter.generated;
+            counters.scatter_cached = scatter.cached;
+            counters.scatter_longest_frame_ms = scatter.longest_frame_ms;
+            counters.scatter_longest_generate_ms = scatter.longest_generate_ms;
+            counters.scatter_longest_activation_ms = scatter.longest_activation_ms;
         }
         counters.animated = world.component_count<AnimationComponent>();
         const auto last = extract_render_snapshot(world, stage.registry);
@@ -1002,6 +1035,13 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         auto skins = SkinBindingCache{};
         auto visibility = std::unique_ptr<VisibilityIndex>{};
         auto terrain = std::unique_ptr<TerrainStreamer>{};
+        auto scatter = std::unique_ptr<ScatterStreamer>{};
+        auto scatter_sink = std::unique_ptr<WorldScatterSink>{};
+        if (has_generators(document)) { // as the player scatters: through the project's cook cache
+            auto settings = ScatterSettings{};
+            settings.streaming = project_streaming_settings(opened.project.settings);
+            scatter = std::make_unique<ScatterStreamer>(cache, settings);
+        }
         if (has_terrain(document)) { // as the player streams it: through the project's cook cache, collided with
             auto settings = TerrainSettings{};
             settings.streaming = project_streaming_settings(opened.project.settings);
@@ -1009,7 +1049,8 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
             terrain = std::make_unique<TerrainStreamer>(&device, cache, settings);
         }
         const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, manifest.present, &poll, manifest.debug_view, skins,
-                                 visibility, project_lod_pixels(opened.project.settings), project_cull_pixels(opened.project.settings), terrain};
+                                 visibility, project_lod_pixels(opened.project.settings), project_cull_pixels(opened.project.settings), terrain,
+                                 scatter, scatter_sink};
         // The warmed empty session: the device, the project's catalog, the view target, and what the
         // renderer keeps (its texture placeholder), with no content.
         if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
@@ -1033,6 +1074,7 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
                 // Frames from the start, as the editor runs: until nothing the view draws is loading.
                 auto& load = *result.load;
                 load.streamed = true;
+                if (scatter) scatter_sink = std::make_unique<WorldScatterSink>(probe.session->world(), &probe.session->physics());
                 const auto budget = std::chrono::duration<double, std::milli>(AssetLoadBudget{}.time).count();
                 for (;;) {
                     const auto sample = run_frame(stage, *probe.session, camera, false);
@@ -1055,7 +1097,7 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
                 result.load->first_frame_ms = clock.milliseconds() + run_frame(stage, *probe.session, camera, false).frame;
             }
             device.take_gpu_timings();
-            if (terrain) terrain->clear(&probe.session->physics());
+            clear_generated(stage, *probe.session);
         }
 
         if (manifest.workload == Workload::instances || manifest.workload == Workload::scene || manifest.workload == Workload::animation) {
@@ -1320,6 +1362,13 @@ std::string to_json(const Result& r) {
     json.field("terrain_cached", c.terrain_cached);
     json.field("terrain_longest_update_ms", c.terrain_longest_update_ms);
     json.field("terrain_longest_generate_ms", c.terrain_longest_generate_ms);
+    json.field("scatter_items", c.scatter_items);
+    json.field("scatter_cells", c.scatter_cells);
+    json.field("scatter_generated", c.scatter_generated);
+    json.field("scatter_cached", c.scatter_cached);
+    json.field("scatter_longest_frame_ms", c.scatter_longest_frame_ms);
+    json.field("scatter_longest_generate_ms", c.scatter_longest_generate_ms);
+    json.field("scatter_longest_activation_ms", c.scatter_longest_activation_ms);
     json.close('}');
     write_jobs(json, r.jobs);
     // The registry's loading (docs/assets.md#asynchronous-loading): waited_in_frames must be 0.
@@ -1639,6 +1688,11 @@ std::string to_text(const Result& r) {
             << " read from the cook cache; longest update " << r.counters.terrain_longest_update_ms << " ms, longest tile "
             << r.counters.terrain_longest_generate_ms << " ms; " << r.counters.terrain_cpu_bytes / 1024 << " KiB held, "
             << r.counters.terrain_gpu_bytes / 1024 << " KiB on the device\n";
+    if (!r.runs.empty() && r.counters.scatter_items > 0)
+        out << "  scatter: " << r.counters.scatter_items << " items in " << r.counters.scatter_cells << " cells; "
+            << r.counters.scatter_generated << " cells generated, " << r.counters.scatter_cached << " read from the cook cache; longest update "
+            << r.counters.scatter_longest_frame_ms << " ms, longest cell " << r.counters.scatter_longest_generate_ms << " ms to make, "
+            << r.counters.scatter_longest_activation_ms << " ms to put in\n";
     if (r.load && r.load->streamed)
         out << "  load: scene " << r.load->scene_ms << " ms, start " << r.load->start_ms << " ms; streamed: first frame " << r.load->first_frame_ms
             << " ms, resident after " << r.load->resident_ms << " ms and " << r.load->frames << " frames, longest frame "

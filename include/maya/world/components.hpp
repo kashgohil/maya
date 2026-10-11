@@ -132,6 +132,32 @@ struct TerrainComponent {
     float texture_size = 4.0f; // metres each layer's maps repeat over, along x and z
 };
 
+// Generators (#1093, docs/procedural.md#scatter). A scatter generator places its items as entities around where
+// the world is seen from; an item's ID comes from its generator and its place, so the same item always has
+// the same ID.
+
+/// Runs a generator: its items stream in and out over its region. A world keeps it in its persistent part.
+struct GeneratorComponent {
+    AssetRef<GeneratorAsset> generator{};
+};
+/// A generated item, and what keeps it when authored: an entity with this marker saved in a scene or cell is
+/// an override (#1093). It stands in for its generator's item of the same ID, which is then not made; a
+/// removed one stands for an item taken away, and is neither drawn nor simulated.
+struct GeneratedComponent {
+    AssetRef<GeneratorAsset> generator{};
+    bool removed = false;
+};
+/// A volume scatter leaves clear: a box (half extents in the entity's frame) or a sphere (its radius times the
+/// entity's largest scale). It clears every scatter generator, or only `generator`. Kept in a world's
+/// persistent part, so every cell it reaches sees it.
+enum class ExclusionShape : uint32_t { box, sphere };
+struct ScatterExclusionComponent {
+    ExclusionShape shape = ExclusionShape::box;
+    math::Vec3 half_extents{4.0f, 4.0f, 4.0f}; // metres
+    float radius = 4.0f; // metres
+    AssetRef<GeneratorAsset> generator{}; // none: every scatter generator
+};
+
 // Skeletal animation (docs/animation.md).
 
 /// Deforms the entity's mesh with the joints its skin names. They are entities below one of this

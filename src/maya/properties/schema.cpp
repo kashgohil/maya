@@ -245,6 +245,31 @@ const auto& terrain_bindings() {
             "The ground distance each layer's maps repeat over.")};
     return values;
 }
+constexpr auto exclusion_shape_options = std::array{option(ExclusionShape::box, "box", "Box"), option(ExclusionShape::sphere, "sphere", "Sphere")};
+constexpr auto exclusion_size = NumericRange{0.01f, 10000.0f, true, true};
+// Generators (#1093): the component that runs one, the marker of generated items, and exclusions.
+const auto& generator_component_bindings() {
+    static const auto values = std::array{
+        bind<&GeneratorComponent::generator>(1, "generator", "Generator", Hint::asset, {}, {},
+            "A scatter generator: its items stream in and out over its region.")};
+    return values;
+}
+const auto& generated_bindings() {
+    static const auto values = std::array{
+        bind<&GeneratedComponent::generator>(1, "generator", "Generator", Hint::asset, {}, {}, "The generator that made this item."),
+        bind<&GeneratedComponent::removed>(2, "removed", "Removed", Hint::toggle, {}, {},
+            "Taken away: the generator does not make this item, and nothing is shown in its place.")};
+    return values;
+}
+const auto& exclusion_bindings() {
+    static const auto values = std::array{
+        bind<&ScatterExclusionComponent::shape>(1, "shape", "Shape", Hint::choice, {}, {}, {}, exclusion_shape_options),
+        bind<&ScatterExclusionComponent::half_extents>(2, "half_extents", "Half extents", Hint::vector, exclusion_size, "m", "Box only."),
+        bind<&ScatterExclusionComponent::radius>(3, "radius", "Radius", Hint::number, exclusion_size, "m", "Sphere only."),
+        bind<&ScatterExclusionComponent::generator>(4, "generator", "Generator", Hint::asset, {}, {},
+            "Only this scatter generator's items are cleared; none clears every one.")};
+    return values;
+}
 
 constexpr auto environment_intensity = NumericRange{0.0f, 100000.0f, true, true};
 constexpr auto half_turn = NumericRange{-math::PI, math::PI, true, true};
@@ -387,7 +412,14 @@ struct GeneratorBinding {
     PropertyDescriptor descriptor;
     PropertyValue (*read)(const GeneratorAsset&);
     bool (*write)(GeneratorAsset&, const PropertyValue&);
+    uint32_t kinds = ~0u; // the generator kinds it belongs to, a bit each (GeneratorKind's value)
 };
+constexpr uint32_t heights_only = 1u << uint32_t(GeneratorKind::heightfield_noise);
+constexpr uint32_t scatter_only = 1u << uint32_t(GeneratorKind::scatter);
+GeneratorBinding only(uint32_t kinds, GeneratorBinding binding) {
+    binding.kinds = kinds;
+    return binding;
+}
 template<auto Member>
 GeneratorBinding bind_generator(PropertyId id, std::string_view name, std::string_view label, PropertyPresentation presentation,
                                 NumericRange range = {}, std::string_view units = {}, std::string_view description = {},
@@ -410,27 +442,50 @@ GeneratorBinding bind_generator(PropertyId id, std::string_view name, std::strin
             return true;
         }};
 }
-constexpr auto generator_kind_options = std::array{option(GeneratorKind::heightfield_noise, "heightfield.noise", "Noise height field")};
+constexpr auto generator_kind_options = std::array{option(GeneratorKind::heightfield_noise, "heightfield.noise", "Noise height field"),
+                                                   option(GeneratorKind::scatter, "scatter", "Scatter")};
 constexpr auto seed_range = NumericRange{0.0f, 2147483520.0f, true, true}; // the largest float below 2^31
 constexpr auto octave_range = NumericRange{1.0f, 12.0f, true, true};
 constexpr auto wavelength_range = NumericRange{1.0f, 100000.0f, true, true};
 constexpr auto relief_range = NumericRange{0.0f, 10000.0f, true, true};
 constexpr auto base_range = NumericRange{-10000.0f, 10000.0f, true, true};
 constexpr auto region_range = NumericRange{-1024.0f, 1023.0f, true, true}; // 128 m cells: about 131 km either way
+constexpr auto spacing_range = NumericRange{0.125f, 64.0f, true, true};
+constexpr auto unit_range = NumericRange{0.0f, 1.0f, true, true};
+constexpr auto slope_limit_range = NumericRange{0.0f, 90.0f, true, true};
+constexpr auto scale_range = NumericRange{0.01f, 100.0f, true, true};
+constexpr auto weight_range = NumericRange{0.0f, 1000.0f, true, true};
+template<auto Mesh, auto Material, auto Weight, auto Collider>
+std::array<GeneratorBinding, 4> scatter_variant(PropertyId first, int index) {
+    static const std::string names[4][4] = {{"mesh0", "material0", "weight0", "collider0"}, {"mesh1", "material1", "weight1", "collider1"},
+                                            {"mesh2", "material2", "weight2", "collider2"}, {"mesh3", "material3", "weight3", "collider3"}};
+    static const std::string labels[4][4] = {{"Mesh 1", "Material 1", "Weight 1", "Collider 1"}, {"Mesh 2", "Material 2", "Weight 2", "Collider 2"},
+                                             {"Mesh 3", "Material 3", "Weight 3", "Collider 3"}, {"Mesh 4", "Material 4", "Weight 4", "Collider 4"}};
+    const auto& name = names[index];
+    const auto& label = labels[index];
+    return {only(scatter_only, bind_generator<Mesh>(first, name[0], label[0], Hint::asset, {}, {}, "A mesh the generator places; none leaves this one out.")),
+            only(scatter_only, bind_generator<Material>(PropertyId(first + 1), name[1], label[1], Hint::asset, {}, {}, "Its material.")),
+            only(scatter_only, bind_generator<Weight>(PropertyId(first + 2), name[2], label[2], Hint::number, weight_range, {},
+                "How often it is chosen, against the other meshes' weights.")),
+            only(scatter_only, bind_generator<Collider>(PropertyId(first + 3), name[3], label[3], Hint::number, weight_range, "m",
+                "A sphere collider's radius, before the item's scale; 0 for none."))};
+}
 const auto& generator_bindings() {
-    static const auto values = std::array{
+    static const auto values = [] {
+        auto bindings = std::vector<GeneratorBinding>{
         bind_generator<&GeneratorAsset::kind>(1, "kind", "Kind", Hint::choice, {}, {}, "What the generator makes.", generator_kind_options),
         bind_generator<&GeneratorAsset::seed>(2, "seed", "Seed", Hint::number, seed_range, {},
-            "Chooses the output; the same seed and parameters always give the same heights."),
-        bind_generator<&GeneratorAsset::octaves>(3, "octaves", "Octaves", Hint::number, octave_range, {},
-            "Layers of noise, each half the wavelength and half the height of the one before."),
-        bind_generator<&GeneratorAsset::wavelength>(4, "wavelength", "Wavelength", Hint::number, wavelength_range, "m",
-            "The size of the largest features."),
-        bind_generator<&GeneratorAsset::amplitude>(5, "amplitude", "Amplitude", Hint::number, relief_range, "m",
-            "How far the largest features rise and fall from the base height."),
-        bind_generator<&GeneratorAsset::warp>(6, "warp", "Warp", Hint::number, relief_range, "m",
-            "How far noise bends the features sideways, so ridges wander."),
-        bind_generator<&GeneratorAsset::base>(7, "base", "Base height", Hint::number, base_range, "m", "Added to every height."),
+            "Chooses the output; the same seed and parameters always give the same output."),
+        only(heights_only, bind_generator<&GeneratorAsset::octaves>(3, "octaves", "Octaves", Hint::number, octave_range, {},
+            "Layers of noise, each half the wavelength and half the height of the one before.")),
+        only(heights_only, bind_generator<&GeneratorAsset::wavelength>(4, "wavelength", "Wavelength", Hint::number, wavelength_range, "m",
+            "The size of the largest features.")),
+        only(heights_only, bind_generator<&GeneratorAsset::amplitude>(5, "amplitude", "Amplitude", Hint::number, relief_range, "m",
+            "How far the largest features rise and fall from the base height.")),
+        only(heights_only, bind_generator<&GeneratorAsset::warp>(6, "warp", "Warp", Hint::number, relief_range, "m",
+            "How far noise bends the features sideways, so ridges wander.")),
+        bind_generator<&GeneratorAsset::base>(7, "base", "Base height", Hint::number, base_range, "m",
+            "Heights: added to every height. Scatter: the ground's height where it names no heights."),
         bind_generator<&GeneratorAsset::region_min_x>(8, "region_min_x", "Region from x", Hint::number, region_range, "cells",
             "The first 128 m cell along x."),
         bind_generator<&GeneratorAsset::region_min_z>(9, "region_min_z", "Region from z", Hint::number, region_range, "cells",
@@ -438,7 +493,33 @@ const auto& generator_bindings() {
         bind_generator<&GeneratorAsset::region_max_x>(10, "region_max_x", "Region to x", Hint::number, region_range, "cells",
             "The last 128 m cell along x, included."),
         bind_generator<&GeneratorAsset::region_max_z>(11, "region_max_z", "Region to z", Hint::number, region_range, "cells",
-            "The last 128 m cell along z, included.")};
+            "The last 128 m cell along z, included."),
+        only(scatter_only, bind_generator<&GeneratorAsset::heights>(12, "heights", "Heights", Hint::asset, {}, {},
+            "A height-field generator: the terrain items stand on. None for a flat ground at the base height.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::spacing>(13, "spacing", "Spacing", Hint::number, spacing_range, "m",
+            "The squares items are placed in, one candidate each; items are at least half of it apart. A power of two.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::density>(14, "density", "Density", Hint::number, unit_range, {},
+            "The share of candidates kept, before the other rules.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::max_slope>(15, "max_slope", "Steepest slope", Hint::number, slope_limit_range, "deg",
+            "No items on ground steeper than this.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::min_height>(16, "min_height", "Lowest", Hint::number, base_range, "m",
+            "No items below this height.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::max_height>(17, "max_height", "Highest", Hint::number, base_range, "m",
+            "No items above this height.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::min_scale>(18, "min_scale", "Smallest scale", Hint::number, scale_range, {},
+            "Each item's size is chosen between the smallest and largest scale.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::max_scale>(19, "max_scale", "Largest scale", Hint::number, scale_range, {},
+            "Each item's size is chosen between the smallest and largest scale.")),
+        only(scatter_only, bind_generator<&GeneratorAsset::random_yaw>(20, "random_yaw", "Random turn", Hint::toggle, {}, {},
+            "Each item turned about its up axis at random.")),
+        };
+        for (const auto& variant : {scatter_variant<&GeneratorAsset::mesh0, &GeneratorAsset::material0, &GeneratorAsset::weight0, &GeneratorAsset::collider0>(21, 0),
+                                    scatter_variant<&GeneratorAsset::mesh1, &GeneratorAsset::material1, &GeneratorAsset::weight1, &GeneratorAsset::collider1>(25, 1),
+                                    scatter_variant<&GeneratorAsset::mesh2, &GeneratorAsset::material2, &GeneratorAsset::weight2, &GeneratorAsset::collider2>(29, 2),
+                                    scatter_variant<&GeneratorAsset::mesh3, &GeneratorAsset::material3, &GeneratorAsset::weight3, &GeneratorAsset::collider3>(33, 3)})
+            bindings.insert(bindings.end(), variant.begin(), variant.end());
+        return bindings;
+    }();
     return values;
 }
 
@@ -515,6 +596,9 @@ std::span<const Binding> bindings(ComponentId id) {
     case ComponentId::script: return script_bindings();
     case ComponentId::environment: return environment_bindings();
     case ComponentId::terrain: return terrain_bindings();
+    case ComponentId::generator: return generator_component_bindings();
+    case ComponentId::generated: return generated_bindings();
+    case ComponentId::scatter_exclusion: return exclusion_bindings();
     case ComponentId::skin: return skin_bindings();
     case ComponentId::animation: return animation_bindings();
     }
@@ -620,6 +704,9 @@ std::span<const ComponentDescriptor> component_schemas() {
     static const auto skins = descriptors(skin_bindings());
     static const auto animations = descriptors(animation_bindings());
     static const auto terrains = descriptors(terrain_bindings());
+    static const auto generators = descriptors(generator_component_bindings());
+    static const auto generated = descriptors(generated_bindings());
+    static const auto exclusions = descriptors(exclusion_bindings());
     static const auto schemas = std::array{
         ComponentDescriptor{ComponentId::name, "maya.name", "Name", 1, names},
         ComponentDescriptor{ComponentId::transform, "maya.transform", "Transform", 2, transforms}, // 2: double translation (#1065)
@@ -635,7 +722,10 @@ std::span<const ComponentDescriptor> component_schemas() {
         ComponentDescriptor{ComponentId::environment, "maya.environment", "Environment", 1, environments}, // #1035
         ComponentDescriptor{ComponentId::skin, "maya.skin", "Skin", 1, skins}, // #1038
         ComponentDescriptor{ComponentId::animation, "maya.animation", "Animation", 1, animations}, // #1038
-        ComponentDescriptor{ComponentId::terrain, "maya.terrain", "Terrain", 1, terrains}}; // #1068
+        ComponentDescriptor{ComponentId::terrain, "maya.terrain", "Terrain", 1, terrains}, // #1068
+        ComponentDescriptor{ComponentId::generator, "maya.generator", "Generator", 1, generators}, // #1093
+        ComponentDescriptor{ComponentId::generated, "maya.generated", "Generated", 1, generated}, // #1093
+        ComponentDescriptor{ComponentId::scatter_exclusion, "maya.scatter_exclusion", "Scatter exclusion", 1, exclusions}}; // #1093
     return schemas;
 }
 const ComponentDescriptor* component_schema(ComponentId id) {
@@ -672,7 +762,10 @@ ComponentId component_id(const ComponentValue& value) {
         else if constexpr (std::same_as<T, EnvironmentComponent>) return ComponentId::environment;
         else if constexpr (std::same_as<T, SkinComponent>) return ComponentId::skin;
         else if constexpr (std::same_as<T, AnimationComponent>) return ComponentId::animation;
-        else { static_assert(std::same_as<T, TerrainComponent>); return ComponentId::terrain; }
+        else if constexpr (std::same_as<T, TerrainComponent>) return ComponentId::terrain;
+        else if constexpr (std::same_as<T, GeneratorComponent>) return ComponentId::generator;
+        else if constexpr (std::same_as<T, GeneratedComponent>) return ComponentId::generated;
+        else { static_assert(std::same_as<T, ScatterExclusionComponent>); return ComponentId::scatter_exclusion; }
     }, value);
 }
 std::optional<ComponentValue> default_component(ComponentId id) {
@@ -692,6 +785,9 @@ std::optional<ComponentValue> default_component(ComponentId id) {
     case ComponentId::skin: return SkinComponent{};
     case ComponentId::animation: return AnimationComponent{};
     case ComponentId::terrain: return TerrainComponent{};
+    case ComponentId::generator: return GeneratorComponent{};
+    case ComponentId::generated: return GeneratedComponent{};
+    case ComponentId::scatter_exclusion: return ScatterExclusionComponent{};
     }
     return std::nullopt;
 }
@@ -785,9 +881,8 @@ PropertyResult validate_material(MaterialAsset& material, const PropertyValidati
 
 std::span<const PropertyDescriptor> generator_properties() {
     static const auto values = [] {
-        const auto& bindings = generator_bindings();
-        auto result = std::array<PropertyDescriptor, std::tuple_size_v<std::remove_cvref_t<decltype(bindings)>>>{};
-        for (size_t i = 0; i < result.size(); ++i) result[i] = bindings[i].descriptor;
+        auto result = std::vector<PropertyDescriptor>{};
+        for (const auto& binding : generator_bindings()) result.push_back(binding.descriptor);
         return result;
     }();
     return values;
@@ -803,6 +898,20 @@ const PropertyDescriptor* generator_property(std::string_view name) {
 std::optional<PropertyValue> read_property(const GeneratorAsset& generator, PropertyId property) {
     for (const auto& item : generator_bindings()) if (item.descriptor.id == property) return item.read(generator);
     return std::nullopt;
+}
+std::span<const PropertyDescriptor> generator_properties(GeneratorKind kind) {
+    static const auto values = [] {
+        auto result = std::array<std::vector<PropertyDescriptor>, 2>{};
+        for (const auto& binding : generator_bindings())
+            for (uint32_t k = 0; k < result.size(); ++k)
+                if (binding.kinds & (1u << k)) result[k].push_back(binding.descriptor);
+        return result;
+    }();
+    return values[size_t(kind)];
+}
+bool generator_property_applies(PropertyId property, GeneratorKind kind) {
+    const auto item = std::ranges::find(generator_bindings(), property, [](const GeneratorBinding& b) { return b.descriptor.id; });
+    return item != generator_bindings().end() && (item->kinds & (1u << uint32_t(kind)));
 }
 PropertyResult edit_properties(GeneratorAsset& generator, std::span<const PropertyEdit> edits, const PropertyValidationContext& context) {
     auto candidate = generator;
@@ -821,6 +930,12 @@ PropertyResult edit_properties(GeneratorAsset& generator, std::span<const Proper
         return {PropertyError::invalid_value, 10, "The region's last cell along x comes before its first"};
     if (candidate.region_min_z > candidate.region_max_z)
         return {PropertyError::invalid_value, 11, "The region's last cell along z comes before its first"};
+    if (!scatter_spacing_valid(candidate.spacing))
+        return {PropertyError::invalid_value, 13, "The spacing must be a power of two that divides a 128 m cell: 0.125, 0.25, ... 32, or 64 m"};
+    if (candidate.min_height > candidate.max_height)
+        return {PropertyError::invalid_value, 17, "The highest items may stand comes below the lowest"};
+    if (candidate.min_scale > candidate.max_scale)
+        return {PropertyError::invalid_value, 19, "The largest scale is smaller than the smallest"};
     generator = candidate;
     return {};
 }

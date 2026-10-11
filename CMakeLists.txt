@@ -58,7 +58,7 @@ maya_target_options(MayaJobs)
 
 # Procedural content (#1068, docs/procedural.md): Maya's own seeded noise and the height tiles terrain draws
 # and collides with. CPU-only; generation runs on the job system.
-add_library(MayaProcedural STATIC src/maya/procedural/height_field.cpp)
+add_library(MayaProcedural STATIC src/maya/procedural/height_field.cpp src/maya/procedural/scatter.cpp)
 add_library(Maya::Procedural ALIAS MayaProcedural)
 target_include_directories(MayaProcedural PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(MayaProcedural PUBLIC MayaJobs)
@@ -272,7 +272,8 @@ maya_target_options(MayaSimulation)
 
 # World streaming (#1064, docs/world.md#streaming): cells load on jobs, cook to binary through the cook
 # cache, and activate into a play session's World within a frame budget.
-add_library(MayaStreaming STATIC src/maya/streaming/world_streamer.cpp src/maya/streaming/terrain_streamer.cpp)
+add_library(MayaStreaming STATIC src/maya/streaming/world_streamer.cpp src/maya/streaming/terrain_streamer.cpp
+    src/maya/streaming/scatter_streamer.cpp)
 add_library(Maya::Streaming ALIAS MayaStreaming)
 target_include_directories(MayaStreaming PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(MayaStreaming PUBLIC MayaSimulation MayaAssets MayaJobs MayaRenderer)

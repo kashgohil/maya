@@ -59,7 +59,8 @@ bool persistent(const ComponentValue& value) { return persistent_component(value
 
 bool persistent_component(const ComponentValue& value) {
     if (std::holds_alternative<CameraComponent>(value) || std::holds_alternative<EnvironmentComponent>(value) ||
-        std::holds_alternative<PhysicsSettingsComponent>(value) || std::holds_alternative<TerrainComponent>(value))
+        std::holds_alternative<PhysicsSettingsComponent>(value) || std::holds_alternative<TerrainComponent>(value) ||
+        std::holds_alternative<GeneratorComponent>(value) || std::holds_alternative<ScatterExclusionComponent>(value))
         return true;
     const auto* light = std::get_if<LightComponent>(&value);
     return light && light->kind == LightKind::directional;

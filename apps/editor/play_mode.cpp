@@ -32,6 +32,12 @@ bool EditorShell::start_play(bool record) {
     const auto& streamed = m_play_world->settle(m_play->world(), &m_play->physics()); // a loading screen: the first tick has its ground
     m_log.add(DiagnosticSource::play, "Streamed " + std::to_string(streamed.cells[size_t(CellState::active)]) + " cells in around the camera",
               m_frame);
+    if (m_play_scatter) { // after the cells: an item goes in once its cell (and any override of it) is in
+        m_play_scatter->set_ready([streamer = m_play_world.get()](CellIndex cell) {
+            return !streamer->world().cell(cell) || streamer->state(cell) == CellState::active;
+        });
+        settle_play_scatter();
+    }
     return true;
 }
 
@@ -101,6 +107,14 @@ bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording*
         notice("Couldn't play the scene", "Recording and replaying a scene with terrain are not supported yet");
         return false;
     }
+    // Scatter (#1093) as well: its items join the play World as they stream.
+    const auto has_generators = std::ranges::any_of(document.entities, [](const SceneEntity& entity) {
+        return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<GeneratorComponent>(value); });
+    });
+    if (has_generators && (replay || record)) {
+        notice("Couldn't play the scene", "Recording and replaying a scene with generators are not supported yet");
+        return false;
+    }
     auto started = PlaySession::start(document, asset_property_context(*m_assets), play_systems(sources, registry_animation_clips(*m_assets), scripts));
     if (!started) {
         auto reason = started.error;
@@ -132,14 +146,31 @@ bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording*
         update_terrain(m_play->world(), pose ? pose->translation : math::DVec3{});
         if (m_terrain) m_terrain->settle(m_play->world(), *m_assets, &m_play->physics());
     }
+    if (has_generators) { // scatter's items around the play camera, in the play World and its physics, before the first tick
+        auto settings = ScatterSettings{};
+        if (m_project) settings.streaming = project_streaming_settings(m_project->settings);
+        m_play_scatter = std::make_unique<ScatterStreamer>(m_cook_cache, settings);
+        m_play_scatter_sink = std::make_unique<WorldScatterSink>(m_play->world(), &m_play->physics());
+        const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
+        const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
+        m_play_scatter->set_sources({pose ? pose->translation : m_camera.position});
+    }
     m_play_selection = m_scene->selection();
     m_scene->lock(play_lock);
     m_renaming.reset();
     m_snapshot.reset(); // picking and outlines belong to the authored scene
     if (const auto release = m_router.cancel()) m_capture_request = release; // stop flying the editor camera
+    if (m_play_scatter && !m_cells) settle_play_scatter(); // a world's waits for its cells (start_play)
     m_log.add(DiagnosticSource::play, "Playing" + std::string(m_play->camera() ? "" : " (the scene has no camera; showing the editor camera)"),
               m_frame);
     return true;
+}
+
+void EditorShell::settle_play_scatter() {
+    const auto& scattered = m_play_scatter->settle(m_play->world(), *m_assets, *m_play_scatter_sink);
+    m_log.add(DiagnosticSource::play, "Scattered " + std::to_string(scattered.items) + " items in " + std::to_string(scattered.cells_active) + " cells",
+              m_frame);
+    for (auto& report : m_play_scatter->take_reports()) m_log.add(DiagnosticSource::play, std::move(report), m_frame);
 }
 
 void EditorShell::stop_play() {
@@ -154,6 +185,9 @@ void EditorShell::stop_play() {
         m_play_recording.reset();
     }
     m_visibility.reset(); // before its World
+    if (m_play_scatter) m_play_scatter->clear(*m_play_scatter_sink); // its items and colliders, before the cells they stand in
+    m_play_scatter.reset();
+    m_play_scatter_sink.reset();
     if (m_play_world) m_play_world->unload_all(m_play->world(), &m_play->physics());
     m_play_world.reset();
     if (m_terrain) m_terrain->clear(&m_play->physics()); // its height fields leave the play physics first
@@ -201,6 +235,13 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
         const auto errors = m_play_world->stats().loads_failed + m_play_world->stats().pinned;
         const auto& streamed = m_play_world->update(m_play->world(), &m_play->physics());
         if (streamed.loads_failed + streamed.pinned != errors) m_log.add(DiagnosticSource::play, streamed.last_error, m_frame);
+    }
+    if (m_play_scatter) { // scatter's items around the play camera, after the cells they belong to
+        const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
+        const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
+        m_play_scatter->set_sources({pose ? pose->translation : m_camera.position});
+        m_play_scatter->update(m_play->world(), *m_assets, *m_play_scatter_sink);
+        for (auto& report : m_play_scatter->take_reports()) m_log.add(DiagnosticSource::play, std::move(report), m_frame);
     }
     const auto frame = m_play->update(delta_time);
     // Diagnostics' physics counts, four times a second, whether or not the panel is showing.

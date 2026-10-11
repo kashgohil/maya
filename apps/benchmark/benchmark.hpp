@@ -153,6 +153,11 @@ struct Counters {
     double terrain_patches = 0.0, terrain_draws = 0.0, terrain_shadow_patches = 0.0;
     size_t terrain_generated = 0, terrain_cached = 0;
     double terrain_longest_update_ms = 0.0, terrain_longest_generate_ms = 0.0;
+    // Scatter, as the player streams it (#1093, docs/procedural.md#scatter): at the end of the first run, its items
+    // and the cells holding them; cells generated and read from the cook cache since loading; its longest
+    // update, cell job, and cell going in.
+    size_t scatter_items = 0, scatter_cells = 0, scatter_generated = 0, scatter_cached = 0;
+    double scatter_longest_frame_ms = 0.0, scatter_longest_generate_ms = 0.0, scatter_longest_activation_ms = 0.0;
 };
 
 /// Scene workload: loading the scene, once before the runs, in milliseconds.

@@ -53,7 +53,8 @@ WorldReadResult read_world(std::string_view text);
 std::string write_world(const WorldDocument& document);
 
 /// Whether a component puts its root's whole hierarchy in the persistent part: a camera, a directional
-/// light, an environment, physics settings, or terrain (what the whole world needs, wherever it is).
+/// light, an environment, physics settings, terrain, a generator, or a scatter exclusion (what the whole
+/// world needs, wherever it is).
 bool persistent_component(const ComponentValue& value);
 
 /// A world's content, split: the persistent part and each occupied cell's scene.

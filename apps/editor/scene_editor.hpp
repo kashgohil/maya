@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace maya::editor {
@@ -34,6 +35,8 @@ struct SceneChange {
     std::unordered_map<EntityId, std::vector<EntityId>, PersistentIdHash> order_before, order_after;
     std::unordered_map<AssetId, MaterialAsset, PersistentIdHash> materials_before, materials_after;
     std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> generators_before, generators_after;
+    /// Transient entities (generated items, #1093) this change made authored: transient again when it is undone.
+    std::vector<EntityId> made_authored;
     bool empty() const noexcept { return before.empty() && order_before.empty() && materials_before.empty() && generators_before.empty(); }
 };
 /// Entities and child lists that differ between two states.
@@ -169,15 +172,29 @@ public:
     // undo and redo order the roots there are.
     /// Commits `entities` (parents before children; whole hierarchies) into stage group `group` (any number
     /// but 0), invisible until reveal. A group may take several calls, one a frame.
-    EditResult stage_entities(StageGroup group, std::span<const SceneEntity> entities);
+    EditResult stage_entities(StageGroup group, std::span<const SceneEntity> entities, bool transient = false);
+    /// A transient entity (#1093: a generated item) is in the scene but not saved: document() and a world's
+    /// parts leave it out. An edit that touches it makes it authored (an override), until that edit is undone.
+    bool transient(EntityId id) const { return m_transient.contains(id); }
+    size_t transient_count() const noexcept { return m_transient.size(); }
+    /// Rewrites deleting an entity without children into an edit of it, when this gives a record: deleting a
+    /// generated item leaves a marker that it was removed (#1093).
+    void set_delete_rewrite(std::function<std::optional<EntityRecord>(EntityId, const EntityRecord&)> rewrite) {
+        m_delete_rewrite = std::move(rewrite);
+    }
     /// Shows a staged group's entities together and adds them to the scene, their roots after the others.
     EditResult reveal(StageGroup group);
     /// Drops a staged group's entities (a cancelled load).
     void discard_staged(StageGroup group);
     /// Takes `roots` and everything below them out of the scene (a cell unloading), and out of the selection.
     EditResult unload(std::span<const EntityId> roots);
-    /// Called with every change an edit, undo, or redo applies, and its direction.
-    void set_change_listener(std::function<void(const SceneChange&, bool forward)> listener) { m_listener = std::move(listener); }
+    /// Called with every change an edit, undo, or redo applies, and its direction. One listener per owner (a
+    /// world's cells, scatter); an empty one removes the owner's.
+    void set_change_listener(std::function<void(const SceneChange&, bool forward)> listener) { set_change_listener(nullptr, std::move(listener)); }
+    void set_change_listener(const void* owner, std::function<void(const SceneChange&, bool forward)> listener) {
+        std::erase_if(m_listeners, [&](const auto& entry) { return entry.first == owner; });
+        if (listener) m_listeners.emplace_back(owner, std::move(listener));
+    }
     /// Checks each edit once applied: a reason refuses it, and it is taken back (e.g. a hierarchy leaving its cell).
     void set_change_check(std::function<std::string(const SceneChange&)> check) { m_check = std::move(check); }
     /// The change the next undo or redo would apply, or null: what it touches (cells to load first).
@@ -215,11 +232,17 @@ private:
     std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> m_generators; // open generators, as edited
     std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> m_generator_files; // what their files hold
     std::function<void(AssetId, const GeneratorAsset&)> m_publish_generator;
-    std::function<void(const SceneChange&, bool)> m_listener;
+    std::vector<std::pair<const void*, std::function<void(const SceneChange&, bool)>>> m_listeners;
+    void notify(const SceneChange& change, bool forward) const {
+        for (const auto& [owner, listener] : m_listeners) listener(change, forward);
+    }
+    std::unordered_set<EntityId, PersistentIdHash> m_transient;
+    std::function<std::optional<EntityRecord>(EntityId, const EntityRecord&)> m_delete_rewrite;
     std::function<std::string(const SceneChange&)> m_check;
     struct Staging {
         std::vector<std::pair<EntityId, EntityHandle>> order; // staged so far, in order
         std::unordered_map<EntityId, EntityHandle, PersistentIdHash> handles;
+        bool transient = false;
     };
     std::unordered_map<StageGroup, Staging> m_staging;
 };

@@ -1,0 +1,34 @@
+maya-generator 1
+algorithm 1
+kind scatter
+seed 1093
+base 0
+region_min_x -2
+region_min_z -2
+region_max_x 1
+region_max_z 1
+heights 6d617961 90
+spacing 8
+density 0.3
+max_slope 28
+min_height -10000
+max_height 10000
+min_scale 0.6
+max_scale 1.6
+random_yaw true
+mesh0 6d617961 5
+material0 6d617961 92
+weight0 3
+collider0 1
+mesh1 6d617961 2
+material1 6d617961 92
+weight1 1
+collider1 0.6
+mesh2 none
+material2 none
+weight2 1
+collider2 0
+mesh3 none
+material3 none
+weight3 1
+collider3 0

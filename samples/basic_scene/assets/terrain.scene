@@ -95,3 +95,24 @@ entity 6d617961 603
     linear_velocity 0 0 0
     angular_velocity 0 0 0
 end
+
+entity 6d617961 604
+  component maya.name 1
+    value "Rocks"
+  component maya.generator 1
+    generator 6d617961 93
+end
+
+entity 6d617961 605
+  component maya.name 1
+    value "Clearing"
+  component maya.transform 2
+    translation 0 0 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.scatter_exclusion 1
+    shape sphere
+    half_extents 4 4 4
+    radius 20
+    generator none
+end

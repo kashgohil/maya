@@ -13,6 +13,7 @@
 #include "maya/simulation/physics_debug.hpp"
 #include "maya/simulation/play_session.hpp"
 #include "maya/streaming/terrain_streamer.hpp"
+#include "maya/streaming/scatter_streamer.hpp"
 #include "maya/streaming/world_streamer.hpp"
 #include <algorithm>
 #include <fstream>
@@ -110,6 +111,11 @@ public:
             return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<TerrainComponent>(value); });
         });
         if (has_terrain && (m_options.record || m_options.replay)) return fail("recording and replaying a scene with terrain are not supported yet");
+        // Scatter (#1093) too: its items join the World as they stream.
+        const auto has_generators = std::ranges::any_of(document.entities, [](const SceneEntity& entity) {
+            return std::ranges::any_of(entity.components, [](const ComponentValue& value) { return std::holds_alternative<GeneratorComponent>(value); });
+        });
+        if (has_generators && (m_options.record || m_options.replay)) return fail("recording and replaying a scene with generators are not supported yet");
         if (m_options.record)
             m_recording = begin_recording(scene_name, document, recorded_assets(*m_assets, document), scripts.seed, {}, {});
         auto started = PlaySession::start(document, context, play_systems(registry_script_sources(*m_assets), registry_animation_clips(*m_assets), scripts));
@@ -149,6 +155,20 @@ public:
             const auto& terrain = m_terrain->settle(m_session->world(), *m_assets, &m_session->physics());
             std::cerr << "[Player] generated " << terrain.generated << " terrain tiles and read " << terrain.cached << " from the cook cache\n";
         }
+        if (has_generators) { // scatter's items around the camera, once their cells are in, before the first frame
+            auto settings = ScatterSettings{};
+            settings.streaming = project_streaming_settings(project.settings);
+            m_scatter = std::make_unique<ScatterStreamer>(package ? nullptr : std::make_shared<CookCache>(cook_cache_folder(project)), settings);
+            m_scatter_sink = std::make_unique<WorldScatterSink>(m_session->world(), &m_session->physics());
+            if (m_streamer)
+                m_scatter->set_ready([streamer = m_streamer.get()](CellIndex cell) {
+                    return !streamer->world().cell(cell) || streamer->state(cell) == CellState::active;
+                });
+            m_scatter->set_sources({camera_position()});
+            const auto& scattered = m_scatter->settle(m_session->world(), *m_assets, *m_scatter_sink);
+            std::cerr << "[Player] scattered " << scattered.items << " items in " << scattered.cells_active << " cells\n";
+            for (const auto& report : m_scatter->take_reports()) std::cerr << "[Player] " << report << '\n';
+        }
         const auto loaded = preload_render_assets(m_session->world(), *m_assets);
         std::cerr << "[Player] loaded " << loaded << " assets in " << int(loading.milliseconds()) << " ms\n";
         m_renderer = std::make_unique<Renderer>(device, std::move(shader));
@@ -176,6 +196,11 @@ public:
         if (m_terrain) { // its tiles around the camera, before the tick steps physics
             m_terrain->set_sources({camera_position()});
             m_terrain->update(m_session->world(), *m_assets, &m_session->physics());
+        }
+        if (m_scatter) { // scatter's items, after the cells they belong to
+            m_scatter->set_sources({camera_position()});
+            m_scatter->update(m_session->world(), *m_assets, *m_scatter_sink);
+            for (const auto& report : m_scatter->take_reports()) std::cerr << "[Player] " << report << '\n';
         }
         // Every window event belongs to the game in the player.
         if (input_enabled) m_session->input().feed(Input::instance().events());
@@ -265,6 +290,9 @@ public:
                 std::cerr << "[Player] resident: " << residency_summary(report) << '\n';
             }
         }
+        if (m_scatter) m_scatter->clear(*m_scatter_sink); // its items and colliders out of the session
+        m_scatter.reset();
+        m_scatter_sink.reset();
         m_streamer.reset(); // its loads end before the session and the assets they use
         if (m_terrain) m_terrain->clear(&m_session->physics()); // its height fields out of the session's physics
         m_terrain.reset();
@@ -297,6 +325,8 @@ private:
     std::unique_ptr<WorldStreamer> m_streamer; // when the scene is a world: its cells around the camera
     std::unique_ptr<VisibilityIndex> m_visibility; // of the session's World: declared after it, so it goes first
     std::unique_ptr<TerrainStreamer> m_terrain; // when the scene has terrain (#1068): its tiles around the camera
+    std::unique_ptr<ScatterStreamer> m_scatter; // when the scene runs generators (#1093): their items around the camera
+    std::unique_ptr<WorldScatterSink> m_scatter_sink; // into the session's World and physics
     float m_lod_pixels = 1.0f, m_cull_pixels = 2.0f; // the project's (docs/renderer.md#visibility-and-levels-of-detail)
     math::DVec3 camera_position() const {
         const auto camera = m_session->world().find(*m_session->camera());

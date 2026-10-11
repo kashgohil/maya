@@ -288,6 +288,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
         m_pivot_distance = std::max(float((m_camera.pivot - m_camera.position).length()), 0.05f);
     update_play(routed, io.DeltaTime); // before the UI, so it shows this frame's ticks
     update_cells(); // a world's cells around the editor camera, within their budget (#1067)
+    update_scatter(); // and scatter's items, once their cells are in (#1093)
 
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
@@ -658,13 +659,24 @@ void EditorShell::draw_hierarchy_row(EntityId id) {
         if (ImGui::IsItemDeactivated() || entered) m_renaming.reset();
     } else {
         ImGui::TextUnformatted(scene.display_name(id).c_str());
-        // In a world, each root's part: the cell it saves into, or the persistent part (#1067).
+        // In a world, each root's part: the cell it saves into, or the persistent part (#1067); and what a
+        // generated item is (#1093): generated, an override, an orphaned one, or removed.
+        auto tag = std::string{};
+        auto tone = theme::color::faint;
+        if (const auto* marker = find_component(*record, ComponentId::generated)) {
+            const auto orphan = m_scatter && m_scatter->orphans().contains(id);
+            tag = scene.transient(id) ? "generated" : std::get<GeneratedComponent>(*marker).removed ? "removed" : orphan ? "orphan" : "override";
+            if (orphan) tone = theme::color::danger;
+        }
         if (const auto* indexed = m_cells && !record->parent ? m_cells->find(id) : nullptr) {
-            const auto tag = part_name(indexed->part);
+            tag = (tag.empty() ? "" : tag + "  ") + part_name(indexed->part);
+            if (indexed->part && m_cells->changed(*indexed->part) && tone == theme::color::faint) tone = theme::color::warning;
+        }
+        if (!tag.empty()) {
             const auto width = ImGui::CalcTextSize(tag.c_str()).x;
             ImGui::SameLine();
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(8.0f, ImGui::GetContentRegionAvail().x - width - 6.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, indexed->part && m_cells->changed(*indexed->part) ? theme::color::warning : theme::color::faint);
+            ImGui::PushStyleColor(ImGuiCol_Text, tone);
             ImGui::TextUnformatted(tag.c_str());
             ImGui::PopStyleColor();
         }
@@ -735,7 +747,13 @@ void EditorShell::draw_hierarchy() {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6.0f, 4.0f});
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {6.0f, 2.0f});
         ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, 14.0f);
+        if (scene.transient_count() > 0) { // generated items are not listed one by one; picked or followed, they show
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+            ImGui::TextUnformatted((std::string(icon::sparkle) + "  " + std::to_string(scene.transient_count()) + " generated items, not listed").c_str());
+            ImGui::PopStyleColor();
+        }
         for (const auto id : std::vector<EntityId>(scene.roots())) {
+            if (scene.transient(id) && !scene.selected(id)) continue;
             if (m_cells && m_hierarchy_filter)
                 if (const auto* indexed = m_cells->find(id); !indexed || indexed->part != *m_hierarchy_filter) continue;
             draw_hierarchy_row(id);

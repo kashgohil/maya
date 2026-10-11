@@ -1,4 +1,5 @@
 #include "maya/streaming/terrain_streamer.hpp"
+#include "maya/procedural/scatter.hpp"
 #include "maya/core/sha256.hpp"
 #include <algorithm>
 #include <charconv>
@@ -45,6 +46,7 @@ CookKey height_overview_cook_key(const GeneratorAsset& generator) {
                 std::to_string(generator.region_max_x) + " " + std::to_string(generator.region_max_z) + "\n"};
 }
 void append_generator_cook_keys(const GeneratorAsset& generator, std::vector<CookKey>& keys) {
+    if (generator.kind != GeneratorKind::heightfield_noise) return; // only heights have tiles and an overview
     keys.push_back(height_overview_cook_key(generator));
     for (auto z = generator.region_min_z; z <= generator.region_max_z; ++z)
         for (auto x = generator.region_min_x; x <= generator.region_max_x; ++x) keys.push_back(height_tile_cook_key(generator, {x, z}));
@@ -82,6 +84,8 @@ struct TerrainStreamer::Impl {
         std::shared_ptr<std::shared_ptr<const HeightOverview>> overview_result;
         std::shared_ptr<const HeightOverview> overview;
         std::shared_ptr<const HeightBuffer> overview_buffer;
+        /// What was drawn before its generator changed (#1093): drawn until the new tiles are ready.
+        std::optional<TerrainView> previous;
     };
 
     GraphicsDevice* device;
@@ -223,8 +227,18 @@ const TerrainStats& TerrainStreamer::update(const World& world, AssetRegistry& a
         const auto changed = terrain.entity != entity || terrain.generation != generation ||
                              !same_heights(terrain.component, component);
         if (changed) {
+            // The terrain as it was keeps being drawn (not collided with) until the new one is ready.
+            auto previous = std::optional<TerrainView>{};
+            if (terrain.generator && terrain.overview_buffer && terrain.entity == entity) {
+                previous = TerrainView{terrain.entity, terrain.id, terrain.component, *terrain.generator, terrain.overview, terrain.overview_buffer, {}};
+                for (const auto& [index, tile] : terrain.tiles)
+                    if (tile.state != Impl::State::loading && tile.buffer) previous->tiles.push_back({index, tile.heights, tile.buffer});
+            } else if (terrain.previous && terrain.entity == entity) {
+                previous = std::move(terrain.previous); // changed again before the last change was ready
+            }
             impl.drop(terrain);
             terrain = {};
+            terrain.previous = std::move(previous);
             terrain.entity = entity;
             terrain.id = world.persistent_id(entity).value_or(EntityId{});
             terrain.component = component;
@@ -370,7 +384,23 @@ const TerrainStats& TerrainStreamer::update(const World& world, AssetRegistry& a
     m_stats.cpu_bytes = m_stats.gpu_bytes = 0;
     m_stats.height_fields = 0;
     m_stats.drawn = 0;
-    for (const auto& [key, terrain] : impl.terrains) {
+    m_stats.regenerating = 0;
+    for (auto& [key, terrain] : impl.terrains) {
+        if (terrain.previous) { // until the new terrain is ready: its overview, and every wanted tile loaded and on the device
+            const auto ready = terrain.generator && terrain.overview && (!impl.device || terrain.overview_buffer) &&
+                               std::ranges::none_of(terrain.tiles, [&](const auto& entry) {
+                                   return entry.second.state == Impl::State::loading || (impl.device && !entry.second.buffer);
+                               });
+            if (ready) terrain.previous.reset();
+        }
+        if (terrain.previous) {
+            auto shown = *terrain.previous;
+            shown.component = terrain.component; // its layers as they are now
+            m_views.push_back(std::move(shown));
+            ++m_stats.regenerating;
+            for (const auto& [index, tile] : terrain.tiles) m_stats.loading += tile.state == Impl::State::loading;
+            continue;
+        }
         if (!terrain.generator) continue;
         auto view = TerrainView{terrain.entity, terrain.id, terrain.component, *terrain.generator, terrain.overview, terrain.overview_buffer, {}};
         if (terrain.overview) m_stats.cpu_bytes += terrain.overview->heights.size() * 6;
@@ -402,13 +432,8 @@ std::optional<float> TerrainStreamer::height_at(double x, double z) const {
     for (const auto& [key, terrain] : m_impl->terrains) {
         const auto found = terrain.tiles.find(index);
         if (found == terrain.tiles.end() || !found->second.heights) continue;
-        const auto& tile = *found->second.heights;
-        const auto fx = x - double(index.x) * tile_size, fz = z - double(index.z) * tile_size;
-        const auto ix = std::min(uint32_t(fx), tile_samples - 2), iz = std::min(uint32_t(fz), tile_samples - 2);
-        const auto tx = float(fx - ix), tz = float(fz - iz);
-        // The two triangles of the square, split along its diagonal from (0, 0) to (1, 1), as the terrain draws it.
-        const auto h00 = tile.height(ix, iz), h10 = tile.height(ix + 1, iz), h01 = tile.height(ix, iz + 1), h11 = tile.height(ix + 1, iz + 1);
-        return tx >= tz ? h00 + (h10 - h00) * tx + (h11 - h10) * tz : h00 + (h01 - h00) * tz + (h11 - h01) * tx;
+        // On the triangles the terrain draws (scatter stands its items on the same ones).
+        return tile_height_at(*found->second.heights, x - double(index.x) * tile_size, z - double(index.z) * tile_size);
     }
     return std::nullopt;
 }

@@ -74,7 +74,7 @@ EditorCells::EditorCells(SceneEditor& scene, std::filesystem::path file, WorldDo
     }
     for (const auto root : m_scene.roots()) place(root);
     refresh();
-    m_scene.set_change_listener([this](const SceneChange& change, bool) { changed_by(change); });
+    m_scene.set_change_listener(this, [this](const SceneChange& change, bool) { changed_by(change); });
     m_scene.set_change_check([this](const SceneChange& change) { return check(change); });
     // Every cell read once on a background job: where each entity is, for references and undo.
     m_index_result = std::make_shared<std::vector<std::pair<CellIndex, std::vector<std::pair<EntityId, std::string>>>>>();
@@ -97,7 +97,7 @@ EditorCells::~EditorCells() {
     m_jobs.wait();
     for (auto& [index, cell] : m_cells)
         if (cell.group) m_scene.discard_staged(cell.group);
-    m_scene.set_change_listener({});
+    m_scene.set_change_listener(this, {});
     m_scene.set_change_check({});
 }
 
@@ -450,6 +450,14 @@ std::vector<EntityId> EditorCells::roots(const WorldPart& part) const {
 }
 
 void EditorCells::place(EntityId root) {
+    if (m_scene.transient(root)) { // a generated item: in no part until edited (an override)
+        if (const auto found = m_root_part.find(root); found != m_root_part.end()) {
+            m_part_roots[found->second].erase(root);
+            m_touched.insert(found->second);
+            m_root_part.erase(found);
+        }
+        return;
+    }
     const auto part = part_of_root(root);
     if (const auto found = m_root_part.find(root); found != m_root_part.end()) {
         if (found->second != part) {

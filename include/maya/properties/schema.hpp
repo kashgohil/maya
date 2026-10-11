@@ -13,13 +13,14 @@ namespace maya {
 enum class ComponentId : uint32_t {
     name = 1, transform = 2, mesh_renderer = 3, camera = 4, light = 5, spin = 6, fly_control = 7,
     collider = 8, rigid_body = 9, physics_settings = 10, script = 11, environment = 12, skin = 13, animation = 14,
-    terrain = 15
+    terrain = 15, generator = 16, generated = 17, scatter_exclusion = 18
 };
 using PropertyId = uint32_t; // scoped to ComponentId; zero is reserved
 using ComponentValue = std::variant<NameComponent, TransformComponent, MeshRendererComponent,
                                     CameraComponent, LightComponent, SpinComponent, FlyControlComponent,
                                     ColliderComponent, RigidBodyComponent, PhysicsSettingsComponent, ScriptComponent,
-                                    EnvironmentComponent, SkinComponent, AnimationComponent, TerrainComponent>;
+                                    EnvironmentComponent, SkinComponent, AnimationComponent, TerrainComponent,
+                                    GeneratorComponent, GeneratedComponent, ScatterExclusionComponent>;
 /// One of a property's named choices (an enumeration such as a light's kind), by its value.
 struct ChoiceValue {
     uint32_t value = 0;
@@ -138,6 +139,9 @@ PropertyResult validate_material(MaterialAsset& material, const PropertyValidati
 /// A generator asset's properties (#1068, docs/procedural.md#generator-assets), edited like a material's;
 /// their names are the generator file's keys. A region whose last cell comes before its first is refused.
 std::span<const PropertyDescriptor> generator_properties();
+/// The properties of one kind of generator (#1093): what its file holds and its Inspector shows.
+std::span<const PropertyDescriptor> generator_properties(GeneratorKind kind);
+bool generator_property_applies(PropertyId property, GeneratorKind kind);
 const PropertyDescriptor* generator_property(PropertyId property);
 const PropertyDescriptor* generator_property(std::string_view name);
 std::optional<PropertyValue> read_property(const GeneratorAsset& generator, PropertyId property);

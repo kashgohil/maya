@@ -32,6 +32,9 @@ const char* component_icon(ComponentId id) {
     case ComponentId::skin: return icon::bone;
     case ComponentId::animation: return icon::film_strip;
     case ComponentId::terrain: return icon::mountains;
+    case ComponentId::generator: return icon::tree_evergreen;
+    case ComponentId::generated: return icon::sparkle;
+    case ComponentId::scatter_exclusion: return icon::prohibit;
     }
     return icon::circle_dashed;
 }
@@ -639,9 +642,31 @@ void EditorShell::draw_generator(AssetId id, bool folded) {
     ImGui::TextUnformatted(dirty ? "Generator, unsaved" : "Generator");
     ImGui::PopStyleColor();
     m_layout.controls.push_back({"generator." + name, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    // First, a new seed, as one edit; and, for scatter, what it makes now: a live preview, remade on jobs as it changes.
+    if (ImGui::Button((std::string(icon::dice_five) + "  New seed").c_str())) {
+        static auto draws = uint32_t{0x1093};
+        draws = draws * 1664525u + 1013904223u + uint32_t(m_frame);
+        edit_generator(id, generator_property("seed")->id, int32_t(draws & 0x7fffffffu));
+    }
+    m_layout.controls.push_back({"generator.seed", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    if (generator.kind == GeneratorKind::scatter) {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::color::faint);
+        if (const auto* scatter = m_scatter.get()) {
+            const auto& stats = scatter->stats();
+            ImGui::TextUnformatted(stats.regenerating > 0 || stats.cells_loading > 0
+                                       ? format("Remaking %zu cells...", std::max(stats.regenerating, stats.cells_loading)).c_str()
+                                       : format("%zu items in %zu cells, %zu overridden, %zu orphaned; a cell in %.1f ms", stats.items, stats.cells_active,
+                                                stats.skipped, stats.orphans, stats.longest_generate_ms).c_str());
+        } else {
+            ImGui::TextUnformatted("Not run here: add a Generator component that names it");
+        }
+        ImGui::PopStyleColor();
+        m_layout.controls.push_back({"generator.stats", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    }
     const auto group = "Edit " + name;
     if (theme::begin_properties("generator")) {
-        for (const auto& property : generator_properties()) {
+        for (const auto& property : generator_properties(generator.kind)) { // its kind's alone
             theme::property(std::string(property.label).c_str());
             ImGui::PushID(static_cast<int>(property.id));
             draw_property(property, *read_property(generator, property.id), "generator." + std::string(property.name), group, {},
@@ -924,6 +949,28 @@ void EditorShell::draw_inspector() {
                 ImGui::TextWrapped("%s", m_edit_error.c_str());
                 ImGui::PopStyleColor();
             }
+            // A generated item (#1093): what it is, and baking it.
+            if (const auto* record = m_scene->record(id); record && !m_play)
+                if (const auto* marker = find_component(*record, ComponentId::generated)) {
+                    const auto& generated = std::get<GeneratedComponent>(*marker);
+                    const auto info = m_assets ? m_assets->info(generated.generator.id) : std::nullopt;
+                    const auto source = info ? asset_label(info->record) : std::string("its generator");
+                    const auto orphan = m_scatter && m_scatter->orphans().contains(id);
+                    const auto text = m_scene->transient(id) ? "Made by " + source + ". Editing it makes it an override, saved with the scene; Bake makes it authored."
+                                    : generated.removed ? "A removed item of " + source + ": delete this to bring the item back."
+                                    : orphan ? "An override " + source + " no longer makes: kept as it is. Bake it or delete it."
+                                             : "An override of an item " + source + " makes, saved in place of it.";
+                    ImGui::Dummy({0.0f, 2.0f});
+                    icon_text(icon::sparkle, orphan ? theme::color::danger : theme::color::accent, 6.0f);
+                    ImGui::PushStyleColor(ImGuiCol_Text, orphan ? theme::color::danger : theme::color::muted);
+                    ImGui::TextWrapped("%s", text.c_str());
+                    ImGui::PopStyleColor();
+                    if (!generated.removed) {
+                        if (ImGui::Button((std::string(icon::check) + "  Bake").c_str())) report(bake_selection(), "Bake");
+                        m_layout.controls.push_back({"generated.bake", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make the selected generated items ordinary entities, with their IDs; the generator skips them.");
+                    }
+                }
             // Components, in schema order.
             for (const auto& value : components) {
                 if (component_id(value) == ComponentId::name) continue;

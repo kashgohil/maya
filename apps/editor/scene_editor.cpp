@@ -65,6 +65,9 @@ void remove_command(WorldCommands& commands, EntityTarget target, ComponentId id
     case ComponentId::skin: commands.remove<SkinComponent>(target); break;
     case ComponentId::animation: commands.remove<AnimationComponent>(target); break;
     case ComponentId::terrain: commands.remove<TerrainComponent>(target); break;
+    case ComponentId::generator: commands.remove<GeneratorComponent>(target); break;
+    case ComponentId::generated: commands.remove<GeneratedComponent>(target); break;
+    case ComponentId::scatter_exclusion: commands.remove<ScatterExclusionComponent>(target); break;
     }
 }
 
@@ -182,7 +185,9 @@ SceneEditor::SceneEditor(std::unique_ptr<World> world, const std::vector<EntityI
 SceneDocument SceneEditor::document() const {
     auto document = SceneDocument{};
     document.entities.reserve(m_state.entities.size());
-    auto pending = std::vector<EntityId>(roots().rbegin(), roots().rend());
+    auto pending = std::vector<EntityId>{};
+    for (auto root = roots().rbegin(); root != roots().rend(); ++root)
+        if (!m_transient.contains(*root)) pending.push_back(*root); // generated items are not saved
     while (!pending.empty()) {
         const auto id = pending.back();
         pending.pop_back();
@@ -359,6 +364,10 @@ EditResult SceneEditor::apply(const SceneChange& change, bool forward) {
         m_generators.insert_or_assign(id, value);
         if (m_publish_generator) m_publish_generator(id, value);
     }
+    for (const auto id : change.made_authored) { // edited, a generated item is authored; undone, generated again
+        if (forward) m_transient.erase(id);
+        else if (record(id)) m_transient.insert(id);
+    }
     ++m_revision; // callers then set the selection, which prunes missing entities
     return {true, {}};
 }
@@ -456,6 +465,8 @@ EditResult SceneEditor::commit(std::string label, SceneChange change, std::vecto
     if (change.empty()) return {false, "Nothing to change"};
     if (locked()) return {false, m_lock_reason};
     const auto selection_before = m_selection;
+    for (const auto& [id, after] : change.after)
+        if (m_transient.contains(id)) change.made_authored.push_back(id);
     if (auto result = apply(change, true); !result) return result;
     if (m_check)
         if (auto refused = m_check(change); !refused.empty()) {
@@ -464,7 +475,7 @@ EditResult SceneEditor::commit(std::string label, SceneChange change, std::vecto
             return {false, std::move(refused)};
         }
     set_selection(std::move(selection_after));
-    if (m_listener) m_listener(change, true);
+    notify(change, true);
     if (m_group_depth > 0) {
         // Merge into the group: keep each entry's first "before" and latest "after".
         for (auto& [id, after] : change.after) {
@@ -483,6 +494,7 @@ EditResult SceneEditor::commit(std::string label, SceneChange change, std::vecto
             m_group_change.generators_before.try_emplace(id, change.generators_before.at(id));
             m_group_change.generators_after.insert_or_assign(id, std::move(after));
         }
+        m_group_change.made_authored.insert(m_group_change.made_authored.end(), change.made_authored.begin(), change.made_authored.end());
     } else {
         record({std::move(label), std::move(change), selection_before, m_selection});
     }
@@ -633,6 +645,11 @@ EditResult SceneEditor::delete_selection() {
     if (doomed.empty()) return {false, "Nothing is selected"};
     auto change = ChangeBuilder(m_state);
     for (const auto root : doomed) {
+        if (m_delete_rewrite && m_state.children_of(root).empty())
+            if (auto rewritten = m_delete_rewrite(root, m_state.entities.at(root))) { // a generated item: marked removed
+                change.set(root, std::move(*rewritten));
+                continue;
+            }
         for (const auto id : subtree(m_state, root)) {
             change.set(id, std::nullopt);
             if (!m_state.children_of(id).empty()) change.order(id, {});
@@ -717,7 +734,7 @@ EditResult SceneEditor::undo() {
     if (auto result = apply(step.change, false); !result) return result;
     --m_position;
     set_selection(step.selection_before);
-    if (m_listener) m_listener(step.change, false);
+    notify(step.change, false);
     return {true, {}};
 }
 
@@ -728,13 +745,14 @@ EditResult SceneEditor::redo() {
     if (auto result = apply(step.change, true); !result) return result;
     ++m_position;
     set_selection(step.selection_after);
-    if (m_listener) m_listener(step.change, true);
+    notify(step.change, true);
     return {true, {}};
 }
 
-EditResult SceneEditor::stage_entities(StageGroup group, std::span<const SceneEntity> entities) {
+EditResult SceneEditor::stage_entities(StageGroup group, std::span<const SceneEntity> entities, bool transient) {
     if (group == 0) return {false, "Stage group 0 is the visible World"};
     auto& staged = m_staging[group];
+    staged.transient = transient;
     auto handles = std::unordered_map<EntityId, size_t, PersistentIdHash>{}; // within this call
     auto commands = m_world->commands();
     auto made = std::vector<EntityTarget>{};
@@ -767,6 +785,7 @@ EditResult SceneEditor::reveal(StageGroup group) {
     const auto found = m_staging.find(group);
     if (found == m_staging.end()) return {false, "Nothing is staged in that group"};
     const auto order = std::move(found->second.order);
+    const auto transient = found->second.transient;
     m_staging.erase(found);
     m_world->publish(group);
     for (const auto& [id, handle] : order) {
@@ -776,6 +795,7 @@ EditResult SceneEditor::reveal(StageGroup group) {
             if (auto value = read_component(*m_world, handle, schema.id)) mirrored.components.push_back(std::move(*value));
         m_state.children[mirrored.parent.value_or(EntityId{})].push_back(id);
         m_state.entities.insert_or_assign(id, std::move(mirrored));
+        if (transient) m_transient.insert(id);
     }
     ++m_revision;
     return {true, {}};
@@ -810,6 +830,7 @@ EditResult SceneEditor::unload(std::span<const EntityId> roots) {
         }
         m_state.entities.erase(id);
         m_state.children.erase(id);
+        m_transient.erase(id);
     }
     auto& top = m_state.children[EntityId{}];
     std::erase_if(top, [&](EntityId id) { return gone.contains(id); });

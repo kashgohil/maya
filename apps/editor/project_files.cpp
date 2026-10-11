@@ -222,6 +222,8 @@ void EditorShell::finish_cook_maintenance() {
 
 void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path) {
     stop_play(); // a play World belongs to the scene it was started from
+    m_scatter.reset(); // its jobs end; its items go with the scene
+    m_scatter_sink.reset();
     m_cells.reset(); // a world's cells belong to its scene; opening a world makes them again
     m_cells_error.clear();
     discard_material_edits(); // they belong to the closing scene's history
@@ -625,10 +627,24 @@ bool EditorShell::follow_entity(EntityId id) {
     return true;
 }
 
+namespace {
+/// Before a step is applied: a generated item it brings back as authored (a removed marker, an override)
+/// leaves the scene first, so the step makes the authored entity, not an edit of the generated one.
+void clear_for(const SceneChange* change, bool forward, SceneEditor& scene, ScatterStreamer* scatter) {
+    if (!change || !scatter) return;
+    for (const auto& [id, record] : forward ? change->after : change->before)
+        if (record && scatter->made(id) && scene.transient(id) && std::ranges::find(change->made_authored, id) == change->made_authored.end()) {
+            scatter->release(id);
+            scene.unload(std::vector{id});
+        }
+}
+} // namespace
+
 EditResult EditorShell::undo_edit() {
     if (!m_scene) return {false, "No scene is open"};
     if (const auto* change = m_scene->undo_change(); change && m_cells && !m_cells->load_for(*change))
         return {false, "The cells this undo touches could not be loaded: " + m_cells->stats().last_error};
+    clear_for(m_scene->undo_change(), false, *m_scene, m_scatter.get());
     return m_scene->undo();
 }
 
@@ -636,7 +652,66 @@ EditResult EditorShell::redo_edit() {
     if (!m_scene) return {false, "No scene is open"};
     if (const auto* change = m_scene->redo_change(); change && m_cells && !m_cells->load_for(*change))
         return {false, "The cells this redo touches could not be loaded: " + m_cells->stats().last_error};
+    clear_for(m_scene->redo_change(), true, *m_scene, m_scatter.get());
     return m_scene->redo();
+}
+
+void EditorShell::update_scatter() {
+    if (!m_scene || m_play || !m_assets) return; // while playing, the authored scene stays as it is
+    if (!m_scatter) {
+        if (m_scene->world().component_count<GeneratorComponent>() == 0) return;
+        auto settings = ScatterSettings{};
+        if (m_project) settings.streaming = project_streaming_settings(m_project->settings);
+        settings.streaming.activate_radius = m_project ? project_editor_cells_settings(m_project->settings).load_radius : 256.0; // the editor's radius
+        m_scatter = std::make_unique<ScatterStreamer>(m_cook_cache, settings);
+        m_scatter_sink = std::make_unique<EditorScatterSink>(*m_scene);
+        // An edit that makes an item authored takes it from the streamer; undone, it is the streamer's again. A
+        // removed marker deleted brings its item back.
+        m_scene->set_change_listener(m_scatter_sink.get(), [this](const SceneChange& change, bool forward) {
+            for (const auto id : change.made_authored) forward ? m_scatter->release(id) : m_scatter->adopt(id);
+            const auto& now = forward ? change.after : change.before;
+            const auto& was = forward ? change.before : change.after;
+            for (const auto& [id, record] : now)
+                if (!record)
+                    if (const auto before = was.find(id); before != was.end() && before->second && find_component(*before->second, ComponentId::generated))
+                        m_scatter->restore(id);
+        });
+        // Deleting a generated item (or an override) leaves a marker that it was removed; deleting that marker
+        // brings the item back.
+        m_scene->set_delete_rewrite([](EntityId, const EntityRecord& record) -> std::optional<EntityRecord> {
+            const auto* marker = find_component(record, ComponentId::generated);
+            if (!marker || std::get<GeneratedComponent>(*marker).removed) return std::nullopt;
+            auto removed = EntityRecord{record.parent, {}};
+            for (const auto& value : record.components)
+                if (std::holds_alternative<NameComponent>(value) || std::holds_alternative<TransformComponent>(value)) removed.components.push_back(value);
+            removed.components.push_back(GeneratedComponent{std::get<GeneratedComponent>(*marker).generator, true});
+            return removed;
+        });
+    }
+    if (m_cells)
+        m_scatter->set_ready([cells = m_cells.get()](CellIndex cell) {
+            return !cells->document().cell(cell) || cells->state(cell) == EditorCellState::active;
+        });
+    m_scatter->set_sources({m_camera.position});
+    m_scatter->update(m_scene->world(), *m_assets, *m_scatter_sink);
+    for (auto& report : m_scatter->take_reports()) m_log.add(DiagnosticSource::scene, std::move(report), m_frame);
+}
+
+EditResult EditorShell::bake_selection() {
+    if (!m_scene) return {false, "No scene is open"};
+    auto items = std::vector<EntityId>{};
+    for (const auto id : m_scene->selection())
+        if (const auto* record = m_scene->record(id))
+            if (const auto* marker = find_component(*record, ComponentId::generated); marker && !std::get<GeneratedComponent>(*marker).removed)
+                items.push_back(id);
+    if (items.empty()) return {false, "Select generated items to bake them"};
+    m_scene->begin_group(items.size() == 1 ? "Bake " + m_scene->display_name(items.front()) : "Bake " + std::to_string(items.size()) + " items");
+    auto result = EditResult{true, {}};
+    for (const auto id : items)
+        if (const auto removed = m_scene->remove_component(id, ComponentId::generated); !removed) result = removed;
+    m_scene->end_group();
+    if (result) m_log.add(DiagnosticSource::scene, "Baked " + std::to_string(items.size()) + (items.size() == 1 ? " item" : " items"), m_frame);
+    return result;
 }
 
 bool EditorShell::request_close() {

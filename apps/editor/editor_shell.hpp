@@ -11,6 +11,7 @@
 #include "texture_thumbnails.hpp"
 #include "ui_renderer.hpp"
 #include "world_cells.hpp"
+#include "maya/streaming/scatter_streamer.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/import/gltf_import.hpp"
 #include "maya/assets/cook_cache.hpp"
@@ -148,6 +149,15 @@ public:
     /// Selects an entity and frames it, loading its cell first when it is in an unloaded one (following a
     /// cross-cell reference, #1067). False when it is nowhere the world knows.
     bool follow_entity(EntityId id);
+    // Generated content (#1093, docs/editor.md#generated-content): the open scene's scatter generators' items,
+    // streamed around the camera as transient entities, regenerated as their generators and exclusions change.
+    const ScatterStreamer* scatter() const noexcept { return m_scatter.get(); }
+    /// Makes the selected generated items ordinary authored entities with the IDs they have (their markers
+    /// taken off), as one step; the generator skips them from then on.
+    EditResult bake_selection();
+    /// The view that marks generated items (teal), overrides (amber), orphans (red), and removed ones (grey).
+    bool generated_view() const noexcept { return m_generated_view; }
+    void set_generated_view(bool on) noexcept { m_generated_view = on; }
     /// Saves the open scene to `path` (content-relative, or absolute inside the content root), or to
     /// its own file when `path` is empty, creating folders as needed. Roots are saved in hierarchy
     /// order. A failed save leaves every file untouched and the scene unsaved. Returns the reason for
@@ -635,7 +645,17 @@ private:
     std::unique_ptr<EditorCells> m_cells;
     /// Play of a world: its cells streamed into the play World around the play camera.
     std::unique_ptr<WorldStreamer> m_play_world;
+    /// Play's scatter (#1093): generators' items in the play World, around the play camera.
+    std::unique_ptr<ScatterStreamer> m_play_scatter;
+    std::unique_ptr<WorldScatterSink> m_play_scatter_sink;
+    void settle_play_scatter();
     std::string m_cells_error; // the last cells error logged, so each is logged once
+    /// The open scene's scatter (#1093): after the scene, so it goes first; its sink stages into the scene.
+    std::unique_ptr<ScatterStreamer> m_scatter;
+    std::unique_ptr<EditorScatterSink> m_scatter_sink;
+    bool m_generated_view = false;
+    void update_scatter();
+    void draw_generated_markers(const RenderView& view, ImVec2 min, ImVec2 max);
     bool m_new_world_prompt = false; // the path prompt is creating a world
     void update_cells();
     void ask_new_world();

@@ -269,6 +269,7 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     const auto toolbar_hovered = ImGui::IsAnyItemHovered();
     draw_physics_debug_menu();
     if (m_cells) draw_cells_overlay(view, min, max, toolbar_hovered);
+    if (m_generated_view) draw_generated_markers(view, min, max);
 
     // Gizmo on the primary selection.
     m_layout.gizmo_origin.reset();
@@ -431,6 +432,28 @@ void EditorShell::draw_cells_overlay(const RenderView& view, ImVec2 min, ImVec2 
     draw_cells_menu();
 }
 
+void EditorShell::draw_generated_markers(const RenderView& view, ImVec2 min, ImVec2 max) {
+    // Generated content against authored (#1093): a dot on each item near the camera, by what it is now.
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(min, max, true);
+    const auto& world = m_scene->world();
+    world.for_each<GeneratedComponent>([&](EntityHandle entity, const GeneratedComponent& marker) {
+        const auto pose = world.world_matrix(entity);
+        if (!pose || (pose->translation - view.position).length() > 400.0) return;
+        const auto clip = view.matrices.view_projection * math::Vec4((pose->translation - view.position).to_float(), 1.0f);
+        if (clip.w <= 1e-4f) return;
+        const auto at = ImVec2{min.x + (clip.x / clip.w * 0.5f + 0.5f) * (max.x - min.x), min.y + (0.5f - clip.y / clip.w * 0.5f) * (max.y - min.y)};
+        const auto id = *world.persistent_id(entity);
+        const auto color = marker.removed ? theme::color::rgb(0x9AA0AA, 220)
+                         : m_scene->transient(id) ? theme::color::rgb(0x3FD0C0, 230)
+                         : m_scatter && m_scatter->orphans().contains(id) ? theme::color::rgb(0xFF5A5A, 240)
+                                                                          : theme::color::rgb(0xFFB020, 240);
+        draw->AddCircleFilled(at, 3.0f, color);
+        if (!m_scene->transient(id)) draw->AddCircle(at, 6.0f, color, 0, 1.5f); // authored: ringed
+    });
+    draw->PopClipRect();
+}
+
 void EditorShell::draw_cells_menu() {
     if (!ImGui::BeginPopup("cells-menu")) {
         m_chosen_cells.clear();
@@ -502,6 +525,12 @@ void EditorShell::draw_physics_debug_menu() {
     if (auto on = m_preferences.skeletons; ImGui::Checkbox("Skeletons", &on)) set_skeletons(on);
     remember("debug.skeletons");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Skinned meshes' joints and bones, with each joint's axes: X red, Y green, Z blue.");
+    ImGui::Dummy({0.0f, 4.0f});
+    theme::caption(m_fonts, "GENERATED");
+    ImGui::Checkbox("Generated items", &m_generated_view);
+    remember("debug.generated");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Marks generated items (teal), overrides (amber), orphaned overrides (red), and removed items (grey).");
     ImGui::Dummy({0.0f, 4.0f});
     theme::caption(m_fonts, "PHYSICS DEBUG");
     const auto category = [&](PhysicsDebugCategory value, const char* label, const char* key, const char* tip) {
