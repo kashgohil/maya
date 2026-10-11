@@ -327,7 +327,7 @@ TEST_CASE("Failed saves and loads explain why and change nothing", "[editor][pro
         // The same rules hold without the dialog, and for files that are not scenes.
         CHECK(harness.shell.save_scene("../escape.scene").find("outside the project's content root") != std::string::npos);
         CHECK(harness.shell.save_scene(copy.root / "escape.scene").find("outside the project's content root") != std::string::npos);
-        CHECK(harness.shell.save_scene("notes.txt") == "Scene files must end in .scene");
+        CHECK(harness.shell.save_scene("notes.txt") == "Scene files must end in .scene, and worlds in .world");
         fs::create_directory(copy.content / "folder.scene");
         CHECK(harness.shell.save_scene("folder.scene") == "folder.scene is a folder");
         CHECK_FALSE(fs::exists(copy.root / "escape.scene"));

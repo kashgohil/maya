@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <unistd.h>
 
 using namespace maya;
 using namespace maya::editor;
@@ -224,4 +225,136 @@ TEST_CASE("The Residency panel matches its reference", "[gpu][editor][visual][re
         device.destroy(window.handle);
     }
     device.shutdown();
+}
+
+TEST_CASE("The cells overlay and the Streaming panel match their references", "[gpu][editor][visual][worlds]") {
+    // A copy of the sample project holding a 5 × 5-cell world: a crate in each cell, and one cell whose file
+    // is damaged, so it fails to load.
+    const auto folder = std::filesystem::temp_directory_path() / ("maya-world-visual-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    const auto sample = FileSystem::resolve("samples/basic_scene/project.maya");
+    REQUIRE(sample);
+    std::filesystem::copy(sample->parent_path() / "assets", folder / "assets", std::filesystem::copy_options::recursive);
+    std::filesystem::copy_file(*sample, folder / "project.maya");
+    {
+        const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+        auto scene = SceneDocument{};
+        const auto id = [](uint64_t low) { return EntityId{0x0e1d, low}; };
+        auto camera = TransformComponent{{0, 2, 0}, {}, math::Vec3(1.0f)};
+        scene.entities.push_back({id(1), std::nullopt, {NameComponent{"Camera"}, camera, CameraComponent{}}});
+        auto sun = TransformComponent{{0, 10, 0}, math::Quat::from_axis_angle(math::Vec3{1, 0.3f, 0.2f}.normalized(), -0.9f), math::Vec3(1.0f)};
+        scene.entities.push_back({id(2), std::nullopt, {NameComponent{"Sun"}, sun, LightComponent{}}});
+        for (int x = -2; x <= 2; ++x)
+            for (int z = -2; z <= 2; ++z) {
+                auto crate = TransformComponent{{x * 128.0 + 64.0, 4.0, z * 128.0 + 64.0}, {}, math::Vec3(8.0f)};
+                scene.entities.push_back({id(100 + uint64_t((x + 2) * 5 + z + 2)), std::nullopt,
+                                          {NameComponent{"Crate " + cell_name({x, z})}, crate,
+                                           MeshRendererComponent{AssetRef<MeshAsset>{{0x6d617961, 2}}, AssetRef<MaterialAsset>{{0x6d617961, 0x11}}, true}}});
+            }
+        REQUIRE(save_world(folder / "assets/levels/overlay.world", scene, any).empty());
+        std::ofstream(folder / "assets/levels/overlay/cells/1_1.scene") << "not a scene\n";
+    }
+    MetalDevice device;
+    REQUIRE(device.initialize(nullptr, {3, size_t{16} << 20}));
+    {
+        const auto read = [](const char* relative) {
+            auto file = std::ifstream(*FileSystem::resolve(relative), std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(file), {});
+        };
+        auto shell = EditorShell(device, FileSystem::read_text("resources/shaders/metal/renderer.metal"),
+                                 FileSystem::read_text("resources/shaders/metal/editor_ui.metal"), {},
+                                 {read("resources/fonts/Inter-Regular.ttf"), read("resources/fonts/Inter-SemiBold.ttf"),
+                                  read("resources/fonts/GeistMono-Regular.ttf"), read("resources/fonts/Phosphor-Light.ttf")});
+        REQUIRE(shell.open_project(folder / "project.maya"));
+        shell.camera() = EditorCamera::looking_at({0.0, 700.0, 260.0}, {0.0, 0.0, -20.0}); // all within the far clip
+        REQUIRE(shell.open_scene("levels/overlay.world"));
+        auto& cells = *shell.cells();
+        cells.settings().load_radius = 360.0; // from the camera, 260 m south: all but the farthest row
+        shell.set_cells_tool(true);
+        // The overlay in a usual window; the panel in a tall one, where the bottom panels' share shows all of it.
+        auto metrics = WindowMetrics{1280, 720, 2560, 1440};
+        const auto wide = device.create_texture({metrics.framebuffer_width, metrics.framebuffer_height, Format::bgra8_unorm,
+                                                 TextureUsage::render_target | TextureUsage::readback, "window"});
+        const auto tall = device.create_texture({2400, 6800, Format::bgra8_unorm, TextureUsage::render_target | TextureUsage::readback, "tall window"});
+        REQUIRE(wide);
+        REQUIRE(tall);
+        auto window = wide;
+        const auto frames = [&](int count) {
+            for (int frame = 0; frame < count; ++frame) {
+                shell.update(1.0f / 60.0f, {}, metrics);
+                REQUIRE_FALSE(device.begin_frame());
+                REQUIRE_FALSE(shell.render(window.handle));
+                REQUIRE_FALSE(device.end_frame());
+            }
+        };
+        frames(3);
+        cells.settle();
+        // A cell locked by hand far off, and one changed: each as the overlay marks it.
+        REQUIRE(cells.hold({-2, -2}, CellHold::loaded).empty());
+        REQUIRE(shell.scene()->rename(EntityId{0x0e1d, 100 + 2 * 5 + 1 + 2}, "Edited crate")); // cell 0_1
+        cells.settle();
+        CHECK(cells.state({1, 1}) == EditorCellState::failed);
+        CHECK(cells.state({0, -2}) == EditorCellState::unloaded);
+        CHECK(cells.state({-2, -2}) == EditorCellState::active);
+        CHECK(cells.changed({0, 1}));
+        frames(2);
+        for (int i = 0; i < 600 && (shell.extraction().pending > 0 || shell.extraction().pending_textures > 0); ++i) { // the crates' meshes and material
+            shell.assets()->wait_idle();
+            frames(1);
+        }
+        REQUIRE(shell.extraction().pending == 0);
+        frames(2);
+        const auto capture = [&](ImVec2 min, ImVec2 max) {
+            auto pixels = std::vector<std::byte>{};
+            REQUIRE_FALSE(device.read_texture(window.handle, pixels));
+            const auto left = uint32_t(min.x * 2.0f), top = uint32_t(min.y * 2.0f);
+            const auto width = uint32_t((max.x - min.x) * 2.0f), height = uint32_t((max.y - min.y) * 2.0f);
+            REQUIRE(width > 0);
+            REQUIRE(height > 0);
+            auto image = test::RgbImage{width, height, {}};
+            for (uint32_t y = 0; y < height; ++y)
+                for (uint32_t x = 0; x < width; ++x) {
+                    const auto* p = pixels.data() + (size_t(top + y) * metrics.framebuffer_width + left + x) * 4; // BGRA
+                    image.rgb.insert(image.rgb.end(), {uint8_t(p[2]), uint8_t(p[1]), uint8_t(p[0])});
+                }
+            return image;
+        };
+        const auto overlay = capture(shell.layout().viewport_min, shell.layout().viewport_max);
+        // The panel with fixed figures: timings change from run to run.
+        constexpr auto mib = size_t{1} << 20;
+        auto figures = EditorCellStats{};
+        figures.cells[size_t(EditorCellState::active)] = 10;
+        figures.cells[size_t(EditorCellState::loading)] = 2;
+        figures.cells[size_t(EditorCellState::unloaded)] = 12;
+        figures.cells[size_t(EditorCellState::failed)] = 1;
+        figures.changed = 1;
+        figures.held = 1;
+        figures.loads_in_flight = 2;
+        figures.frame_ms = 0.42;
+        figures.longest_frame_ms = 1.87;
+        figures.last_activation_ms = 0.35;
+        figures.longest_activation_ms = 2.4;
+        figures.last_error = "Cell 1_1: overlay/cells/1_1.scene: line 1: Expected maya-scene 1";
+        auto residency = EditorShell::ResidencyFigures{};
+        residency.report.budgets = default_residency_budgets();
+        residency.report.bytes[size_t(ResidencyCategory::cells)] = {6 * mib, 0};
+        residency.report.bytes[size_t(ResidencyCategory::meshes)] = {mib, 3 * mib};
+        residency.report.bytes[size_t(ResidencyCategory::renderer)] = {0, 120 * mib};
+        shell.pin_residency(residency);
+        shell.pin_streaming(figures);
+        metrics = WindowMetrics{1200, 3400, 2400, 6800};
+        window = tall;
+        frames(4);
+        const auto* panel = shell.layout().control("streaming.panel");
+        REQUIRE(panel);
+        const auto streaming = capture(panel->min, panel->max);
+        test::compare_with_references(std::filesystem::path(MAYA_SOURCE_DIR) / "tests/references/editor",
+                                      std::filesystem::path(MAYA_SOURCE_DIR) / "build/visual-diffs",
+                                      {{"cells-overlay", overlay}, {"streaming", streaming}});
+        device.destroy(wide.handle);
+        device.destroy(tall.handle);
+    }
+    device.shutdown();
+    std::filesystem::remove_all(folder);
 }

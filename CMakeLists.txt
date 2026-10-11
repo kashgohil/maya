@@ -677,7 +677,7 @@ if(BUILD_TESTING)
 
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
-            tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp tests/editor_terrain_tests.cpp
+            tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp tests/editor_terrain_tests.cpp tests/world_cells_tests.cpp tests/world_editor_tests.cpp
             tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/editor_residency_tests.cpp tests/r1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)

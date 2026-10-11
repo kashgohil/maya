@@ -461,3 +461,79 @@ TEST_CASE("Material edits share the scene's history, groups, and unsaved state, 
     CHECK(editor.set_material(stone, file, "Edit stone").error == "Playing");
     editor.unlock();
 }
+
+TEST_CASE("Cells come into the scene staged and leave it outside the history, and undo keeps the roots that are there", "[editor][worlds]") {
+    auto ids = std::vector<EntityId>{};
+    SceneEditor editor(scene({{"Camera", std::nullopt}}, &ids));
+    editor.mark_saved();
+    // A cell's content, a hierarchy over two calls: nothing shows until it is revealed.
+    const auto cell_root = EntityId{0xce11, 1}, cell_child = EntityId{0xce11, 2}, cell_leaf = EntityId{0xce11, 3};
+    auto first = std::vector<SceneEntity>{{cell_root, std::nullopt, {NameComponent{"Tree"}, TransformComponent{{130, 0, 5}, {}, {1.0f}}}}};
+    auto second = std::vector<SceneEntity>{{cell_child, cell_root, {NameComponent{"Branch"}, TransformComponent{{0, 2, 0}, {}, {1.0f}}}},
+                                           {cell_leaf, cell_child, {NameComponent{"Leaf"}, TransformComponent{{0, 1, 0}, {}, {1.0f}}}}};
+    REQUIRE(editor.stage_entities(7, first));
+    REQUIRE(editor.stage_entities(7, second));
+    CHECK(editor.world().size() == 1);
+    CHECK_FALSE(editor.record(cell_root));
+    REQUIRE(editor.reveal(7));
+    CHECK(editor.world().size() == 4);
+    CHECK(editor.roots() == std::vector{ids[0], cell_root});
+    CHECK(editor.children(cell_child) == std::vector{cell_leaf});
+    CHECK(editor.record(cell_leaf)->parent == cell_child);
+    CHECK_FALSE(editor.dirty()); // not an edit
+    CHECK_FALSE(editor.can_undo());
+    // An edit while the cell is in, then the cell leaves: undoing the edit keeps the roots there are.
+    REQUIRE(editor.create("Rock"));
+    const auto rock = editor.roots().back();
+    editor.select(cell_leaf);
+    REQUIRE(editor.unload(std::vector{cell_root}));
+    CHECK(editor.world().size() == 2);
+    CHECK_FALSE(editor.record(cell_leaf));
+    CHECK(editor.selection().empty());
+    CHECK(editor.roots() == std::vector{ids[0], rock});
+    REQUIRE(editor.undo());
+    CHECK(editor.roots() == std::vector{ids[0]}); // not the list from before the cell left, which named it
+    REQUIRE(editor.redo());
+    CHECK(editor.roots() == std::vector{ids[0], rock});
+    // A cell revealed after an edit stays when that edit is undone.
+    REQUIRE(editor.stage_entities(8, first));
+    REQUIRE(editor.reveal(8));
+    REQUIRE(editor.undo());
+    CHECK(editor.roots() == std::vector{ids[0], cell_root});
+    // A discarded load leaves nothing.
+    REQUIRE(editor.stage_entities(9, std::vector<SceneEntity>{{EntityId{0xce11, 9}, std::nullopt, {NameComponent{"Gone"}}}}));
+    editor.discard_staged(9);
+    CHECK_FALSE(editor.world().find(EntityId{0xce11, 9}));
+    CHECK_FALSE(editor.reveal(9));
+    // A parent that is not in the cell is refused.
+    CHECK_FALSE(editor.stage_entities(10, std::vector<SceneEntity>{{EntityId{0xce11, 10}, EntityId{0xbad, 1}, {NameComponent{"Orphan"}}}}));
+}
+
+TEST_CASE("A change check refuses an edit and takes it back; listeners hear every edit, undo, and redo", "[editor][worlds]") {
+    auto ids = std::vector<EntityId>{};
+    SceneEditor editor(scene({{"A", std::nullopt}, {"B", 0}}, &ids));
+    const auto before = text(editor.world());
+    auto heard = std::vector<std::pair<size_t, bool>>{};
+    editor.set_change_listener([&](const SceneChange& change, bool forward) { heard.emplace_back(change.after.size(), forward); });
+    editor.set_change_check([&](const SceneChange& change) -> std::string {
+        for (const auto& [id, after] : change.after)
+            if (after)
+                if (const auto* transform = find_component(*after, ComponentId::transform);
+                    transform && std::get<TransformComponent>(*transform).translation.x > 100.0)
+                    return "too far";
+        return {};
+    });
+    const auto refused = editor.set_component(ids[1], TransformComponent{{500, 0, 0}, {}, {1.0f}});
+    CHECK_FALSE(refused);
+    CHECK(refused.error == "too far");
+    CHECK(text(editor.world()) == before);
+    CHECK_FALSE(editor.can_undo());
+    CHECK(heard.empty());
+    REQUIRE(editor.set_component(ids[1], TransformComponent{{50, 0, 0}, {}, {1.0f}}));
+    REQUIRE(editor.undo_change());
+    CHECK(editor.undo_change()->after.contains(ids[1]));
+    CHECK_FALSE(editor.redo_change());
+    REQUIRE(editor.undo());
+    REQUIRE(editor.redo());
+    CHECK(heard == std::vector<std::pair<size_t, bool>>{{1, true}, {1, false}, {1, true}});
+}

@@ -148,6 +148,47 @@ TEST_CASE("A world saves as a world file, a persistent scene, and a scene per oc
     CHECK(cell_of({-0.5, 0.0, 128.0}) == CellIndex{-1, 1});
 }
 
+TEST_CASE("Saving some of a world's parts rewrites just those, adds and removes cells, and keeps the counts", "[streaming][format]") {
+    auto saved = SavedWorld(1, 2);
+    auto document = saved.document;
+    const auto folder = saved.file.parent_path();
+    const auto untouched = folder / document.cell({1, 1})->scene;
+    const auto untouched_time = fs::last_write_time(untouched);
+    auto whole = load_world(saved.file, any_asset);
+    REQUIRE(whole);
+    // A cell edited, one emptied, and one new (far from the rest); the persistent part as it was.
+    auto edited = whole.cells.at({0, 0});
+    edited.entities.erase(edited.entities.end() - 2, edited.entities.end()); // a prop and its part
+    auto parts = std::map<CellIndex, SceneDocument>{{{0, 0}, edited}, {{-1, -1}, SceneDocument{}}};
+    auto far = SceneDocument{};
+    far.entities.push_back({id(9, 1), std::nullopt, {NameComponent{"Far"}, at(10 * cell + 3, 0, -4 * cell + 3)}});
+    parts.emplace(CellIndex{10, -4}, far);
+    REQUIRE(save_world_parts(saved.file, document, &whole.persistent, parts, any_asset).empty());
+    CHECK(document.cell({0, 0})->entities == edited.entities.size());
+    CHECK_FALSE(document.cell({-1, -1}));
+    CHECK_FALSE(fs::exists(folder / saved.document.cell({-1, -1})->scene));
+    REQUIRE(document.cell({10, -4}));
+    CHECK(document.cell({10, -4})->scene == fs::path("grid/cells/10_-4.scene"));
+    CHECK(std::ranges::is_sorted(document.cells, {}, &WorldCell::index));
+    CHECK((fs::last_write_time(untouched) == untouched_time)); // not given: not written
+    // The world file says the same, and the world loads as the parts now are.
+    auto text = std::ifstream(saved.file);
+    CHECK(write_world(*read_world(std::string(std::istreambuf_iterator<char>(text), {})).document) == write_world(document));
+    auto reloaded = load_world(saved.file, any_asset);
+    REQUIRE(reloaded);
+    CHECK(reloaded.cells.size() == 9);
+    CHECK(reloaded.cells.at({0, 0}).entities.size() == edited.entities.size());
+    CHECK(reloaded.cells.at({10, -4}).entities.front().id == id(9, 1));
+    // A part that does not validate writes nothing.
+    auto bad = far;
+    bad.entities.push_back(bad.entities.front()); // the same ID twice
+    const auto before = write_world(document);
+    CHECK_FALSE(save_world_parts(saved.file, document, nullptr, {{{10, -4}, bad}}, any_asset).empty());
+    CHECK(write_world(document) == before);
+    CHECK(persistent_component(CameraComponent{}));
+    CHECK_FALSE(persistent_component(LightComponent{LightKind::point}));
+}
+
 TEST_CASE("Cells cook to a packed binary that decodes to the same scene, and refuse damage", "[streaming][format]") {
     const auto scene = grid_world(0, 20);
     const auto binary = encode_scene_binary(scene);
