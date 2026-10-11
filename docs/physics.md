@@ -154,6 +154,10 @@ If creating a body fails at the commit (a refused entity, or a full world), the 
 
 Bodies rest on height fields, and rays, shape casts, and overlaps hit them as any static body; rays land within a centimetre of the sampled heights. A prepared 129 × 129 field holds about 48 KiB of Jolt's memory.
 
+## Scattered items
+
+[#1093](https://work.rezee.app/kash/issues/1093)'s [scatter](procedural.md#scatter) gives an item a sphere `maya.collider` when its variant has a radius, and no rigid body, so it is a [static body](#authored-bodies), its uniform scale baked into the radius. Items join the physics world while play runs, not only when it starts: when a cell's items are revealed, `WorldScatterSink` turns those with colliders into bodies (`authored_physics`, then `create_bodies`), on the owner thread between ticks, and when they go it takes their bodies out (`remove_bodies`) before destroying them. In the player and Play they stream frame by frame, which is why recording and replaying a scene with generators are refused. [scatter_tests.cpp](../tests/scatter_tests.cpp) checks that each item with a collider is one static body, that a ray down onto an item hits it, and that the bodies leave with their items.
+
 ## Contact and trigger events
 
 A Jolt contact listener runs on the worker threads during the step. It only appends plain records (the two bodies and sub-shapes, and for a new contact its point, normal, and approach speed) under a lock, and never throws; a record it cannot store is lost, never the step. In phase 7, `take_events` turns them into `PhysicsEvent`s on the owner thread:

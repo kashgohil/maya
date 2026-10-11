@@ -85,6 +85,31 @@ A [terrain](procedural.md#terrain) (#1068) is a component like any other; its `h
 
 Validation checks that `heights` names a cataloged generator and each layer a material, as it checks any [reference](#validation-and-diagnostics).
 
+[Scatter](procedural.md#scatter) (#1093) puts three more components in scenes: `maya.generator` runs a generator, `maya.scatter_exclusion` clears a volume of its items, and `maya.generated` marks an [override](procedural.md#overrides) of a generated item, saved as the whole entity with the item's ID. The scene holds none of the items a generator makes, only the overrides; the sample's terrain scene runs its rocks and clears a sphere round the origin:
+
+```text
+entity 6d617961 604
+  component maya.name 1
+    value "Rocks"
+  component maya.generator 1
+    generator 6d617961 93
+end
+
+entity 6d617961 605
+  component maya.name 1
+    value "Clearing"
+  component maya.transform 2
+    translation 0 0 0
+    rotation 0 0 0 1
+    scale 1 1 1
+  component maya.scatter_exclusion 1
+    shape sphere
+    half_extents 4 4 4
+    radius 20
+    generator none
+end
+```
+
 Writing keeps the document's entity order. `capture_scene` orders roots by EntityId, since the World has no root order, and follows each root depth-first by its descendants. The editor writes roots in its hierarchy order instead, and reads them back in file order ([#1002](projects.md#scene-files)). Components are ordered by ComponentId and properties by schema order. Entity order also records sibling order: children appear in their parent's child order, and loading reproduces that order. Saving, reopening, and saving again produces byte-identical output. When reading, blank lines, `#` comment lines, tabs, and CRLF line endings are accepted. Comments and formatting are not preserved on the next save.
 
 Only persistent data is written: entity IDs, parent IDs, and the [schema](properties.md) properties. World tokens, slots, generations, pointers, derived matrices, asset leases/handles, GPU resources, and source paths never appear. Other native component types, such as components holding asset leases, are runtime state and are not saved. A scene can therefore be saved from any World lifetime and loaded into another.

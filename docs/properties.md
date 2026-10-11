@@ -23,6 +23,9 @@
 | 13 / `maya.skin` | 1 `skin` (a skin reference) — [animation](animation.md#components) (#1038) |
 | 14 / `maya.animation` | 1 `clip` (a clip reference), 2 `playing`, 3 `loop`, 4 `speed` (−100 to 100), 5 `start` (s, at least 0) — [animation](animation.md#components) (#1038) |
 | 15 / `maya.terrain` | 1 `heights` (a generator reference), 2 `layer0`, 3 `layer1`, 6 `layer2`, 9 `layer3` (material references), 4 `layer1_slope`, 7 `layer2_slope`, 10 `layer3_slope` (° from level, 0 to 90), 5 `layer1_height`, 8 `layer2_height`, 11 `layer3_height` (m, −10,000 to 10,000), 12 `texture_size` (m, 0.01 to 1,000) — [terrain](procedural.md#terrain) (#1068) |
+| 16 / `maya.generator` | 1 `generator` (a generator reference): runs a scatter generator — [scatter](procedural.md#scatter) (#1093) |
+| 17 / `maya.generated` | 1 `generator` (a generator reference), 2 `removed`: the marker of a generated item, and of an [override](procedural.md#overrides) of one (#1093) |
+| 18 / `maya.scatter_exclusion` | 1 `shape` (`box` or `sphere`), 2 `half_extents` (m, 0.01 to 10,000; box only), 3 `radius` (m, 0.01 to 10,000; sphere only), 4 `generator` (a generator reference; none clears every scatter generator) — [exclusions](procedural.md#exclusions) (#1093) |
 
 Property values are one of: text, boolean, scalar (float), vector3, (since #1065, for a transform's translation) position (`math::DVec3`, double; a vector3 value is accepted for it and widens exactly), (since #1036, for [materials](#materials)) vector2, quaternion, choice (`ChoiceValue`, a value from the property's named choices), mesh, material, (since #1033, for [materials](#materials)) texture, (since #1035) environment, (since #1038) skin and animation, or (since #1068) generator reference (`PropertyType::generator_ref`, checked as `ReferenceKind::generator`), integer (`int32_t`, within the range), or flags (`uint32_t`, a bit set no greater than the range's maximum). #1019 added choice, integer, and flags; a light's kind became a choice. #1018 added a script reference and script values (`std::vector<ScriptValue>`: named values of a script's declared properties, each a number, integer, boolean, string, vector, color, or entity), presented as `script_values`. Presentation hints `collision_group` and `collision_mask` show an integer and a flags value with the project's collision group names.
 
@@ -115,15 +118,28 @@ Texture references take a texture from the catalog; which role a slot needs is t
 
 | ID / name | Type | Range |
 | --- | --- | --- |
-| 1 `kind` | choice: `heightfield.noise` | |
-| 2 `seed` | integer | 0 to 2,147,483,520 |
-| 3 `octaves` | integer | 1 to 12 |
-| 4 `wavelength` | scalar (m) | 1 to 100,000 |
-| 5 `amplitude`, 6 `warp` | scalar (m) | 0 to 10,000 |
-| 7 `base` | scalar (m) | −10,000 to 10,000 |
-| 8 `region_min_x`, 9 `region_min_z`, 10 `region_max_x`, 11 `region_max_z` | integer (128 m cells) | −1,024 to 1,023 |
+| ID / name | Type | Range | Kinds |
+| --- | --- | --- | --- |
+| 1 `kind` | choice: `heightfield.noise`, `scatter` | | both |
+| 2 `seed` | integer | 0 to 2,147,483,520 | both |
+| 3 `octaves` | integer | 1 to 12 | heights |
+| 4 `wavelength` | scalar (m) | 1 to 100,000 | heights |
+| 5 `amplitude`, 6 `warp` | scalar (m) | 0 to 10,000 | heights |
+| 7 `base` | scalar (m) | −10,000 to 10,000 | both |
+| 8 `region_min_x`, 9 `region_min_z`, 10 `region_max_x`, 11 `region_max_z` | integer (128 m cells) | −1,024 to 1,023 | both |
+| 12 `heights` | generator reference | | scatter |
+| 13 `spacing` | scalar (m) | 0.125 to 64, a power of two | scatter |
+| 14 `density` | scalar | 0 to 1 | scatter |
+| 15 `max_slope` | scalar (deg) | 0 to 90 | scatter |
+| 16 `min_height`, 17 `max_height` | scalar (m) | −10,000 to 10,000 | scatter |
+| 18 `min_scale`, 19 `max_scale` | scalar | 0.01 to 100 | scatter |
+| 20 `random_yaw` | boolean | | scatter |
+| 21, 25, 29, 33 `mesh0` to `mesh3` | mesh reference | | scatter |
+| 22, 26, 30, 34 `material0` to `material3` | material reference | | scatter |
+| 23, 27, 31, 35 `weight0` to `weight3` | scalar | 0 to 1,000 | scatter |
+| 24, 28, 32, 36 `collider0` to `collider3` | scalar (m) | 0 to 1,000 | scatter |
 
-A region whose last cell along x or z comes before its first is refused, reported against property 10 or 11, whichever corner the edit changed: corners are checked together, so a region can be moved by editing both in one call.
+A region whose last cell along x or z comes before its first is refused, reported against property 10 or 11, whichever corner the edit changed: corners are checked together, so a region can be moved by editing both in one call. Since [#1093](https://work.rezee.app/kash/issues/1093) each property belongs to the kinds the table names: `generator_properties(kind)` gives one kind's (11 for heights, 32 for scatter; `generator_properties()` all 36), and `generator_property_applies(id, kind)` says whether one belongs. Scatter's values are checked whatever the kind: a spacing that is not a power of two dividing a 128 m cell is refused against property 13, a highest height below the lowest against 17, and a largest scale below the smallest against 19.
 
 ## Persistence and schema evolution
 
