@@ -287,6 +287,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     if (const auto mode = m_router.navigation(); mode == NavigationMode::orbit || mode == NavigationMode::pan || mode == NavigationMode::zoom)
         m_pivot_distance = std::max(float((m_camera.pivot - m_camera.position).length()), 0.05f);
     update_play(routed, io.DeltaTime); // before the UI, so it shows this frame's ticks
+    update_cells(); // a world's cells around the editor camera, within their budget (#1067)
 
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
@@ -309,6 +310,7 @@ void EditorShell::update(float delta_time, const std::vector<InputEvent>& events
     draw_assets();
     draw_diagnostics();
     draw_residency();
+    draw_streaming();
     accept_dropped_files();
     // New windows take focus as they are created, and a focused docked window brings its tab to the
     // front. Start with the viewport focused, so the bottom panels open on Assets, not on Diagnostics
@@ -351,6 +353,7 @@ void EditorShell::build_dock_layout(ImGuiID dockspace) {
     ImGui::DockBuilderDockWindow(assets_title.c_str(), bottom);
     ImGui::DockBuilderDockWindow(diagnostics_title.c_str(), bottom);
     ImGui::DockBuilderDockWindow(residency_title.c_str(), bottom);
+    ImGui::DockBuilderDockWindow(streaming_title.c_str(), bottom);
     ImGui::DockBuilderDockWindow(viewport_title.c_str(), center);
     ImGui::DockBuilderFinish(dockspace);
     m_layout_built = true;
@@ -438,11 +441,11 @@ void EditorShell::draw_top_bar() {
             };
             if (history_button(icon::undo, "undo", m_scene->can_undo(),
                                m_scene->can_undo() ? "Undo " + m_scene->undo_label() + "   \xE2\x8C\x98Z" : "Nothing to undo"))
-                report(m_scene->undo(), "Undo");
+                report(undo_edit(), "Undo");
             ImGui::SameLine(0.0f, 2.0f);
             if (history_button(icon::redo, "redo", m_scene->can_redo(),
                                m_scene->can_redo() ? "Redo " + m_scene->redo_label() + "   \xE2\x87\xA7\xE2\x8C\x98Z" : "Nothing to redo"))
-                report(m_scene->redo(), "Redo");
+                report(redo_edit(), "Redo");
         } else {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
             ImGui::TextUnformatted("No scene open");
@@ -655,6 +658,16 @@ void EditorShell::draw_hierarchy_row(EntityId id) {
         if (ImGui::IsItemDeactivated() || entered) m_renaming.reset();
     } else {
         ImGui::TextUnformatted(scene.display_name(id).c_str());
+        // In a world, each root's part: the cell it saves into, or the persistent part (#1067).
+        if (const auto* indexed = m_cells && !record->parent ? m_cells->find(id) : nullptr) {
+            const auto tag = part_name(indexed->part);
+            const auto width = ImGui::CalcTextSize(tag.c_str()).x;
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(8.0f, ImGui::GetContentRegionAvail().x - width - 6.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, indexed->part && m_cells->changed(*indexed->part) ? theme::color::warning : theme::color::faint);
+            ImGui::TextUnformatted(tag.c_str());
+            ImGui::PopStyleColor();
+        }
     }
     if (opened) {
         for (const auto child : std::vector<EntityId>(children)) draw_hierarchy_row(child);
@@ -677,7 +690,7 @@ void EditorShell::draw_hierarchy() {
         ImGui::PushFont(m_fonts.caption);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::color::muted);
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("SCENE  %zu", scene.world().size());
+        ImGui::Text(m_cells ? "WORLD  %zu" : "SCENE  %zu", scene.world().size());
         ImGui::PopStyleColor();
         ImGui::PopFont();
         ImGui::SameLine();
@@ -701,10 +714,32 @@ void EditorShell::draw_hierarchy() {
             ImGui::EndPopup();
         }
 
+        // In a world, a filter by cell: the loaded ones, and the persistent part.
+        if (!m_cells) m_hierarchy_filter.reset();
+        if (m_cells) {
+            const auto shown = m_hierarchy_filter ? "Cell: " + part_name(*m_hierarchy_filter) : std::string("All loaded cells");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##cells", (std::string(icon::grid_four) + "  " + shown).c_str())) {
+                if (ImGui::Selectable("All loaded cells", !m_hierarchy_filter)) m_hierarchy_filter.reset();
+                if (ImGui::Selectable("Persistent part", m_hierarchy_filter == std::optional<WorldPart>(WorldPart{})))
+                    m_hierarchy_filter = WorldPart{};
+                for (const auto cell : m_cells->cells())
+                    if (m_cells->state(cell) == EditorCellState::active) {
+                        const auto label = cell_name(cell) + (m_cells->changed(cell) ? "  (changed)" : "");
+                        if (ImGui::Selectable(label.c_str(), m_hierarchy_filter == std::optional<WorldPart>(WorldPart(cell)))) m_hierarchy_filter = WorldPart(cell);
+                    }
+                ImGui::EndCombo();
+            }
+            m_layout.controls.push_back({"hierarchy.cells", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+        }
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6.0f, 4.0f});
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {6.0f, 2.0f});
         ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, 14.0f);
-        for (const auto id : std::vector<EntityId>(scene.roots())) draw_hierarchy_row(id);
+        for (const auto id : std::vector<EntityId>(scene.roots())) {
+            if (m_cells && m_hierarchy_filter)
+                if (const auto* indexed = m_cells->find(id); !indexed || indexed->part != *m_hierarchy_filter) continue;
+            draw_hierarchy_row(id);
+        }
         ImGui::PopStyleVar(3);
 
         // The empty space below the rows: click to clear the selection, drop to move to the root.
@@ -748,9 +783,9 @@ void EditorShell::handle_shortcuts() {
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, global)) save_or_ask();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, global)) ask_save_as();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, global)) request_new_scene();
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, global)) report(m_scene->undo(), "Undo");
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, global)) report(undo_edit(), "Undo");
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, global) || ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, global))
-        report(m_scene->redo(), "Redo");
+        report(redo_edit(), "Redo");
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_D, global)) report(m_scene->duplicate_selection(), "Duplicate");
 }
 

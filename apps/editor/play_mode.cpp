@@ -15,7 +15,24 @@ constexpr auto play_lock = "Stop playing to edit the scene";
 
 bool EditorShell::start_play(bool record) {
     if (m_play || !m_scene || !m_assets) return false;
-    return begin_play(m_scene->document(), nullptr, record);
+    if (!m_cells) return begin_play(m_scene->document(), nullptr, record);
+    // A world (#1067): its persistent part starts the session, and its cells stream in around the play
+    // camera as the editor has them, changed ones included, without saving.
+    if (record) {
+        notice("Couldn't play the world", "Recording a world is not supported yet: its cells join play frame by frame");
+        return false;
+    }
+    auto world = m_cells->play_world(cooked_cell_loader(m_cells->file().parent_path(), m_cook_cache, catalog_context()));
+    if (!begin_play(world.persistent, nullptr, false)) return false;
+    auto settings = m_project ? project_streaming_settings(m_project->settings) : StreamingSettings{};
+    m_play_world = std::make_unique<WorldStreamer>(std::move(world.document), std::move(world.loader), settings);
+    const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
+    const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
+    m_play_world->set_sources({pose ? pose->translation : m_camera.position});
+    const auto& streamed = m_play_world->settle(m_play->world(), &m_play->physics()); // a loading screen: the first tick has its ground
+    m_log.add(DiagnosticSource::play, "Streamed " + std::to_string(streamed.cells[size_t(CellState::active)]) + " cells in around the camera",
+              m_frame);
+    return true;
 }
 
 // The assets a scene plays with, hashed; scripts by the last version that compiled, which is what plays.
@@ -137,6 +154,8 @@ void EditorShell::stop_play() {
         m_play_recording.reset();
     }
     m_visibility.reset(); // before its World
+    if (m_play_world) m_play_world->unload_all(m_play->world(), &m_play->physics());
+    m_play_world.reset();
     if (m_terrain) m_terrain->clear(&m_play->physics()); // its height fields leave the play physics first
     m_terrain.reset();
     m_play.reset(); // the play World, its systems, and the snapshot's leases on it go now
@@ -175,6 +194,14 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
     // Only events the router gave the game reach it; everything else stays with the editor.
     m_play->input().feed(routed.game);
     if (routed.game_ended) m_play->input().release_all();
+    if (m_play_world) { // a world's cells around the play camera, before the tick steps physics, as the player does
+        const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
+        const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
+        m_play_world->set_sources({pose ? pose->translation : m_camera.position});
+        const auto errors = m_play_world->stats().loads_failed + m_play_world->stats().pinned;
+        const auto& streamed = m_play_world->update(m_play->world(), &m_play->physics());
+        if (streamed.loads_failed + streamed.pinned != errors) m_log.add(DiagnosticSource::play, streamed.last_error, m_frame);
+    }
     const auto frame = m_play->update(delta_time);
     // Diagnostics' physics counts, four times a second, whether or not the panel is showing.
     m_physics_age += delta_time;

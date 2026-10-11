@@ -164,6 +164,26 @@ public:
     std::vector<AssetId> dirty_generators() const;
     void set_generator_publisher(std::function<void(AssetId, const GeneratorAsset&)> publish) { m_publish_generator = std::move(publish); }
 
+    // A world's cells (#1067, docs/editor.md#worlds) come and go as the editor streams them: outside the
+    // history, never making the scene dirty. Roots that come and go this way keep the others' order, and
+    // undo and redo order the roots there are.
+    /// Commits `entities` (parents before children; whole hierarchies) into stage group `group` (any number
+    /// but 0), invisible until reveal. A group may take several calls, one a frame.
+    EditResult stage_entities(StageGroup group, std::span<const SceneEntity> entities);
+    /// Shows a staged group's entities together and adds them to the scene, their roots after the others.
+    EditResult reveal(StageGroup group);
+    /// Drops a staged group's entities (a cancelled load).
+    void discard_staged(StageGroup group);
+    /// Takes `roots` and everything below them out of the scene (a cell unloading), and out of the selection.
+    EditResult unload(std::span<const EntityId> roots);
+    /// Called with every change an edit, undo, or redo applies, and its direction.
+    void set_change_listener(std::function<void(const SceneChange&, bool forward)> listener) { m_listener = std::move(listener); }
+    /// Checks each edit once applied: a reason refuses it, and it is taken back (e.g. a hierarchy leaving its cell).
+    void set_change_check(std::function<std::string(const SceneChange&)> check) { m_check = std::move(check); }
+    /// The change the next undo or redo would apply, or null: what it touches (cells to load first).
+    const SceneChange* undo_change() const { return can_undo() ? &m_history[m_position - 1].change : nullptr; }
+    const SceneChange* redo_change() const { return can_redo() ? &m_history[m_position].change : nullptr; }
+
 private:
     struct Step {
         std::string label;
@@ -195,10 +215,19 @@ private:
     std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> m_generators; // open generators, as edited
     std::unordered_map<AssetId, GeneratorAsset, PersistentIdHash> m_generator_files; // what their files hold
     std::function<void(AssetId, const GeneratorAsset&)> m_publish_generator;
+    std::function<void(const SceneChange&, bool)> m_listener;
+    std::function<std::string(const SceneChange&)> m_check;
+    struct Staging {
+        std::vector<std::pair<EntityId, EntityHandle>> order; // staged so far, in order
+        std::unordered_map<EntityId, EntityHandle, PersistentIdHash> handles;
+    };
+    std::unordered_map<StageGroup, Staging> m_staging;
 };
 
 /// Reads a World's authored state (schema components and hierarchy). Roots are ordered by EntityId.
 SceneState capture_state(const World& world);
 bool same_component(const ComponentValue& a, const ComponentValue& b);
+/// The record's component of that kind, or null.
+const ComponentValue* find_component(const EntityRecord& record, ComponentId id);
 
 } // namespace maya::editor

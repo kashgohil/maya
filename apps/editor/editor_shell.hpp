@@ -10,6 +10,7 @@
 #include "scene_editor.hpp"
 #include "texture_thumbnails.hpp"
 #include "ui_renderer.hpp"
+#include "world_cells.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/import/gltf_import.hpp"
 #include "maya/assets/cook_cache.hpp"
@@ -129,6 +130,24 @@ public:
     bool open_scene(const std::filesystem::path& path);
     /// Replaces the open scene with a new, never-saved one holding a camera and a directional light.
     bool new_scene();
+    // Worlds (#1067, docs/editor.md#worlds). open_scene opens a `.world` file as a world: its persistent part
+    // in the scene, its cells streamed around the camera (cells()). Save writes the persistent part and the
+    // changed cells in place; Save as to a `.world` path turns the open scene into a world and opens it.
+    bool open_world(const std::filesystem::path& path);
+    /// Creates a world at `path` (a `.world` file) holding a camera and a sun, and opens it.
+    bool new_world(const std::filesystem::path& path);
+    /// Asks about unsaved changes, then for the new world's path.
+    void request_new_world();
+    /// The open world's cells, or null when a plain scene is open.
+    EditorCells* cells() noexcept { return m_cells.get(); }
+    /// While playing a world: its streamer, in the play World.
+    const WorldStreamer* play_streamer() const noexcept { return m_play_world.get(); }
+    /// Undo and redo as the editor does them: in a world, the cells the step touches are loaded first.
+    EditResult undo_edit();
+    EditResult redo_edit();
+    /// Selects an entity and frames it, loading its cell first when it is in an unloaded one (following a
+    /// cross-cell reference, #1067). False when it is nowhere the world knows.
+    bool follow_entity(EntityId id);
     /// Saves the open scene to `path` (content-relative, or absolute inside the content root), or to
     /// its own file when `path` is empty, creating folders as needed. Roots are saved in hierarchy
     /// order. A failed save leaves every file untouched and the scene unsaved. Returns the reason for
@@ -256,6 +275,12 @@ public:
         m_shown_residency = std::move(figures);
         m_residency_pinned = true;
     }
+    /// The Streaming panel's figures (#1067) from now on, never refreshed (timings change from run to run),
+    /// and its tab brought forward: for screenshots. Its residency summary is the pinned Residency figures'.
+    void pin_streaming(EditorCellStats figures) {
+        m_pinned_streaming = std::move(figures);
+        m_focus_streaming = true;
+    }
     /// The registry's loading as of this frame's update (Diagnostics' Loading row).
     const AssetLoadStats& loading() const noexcept { return m_load_stats; }
     /// The last viewport frame's lights (Diagnostics' Lights row), and its scene problems, including the
@@ -352,6 +377,14 @@ public:
     /// While on, the primary selection's collider shows size and offset handles in place of the
     /// transform gizmo. Each drag is one undoable edit, validated as the Inspector's are.
     bool collider_editing() const noexcept { return m_collider_editing; }
+    /// The Cells tool (#1067): clicks and drags in the viewport choose cells to load, unload, or lock.
+    bool cells_tool() const noexcept { return m_cells_tool; }
+    /// The Hierarchy's cell filter in a world: one part (a cell, or the persistent part), or every one.
+    void set_hierarchy_filter(std::optional<WorldPart> part) { m_hierarchy_filter = std::move(part); }
+    const std::optional<WorldPart>& hierarchy_filter() const noexcept { return m_hierarchy_filter; }
+    void set_cells_tool(bool on) noexcept { m_cells_tool = on; }
+    /// The cells the Cells tool's menu acts on, while it is open.
+    const std::vector<CellIndex>& chosen_cells() const noexcept { return m_chosen_cells; }
     void set_collider_editing(bool on);
     /// The physics counts Diagnostics shows while playing (refreshed four times a second), else none.
     const std::optional<PhysicsStats>& shown_physics() const noexcept { return m_shown_physics; }
@@ -385,6 +418,10 @@ private:
     void note_watched_file(AssetId id);
     void draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2 max);
     void draw_physics_debug_menu();
+    /// The open world's cells on the ground, by state, and the Cells tool's choosing and menu.
+    void draw_cells_overlay(const RenderView& view, ImVec2 min, ImVec2 max, bool toolbar_hovered);
+    void draw_cells_menu();
+    void draw_streaming();
     /// Size and offset handles on the primary selection's collider. Returns whether they are shown.
     bool draw_collider_handles(const RenderView& view, ImVec2 min, ImVec2 max);
     void save_preferences();
@@ -424,7 +461,7 @@ private:
     void notice(std::string title, std::string message);
     void ask_save_as();
     void save_or_ask();
-    enum class Pending { none, open, create, close };
+    enum class Pending { none, open, create, create_world, close };
     void request(Pending action, std::filesystem::path path);
     void perform_pending();
     void replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path);
@@ -522,6 +559,8 @@ private:
     ResidencyFigures m_shown_residency; // refreshed a few times a second
     float m_residency_age = 1.0f;
     bool m_residency_pinned = false; // pin_residency: never refreshed
+    std::optional<EditorCellStats> m_pinned_streaming; // pin_streaming
+    bool m_focus_streaming = false;
     bool m_focus_residency = false; // bring its tab forward next frame
     /// The editor's residency now: the registry's, with the renderer's, the viewport's, and the editor's own
     /// textures (fonts and thumbnails) as the renderer's share.
@@ -558,6 +597,10 @@ private:
     bool m_gizmo_hovered = false;
     // Collider handles: a drag moves one handle along its line, from the collider as it was at the press.
     bool m_collider_editing = false;
+    bool m_cells_tool = false;
+    std::optional<WorldPart> m_hierarchy_filter;
+    std::optional<CellIndex> m_cells_drag; // where a Cells tool drag began
+    std::vector<CellIndex> m_chosen_cells;
     struct ColliderDrag {
         EntityId entity;
         std::string handle; // "collider.+x", "collider.centre", ...
@@ -588,6 +631,16 @@ private:
     /// The drawn World's terrain (#1068): tiles around the view, and in Play, height fields in its physics.
     std::unique_ptr<TerrainStreamer> m_terrain;
     void update_terrain(const World& world, const math::DVec3& source);
+    /// The open world's cells (#1067): after the scene, so they go first; their listener and check are on it.
+    std::unique_ptr<EditorCells> m_cells;
+    /// Play of a world: its cells streamed into the play World around the play camera.
+    std::unique_ptr<WorldStreamer> m_play_world;
+    std::string m_cells_error; // the last cells error logged, so each is logged once
+    bool m_new_world_prompt = false; // the path prompt is creating a world
+    void update_cells();
+    void ask_new_world();
+    SceneDocument default_scene() const;
+    PropertyValidationContext catalog_context();
     std::shared_ptr<ScriptReloads> m_play_reloads; // changed scripts for the play session
     std::optional<PlayRecording> m_play_recording; // the running Play's, finished at Stop
     std::optional<PlayRecording> m_last_recording;

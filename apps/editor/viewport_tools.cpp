@@ -259,10 +259,16 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
              "Debug views"))
         ImGui::OpenPopup("physics-debug");
     m_layout.controls.push_back({"tool.physics-debug", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    if (m_cells) {
+        ImGui::SameLine(0.0f, 8.0f);
+        if (tool(icon::grid_four, m_cells_tool, "Cells: click or drag to load, unload, or lock cells   G")) m_cells_tool = !m_cells_tool;
+        m_layout.controls.push_back({"tool.cells", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    }
     ImGui::PopStyleVar(3);
     ImGui::NewLine();
     const auto toolbar_hovered = ImGui::IsAnyItemHovered();
     draw_physics_debug_menu();
+    if (m_cells) draw_cells_overlay(view, min, max, toolbar_hovered);
 
     // Gizmo on the primary selection.
     m_layout.gizmo_origin.reset();
@@ -322,7 +328,7 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
     // Click to select (the gizmo and tool bar take their own clicks).
     const auto over_image = io.MousePos.x >= min.x && io.MousePos.x < max.x && io.MousePos.y >= min.y && io.MousePos.y < max.y;
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && over_image && ImGui::IsWindowHovered() && !toolbar_hovered &&
-        !m_gizmo_hovered && !m_gizmo_using && !m_handle_hovered && !m_collider_drag)
+        !m_gizmo_hovered && !m_gizmo_using && !m_handle_hovered && !m_collider_drag && !(m_cells && m_cells_tool))
         pick_at(io.MousePos, view, min, max);
 
     // Tool keys while the pointer is over the viewport and no text field has the keyboard.
@@ -334,6 +340,7 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
         if (ImGui::IsKeyPressed(ImGuiKey_X, false)) m_gizmo_local = !m_gizmo_local;
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_selection();
         if (ImGui::IsKeyPressed(ImGuiKey_C, false)) set_collider_editing(!m_collider_editing);
+        if (ImGui::IsKeyPressed(ImGuiKey_G, false) && m_cells) m_cells_tool = !m_cells_tool;
         if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
             if (const auto result = scene.delete_selection(); !result && result.error != "Nothing is selected")
                 report(result, "Delete");
@@ -344,6 +351,107 @@ void EditorShell::draw_viewport_tools(const RenderView& view, ImVec2 min, ImVec2
 
 // The debug menu: the debug views, then what is drawn over them (skeletons, and a check for each physics
 // category and collision group), saved as preferences as they change.
+void EditorShell::draw_cells_overlay(const RenderView& view, ImVec2 min, ImVec2 max, bool toolbar_hovered) {
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto& io = ImGui::GetIO();
+    const auto project = [&](const math::DVec3& p) -> std::optional<ImVec2> {
+        const auto clip = view.matrices.view_projection * math::Vec4((p - view.position).to_float(), 1.0f);
+        if (clip.w <= 1e-4f) return std::nullopt;
+        return ImVec2{min.x + (clip.x / clip.w * 0.5f + 0.5f) * (max.x - min.x), min.y + (0.5f - clip.y / clip.w * 0.5f) * (max.y - min.y)};
+    };
+    // The ground (y = 0) under the pointer: where a Cells tool click lands.
+    const auto ground = [&](ImVec2 point) -> std::optional<CellIndex> {
+        const auto x = (point.x - min.x) / (max.x - min.x) * 2.0f - 1.0f;
+        const auto y = 1.0f - (point.y - min.y) / (max.y - min.y) * 2.0f;
+        const auto ray = view_ray(view, m_camera.pose(), m_camera.camera.vertical_fov, x, y);
+        if (std::abs(ray.direction.y) < 1e-5f) return std::nullopt;
+        const auto t = -ray.origin.y / double(ray.direction.y);
+        if (t <= 0.0 || t > 20000.0) return std::nullopt;
+        return cell_of(ray.origin + math::DVec3(ray.direction) * t);
+    };
+    const auto size = m_cells->document().cell_size;
+    const auto here = cell_of(view.position);
+    const auto reach = std::clamp(int(std::ceil((m_cells->settings().load_radius + m_cells->settings().hysteresis) / size)) + 3, 3, 12);
+    const auto chosen = [&](CellIndex cell) { return std::ranges::find(m_chosen_cells, cell) != m_chosen_cells.end(); };
+    auto dragged = std::vector<CellIndex>{};
+    const auto pointer = m_cells_tool && m_cells_drag ? ground(io.MousePos) : std::nullopt;
+    if (pointer)
+        for (auto x = std::min(m_cells_drag->x, pointer->x); x <= std::max(m_cells_drag->x, pointer->x); ++x)
+            for (auto z = std::min(m_cells_drag->z, pointer->z); z <= std::max(m_cells_drag->z, pointer->z); ++z) dragged.push_back({x, z});
+    draw->PushClipRect(min, max, true);
+    for (auto x = here.x - reach; x <= here.x + reach; ++x)
+        for (auto z = here.z - reach; z <= here.z + reach; ++z) {
+            const auto cell = CellIndex{x, z};
+            const auto x0 = x * size, z0 = z * size;
+            const std::optional<ImVec2> corners[4] = {project({x0, 0, z0}), project({x0 + size, 0, z0}), project({x0 + size, 0, z0 + size}),
+                                                       project({x0, 0, z0 + size})};
+            if (!corners[0] || !corners[1] || !corners[2] || !corners[3]) continue; // behind the camera
+            const ImVec2 quad[4] = {*corners[0], *corners[1], *corners[2], *corners[3]};
+            const auto listed = m_cells->document().cell(cell) != nullptr;
+            const auto state = m_cells->state(cell);
+            const auto changed = m_cells->changed(cell);
+            const auto held = m_cells->held(cell);
+            // Fill by state: active the accent, loading amber, failed red; unloaded cells of the world faintly.
+            auto fill = ImU32{0};
+            switch (state) {
+            case EditorCellState::active: fill = theme::color::rgb(0x7B8CFF, listed || changed ? 26 : 10); break;
+            case EditorCellState::loading: fill = theme::color::rgb(0xFFB020, 48); break;
+            case EditorCellState::failed: fill = theme::color::rgb(0xFF5A5A, 64); break;
+            case EditorCellState::unloaded: fill = listed ? theme::color::rgb(0xFFFFFF, 10) : 0; break;
+            }
+            if (chosen(cell) || std::ranges::find(dragged, cell) != dragged.end()) fill = theme::color::rgb(0xFFFFFF, 56);
+            if (fill) draw->AddConvexPolyFilled(quad, 4, fill);
+            const auto outline = changed ? theme::color::rgb(0xFFD166, 220)
+                               : state == EditorCellState::active ? theme::color::rgb(0x7B8CFF, 110) : theme::color::rgb(0xFFFFFF, listed ? 48 : 18);
+            draw->AddPolyline(quad, 4, outline, ImDrawFlags_Closed, changed ? 2.0f : 1.0f);
+            // A label where the cell is large enough on screen to read: its name, and what was decided by hand.
+            const auto centre = project(cell_center(cell, size));
+            auto across = 0.0f; // its longest edge on screen
+            for (int i = 0; i < 4; ++i) across = std::max(across, std::hypot(quad[(i + 1) % 4].x - quad[i].x, quad[(i + 1) % 4].y - quad[i].y));
+            if (!centre || across < 36.0f || (!listed && !changed && held == CellHold::none)) continue;
+            auto label = cell_name(cell);
+            if (changed) label += "  changed";
+            if (state == EditorCellState::failed) label += "  failed";
+            const auto* glyph = held == CellHold::loaded ? icon::lock_simple : held == CellHold::unloaded ? icon::x_circle : nullptr;
+            const auto text = ImGui::CalcTextSize(label.c_str());
+            const auto at = ImVec2{std::round(centre->x - text.x * 0.5f), std::round(centre->y - text.y * 0.5f)};
+            draw->AddText(at, changed ? theme::color::rgb(0xFFD166) : theme::color::rgb(0xFFFFFF, listed ? 150 : 70), label.c_str());
+            if (glyph) draw->AddText({at.x - 18.0f, at.y}, theme::color::rgb(0xFFFFFF, 190), glyph);
+        }
+    draw->PopClipRect();
+    // The Cells tool: a click chooses a cell, a drag a rectangle of them; then a menu acts on them.
+    const auto over = io.MousePos.x >= min.x && io.MousePos.x < max.x && io.MousePos.y >= min.y && io.MousePos.y < max.y;
+    if (m_cells_tool && over && ImGui::IsWindowHovered() && !toolbar_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        m_cells_drag = ground(io.MousePos);
+    if (m_cells_drag && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        m_chosen_cells = dragged.empty() ? std::vector<CellIndex>{*m_cells_drag} : dragged;
+        m_cells_drag.reset();
+        ImGui::OpenPopup("cells-menu");
+    }
+    draw_cells_menu();
+}
+
+void EditorShell::draw_cells_menu() {
+    if (!ImGui::BeginPopup("cells-menu")) {
+        m_chosen_cells.clear();
+        return;
+    }
+    const auto title = m_chosen_cells.size() == 1 ? "CELL " + cell_name(m_chosen_cells.front()) : std::to_string(m_chosen_cells.size()) + " CELLS";
+    theme::caption(m_fonts, title.c_str());
+    const auto apply = [&](CellHold hold) {
+        for (const auto cell : m_chosen_cells)
+            if (const auto refused = m_cells->hold(cell, hold); !refused.empty()) m_log.add(DiagnosticSource::scene, refused, m_frame);
+        ImGui::CloseCurrentPopup();
+    };
+    if (ImGui::MenuItem((std::string(icon::lock_simple) + "  Load and lock").c_str())) apply(CellHold::loaded);
+    m_layout.controls.push_back({"cells.load", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    if (ImGui::MenuItem((std::string(icon::x_circle) + "  Unload").c_str())) apply(CellHold::unloaded);
+    m_layout.controls.push_back({"cells.unload", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    if (ImGui::MenuItem((std::string(icon::lock_simple_open) + "  Let the camera decide").c_str())) apply(CellHold::none);
+    m_layout.controls.push_back({"cells.release", ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+    ImGui::EndPopup();
+}
+
 void EditorShell::draw_physics_debug_menu() {
     if (!ImGui::BeginPopup("physics-debug")) return;
     auto options = m_preferences.physics_debug;

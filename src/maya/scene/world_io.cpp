@@ -54,15 +54,16 @@ template<class T> bool number(const std::string& text, T& value) {
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
 }
 
-/// Persistent: what the whole world needs, wherever it is.
-bool persistent(const ComponentValue& value) {
+bool persistent(const ComponentValue& value) { return persistent_component(value); }
+} // namespace
+
+bool persistent_component(const ComponentValue& value) {
     if (std::holds_alternative<CameraComponent>(value) || std::holds_alternative<EnvironmentComponent>(value) ||
         std::holds_alternative<PhysicsSettingsComponent>(value) || std::holds_alternative<TerrainComponent>(value))
         return true;
     const auto* light = std::get_if<LightComponent>(&value);
     return light && light->kind == LightKind::directional;
 }
-} // namespace
 
 CellIndex cell_of(const math::DVec3& position, double cell_size) {
     const auto index = [&](double coordinate) {
@@ -201,6 +202,47 @@ SceneDiagnostics save_world(const std::filesystem::path& path, SceneDocument sce
     for (const auto& file : std::filesystem::directory_iterator(folder / "cells", error))
         if (file.path().extension() == ".scene" && !written.contains(file.path().filename())) std::filesystem::remove(file.path(), error);
     if (auto failed = replace_file(path, write_world(document), "world"); !failed.empty()) return fail(failed);
+    return {};
+}
+
+SceneDiagnostics save_world_parts(const std::filesystem::path& path, WorldDocument& document, const SceneDocument* persistent,
+                                  const std::map<CellIndex, SceneDocument>& cells, const PropertyValidationContext& context) {
+    const auto fail = [&](std::string message) {
+        return SceneDiagnostics{{SceneError::io_error, path.generic_string() + ": " + std::move(message)}};
+    };
+    // Validated (and normalized) copies, all of them before anything is written.
+    auto checked_persistent = persistent ? std::optional(*persistent) : std::nullopt;
+    if (checked_persistent)
+        if (auto diagnostics = validate_scene(*checked_persistent, context); !diagnostics.empty()) return diagnostics;
+    auto checked = cells;
+    for (auto& [index, cell] : checked)
+        if (auto diagnostics = validate_scene(cell, context); !diagnostics.empty()) return diagnostics;
+    const auto folder = path.parent_path();
+    if (checked_persistent)
+        if (auto diagnostics = save_scene_file(folder / document.persistent, *checked_persistent, context); !diagnostics.empty())
+            return diagnostics;
+    auto updated = document;
+    for (const auto& [index, cell] : checked) {
+        const auto found = std::ranges::lower_bound(updated.cells, index, {}, &WorldCell::index);
+        const auto listed = found != updated.cells.end() && found->index == index;
+        if (cell.entities.empty()) {
+            if (listed) {
+                auto error = std::error_code{};
+                std::filesystem::remove(folder / found->scene, error); // listed by nothing once the world file is written
+                updated.cells.erase(found);
+            }
+            continue;
+        }
+        const auto relative = listed ? found->scene : document.persistent.parent_path() / "cells" / (cell_name(index) + ".scene");
+        auto error = std::error_code{};
+        std::filesystem::create_directories((folder / relative).parent_path(), error);
+        if (error) return fail("cannot create " + (folder / relative).parent_path().generic_string() + ": " + error.message());
+        if (auto diagnostics = save_scene_file(folder / relative, cell, context); !diagnostics.empty()) return diagnostics;
+        if (listed) found->entities = uint32_t(cell.entities.size());
+        else updated.cells.insert(found, {index, relative, uint32_t(cell.entities.size())});
+    }
+    if (auto failed = replace_file(path, write_world(updated), "world"); !failed.empty()) return fail(failed);
+    document = std::move(updated);
     return {};
 }
 

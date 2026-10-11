@@ -406,6 +406,7 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/editor_preferences.cpp
         apps/editor/editor_shell.cpp
         apps/editor/residency_panel.cpp
+        apps/editor/streaming_panel.cpp
         apps/editor/editor_theme.cpp
         apps/editor/import_files.cpp
         apps/editor/input_router.cpp
@@ -418,7 +419,8 @@ if(MAYA_BUILD_EDITOR)
         apps/editor/watched_files.cpp
         apps/editor/texture_thumbnails.cpp
         apps/editor/ui_renderer.cpp
-        apps/editor/viewport_tools.cpp)
+        apps/editor/viewport_tools.cpp
+        apps/editor/world_cells.cpp)
     target_include_directories(MayaEditor PUBLIC apps/editor)
     target_link_libraries(MayaEditor PUBLIC MayaRuntime MayaImport MayaImGui MayaStreaming)
     maya_target_options(MayaEditor)

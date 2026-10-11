@@ -118,8 +118,9 @@ ProjectSettingsResult read_project(std::istream& input) {
             field = float(number);
             continue;
         }
-        if (key == "stream_load" || key == "stream_activate" || key == "stream_hysteresis") {
-            auto& field = key == "stream_load" ? settings.stream_load : key == "stream_activate" ? settings.stream_activate : settings.stream_hysteresis;
+        if (key == "stream_load" || key == "stream_activate" || key == "stream_hysteresis" || key == "editor_stream_load") {
+            auto& field = key == "stream_load" ? settings.stream_load : key == "stream_activate" ? settings.stream_activate
+                        : key == "stream_hysteresis" ? settings.stream_hysteresis : settings.editor_stream_load;
             auto number = 0.0;
             const auto parsed = (input >> value) ? std::from_chars(value.data(), value.data() + value.size(), number)
                                                  : std::from_chars_result{value.data(), std::errc::invalid_argument};
@@ -170,6 +171,7 @@ void write_project(std::ostream& output, const ProjectSettings& settings) {
     if (settings.stream_load) text << "stream_load " << *settings.stream_load << '\n';
     if (settings.stream_activate) text << "stream_activate " << *settings.stream_activate << '\n';
     if (settings.stream_hysteresis) text << "stream_hysteresis " << *settings.stream_hysteresis << '\n';
+    if (settings.editor_stream_load) text << "editor_stream_load " << *settings.editor_stream_load << '\n';
     for (size_t i = 0; i < resident_setting_keys.size(); ++i)
         if (settings.resident[i]) text << resident_setting_keys[i] << ' ' << *settings.resident[i] << '\n';
     if (settings.cook_cache_limit) text << "cook_cache_limit " << *settings.cook_cache_limit << '\n';

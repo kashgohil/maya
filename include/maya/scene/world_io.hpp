@@ -52,6 +52,10 @@ struct WorldReadResult {
 WorldReadResult read_world(std::string_view text);
 std::string write_world(const WorldDocument& document);
 
+/// Whether a component puts its root's whole hierarchy in the persistent part: a camera, a directional
+/// light, an environment, physics settings, or terrain (what the whole world needs, wherever it is).
+bool persistent_component(const ComponentValue& value);
+
 /// A world's content, split: the persistent part and each occupied cell's scene.
 struct WorldContent {
     SceneDocument persistent;
@@ -59,7 +63,7 @@ struct WorldContent {
 };
 /// Splits a scene into a world's parts. A root entity and everything below it go together: into the
 /// persistent part when any of them is a camera, a directional light, an environment, or physics
-/// settings (what the whole world needs), else into the cell of the root's translation. Roots without a
+/// settings, or terrain (what the whole world needs; persistent_component), else into the cell of the root's translation. Roots without a
 /// transform are persistent. A hierarchy therefore never crosses a cell.
 WorldContent partition_world(const SceneDocument& scene, double cell_size = default_cell_size);
 
@@ -68,6 +72,14 @@ WorldContent partition_world(const SceneDocument& scene, double cell_size = defa
 /// nothing is written when it fails. Cell scenes of cells no longer occupied are removed.
 SceneDiagnostics save_world(const std::filesystem::path& path, SceneDocument scene, const PropertyValidationContext& context,
                             double cell_size = default_cell_size);
+
+/// Saves some of an existing world's parts (the editor's changed ones, docs/editor.md#worlds): the persistent
+/// scene when given, and each scene in `cells`, at `<world folder>/cells/<x_z>.scene` for a cell new to the
+/// world; an empty one is removed, and its cell with it. Then the world file, last, with every cell's
+/// entity count; `document` is updated to match. Each file is written atomically; cells not given keep
+/// their files. Validates every given part first, and writes nothing when one fails.
+SceneDiagnostics save_world_parts(const std::filesystem::path& path, WorldDocument& document, const SceneDocument* persistent,
+                                  const std::map<CellIndex, SceneDocument>& cells, const PropertyValidationContext& context);
 
 /// A world read in full: the world file, and each part loaded and validated. For tests and tools; play
 /// streams cells instead (simulation/world_streamer.hpp).

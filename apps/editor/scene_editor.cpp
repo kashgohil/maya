@@ -29,10 +29,14 @@ bool same_record(const EntityRecord& a, const EntityRecord& b) {
     return true;
 }
 
+} // namespace
+
 const ComponentValue* find_component(const EntityRecord& record, ComponentId id) {
     const auto found = std::ranges::find(record.components, id, [](const ComponentValue& value) { return component_id(value); });
     return found == record.components.end() ? nullptr : &*found;
 }
+
+namespace {
 
 void put_component(EntityRecord& record, ComponentValue value) {
     const auto id = component_id(value);
@@ -332,6 +336,18 @@ EditResult SceneEditor::apply(const SceneChange& change, bool forward) {
         m_state.entities.insert_or_assign(id, std::move(mirrored));
     }
     for (const auto& [parent, list] : orders) {
+        if (!parent.valid()) { // roots: those there are now, in the list's order, then any it does not know
+            auto roots = std::vector<EntityId>{};
+            auto listed = IdSet{};
+            for (const auto id : list)
+                if (const auto* entity = record(id); entity && !entity->parent && listed.insert(id).second) roots.push_back(id);
+            for (const auto id : m_state.children_of({}))
+                if (const auto* entity = record(id); entity && !entity->parent && !listed.contains(id) && !records.contains(id))
+                    roots.push_back(id);
+            if (roots.empty()) m_state.children.erase(parent);
+            else m_state.children.insert_or_assign(parent, std::move(roots));
+            continue;
+        }
         if (list.empty()) m_state.children.erase(parent);
         else m_state.children.insert_or_assign(parent, list);
     }
@@ -441,7 +457,14 @@ EditResult SceneEditor::commit(std::string label, SceneChange change, std::vecto
     if (locked()) return {false, m_lock_reason};
     const auto selection_before = m_selection;
     if (auto result = apply(change, true); !result) return result;
+    if (m_check)
+        if (auto refused = m_check(change); !refused.empty()) {
+            apply(change, false); // as it was
+            prune_selection();
+            return {false, std::move(refused)};
+        }
     set_selection(std::move(selection_after));
+    if (m_listener) m_listener(change, true);
     if (m_group_depth > 0) {
         // Merge into the group: keep each entry's first "before" and latest "after".
         for (auto& [id, after] : change.after) {
@@ -694,6 +717,7 @@ EditResult SceneEditor::undo() {
     if (auto result = apply(step.change, false); !result) return result;
     --m_position;
     set_selection(step.selection_before);
+    if (m_listener) m_listener(step.change, false);
     return {true, {}};
 }
 
@@ -704,6 +728,94 @@ EditResult SceneEditor::redo() {
     if (auto result = apply(step.change, true); !result) return result;
     ++m_position;
     set_selection(step.selection_after);
+    if (m_listener) m_listener(step.change, true);
+    return {true, {}};
+}
+
+EditResult SceneEditor::stage_entities(StageGroup group, std::span<const SceneEntity> entities) {
+    if (group == 0) return {false, "Stage group 0 is the visible World"};
+    auto& staged = m_staging[group];
+    auto handles = std::unordered_map<EntityId, size_t, PersistentIdHash>{}; // within this call
+    auto commands = m_world->commands();
+    auto made = std::vector<EntityTarget>{};
+    made.reserve(entities.size());
+    for (const auto& entity : entities) {
+        const auto created = commands.create_staged(entity.id, group);
+        for (const auto& value : entity.components) std::visit([&](const auto& component) { commands.add(created, component); }, value);
+        if (entity.parent) {
+            if (const auto here = handles.find(*entity.parent); here != handles.end())
+                commands.reparent(created, made[here->second], ReparentPolicy::keep_local);
+            else if (const auto before = staged.handles.find(*entity.parent); before != staged.handles.end())
+                commands.reparent(created, before->second, ReparentPolicy::keep_local);
+            else
+                return {false, "An entity's parent is not in its cell"};
+        }
+        handles.emplace(entity.id, made.size());
+        made.push_back(created);
+    }
+    const auto result = m_world->commit(commands);
+    if (!result) return {false, world_error_text(result.error)};
+    for (size_t i = 0; i < entities.size(); ++i) {
+        const auto handle = result.created[std::get<PendingEntity>(made[i]).index];
+        staged.order.emplace_back(entities[i].id, handle);
+        staged.handles.emplace(entities[i].id, handle);
+    }
+    return {true, {}};
+}
+
+EditResult SceneEditor::reveal(StageGroup group) {
+    const auto found = m_staging.find(group);
+    if (found == m_staging.end()) return {false, "Nothing is staged in that group"};
+    const auto order = std::move(found->second.order);
+    m_staging.erase(found);
+    m_world->publish(group);
+    for (const auto& [id, handle] : order) {
+        const auto parent = m_world->parent(handle);
+        auto mirrored = EntityRecord{parent ? m_world->persistent_id(*parent) : std::nullopt, {}};
+        for (const auto& schema : component_schemas())
+            if (auto value = read_component(*m_world, handle, schema.id)) mirrored.components.push_back(std::move(*value));
+        m_state.children[mirrored.parent.value_or(EntityId{})].push_back(id);
+        m_state.entities.insert_or_assign(id, std::move(mirrored));
+    }
+    ++m_revision;
+    return {true, {}};
+}
+
+void SceneEditor::discard_staged(StageGroup group) {
+    m_staging.erase(group);
+    m_world->discard(group);
+}
+
+EditResult SceneEditor::unload(std::span<const EntityId> roots) {
+    auto commands = m_world->commands();
+    auto gone = IdSet{};
+    for (const auto root : roots) {
+        if (!record(root)) continue;
+        if (const auto handle = m_world->find(root)) commands.destroy(*handle); // its descendants go with it
+        auto pending = std::vector<EntityId>{root};
+        while (!pending.empty()) {
+            const auto id = pending.back();
+            pending.pop_back();
+            gone.insert(id);
+            const auto& children = m_state.children_of(id);
+            pending.insert(pending.end(), children.begin(), children.end());
+        }
+    }
+    if (gone.empty()) return {true, {}};
+    if (const auto result = m_world->commit(commands); !result) return {false, world_error_text(result.error)};
+    for (const auto id : gone) {
+        if (const auto* entity = record(id); entity && entity->parent && !gone.contains(*entity->parent)) {
+            auto& siblings = m_state.children[*entity->parent];
+            std::erase(siblings, id);
+        }
+        m_state.entities.erase(id);
+        m_state.children.erase(id);
+    }
+    auto& top = m_state.children[EntityId{}];
+    std::erase_if(top, [&](EntityId id) { return gone.contains(id); });
+    if (top.empty()) m_state.children.erase(EntityId{});
+    prune_selection();
+    ++m_revision;
     return {true, {}};
 }
 

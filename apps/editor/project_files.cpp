@@ -222,6 +222,8 @@ void EditorShell::finish_cook_maintenance() {
 
 void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesystem::path path) {
     stop_play(); // a play World belongs to the scene it was started from
+    m_cells.reset(); // a world's cells belong to its scene; opening a world makes them again
+    m_cells_error.clear();
     discard_material_edits(); // they belong to the closing scene's history
     // Material edits show at once: each value they make current is published to the registry.
     scene->set_material_publisher([this](AssetId id, const MaterialAsset& value) {
@@ -231,9 +233,7 @@ void EditorShell::replace_scene(std::unique_ptr<SceneEditor> scene, std::filesys
         if (m_assets) m_assets->publish(AssetRef<GeneratorAsset>{id}, value);
     });
     // References are checked against whichever catalog is current, including after a refresh.
-    scene->set_validation_context({[this](AssetId id, ReferenceKind kind) {
-        return m_assets ? asset_property_context(*m_assets).resolve_asset(id, kind) : ReferenceStatus::missing;
-    }});
+    scene->set_validation_context(catalog_context());
     m_visibility.reset(); // before the World it indexes goes
     m_terrain.reset();
     m_scene = std::move(scene);
@@ -259,6 +259,7 @@ bool EditorShell::open_scene(const std::filesystem::path& path) {
         return false;
     };
     if (!m_project || !m_assets) return fail("No project is open");
+    if (path.extension() == ".world") return open_world(path);
     const auto full = m_project->resolve(path);
     if (!full) return fail(path.generic_string() + " is outside the project's content root " + m_project->content_root.string());
     const auto context = asset_property_context(*m_assets);
@@ -279,11 +280,14 @@ bool EditorShell::open_scene(const std::filesystem::path& path) {
     return true;
 }
 
-bool EditorShell::new_scene() {
-    if (!m_project) {
-        notice("Couldn't create a scene", "No project is open");
-        return false;
-    }
+PropertyValidationContext EditorShell::catalog_context() {
+    // Whichever catalog is current, including after a refresh.
+    return {[this](AssetId id, ReferenceKind kind) {
+        return m_assets ? asset_property_context(*m_assets).resolve_asset(id, kind) : ReferenceStatus::missing;
+    }};
+}
+
+SceneDocument EditorShell::default_scene() const {
     auto camera = TransformComponent{};
     camera.translation = {0.0f, 1.5f, 6.0f};
     camera.rotation = math::Quat::from_axis_angle({1.0f, 0.0f, 0.0f}, -0.2f);
@@ -293,6 +297,15 @@ bool EditorShell::new_scene() {
     auto document = SceneDocument{};
     document.entities.push_back({EntityId::generate(), std::nullopt, {NameComponent{"Camera"}, camera, CameraComponent{}}});
     document.entities.push_back({EntityId::generate(), std::nullopt, {NameComponent{"Sun"}, sun, LightComponent{}}});
+    return document;
+}
+
+bool EditorShell::new_scene() {
+    if (!m_project) {
+        notice("Couldn't create a scene", "No project is open");
+        return false;
+    }
+    auto document = default_scene();
     const auto roots = std::vector<EntityId>{document.entities[0].id, document.entities[1].id};
     auto built = instantiate_scene(std::move(document), {});
     if (!built) {
@@ -314,7 +327,31 @@ std::string EditorShell::save_scene(const std::filesystem::path& path) {
     if (wanted.empty()) return fail("The scene has no file yet; choose one with Save as");
     const auto target = m_project->resolve(wanted);
     if (!target) return fail(wanted.generic_string() + " is outside the project's content root");
-    if (target->extension() != ".scene") return fail("Scene files must end in .scene");
+    if (m_cells) { // a world saves in place: its persistent part and its changed cells
+        if (*target != m_cells->file()) return fail("A world saves in place; use Save");
+        if (auto failed = save_materials(); !failed.empty()) return fail(failed);
+        const auto changed = m_cells->changed_cells().size();
+        if (const auto problems = m_cells->save(); !problems.empty()) {
+            for (auto i = notice_problems; i < problems.size(); ++i) m_log.add(DiagnosticSource::scene, problems[i].message, m_frame);
+            return fail(summarize(problems));
+        }
+        m_scene->mark_saved();
+        m_log.add(DiagnosticSource::scene, "Saved " + m_project->relative(*target).generic_string() + ": the persistent part and " +
+            std::to_string(changed) + (changed == 1 ? " changed cell" : " changed cells"), m_frame);
+        return {};
+    }
+    if (target->extension() == ".world") { // the open scene becomes a world, and the world is opened
+        if (auto failed = save_materials(); !failed.empty()) return fail(failed);
+        auto error = std::error_code{};
+        std::filesystem::create_directories(target->parent_path(), error);
+        if (const auto problems = save_world(*target, m_scene->document(), asset_property_context(*m_assets)); !problems.empty())
+            return fail(summarize(problems));
+        m_log.add(DiagnosticSource::scene, "Saved the scene as the world " + m_project->relative(*target).generic_string(), m_frame);
+        scan_project();
+        if (!open_world(*target)) return fail("The world was saved but did not open");
+        return {};
+    }
+    if (target->extension() != ".scene") return fail("Scene files must end in .scene, and worlds in .world");
     auto error = std::error_code{};
     if (std::filesystem::is_directory(*target, error)) return fail(wanted.generic_string() + " is a folder");
     std::filesystem::create_directories(target->parent_path(), error);
@@ -362,12 +399,22 @@ void EditorShell::scan_project() {
             if (entry.is_directory(entry_error)) entries.disable_recursion_pending();
             continue;
         }
-        if (entry.is_regular_file(entry_error) && entry.path().extension() == ".scene")
+        if (entry.is_regular_file(entry_error) && (entry.path().extension() == ".scene" || entry.path().extension() == ".world"))
             m_scene_files.push_back(entry.path().lexically_relative(root));
         if (const auto extension = lowercase(entry.path().extension().string());
             entry.is_regular_file(entry_error) && (extension == ".gltf" || extension == ".glb"))
             m_model_files.push_back(entry.path().lexically_relative(root));
     }
+    // A world's parts (its folder beside it: persistent.scene, cells/) are opened through the world.
+    auto world_folders = std::vector<std::filesystem::path>{};
+    for (const auto& file : m_scene_files)
+        if (file.extension() == ".world") world_folders.push_back(file.parent_path() / file.stem());
+    std::erase_if(m_scene_files, [&](const std::filesystem::path& file) {
+        return file.extension() == ".scene" && std::ranges::any_of(world_folders, [&](const std::filesystem::path& folder) {
+            const auto relative = file.lexically_relative(folder);
+            return !relative.empty() && *relative.begin() != "..";
+        });
+    });
     std::ranges::sort(m_scene_files, {}, [](const std::filesystem::path& p) { return p.generic_string(); });
     std::ranges::sort(m_model_files, {}, [](const std::filesystem::path& p) { return p.generic_string(); });
     read_part_labels();
@@ -458,6 +505,7 @@ void EditorShell::discard_material_edits() {
 }
 
 void EditorShell::ask_save_as() {
+    m_new_world_prompt = false;
     m_prompt = EditorPrompt::save_as;
     m_prompt_opening = true;
     m_prompt_message.clear();
@@ -488,6 +536,108 @@ void EditorShell::request(Pending action, std::filesystem::path path) {
 
 void EditorShell::request_open_scene(const std::filesystem::path& path) { request(Pending::open, path); }
 void EditorShell::request_new_scene() { request(Pending::create, {}); }
+void EditorShell::request_new_world() { request(Pending::create_world, {}); }
+
+void EditorShell::ask_new_world() {
+    ask_save_as();
+    m_new_world_prompt = true;
+    std::snprintf(m_save_as_buffer, sizeof(m_save_as_buffer), "%s", "levels/untitled.world");
+}
+
+bool EditorShell::open_world(const std::filesystem::path& path) {
+    const auto title = "Couldn't open " + path.filename().string();
+    const auto fail = [&](const std::string& message) {
+        m_log.add(DiagnosticSource::scene, message, m_frame);
+        notice(title, message);
+        return false;
+    };
+    if (!m_project || !m_assets) return fail("No project is open");
+    const auto full = m_project->resolve(path);
+    if (!full) return fail(path.generic_string() + " is outside the project's content root " + m_project->content_root.string());
+    auto file = std::ifstream(*full, std::ios::binary);
+    if (!file) return fail("Cannot read " + m_project->relative(*full).generic_string());
+    auto read = read_world(std::string(std::istreambuf_iterator<char>(file), {}));
+    if (!read) return fail(m_project->relative(*full).generic_string() + ": " + read.error);
+    if (read.document->cell_size != default_cell_size)
+        return fail("The editor edits worlds of 128 m cells; this one's are " + std::to_string(read.document->cell_size) + " m");
+    const auto context = asset_property_context(*m_assets);
+    auto loaded = load_scene_file(full->parent_path() / read.document->persistent, context);
+    auto roots = std::vector<EntityId>{};
+    for (const auto& entity : loaded.document.entities) if (!entity.parent) roots.push_back(entity.id);
+    auto built = loaded ? instantiate_scene(std::move(loaded.document), context) : SceneWorldResult{nullptr, std::move(loaded.diagnostics)};
+    if (!built) {
+        for (const auto& problem : built.diagnostics) m_log.add(DiagnosticSource::scene, problem.message, m_frame);
+        notice(title, summarize(built.diagnostics));
+        return false;
+    }
+    replace_scene(std::make_unique<SceneEditor>(std::move(built.world), roots), *full);
+    m_cells = std::make_unique<EditorCells>(*m_scene, *full, *read.document, cooked_cell_loader(full->parent_path(), m_cook_cache, catalog_context()),
+                                            catalog_context(), project_editor_cells_settings(m_project->settings));
+    m_cells->set_source(m_camera.position);
+    m_log.add(DiagnosticSource::scene, "Opened the world " + m_project->relative(*full).generic_string() + " (" +
+        std::to_string(read.document->cells.size()) + " cells; those near the camera load as it moves)", m_frame);
+    return true;
+}
+
+bool EditorShell::new_world(const std::filesystem::path& path) {
+    if (!m_project || !m_assets) {
+        notice("Couldn't create a world", "No project is open");
+        return false;
+    }
+    const auto full = m_project->resolve(path);
+    if (!full || full->extension() != ".world") {
+        notice("Couldn't create a world", path.generic_string() + " is not a .world path inside the content root");
+        return false;
+    }
+    auto error = std::error_code{};
+    std::filesystem::create_directories(full->parent_path(), error);
+    if (const auto problems = save_world(*full, default_scene(), asset_property_context(*m_assets)); !problems.empty()) {
+        notice("Couldn't create a world", summarize(problems));
+        return false;
+    }
+    scan_project();
+    m_log.add(DiagnosticSource::scene, "Created the world " + m_project->relative(*full).generic_string(), m_frame);
+    return open_world(*full);
+}
+
+void EditorShell::update_cells() {
+    if (!m_cells || m_play) return; // while playing, the authored world stays as it is
+    m_cells->set_source(m_camera.position);
+    const auto& stats = m_cells->update();
+    if (!stats.last_error.empty() && stats.last_error != m_cells_error) {
+        m_cells_error = stats.last_error;
+        m_log.add(DiagnosticSource::scene, stats.last_error, m_frame);
+    }
+}
+
+bool EditorShell::follow_entity(EntityId id) {
+    if (!m_scene) return false;
+    if (!m_scene->record(id) && m_cells)
+        if (const auto* indexed = m_cells->find(id); indexed && indexed->part && !m_cells->load_now(*indexed->part)) {
+            notice("Couldn't follow the reference", m_cells->stats().last_error);
+            return false;
+        }
+    if (!m_scene->record(id)) return false;
+    m_scene->select(id);
+    m_reveal = id; // shown in the Hierarchy
+    if (m_cells && m_hierarchy_filter) m_hierarchy_filter.reset();
+    frame_selection();
+    return true;
+}
+
+EditResult EditorShell::undo_edit() {
+    if (!m_scene) return {false, "No scene is open"};
+    if (const auto* change = m_scene->undo_change(); change && m_cells && !m_cells->load_for(*change))
+        return {false, "The cells this undo touches could not be loaded: " + m_cells->stats().last_error};
+    return m_scene->undo();
+}
+
+EditResult EditorShell::redo_edit() {
+    if (!m_scene) return {false, "No scene is open"};
+    if (const auto* change = m_scene->redo_change(); change && m_cells && !m_cells->load_for(*change))
+        return {false, "The cells this redo touches could not be loaded: " + m_cells->stats().last_error};
+    return m_scene->redo();
+}
 
 bool EditorShell::request_close() {
     if (m_close_confirmed || !m_scene || !m_scene->dirty()) return true;
@@ -502,6 +652,7 @@ void EditorShell::perform_pending() {
     case Pending::none: break;
     case Pending::open: open_scene(m_pending_path); break;
     case Pending::create: new_scene(); break;
+    case Pending::create_world: ask_new_world(); break;
     case Pending::close:
         m_close_confirmed = true;
         if (m_services.request_close) m_services.request_close();
@@ -573,13 +724,16 @@ void EditorShell::draw_prompts() {
             }
         }
     } else if (m_prompt == EditorPrompt::save_as) {
-        heading(m_fonts, icon::floppy_disk, theme::color::accent, "Save scene as");
+        heading(m_fonts, m_new_world_prompt ? icon::globe : icon::floppy_disk, theme::color::accent,
+                m_new_world_prompt ? "New world" : "Save scene as");
         // Paths are relative to the content folder, e.g. "basic_scene/assets/".
         auto content = m_project ? (std::filesystem::path(m_project->name()) /
             m_project->content_root.lexically_relative(m_project->file.parent_path())).lexically_normal().generic_string()
             : std::string{};
         if (!content.empty() && content.back() != '/') content += '/';
-        muted_text("A path inside " + content, theme::color::faint);
+        muted_text("A path inside " + content + (m_new_world_prompt ? std::string(", ending in .world")
+                                                                    : m_cells ? std::string{} : std::string("; a .world path makes it a world")),
+                   theme::color::faint);
         ImGui::Dummy({0.0f, 2.0f});
         if (opening) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -591,16 +745,17 @@ void EditorShell::draw_prompts() {
             muted_text(m_prompt_message, m_prompt_caution ? theme::color::warning : theme::color::danger);
         }
         ImGui::Dummy({0.0f, 10.0f});
-        align_buttons_right({"Cancel", "Save"});
+        const auto* confirm = m_new_world_prompt ? "Create" : "Save";
+        align_buttons_right({"Cancel", confirm});
         const auto cancel = dialog_button(m_layout, "Cancel", "cancel") || (escape && !ImGui::IsAnyItemActive());
         ImGui::SameLine();
-        const auto save = dialog_button(m_layout, "Save", "save", true) || entered || (enter && !ImGui::IsAnyItemActive());
+        const auto save = dialog_button(m_layout, confirm, "save", true) || entered || (enter && !ImGui::IsAnyItemActive());
         if (cancel) {
             close();
             m_pending = Pending::none; // cancelling the save cancels what was waiting for it
         } else if (save) {
             auto relative = std::filesystem::path(trim(m_save_as_buffer));
-            if (!relative.empty() && !relative.has_extension()) relative += ".scene";
+            if (!relative.empty() && !relative.has_extension()) relative += m_new_world_prompt ? ".world" : ".scene";
             const auto target = relative.empty() || !m_project ? std::nullopt : m_project->resolve(relative);
             auto error = std::error_code{};
             m_prompt_caution = false;
@@ -612,6 +767,16 @@ void EditorShell::draw_prompts() {
                 m_replace_confirmed = *target;
                 m_prompt_caution = true;
                 m_prompt_message = relative.generic_string() + " already exists. Save again to replace it.";
+            } else if (m_new_world_prompt) {
+                if (target->extension() != ".world") {
+                    m_prompt_message = "A world's file name ends in .world.";
+                } else if (std::filesystem::exists(*target, error)) {
+                    m_prompt_message = relative.generic_string() + " already exists.";
+                } else {
+                    close();
+                    m_new_world_prompt = false;
+                    new_world(*target);
+                }
             } else if (auto failure = save_scene(*target); !failure.empty()) {
                 m_prompt_message = failure;
             } else {
@@ -648,6 +813,7 @@ void EditorShell::draw_scene_menu() {
     }
     ImGui::Separator();
     if (ImGui::MenuItem((std::string(icon::file_plus) + "  New scene").c_str(), "\xE2\x8C\x98N")) request_new_scene();
+    if (ImGui::MenuItem((std::string(icon::globe) + "  New world\xE2\x80\xA6").c_str(), nullptr, false, m_project.has_value())) request_new_world();
     if (ImGui::MenuItem((std::string(icon::floppy_disk) + "  Save").c_str(), "\xE2\x8C\x98S")) save_or_ask();
     if (ImGui::MenuItem((std::string(icon::pencil) + "  Save as\xE2\x80\xA6").c_str(), "\xE2\x87\xA7\xE2\x8C\x98S")) ask_save_as();
     ImGui::Separator();

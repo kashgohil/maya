@@ -45,6 +45,9 @@ struct ProjectSettings {
     /// Streaming radii for worlds (#1064, docs/world.md#streaming), in metres: from a source to a cell, to
     /// load it, to activate it, and the hysteresis before either is undone. The engine's defaults when unset.
     std::optional<double> stream_load, stream_activate, stream_hysteresis;
+    /// The editor's own radius around its camera (#1067, docs/editor.md#worlds): cells within it are loaded
+    /// for editing. 256 m when unset; the hysteresis is stream_hysteresis's.
+    std::optional<double> editor_stream_load;
     /// Resident-memory budgets in MiB, as resident_setting_keys orders them (#1063); W1's when unset.
     std::array<std::optional<uint32_t>, resident_setting_keys.size()> resident;
     /// The cook cache's size in MiB past which opening the project prunes it; 4 GiB when unset, 0 for never.
@@ -74,7 +77,7 @@ struct ProjectSettingsResult {
 ///     group 1 "Player"
 ///
 /// `content` and `catalog` are required and `startup` is optional, in that order. The optional script
-/// limits and streaming radii (`stream_load`, `stream_activate`, `stream_hysteresis`) follow, then any number of `group <index> "<name>"` lines, one per named collision group other
+/// limits and streaming radii (`stream_load`, `stream_activate`, `stream_hysteresis`, `editor_stream_load`) follow, then any number of `group <index> "<name>"` lines, one per named collision group other
 /// than the default names; after `startup`, these lines may come in any order.
 ProjectSettingsResult read_project(std::istream& input);
 void write_project(std::ostream& output, const ProjectSettings& settings);

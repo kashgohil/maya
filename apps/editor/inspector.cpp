@@ -740,9 +740,16 @@ void EditorShell::draw_script_properties(EntityId id, const ComponentValue& valu
             break;
         }
         case ScriptValueType::entity: {
+            // A reference is resolved while its target is loaded; in a world, one in an unloaded cell is
+            // unresolved, and says where (#1067). Following it loads that cell.
             const auto target = std::get<EntityId>(current.data);
+            const auto* elsewhere = target.valid() && !m_scene->record(target) && m_cells ? m_cells->find(target) : nullptr;
             const auto preview = !target.valid() ? std::string("None")
-                               : m_scene->record(target) ? m_scene->display_name(target) : "Missing " + id_text(target.high, target.low);
+                               : m_scene->record(target) ? std::string(icon::link_simple) + "  " + m_scene->display_name(target)
+                               : elsewhere ? std::string(icon::link_break) + "  " + elsewhere->name + " (unloaded, " + part_name(elsewhere->part) + ")"
+                                           : std::string(icon::link_break) + "  Missing " + id_text(target.high, target.low);
+            const auto follow_width = target.valid() ? ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+            ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - follow_width);
             if (ImGui::BeginCombo("##entity", preview.c_str())) {
                 if (ImGui::Selectable("None", !target.valid())) set(EntityId{});
                 const auto list = [&](auto&& self, EntityId parent, int depth) -> void {
@@ -755,9 +762,32 @@ void EditorShell::draw_script_properties(EntityId id, const ComponentValue& valu
                     }
                 };
                 list(list, EntityId{}, 0);
+                // Entities of cells that are not loaded, by cell; choosing one loads its cell.
+                if (m_cells && m_cells->index_ready()) {
+                    ImGui::Separator();
+                    for (const auto cell : m_cells->cells()) {
+                        if (m_cells->state(cell) == EditorCellState::active) continue;
+                        const auto entities = m_cells->unloaded_entities(cell);
+                        if (entities.empty()) continue;
+                        if (ImGui::BeginMenu(("Cell " + cell_name(cell) + " (unloaded)").c_str())) {
+                            for (const auto& [id, name] : entities) {
+                                ImGui::PushID(int(id.low ^ id.high));
+                                if (ImGui::MenuItem(name.c_str(), nullptr, id == target) && m_cells->load_now(cell)) set(id);
+                                ImGui::PopID();
+                            }
+                            ImGui::EndMenu();
+                        }
+                    }
+                }
                 ImGui::EndCombo();
             }
             remember();
+            if (target.valid()) {
+                ImGui::SameLine();
+                if (ImGui::Button(icon::frame, {ImGui::GetFrameHeight(), 0.0f})) follow_entity(target);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", elsewhere ? "Load its cell, select it, and frame it" : "Select it and frame it");
+                m_layout.controls.push_back({"reference.follow." + declared.name, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()});
+            }
             break;
         }
         }

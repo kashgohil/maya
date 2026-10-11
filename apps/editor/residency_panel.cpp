@@ -36,7 +36,9 @@ ResidencyReport EditorShell::residency_report() const {
     const auto renderer = m_renderer.shadow_bytes() + m_renderer.table_bytes() + m_viewport.gpu_bytes() + m_thumbnails.gpu_bytes() +
                           m_ui.gpu_bytes();
     const auto memory = process_memory();
-    return maya::residency_report(m_assets ? m_assets->residency() : AssetResidency{}, 0, renderer, m_device.stats(),
+    // A world's cooked cells (#1067): the play World's while playing, else the editor's.
+    const auto cells = m_play_world ? m_play_world->stats().bytes_loaded : m_cells ? m_cells->stats().bytes_loaded : 0;
+    return maya::residency_report(m_assets ? m_assets->residency() : AssetResidency{}, cells, renderer, m_device.stats(),
                                   m_device.reported_memory(), memory ? std::optional(size_t(memory->footprint)) : std::nullopt);
 }
 
