@@ -208,6 +208,156 @@ TEST_CASE("Tiles loaded before a physics world collide once one is given", "[ter
     CHECK(physics.height_fields() == 0);
 }
 
+TEST_CASE("Tiles wanted but not yet started that fall behind a moving source are dropped, not left loading", "[terrain]") {
+    // #1069: tiles wait to start while others generate (tiles_in_flight). One the source left behind before it
+    // started, past the loading radius but within the hysteresis, was kept loading with no job, forever.
+    Fixture fixture;
+    auto settings = TerrainSettings{};
+    settings.streaming.load_radius = 300.0;
+    settings.tile_radius = 0.0;
+    settings.streaming.activate_radius = 100.0;
+    settings.streaming.hysteresis = 64.0;
+    settings.tiles_in_flight = 1;
+    auto streamer = TerrainStreamer(nullptr, fixture.cache, settings);
+    const auto here = math::DVec3{42 * 128.0 + 64.0, 0.0, 35 * 128.0 + 64.0};
+    streamer.set_sources({here});
+    for (int i = 0; i < 50 && streamer.stats().loading <= 1; ++i) { // the generator loads, then its tiles are wanted, one started
+        fixture.project.registry->update();
+        fixture.project.registry->wait_idle();
+        streamer.update(fixture.world, *fixture.project.registry, nullptr);
+    }
+    REQUIRE(streamer.stats().loading > 1);
+    // 40 m west: the east side's farthest tiles are no longer wanted, but within the hysteresis.
+    streamer.set_sources({{here.x - 40.0, 0.0, here.z}});
+    fixture.settle(streamer);
+    CHECK(streamer.stats().loading == 0);
+    CHECK(streamer.stats().loaded >= tiles_within(region_generator(), {here.x - 40.0, 0.0, here.z}, 300.0));
+    CHECK(streamer.stats().loaded <= tiles_within(region_generator(), {here.x - 40.0, 0.0, here.z}, 364.0));
+}
+
+TEST_CASE("A world's cells wait for the terrain under them to collide before they activate", "[terrain]") {
+    // #1069: a cell's bodies join the physics world when it activates; its ground must be there first, or a
+    // dynamic body falls through. The world streamer asks the terrain streamer (link_terrain), as the player does.
+    Fixture fixture;
+    auto settings = TerrainSettings{};
+    settings.collide = true;
+    settings.streaming.load_radius = 200.0;
+    settings.tile_radius = 0.0;
+    settings.streaming.activate_radius = 100.0;
+    settings.frame_tiles = 1; // one tile joins physics a frame, so the cell has to wait for its own
+    auto terrain = TerrainStreamer(nullptr, fixture.cache, settings);
+    PhysicsWorld physics;
+    const auto cell = CellIndex{42, 35};
+    const auto middle = math::DVec3{42 * 128.0 + 64.0, 0.0, 35 * 128.0 + 64.0};
+    // One cell holding a ball 2 m over the ground.
+    auto world = WorldDocument{};
+    world.cells.push_back({cell, "42_35.scene", 1});
+    auto ball = SceneEntity{EntityId{0x7465, 0x77}, std::nullopt, {}};
+    const auto ground = generate_height_tile(heightfield_noise(region_generator()), {cell.x, cell.z});
+    REQUIRE(ground);
+    ball.components.push_back(TransformComponent{{middle.x, double(tile_height_at(*ground, 64.0, 64.0)) + 2.0, middle.z}, {}, {1.0f}});
+    ball.components.push_back(RigidBodyComponent{});
+    auto collider = ColliderComponent{};
+    collider.shape = ColliderShape::sphere;
+    ball.components.push_back(collider);
+    const auto loader = CellLoader([ball](const WorldCell&, const JobContext&) { return CellLoad{SceneDocument{{ball}}, {}, 64}; });
+    auto cells = WorldStreamer(world, loader, settings.streaming);
+    link_terrain(cells, terrain);
+    const auto square = math::DVec3{cell.x * 128.0, 0.0, cell.z * 128.0};
+    // Outside the region, or without collision, nothing is waited for.
+    CHECK(terrain.collides({}, 128.0));
+    CHECK(TerrainStreamer(nullptr, nullptr, {}).collides(square, 128.0));
+    terrain.set_sources({middle});
+    cells.set_sources({middle});
+    // The terrain found but not yet generated: the cell loads and waits, and settling the cells does not hang on it.
+    terrain.update(fixture.world, *fixture.project.registry, &physics);
+    CHECK_FALSE(terrain.collides(square, 128.0));
+    cells.settle(fixture.world, &physics);
+    CHECK(cells.state(cell) == CellState::ready);
+    CHECK(cells.stats().waiting == 1);
+    CHECK(physics.stats().dynamic_bodies == 0);
+    // Frame by frame, terrain first: whenever the cell is active, the ground under the ball collides.
+    auto waited = 0;
+    for (int frame = 0; frame < 400 && cells.state(cell) != CellState::active; ++frame) {
+        fixture.project.registry->update();
+        terrain.wait_idle();
+        terrain.update(fixture.world, *fixture.project.registry, &physics);
+        cells.update(fixture.world, &physics);
+        waited += cells.stats().waiting;
+    }
+    REQUIRE(cells.state(cell) == CellState::active);
+    CHECK(waited > 0);
+    CHECK(cells.stats().waiting == 0);
+    CHECK(terrain.collides(square, 128.0));
+    CHECK(physics.stats().dynamic_bodies == 1);
+    auto filter = QueryFilter{};
+    filter.ignore = fixture.world.find(ball.id);
+    const auto hit = physics.raycast_nearest({middle.x, 1000.0, middle.z}, {0, -1, 0}, 2000.0f, filter);
+    REQUIRE(hit);
+    CHECK(hit->entity == fixture.terrain);
+    // The source leaves. The terrain goes first, frame by frame, but keeps the height field the ball stands on
+    // while its cell is in, whenever the cell goes out (its frame budget can put that off).
+    const auto away = math::DVec3{middle.x + 900.0, 0.0, middle.z};
+    terrain.set_sources({away});
+    cells.set_sources({away});
+    const auto fields = physics.height_fields();
+    terrain.update(fixture.world, *fixture.project.registry, &physics);
+    REQUIRE(fields >= 1);
+    CHECK(physics.height_fields() == 1); // only the tile under the active cell is left
+    CHECK(physics.raycast_nearest({middle.x, 1000.0, middle.z}, {0, -1, 0}, 2000.0f, filter));
+    for (int frame = 0; frame < 50 && cells.state(cell) != CellState::unloaded; ++frame) {
+        terrain.update(fixture.world, *fixture.project.registry, &physics);
+        cells.update(fixture.world, &physics);
+    }
+    REQUIRE(cells.state(cell) == CellState::unloaded);
+    terrain.update(fixture.world, *fixture.project.registry, &physics);
+    CHECK(physics.height_fields() == 0);
+    cells.unload_all(fixture.world, &physics);
+    terrain.clear(&physics);
+}
+
+TEST_CASE("A world's larger cells wait for every terrain tile under them within the activation radius", "[terrain]") {
+    // #1069: a world's cells need not be the terrain's 128 m tiles. A 256 m cell over four tiles goes in once each
+    // of them the terrain collides with there holds its height field.
+    Fixture fixture;
+    auto settings = TerrainSettings{};
+    settings.collide = true;
+    settings.streaming.load_radius = 300.0;
+    settings.tile_radius = 0.0;
+    settings.streaming.activate_radius = 150.0;
+    settings.frame_tiles = 1;
+    auto terrain = TerrainStreamer(nullptr, fixture.cache, settings);
+    PhysicsWorld physics;
+    auto world = WorldDocument{};
+    world.cell_size = 256.0;
+    const auto cell = CellIndex{21, 17}; // x 5,376 to 5,632 and z 4,352 to 4,608: tiles 42 to 43 and 34 to 35
+    world.cells.push_back({cell, "21_17.scene", 1});
+    const auto loader = CellLoader([](const WorldCell&, const JobContext&) {
+        return CellLoad{SceneDocument{{SceneEntity{EntityId{0x7465, 0x78}, std::nullopt, {NameComponent{"Marker"}}}}}, {}, 64};
+    });
+    auto cells = WorldStreamer(world, loader, settings.streaming);
+    link_terrain(cells, terrain);
+    const auto source = math::DVec3{42 * 128.0 + 64.0, 0.0, 34 * 128.0 + 64.0}; // over tile 42_34
+    terrain.set_sources({source});
+    cells.set_sources({source});
+    auto checked = 0;
+    for (int frame = 0; frame < 400 && cells.state(cell) != CellState::active; ++frame) {
+        fixture.project.registry->update();
+        terrain.wait_idle();
+        terrain.update(fixture.world, *fixture.project.registry, &physics);
+        cells.update(fixture.world, &physics);
+        if (cells.state(cell) == CellState::ready && cells.stats().waiting == 1) ++checked;
+    }
+    REQUIRE(cells.state(cell) == CellState::active);
+    CHECK(checked > 0);
+    // Every tile under it within 150 m holds its height field: here all four (the farthest corner is 64 m away).
+    CHECK(physics.height_fields() >= 4);
+    for (const auto& [x, z] : {std::pair{42, 34}, {43, 34}, {42, 35}, {43, 35}})
+        CHECK(physics.raycast_nearest({x * 128.0 + 64.0, 1000.0, z * 128.0 + 64.0}, {0, -1, 0}, 2000.0f));
+    cells.unload_all(fixture.world, &physics);
+    terrain.clear(&physics);
+}
+
 TEST_CASE("Terrain tiles come from the cook cache the second time, the same bytes, and change with their generator", "[terrain]") {
     Fixture fixture;
     auto settings = TerrainSettings{};

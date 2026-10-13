@@ -17,7 +17,6 @@ using namespace maya::editor::testing;
 
 namespace {
 constexpr auto rocks = AssetId{0x6d617961, 0x93};
-constexpr auto rocks_runner = EntityId{0x6d617961, 0x604};
 
 ImVec2 centre(const EditorLayout::Field* rect) {
     REQUIRE(rect);

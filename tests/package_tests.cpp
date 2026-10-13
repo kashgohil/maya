@@ -3,7 +3,9 @@
 // project; packaged players read only their bundle and draw what the editor draws.
 
 #include "maya/assets/asset_cooker.hpp"
+#include "maya/assets/generator_file.hpp"
 #include "maya/assets/gltf.hpp"
+#include "maya/assets/material_file.hpp"
 #include "maya/assets/package.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
@@ -11,6 +13,7 @@
 #include "maya/import/gltf_import.hpp"
 #include "maya/package/packager.hpp"
 #include "r1.hpp"
+#include "w1.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "maya/scene/scene_io.hpp"
 #include "maya/scene/world_io.hpp"
@@ -20,6 +23,7 @@
 #include "support/gltf.hpp"
 #include "support/metal_view.hpp"
 #include "support/render_scene.hpp"
+#include "support/w1_play.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <atomic>
@@ -516,6 +520,106 @@ TEST_CASE("R1 packaged draws what the editor draws, and runs from a folder outsi
         CHECK(played(*packaged, bundle / "Contents/Resources/project/content/r1.scene").rgb == played(*sources, r1 / "r1.scene").rgb);
     }
     launch_elsewhere(bundle, scratch.root / "elsewhere", "r1 / r1.scene");
+}
+
+TEST_CASE("A package holds what its scatter generators place: their meshes, materials, and heights", "[package][scatter]") {
+    // #1069: a mesh, a material, and a height field that only a scatter generator names, run by the only entity of
+    // its scene, are packaged with it, as the packaged player makes the items from them.
+    const Scratch scratch;
+    const auto project = copy_sample(scratch);
+    const auto content = project / "assets";
+    fs::create_directories(content / "only");
+    fs::copy_file(content / "sphere.obj", content / "only/pebble.obj");
+    {
+        auto material = MaterialAsset{};
+        material.base_color = {0.3f, 0.3f, 0.3f, 1.0f};
+        auto output = std::ofstream(content / "only/pebble.material");
+        output << write_material_file(material);
+    }
+    auto heights = GeneratorAsset{};
+    auto pebbles = GeneratorAsset{};
+    pebbles.kind = GeneratorKind::scatter;
+    pebbles.version = scatter_version;
+    pebbles.heights = {{0x6d617961, 0x7a03}};
+    pebbles.mesh0 = {{0x6d617961, 0x7a00}};
+    pebbles.material0 = {{0x6d617961, 0x7a01}};
+    {
+        auto output = std::ofstream(content / "only/pebbles.generator");
+        output << write_generator_file(pebbles);
+        auto ground = std::ofstream(content / "only/ground.generator");
+        ground << write_generator_file(heights);
+        auto catalog = std::ofstream(content / "catalog.maya", std::ios::app);
+        catalog << "mesh 6d617961 7a00 \"only/pebble.obj\"\nmaterial 6d617961 7a01 \"only/pebble.material\"\n"
+                << "generator 6d617961 7a02 \"only/pebbles.generator\"\ngenerator 6d617961 7a03 \"only/ground.generator\"\n";
+        auto scene = std::ofstream(content / "only.scene");
+        scene << "maya-scene 1\n\nentity 6d617961 7a10\n  component maya.generator 1\n    generator 6d617961 7a02\nend\n";
+    }
+    const auto bundle = scratch.root / "Pebbles.app";
+    const auto report = package_project(options_for(project, bundle, {"only.scene"}));
+    INFO(report.error);
+    REQUIRE(report);
+    auto ids = std::set<AssetId>{};
+    for (const auto& record : packaged_catalog(bundle)) ids.insert(record.id);
+    CHECK(ids.contains(AssetId{0x6d617961, 0x7a00}));
+    CHECK(ids.contains(AssetId{0x6d617961, 0x7a01}));
+    CHECK(ids.contains(AssetId{0x6d617961, 0x7a02}));
+    CHECK(ids.contains(AssetId{0x6d617961, 0x7a03}));
+}
+
+TEST_CASE("W1 packaged streams and draws what its sources do, and runs from a folder outside the checkout", "[package][gpu][samples][w1]") {
+    // W1 as maya_w1 assembles it (the w1_project fixture, RGBA8 textures; docs/acceptance.md#w1), packaged through
+    // its warm cook cache. The package holds its cells cooked and no cook cache: terrain and scatter are made as
+    // the packaged player runs.
+    const auto w1 = fs::path(MAYA_W1_PROJECT);
+    if (!fs::is_regular_file(w1 / "w1.world")) SKIP("W1 is not assembled; fetch the samples and run the w1_project fixture");
+    const Scratch scratch;
+    const auto bundle = scratch.root / "W1.app";
+    const auto report = package_project(options_for(w1, bundle));
+    INFO(report.error);
+    REQUIRE(report);
+    WARN("W1 package: " << report.bytes << " bytes, " << report.textures << " textures, in " << report.milliseconds << " ms");
+    const auto content = bundle / "Contents/Resources/project/content";
+    const auto files = files_in(content / "w1");
+    const auto cooked = size_t(std::ranges::count_if(files, [](const std::string& file) { return file.ends_with(".cell"); }));
+    CHECK(cooked == test::read_world_file(w1 / "w1.world").cells.size());
+    {
+        // Each named view, from a fresh start as a Play that goes there: the same pixels from both.
+        test::Gpu gpu;
+        auto opened = open_project(bundle / "Contents/Resources/project/project.maya");
+        REQUIRE(opened);
+        for (const auto& view : w1::views()) {
+            INFO(view.name);
+            // One side at a time, each with its own assets: both held at once are 3 GB of RGBA8 textures.
+            const auto from_sources = [&] {
+                const auto sources = test::w1_from_sources(gpu.device, w1);
+                sources->start(480, 270);
+                sources->settle_at(view.from);
+                return sources->render(gpu, view.camera, 480, 270);
+            }();
+            const auto packaged = std::make_unique<test::W1Play>(gpu.device, package_registry(gpu.device, bundle), opened.project.settings,
+                                                                 content / "w1.world", nullptr);
+            packaged->start(480, 270);
+            packaged->settle_at(view.from);
+            // The package makes terrain and scatter as it runs, with no cook cache, and a handful of pixels come out
+            // differently (at most 4 of 129,600 when measured): every channel within one level on all but 0.01%.
+            const auto from_package = packaged->render(gpu, view.camera, 480, 270);
+            REQUIRE(from_package.rgb.size() == from_sources.rgb.size());
+            auto differing = size_t{0};
+            for (size_t i = 0; i < from_package.rgb.size(); i += 3)
+                for (size_t c = 0; c < 3; ++c)
+                    if (std::abs(int(from_package.rgb[i + c]) - int(from_sources.rgb[i + c])) > 1) {
+                        ++differing;
+                        break;
+                    }
+            INFO(differing << " pixels differ by more than one level");
+            CHECK(differing * 10000 <= from_package.rgb.size() / 3);
+            if (differing > 0 && std::getenv("MAYA_W1_DIFF")) { // both images, to compare
+                write_png(fs::path(std::getenv("MAYA_W1_DIFF")) / (std::string(view.name) + "-sources.png"), from_sources);
+                write_png(fs::path(std::getenv("MAYA_W1_DIFF")) / (std::string(view.name) + "-package.png"), from_package);
+            }
+        }
+    }
+    launch_elsewhere(bundle, scratch.root / "elsewhere", "w1 / w1.world");
 }
 
 TEST_CASE("The content workflow's scene runs from a standalone package outside the checkout with the same image", "[acceptance][content][gpu]") {

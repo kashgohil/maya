@@ -609,6 +609,9 @@ if(BUILD_TESTING)
     # when it is present.
     set(MAYA_RENDER_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/render-samples" CACHE PATH
         "Khronos sample content, from tools/fetch_render_samples.sh")
+    # W1's Poly Haven content, from tools/fetch_world_samples.sh (#1069).
+    set(MAYA_WORLD_SAMPLES "${CMAKE_CURRENT_SOURCE_DIR}/build/world-samples" CACHE PATH
+        "W1's Poly Haven content, from tools/fetch_world_samples.sh")
     add_executable(maya_asset_tests tests/asset_tests.cpp tests/project_tests.cpp tests/texture_asset_tests.cpp tests/material_tests.cpp
         tests/environment_tests.cpp tests/gltf_tests.cpp tests/import_tests.cpp tests/cook_cache_tests.cpp tests/asset_loading_tests.cpp)
     # The system zlib writes test PNGs (tests/support/png.hpp).
@@ -688,18 +691,20 @@ if(BUILD_TESTING)
     if(TARGET MayaEditor)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp tests/editor_terrain_tests.cpp tests/world_cells_tests.cpp tests/world_editor_tests.cpp tests/editor_scatter_tests.cpp
-            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/editor_residency_tests.cpp tests/r1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
+            tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/editor_residency_tests.cpp tests/r1_tests.cpp tests/w1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
             tests/physics_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
-        target_link_libraries(maya_editor_tests PRIVATE MayaEditor MayaR1 Catch2::Catch2WithMain z)
+        target_link_libraries(maya_editor_tests PRIVATE MayaEditor MayaR1 MayaW1 Catch2::Catch2WithMain z)
         set(MAYA_ACCEPTANCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/acceptance")
         set(MAYA_R1_PROJECT "${CMAKE_CURRENT_BINARY_DIR}/r1")
+        set(MAYA_W1_PROJECT "${CMAKE_CURRENT_BINARY_DIR}/w1")
         target_compile_definitions(maya_editor_tests PRIVATE MAYA_ACCEPTANCE_DIR="${MAYA_ACCEPTANCE_DIR}"
-            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}" MAYA_R1_PROJECT="${MAYA_R1_PROJECT}")
+            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}" MAYA_R1_PROJECT="${MAYA_R1_PROJECT}"
+            MAYA_W1_PROJECT="${MAYA_W1_PROJECT}")
         maya_target_options(maya_editor_tests)
-        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]~[r1]")
+        add_test(NAME maya_editor COMMAND maya_editor_tests "~[gpu]~[acceptance]~[r1]~[w1]")
         set_tests_properties(maya_editor PROPERTIES LABELS "cpu;editor" TIMEOUT 120)
         add_test(NAME maya_editor_gpu COMMAND maya_editor_tests "[gpu]~[acceptance]~[visual]")
         set_tests_properties(maya_editor_gpu PROPERTIES LABELS "gpu;editor" TIMEOUT 60
@@ -710,7 +715,7 @@ if(BUILD_TESTING)
         add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]~[physics]~[content]")
         set_tests_properties(maya_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 60
             FIXTURES_SETUP authored_project)
-        add_test(NAME maya_acceptance_render COMMAND maya_editor_tests "[acceptance][gpu]")
+        add_test(NAME maya_acceptance_render COMMAND maya_editor_tests "[acceptance][gpu]~[w1]")
         set_tests_properties(maya_acceptance_render PROPERTIES LABELS "gpu;acceptance" TIMEOUT 120 RUN_SERIAL TRUE
             FIXTURES_REQUIRED authored_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         # Milestone 3 (#1040): content imported, placed, edited, lit, played, reloaded, and saved in the editor;
@@ -731,7 +736,7 @@ if(BUILD_TESTING)
                 WORKING_DIRECTORY "${MAYA_ACCEPTANCE_DIR}/elsewhere" FIXTURES_REQUIRED physics_project
                 ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         endif()
-        add_test(NAME maya_visual_reference COMMAND maya_editor_tests "[visual]~[r1]")
+        add_test(NAME maya_visual_reference COMMAND maya_editor_tests "[visual]~[r1]~[w1]")
         set_tests_properties(maya_visual_reference PROPERTIES LABELS "gpu;acceptance;visual" TIMEOUT 120 RUN_SERIAL TRUE
             ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         # Milestone 3 (#1040): R1 assembled from the fetched samples (skipped, 77, without them), with RGBA8
@@ -752,6 +757,21 @@ if(BUILD_TESTING)
         add_test(NAME maya_r1_reference COMMAND maya_editor_tests "[r1][visual]~[precision]")
         set_tests_properties(maya_r1_reference PROPERTIES LABELS "gpu;acceptance;visual;r1" TIMEOUT 900 RUN_SERIAL TRUE
             FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 4 (#1069): W1 assembled from the fetched world and render samples (skipped, 77, without them),
+        # with RGBA8 textures; then its recipe, and its views against the approved references.
+        add_test(NAME maya_w1_assemble COMMAND maya_w1 --compression rgba8 "${MAYA_WORLD_SAMPLES}" "${MAYA_RENDER_SAMPLES}" "${MAYA_W1_PROJECT}")
+        set_tests_properties(maya_w1_assemble PROPERTIES LABELS "cpu;acceptance;w1" TIMEOUT 120 SKIP_RETURN_CODE 77
+            FIXTURES_SETUP w1_project)
+        add_test(NAME maya_w1 COMMAND maya_editor_tests "[w1]~[gpu]")
+        set_tests_properties(maya_w1 PROPERTIES LABELS "cpu;acceptance;w1" TIMEOUT 300 FIXTURES_REQUIRED w1_project
+            RESOURCE_LOCK w1_project_files)
+        add_test(NAME maya_w1_reference COMMAND maya_editor_tests "[w1][visual]~[editor-play]")
+        set_tests_properties(maya_w1_reference PROPERTIES LABELS "gpu;acceptance;visual;w1" TIMEOUT 1800 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED w1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # The same views in the editor's Play, against the player's.
+        add_test(NAME maya_w1_editor COMMAND maya_editor_tests "[w1][editor-play]")
+        set_tests_properties(maya_w1_editor PROPERTIES LABELS "gpu;acceptance;visual;w1" TIMEOUT 3600 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED w1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         # R1 at 100 m to 100 km from the origin against the origin (#1065, the origin-offset sweep).
         add_test(NAME maya_r1_offsets COMMAND maya_editor_tests "[r1][precision]")
         set_tests_properties(maya_r1_offsets PROPERTIES LABELS "gpu;acceptance;visual;r1;precision" TIMEOUT 1200 RUN_SERIAL TRUE
@@ -852,12 +872,12 @@ if(BUILD_TESTING)
     # Packages (#1039): packaging on the CPU, and packaged players on Metal, run from outside the checkout.
     if(TARGET maya_package)
         add_executable(maya_package_tests tests/package_tests.cpp)
-        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaRuntime MayaR1 MayaStreaming Catch2::Catch2WithMain z)
+        target_link_libraries(maya_package_tests PRIVATE MayaPackage MayaRuntime MayaR1 MayaW1 MayaStreaming Catch2::Catch2WithMain z)
         target_include_directories(maya_package_tests PRIVATE tests)
         target_compile_definitions(maya_package_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
             MAYA_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}" MAYA_RENDER_SAMPLES="${MAYA_RENDER_SAMPLES}"
             MAYA_PLAYER="$<TARGET_FILE:maya_player>" MAYA_R1_PROJECT="${CMAKE_CURRENT_BINARY_DIR}/r1"
-            MAYA_ACCEPTANCE_DIR="${CMAKE_CURRENT_BINARY_DIR}/acceptance")
+            MAYA_W1_PROJECT="${CMAKE_CURRENT_BINARY_DIR}/w1" MAYA_ACCEPTANCE_DIR="${CMAKE_CURRENT_BINARY_DIR}/acceptance")
         add_dependencies(maya_package_tests maya_player)
         maya_target_options(maya_package_tests)
         # maya_cook (#1063): a dry run over the sample project's cook cache removes nothing and reports.
@@ -869,9 +889,13 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME maya_package COMMAND maya_package_tests "~[gpu]")
         set_tests_properties(maya_package PROPERTIES LABELS "cpu;package" TIMEOUT 120)
-        add_test(NAME maya_package_gpu COMMAND maya_package_tests "[gpu]~[acceptance]")
+        add_test(NAME maya_package_gpu COMMAND maya_package_tests "[gpu]~[acceptance]~[w1]")
         set_tests_properties(maya_package_gpu PROPERTIES LABELS "gpu;smoke;package" TIMEOUT 900 RUN_SERIAL TRUE
             FIXTURES_REQUIRED r1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 4 (#1069): W1 packaged, streamed from the package as from its sources, and run outside the checkout.
+        add_test(NAME maya_w1_package COMMAND maya_package_tests "[w1]")
+        set_tests_properties(maya_w1_package PROPERTIES LABELS "gpu;smoke;package;w1" TIMEOUT 1800 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED w1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         # Milestone 3 (#1040): the content workflow's scene, packaged and run outside the checkout.
         add_test(NAME maya_content_acceptance_package COMMAND maya_package_tests "[acceptance][content]")
         set_tests_properties(maya_content_acceptance_package PROPERTIES LABELS "gpu;smoke;acceptance" TIMEOUT 300 RUN_SERIAL TRUE

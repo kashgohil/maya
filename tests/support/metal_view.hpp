@@ -42,6 +42,7 @@ struct Gpu {
         REQUIRE_FALSE(target->resize(view.width, view.height));
         options.origin = view.position;
         const auto snapshot = extract_render_snapshot(world, assets, options);
+        for (const auto& problem : snapshot.diagnostics) UNSCOPED_INFO(problem.message);
         REQUIRE(snapshot.diagnostics.empty());
         REQUIRE_FALSE(device.begin_frame());
         const auto error = renderer->render(snapshot, view, *target);

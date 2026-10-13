@@ -386,6 +386,35 @@ TEST_CASE("Rules only remove scatter's items: the survivors keep their IDs and p
     CHECK_FALSE(scatter_spacing_valid(128.0));
 }
 
+TEST_CASE("A scatter generator's heights, meshes, and materials are checked against the catalog where it is used", "[procedural][generators][scatter]") {
+    // #1069: they are asset references, as components' are, so validation asks the catalog about each (and packaging
+    // follows them); reading a file does not, as it has no catalog.
+    auto generator = GeneratorAsset{};
+    generator.kind = GeneratorKind::scatter;
+    generator.version = scatter_version;
+    generator.heights = AssetRef<GeneratorAsset>{{0x6d617961, 0x90}};
+    generator.mesh0 = AssetRef<MeshAsset>{{0x6d617961, 2}};
+    generator.material0 = AssetRef<MaterialAsset>{{0x6d617961, 0x11}};
+    auto asked = std::vector<std::pair<AssetId, ReferenceKind>>{};
+    const auto catalog = PropertyValidationContext{[&](AssetId id, ReferenceKind kind) {
+        asked.push_back({id, kind});
+        return id == AssetId{0x6d617961, 0x11} && kind == ReferenceKind::material ? ReferenceStatus::wrong_type : ReferenceStatus::valid;
+    }};
+    auto checked = generator;
+    const auto result = validate_generator(checked, catalog);
+    CHECK(result.error == PropertyError::wrong_reference_type);
+    CHECK(result.property == generator_property("material0")->id);
+    CHECK(std::ranges::count(asked, std::pair{AssetId{0x6d617961, 0x90}, ReferenceKind::generator}) == 1);
+    CHECK(std::ranges::count(asked, std::pair{AssetId{0x6d617961, 2}, ReferenceKind::mesh}) == 1);
+    const auto missing = PropertyValidationContext{[](AssetId id, ReferenceKind) {
+        return id == AssetId{0x6d617961, 2} ? ReferenceStatus::missing : ReferenceStatus::valid;
+    }};
+    CHECK(validate_generator(checked, missing).error == PropertyError::missing_reference);
+    CHECK(validate_generator(checked).error == PropertyError::validation_context_required); // no catalog to ask
+    auto input = std::istringstream(write_generator_file(generator));
+    CHECK(read_generator_file(input)); // a file is read without its catalog
+}
+
 TEST_CASE("A scatter generator file holds its kind's properties, its meshes, and its heights, and reads back exactly", "[procedural][generators][scatter]") {
     auto generator = GeneratorAsset{};
     generator.kind = GeneratorKind::scatter;
