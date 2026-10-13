@@ -114,10 +114,8 @@ Texture references take a texture from the catalog; which role a slot needs is t
 
 ## Generators
 
-[#1068](https://work.rezee.app/kash/issues/1068) describes [generator assets](procedural.md#generator-assets) with the same descriptors, as materials are: `generator_properties()`, `generator_property` by ID or name, `read_property(generator, id)`, `edit_properties(generator, edits, context)`, and `validate_generator` work on a `GeneratorAsset`, on a copy, checking the whole result. The names are the [generator file](procedural.md#generator-files)'s keys.
+[#1068](https://work.rezee.app/kash/issues/1068) describes [generator assets](procedural.md#generator-assets) with the same descriptors, as materials are: `generator_properties()`, `generator_property` by ID or name, `read_property(generator, id)`, `edit_properties(generator, edits, context)`, and `validate_generator` work on a `GeneratorAsset`, on a copy, checking the whole result. The names are the [generator file](procedural.md#generator-files)'s keys. Its references (12 `heights`, and each variant's mesh and material) are asset IDs (`persistent_asset_id`), checked against the catalog through the context as components' are (#1069); a generator file is read without its catalog.
 
-| ID / name | Type | Range |
-| --- | --- | --- |
 | ID / name | Type | Range | Kinds |
 | --- | --- | --- | --- |
 | 1 `kind` | choice: `heightfield.noise`, `scatter` | | both |

@@ -469,6 +469,45 @@ Approved on 7 October 2026 by the project owner, from the baselines above. They 
 
 The world-scale milestone ([#1059](https://work.rezee.app/kash/issues/1059)) adds checks as its issues land. The editor's side of worlds ([#1067](https://work.rezee.app/kash/issues/1067), [docs/editor.md](editor.md#worlds)) is covered automatically by [world_editor_tests.cpp](../tests/world_editor_tests.cpp): a world is created, filled across cells, linked across them, saved, reopened in part, and played. It is also covered by the overlay and Streaming panel references. A person checks what synthetic input cannot.
 
+### W1
+
+W1 is the reference world, recipe version 2: the [record's](architecture/world-scale-decision.md#w1-the-reference-world) version 1 with the project owner's changes of 12 October 2026 ([#1069](https://work.rezee.app/kash/issues/1069)). Its content is fetched by [fetch_world_samples.sh](../tools/fetch_world_samples.sh) and [fetch_render_samples.sh](../tools/fetch_render_samples.sh), never committed, so **`maya_w1`** ([apps/w1](../apps/w1)) assembles the project from it:
+
+```bash
+tools/fetch_world_samples.sh                    # once: build/world-samples
+tools/fetch_render_samples.sh                   # once: build/render-samples (the landmarks)
+maya_w1 build/world-samples build/render-samples build/w1-astc                  # ASTC textures, as packages ship them
+maya_w1 --compression rgba8 build/world-samples build/render-samples build/w1   # what the tests use
+```
+
+- **The world.** `w1.world`: 128 m cells 32 to 63 along x and z (4,096 m to 8,192 m), loaded at 640 m and activated at 384 m with 64 m of hysteresis, written in `project.maya`. Its persistent part holds the terrain, the generators and their exclusions, the sun, the sky, and the cameras; 10 cells hold the authored content, 939 entities in all. The rest of the world is terrain and scatter.
+- **Terrain.** W1's noise (seed 990, 6 octaves, 900 m, 140 m, 120 m of warp) over the whole world, its heights from −104 m to 107 m: `forest_ground_04` everywhere, and `rock_face_03` on slopes from 28° to 38°, their color, normal, and ARM maps repeating every 8 m.
+- **Scatter** (version 2's spacings: scatter's must divide the 128 m cell):
+
+  | Generator | Meshes | Spacing | Rules | Colliders |
+  | --- | --- | --- | --- | --- |
+  | Boulders | `boulder_01`, `namaqualand_boulder_02` | 8 m | density 0.44 (64/144, the 12 m set's count), slope ≤ 35°, scale 0.8–1.6 | spheres of 0.8 m and 0.7 m |
+  | Rocks | two meshes each of `rock_moss_set_01` and `_02` | 4 m | density 0.4, scale 0.25–0.6 | none |
+  | Deadwood | `tree_stump_01`, `dead_tree_trunk_02` | 8 m | density 0.19 (0.3 × 64/100, the 10 m set's count), scale 0.8–1.2 | spheres of 0.5 m |
+  | Soak rocks | as Rocks | 4 m | as Rocks, over cells 44–45 × 43–44 only | none |
+
+  The main rocks are kept out of the soak's 2 × 2 cells by a box exclusion naming them ("Soak cells"), and the soak rocks cover those cells: the soak gives them a new seed each cycle (`w1::soak_rocks_generator()`). A 45 m sphere ("Clearing") keeps every generator off the clearing.
+- **The clearing** (the flattest ground near the middle, about 5,450 m by 5,620 m): ABeautifulGame's board and FlightHelmet at three times their size, and CesiumMan walking a 24 m loop at 1.2 m/s around the corner of cells 42_43, 43_43, and 42_44, 20 m from each edge, on the terrain's height. His walk loop is in `models/w1_walk.gltf`, which `maya_w1` writes, one clip with the terrain's heights in its keys, its node at rest where the clip starts.
+- **The watch camera**, in the persistent part as a world keeps every camera, runs `scripts/watch.luau`, which turns it each tick toward CesiumMan's walk loop in its cell, a weak reference: while his cell is not in, it holds still.
+- **Light.** The sun where the sky's is (48° up, toward −z and +x), 4.3 lux as the sky's sun is, with shadows to 250 m; the sky at half strength, since its own sun lights everything again unshadowed; and every camera at 1 EV100, a stop above R1's indoor 0.
+- **Physics.** 400 rocks resting on gentle ground (under 15°) within 40 m of S1's walk, and 20 boulders on slopes of 25° to 35° within 80 m of it, which roll down once their cells are in. Each is a unit-scale body (rock, 2,600 kg/m³) with a box or sphere collider, its mesh scaled on an entity below it.
+- **S1**, the traversal (version 2: the record's speeds and times): `models/w1_s1.gltf`'s camera, a key every tick, 9,600 ticks at 60 Hz. 120 s on foot at 8 m/s, 1.7 m over the terrain, east from the clearing along z = 5,640 m over the hill: 400 m, back 160 m, on 240 m, back 160 m, each turn-back across a cell edge; then a 40 s flyover at 60 m/s, 220 m up and north-east, looking 15° down: 3.36 km. It is the persistent part's first camera, so the player, the editor's Game view, and the packaged player follow it, and loop it. `w1::s1_point(tick)` gives the same path.
+- **Views.** Five cameras with fixed IDs, each looking away from the sun: `View: clearing` (the board, the helmet, and CesiumMan), `hillside` (the steepest ground near the walk, sunlit), `vista` (from the highest ground, 2 km across the world), `flyover` (20 s into it, looking 35° down, so the world's edge is out of sight), and `cell-edge` (across the corner where cells 44_43, 45_43, 44_44, and 45_44 meet).
+- **Again.** Assembling again imports again, which keeps every ID, writes the world's parts afresh, and keeps the cook cache.
+
+CTest's **`maya_w1_assemble`** (fixture `w1_project`, skipped with 77 without the samples) writes `build/w1` with RGBA8 textures; `maya_w1` checks the recipe: the parts, the cameras, the generators' spacings, the 420 bodies, and S1's length and turns.
+
+**The visual bar** ([w1_tests.cpp](../tests/w1_tests.cpp), `maya_w1_reference`):
+- The five views match the references in [tests/references/w1](../tests/references/w1), at 640 × 360 with the usual tolerance; the project owner approved them on 13 October 2026, with the rock layer's maps visibly repeating at a distance (the flyover), since the terrain material has no anti-tiling. Each is rendered as Play reaches it: W1 settled around S1's start, two ticks, a frame from S1's camera, then settled around the view. The test streams W1 as the player does (`tests/support/w1_play.hpp`): the terrain, then the cells once the terrain under them collides, then scatter once the cells are in, drawn with the poses between the last two ticks, through a visibility index with the project's settings.
+- **The editor and the player** show the same image: the editor on Metal plays W1 in its Game view and, for each view, puts S1's camera where the view's camera is and streams around it frame by frame until nothing changes; every pixel of its viewport between its tool bar and its "Click to play" hint is within one level of the player's, but for at most 0.01% (an unoptimized build has shown 2 of 279,000 pixels differing in the flyover; Release, none).
+- **The package** ([package_tests.cpp](../tests/package_tests.cpp), `maya_w1_package`): W1 packaged through its warm cook cache (1.8 GB with RGBA8 textures) streams and draws each view within one level of its sources on all but 0.01% of the pixels (it makes terrain and scatter as it runs, with no cook cache: at most 4 pixels in 129,600 differed), and the packaged player runs from a folder outside the checkout.
+- **No seams** at the cell edges, in the cell-edge view; **no LOD popping** and **shadows on terrain and scatter**, in the views and along S1 in the [manual script](#manual-script-w1).
+
 ### Manual script, world editing
 
 Run on the reference machine with a Release build, in a copy of the sample project (`cp -R samples/basic_scene ~/Desktop/Worlds`, then `maya_editor ~/Desktop/Worlds`).
@@ -482,3 +521,12 @@ Run on the reference machine with a Release build, in a copy of the sample proje
 7. **Follow a reference.** Give a cube a script with an entity property and choose, as its target, a cube in a cell that is not loaded, from that cell's list. The cell loads. Save, fly away until the target's cell unloads, then select the first cube: its target shows as unloaded, with its cell. Press the button beside it. The cell loads, the target is selected, and the view frames it.
 8. **Save and reopen.** Press ⌘S, quit, and open the world again from the scene menu. Only the cells near the camera load, and everything is as it was left.
 9. **Play and Stop.** Press ⌘P. Streaming shows the play World's cells around the play camera. Press ⌘P again: the editor's loaded cells are as they were, and nothing is unsaved.
+
+### Manual script, W1
+
+Run on the reference machine with a Release build, after assembling `build/w1-astc` as [above](#w1).
+
+1. **The player follows S1.** Run `maya_player build/w1-astc/project.maya`. The first frame shows the clearing with the board, the helmet, and CesiumMan walking. The camera walks east over the hill, turns back three times, then flies north-east 220 m up, and starts again at the clearing after 160 s.
+2. **Look for seams and popping.** While it walks, watch the ground at cell edges and the scatter at a distance: no cracks, no gaps between tiles, and no rocks or boulders visibly changing shape as the camera passes.
+3. **Look at the shadows.** Rocks, boulders, deadwood, and the landmarks cast shadows on the terrain, and hills cast shadows on each other near the camera.
+4. **Play in the editor.** Press ⌘P. The Game view follows S1 as the player does, and the Streaming panel shows cells coming and going around the play camera. Stop: the editor's loaded cells are as they were.

@@ -203,6 +203,12 @@ Recipe version 1, approved by the project owner on 7 October 2026.
 
 S1 and the soak become benchmark manifests with W1 in #1069, following the [workload rules](performance-baseline.md#repeatable-workloads).
 
+**Recipe version 2** (decided by the project owner on 12 October 2026, [#1069](https://work.rezee.app/kash/issues/1069)), which `maya_w1` assembles ([acceptance](../acceptance.md#w1)):
+- **Scatter spacings.** Scatter's spacing must be a power of two that divides the 128 m cell ([procedural](../procedural.md#the-scatter-generator)), so the boulders and the deadwood use 8 m, with densities that keep version 1's counts: boulders at 0.44 (64/144) and slopes to 35°, deadwood at 0.19 (0.3 × 64/100). The rocks are unchanged.
+- **S1's length.** The speeds and times hold: 120 s on foot at 8 m/s and 40 s of flyover at 60 m/s are 9,600 ticks at 60 Hz and 3.36 km, not 14,400 ticks and 3.2 km as written above.
+- **The soak's regeneration.** The rocks are two generators with the same rules: the main one, kept out of a 2 × 2-cell box by an exclusion naming it, and one over that box, whose seed each soak cycle changes, since a generator has one seed for its whole region.
+- **The cross-cell reference.** A world keeps every camera in its persistent part, so the watch camera is there, and CesiumMan, in a cell, is what it references.
+
 ## What the milestone's issues take from this
 
 | Issue | Decided here |
