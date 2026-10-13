@@ -1150,7 +1150,7 @@ void EditorShell::render_viewport() {
     if (!m_visibility || m_visibility->world() != world.token()) m_visibility = std::make_unique<VisibilityIndex>(world);
     options.view = &*view;
     options.index = m_visibility.get();
-    update_terrain(world, view->position);
+    if (!m_play) update_terrain(world, {view->position}); // while playing, update_play streams it, before the tick
     if (m_terrain) options.terrains = m_terrain->terrains();
     if (m_project) {
         options.lod_pixels = project_lod_pixels(m_project->settings);
@@ -1267,15 +1267,19 @@ void EditorShell::release_unused() {
     m_log.add(DiagnosticSource::asset, text.str(), m_frame);
 }
 
-void EditorShell::update_terrain(const World& world, const math::DVec3& source) {
+void EditorShell::update_terrain(const World& world, std::vector<math::DVec3> sources) {
     if (!m_terrain && world.component_count<TerrainComponent>() == 0) return; // no terrain, nothing kept
     if (!m_terrain) {
         auto settings = TerrainSettings{};
         if (m_project) settings.streaming = project_streaming_settings(m_project->settings);
         settings.collide = true; // in Play; the authored scene has no physics world
         m_terrain = std::make_unique<TerrainStreamer>(&m_device, m_cook_cache, settings);
+        // While a world plays, a tile keeps its height field while a cell over it is in (#1069).
+        m_terrain->set_held([this](TileIndex tile) {
+            return m_play_world && m_play_world->in_world({double(tile.x) * tile_size, 0.0, double(tile.z) * tile_size}, tile_size);
+        });
     }
-    m_terrain->set_sources({source});
+    m_terrain->set_sources(std::move(sources));
     m_terrain->update(world, *m_assets, m_play ? &m_play->physics() : nullptr);
 }
 } // namespace maya::editor

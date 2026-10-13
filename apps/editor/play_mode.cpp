@@ -29,8 +29,16 @@ bool EditorShell::start_play(bool record) {
     const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
     const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
     m_play_world->set_sources({pose ? pose->translation : m_camera.position});
+    // A cell goes in once the terrain under it collides (#1069), which begin_play settled first; the terrain keeps a
+    // tile's height field while a cell over it is in (update_terrain).
+    const auto cell_size = m_play_world->world().cell_size;
+    m_play_world->set_ready([this, cell_size](CellIndex cell) {
+        return !m_terrain || m_terrain->collides({double(cell.x) * cell_size, 0.0, double(cell.z) * cell_size}, cell_size);
+    });
     const auto& streamed = m_play_world->settle(m_play->world(), &m_play->physics()); // a loading screen: the first tick has its ground
-    m_log.add(DiagnosticSource::play, "Streamed " + std::to_string(streamed.cells[size_t(CellState::active)]) + " cells in around the camera",
+    m_log.add(DiagnosticSource::play,
+              "Streamed " + std::to_string(streamed.cells[size_t(CellState::active)]) + " cells in around the camera" +
+                  (streamed.waiting ? ", " + std::to_string(streamed.waiting) + " waiting for the terrain under them" : std::string()),
               m_frame);
     if (m_play_scatter) { // after the cells: an item goes in once its cell (and any override of it) is in
         m_play_scatter->set_ready([streamer = m_play_world.get()](CellIndex cell) {
@@ -141,9 +149,7 @@ bool EditorShell::begin_play(const SceneDocument& document, const PlayRecording*
     }
     if (has_terrain) { // the ground under the play camera collides before the first tick
         m_terrain.reset(); // the authored World's
-        const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
-        const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
-        update_terrain(m_play->world(), pose ? pose->translation : math::DVec3{});
+        update_terrain(m_play->world(), play_terrain_sources());
         if (m_terrain) m_terrain->settle(m_play->world(), *m_assets, &m_play->physics());
     }
     if (has_generators) { // scatter's items around the play camera, in the play World and its physics, before the first tick
@@ -212,6 +218,16 @@ void EditorShell::toggle_pause() {
     else m_play->clock().pause();
 }
 
+std::vector<math::DVec3> EditorShell::play_terrain_sources() const {
+    // Around the play camera, which Play streams the cells around (the editor camera without one), as the player
+    // does; and around the editor camera too while the Scene view shows it.
+    const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
+    const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;
+    auto sources = std::vector{pose ? pose->translation : m_camera.position};
+    if (!showing_game()) sources.push_back(m_camera.position);
+    return sources;
+}
+
 void EditorShell::step_play() {
     if (m_play && m_play->clock().paused()) m_play->clock().step();
 }
@@ -228,6 +244,8 @@ void EditorShell::update_play(const RoutedInput& routed, float delta_time) {
     // Only events the router gave the game reach it; everything else stays with the editor.
     m_play->input().feed(routed.game);
     if (routed.game_ended) m_play->input().release_all();
+    // Terrain first: a world's cells wait for the ground under them (#1069), and the tick steps physics on it.
+    update_terrain(m_play->world(), play_terrain_sources());
     if (m_play_world) { // a world's cells around the play camera, before the tick steps physics, as the player does
         const auto camera = m_play->camera() ? m_play->world().find(*m_play->camera()) : std::nullopt;
         const auto pose = camera ? m_play->world().world_matrix(*camera) : std::nullopt;

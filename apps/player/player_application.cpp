@@ -139,12 +139,6 @@ public:
         // A loading screen: what the scene draws is resident before the first frame, which then streams
         // anything later (docs/assets.md#asynchronous-loading).
         const auto loading = Stopwatch{};
-        if (m_streamer) { // the cells around the camera, before the first frame
-            m_streamer->set_sources({camera_position()});
-            const auto& streamed = m_streamer->settle(m_session->world(), &m_session->physics());
-            std::cerr << "[Player] streamed " << streamed.cells[size_t(CellState::active)] << " cells in around the camera\n";
-            if (!streamed.last_error.empty()) std::cerr << "[Player] " << streamed.last_error << '\n';
-        }
         if (has_terrain) { // its tiles around the camera, drawn and collided with, before the first frame
             auto settings = TerrainSettings{};
             settings.streaming = project_streaming_settings(project.settings);
@@ -154,6 +148,13 @@ public:
             m_terrain->set_sources({camera_position()});
             const auto& terrain = m_terrain->settle(m_session->world(), *m_assets, &m_session->physics());
             std::cerr << "[Player] generated " << terrain.generated << " terrain tiles and read " << terrain.cached << " from the cook cache\n";
+        }
+        if (m_streamer) { // the cells around the camera, before the first frame, each once the terrain under it collides (#1069)
+            if (m_terrain) link_terrain(*m_streamer, *m_terrain);
+            m_streamer->set_sources({camera_position()});
+            const auto& streamed = m_streamer->settle(m_session->world(), &m_session->physics());
+            std::cerr << "[Player] streamed " << streamed.cells[size_t(CellState::active)] << " cells in around the camera\n";
+            if (!streamed.last_error.empty()) std::cerr << "[Player] " << streamed.last_error << '\n';
         }
         if (has_generators) { // scatter's items around the camera, once their cells are in, before the first frame
             auto settings = ScatterSettings{};
@@ -186,16 +187,16 @@ public:
         m_assets->update();
         m_assets->begin_frame();
         for (const auto& warning : m_assets->take_budget_warnings()) std::cerr << "[Player] " << warning << '\n';
-        // Then the world's cells around the camera, within the frame's budget (#1064).
-        if (m_streamer) {
+        // Then the terrain and the world's cells around the camera, within their frame budgets (#1064, #1068).
+        if (m_terrain) { // its tiles around the camera, before the tick steps physics
+            m_terrain->set_sources({camera_position()});
+            m_terrain->update(m_session->world(), *m_assets, &m_session->physics());
+        }
+        if (m_streamer) { // after the terrain its cells wait for
             m_streamer->set_sources({camera_position()});
             const auto errors = m_streamer->stats().loads_failed + m_streamer->stats().pinned;
             const auto& streamed = m_streamer->update(m_session->world(), &m_session->physics());
             if (streamed.loads_failed + streamed.pinned != errors) std::cerr << "[Player] " << streamed.last_error << '\n';
-        }
-        if (m_terrain) { // its tiles around the camera, before the tick steps physics
-            m_terrain->set_sources({camera_position()});
-            m_terrain->update(m_session->world(), *m_assets, &m_session->physics());
         }
         if (m_scatter) { // scatter's items, after the cells they belong to
             m_scatter->set_sources({camera_position()});

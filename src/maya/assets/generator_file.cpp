@@ -139,7 +139,9 @@ GeneratorFileResult read_generator_file(std::istream& input) {
     if (input.bad()) return fail(0, "I/O failure while reading the generator");
     // Values are checked together, since a region's corners depend on each other; a failure names the line
     // of the property it is about.
-    if (const auto edited = edit_properties(generator, edits); !edited) {
+    // A file is read without its catalog: references are checked where it is used, as materials' textures are.
+    const auto any_asset = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    if (const auto edited = edit_properties(generator, edits, any_asset); !edited) {
         const auto at = std::ranges::find(edits, edited.property, &PropertyEdit::property);
         const auto* property = generator_property(edited.property);
         return fail(at == edits.end() ? 0 : lines[size_t(at - edits.begin())],

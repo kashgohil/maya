@@ -86,6 +86,7 @@ struct TerrainStreamer::Impl {
         std::shared_ptr<const HeightBuffer> overview_buffer;
         /// What was drawn before its generator changed (#1093): drawn until the new tiles are ready.
         std::optional<TerrainView> previous;
+        bool loading = false; // its generator is still loading: where it reaches is not known yet
     };
 
     GraphicsDevice* device;
@@ -95,6 +96,7 @@ struct TerrainStreamer::Impl {
     std::vector<math::DVec3> sources;
     std::map<std::pair<uint32_t, uint64_t>, Terrain> terrains; // by entity slot and generation
     PhysicsWorld* physics = nullptr; // the one holding the height fields
+    std::function<bool(TileIndex)> held; // tiles whose height fields stay past the radii (set_held)
     uint64_t world = 0;
 
     Impl(GraphicsDevice* d, std::shared_ptr<CookCache> c, TerrainSettings s) : device(d), cache(std::move(c)), settings(s) {}
@@ -247,6 +249,7 @@ const TerrainStats& TerrainStreamer::update(const World& world, AssetRegistry& a
             if (terrain.generator) impl.start_overview(terrain);
         }
         terrain.component = component; // its layers, drawn as they are now
+        terrain.loading = !terrain.generator && lease.diagnostic.code == AssetError::loading;
     });
     for (auto it = impl.terrains.begin(); it != impl.terrains.end();)
         if (!seen.contains(it->first)) {
@@ -319,14 +322,17 @@ const TerrainStats& TerrainStreamer::update(const World& world, AssetRegistry& a
         for (auto it = terrain.tiles.begin(); it != terrain.tiles.end();) {
             auto& [index, tile] = *it;
             const auto distance = impl.nearest(index);
-            if (distance > load_radius + radii.hysteresis) {
+            // Beyond the hysteresis, unless a cell over it is in (set_held); or never started (waiting for room among
+            // the tiles in flight) and no longer wanted, which nothing would start again (#1069).
+            const auto held = tile.physics_field && impl.held && impl.held(index); // a cell over it is in: it stays
+            if ((distance > load_radius + radii.hysteresis && !held) || (tile.state == Impl::State::loading && !tile.job && distance > load_radius)) {
                 if (tile.job) tile.job.cancel();
                 if (tile.physics_field) removed.push_back(tile.physics_field);
                 if (tile.state == Impl::State::active) ++deactivated;
                 it = terrain.tiles.erase(it);
                 continue;
             }
-            if (tile.state == Impl::State::active && distance > radii.activate_radius + radii.hysteresis) {
+            if (tile.state == Impl::State::active && distance > radii.activate_radius + radii.hysteresis && !held) {
                 if (tile.physics_field) removed.push_back(tile.physics_field);
                 tile.physics_field = 0;
                 tile.state = Impl::State::loaded; // still drawn: its buffer stays while it is loaded
@@ -425,6 +431,32 @@ const TerrainStats& TerrainStreamer::update(const World& world, AssetRegistry& a
     m_stats.update_ms = milliseconds_since(clock);
     m_stats.longest_update_ms = std::max(m_stats.longest_update_ms, m_stats.update_ms);
     return m_stats;
+}
+
+bool TerrainStreamer::collides(const math::DVec3& low, double size) const {
+    if (!m_impl->settings.collide) return true;
+    const auto first_x = int32_t(std::floor(low.x / tile_size)), last_x = int32_t(std::ceil((low.x + size) / tile_size)) - 1;
+    const auto first_z = int32_t(std::floor(low.z / tile_size)), last_z = int32_t(std::ceil((low.z + size) / tile_size)) - 1;
+    for (const auto& [key, terrain] : m_impl->terrains) {
+        if (terrain.loading) return false;
+        if (!terrain.generator) continue;
+        for (auto z = first_z; z <= last_z; ++z)
+            for (auto x = first_x; x <= last_x; ++x) {
+                const auto index = TileIndex{x, z};
+                if (!in_region(*terrain.generator, index) || m_impl->nearest(index) > m_impl->settings.streaming.activate_radius) continue;
+                const auto found = terrain.tiles.find(index);
+                if (found == terrain.tiles.end() || !found->second.physics_field) return false;
+            }
+    }
+    return true;
+}
+
+void TerrainStreamer::set_held(std::function<bool(TileIndex)> held) { m_impl->held = std::move(held); }
+
+void link_terrain(WorldStreamer& cells, TerrainStreamer& terrain) {
+    const auto size = cells.world().cell_size;
+    cells.set_ready([&terrain, size](CellIndex cell) { return terrain.collides({double(cell.x) * size, 0.0, double(cell.z) * size}, size); });
+    terrain.set_held([&cells](TileIndex tile) { return cells.in_world({double(tile.x) * tile_size, 0.0, double(tile.z) * tile_size}, tile_size); });
 }
 
 std::optional<float> TerrainStreamer::height_at(double x, double z) const {

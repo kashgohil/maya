@@ -364,6 +364,15 @@ if(MAYA_BUILD_PLAYER OR MAYA_BUILD_SAMPLES)
     target_link_libraries(maya_r1 PRIVATE MayaR1)
     maya_target_options(maya_r1)
 
+    # W1, the reference world (#1069), assembled from the fetched samples (docs/acceptance.md#w1).
+    add_library(MayaW1 STATIC apps/w1/w1.cpp)
+    target_include_directories(MayaW1 PUBLIC apps/w1)
+    target_link_libraries(MayaW1 PUBLIC MayaImport MayaScene MayaProcedural)
+    maya_target_options(MayaW1)
+    add_executable(maya_w1 apps/w1/main.cpp)
+    target_link_libraries(maya_w1 PRIVATE MayaW1)
+    maya_target_options(maya_w1)
+
     # The benchmark runner: headless, offscreen, driven by versioned manifests (docs/performance.md).
     add_library(MayaBenchmark STATIC apps/benchmark/benchmark.cpp apps/benchmark/physics_workload.cpp apps/benchmark/import_workload.cpp
         apps/benchmark/animation_workload.cpp apps/benchmark/stream_workload.cpp)

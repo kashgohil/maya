@@ -281,6 +281,22 @@ void WorldStreamer::release(std::shared_ptr<const void>&& held) {
 
 void WorldStreamer::set_sources(std::vector<math::DVec3> positions) { m_sources = std::move(positions); }
 
+void WorldStreamer::set_ready(std::function<bool(CellIndex)> ready) { m_ready = std::move(ready); }
+
+bool WorldStreamer::in_world(const math::DVec3& low, double size) const {
+    const auto size_of = m_world.cell_size;
+    const auto first_x = int32_t(std::floor(low.x / size_of)), last_x = int32_t(std::ceil((low.x + size) / size_of)) - 1;
+    const auto first_z = int32_t(std::floor(low.z / size_of)), last_z = int32_t(std::ceil((low.z + size) / size_of)) - 1;
+    for (auto z = first_z; z <= last_z; ++z)
+        for (auto x = first_x; x <= last_x; ++x) {
+            const auto found = m_cells.find({x, z});
+            if (found == m_cells.end()) continue;
+            const auto state = found->second->state;
+            if (state == CellState::activating || state == CellState::active || state == CellState::deactivating) return true;
+        }
+    return false;
+}
+
 CellState WorldStreamer::state(CellIndex index) const {
     const auto found = m_cells.find(index);
     return found == m_cells.end() ? CellState::unloaded : found->second->state;
@@ -547,6 +563,7 @@ const StreamingStats& WorldStreamer::update(World& world, PhysicsWorld* physics)
     // Decisions: cheap, every cell. What costs the World time waits for the work below.
     auto loads = size_t(std::ranges::count(order, CellState::loading, &Cell::state));
     auto in_flight = m_stats.bytes_in_flight;
+    m_stats.waiting = 0;
     for (auto* cell : order) {
         const auto want = this->want(*cell);
         switch (cell->state) {
@@ -574,6 +591,8 @@ const StreamingStats& WorldStreamer::update(World& world, PhysicsWorld* physics)
                 release(std::move(cell->authored));
                 cell->bytes = 0;
                 cell->state = CellState::unloaded;
+            } else if (want.active && m_ready && !m_ready(cell->info->index)) {
+                ++m_stats.waiting; // what it stands on is not there yet
             } else if (want.active) {
                 cell->pending = with_delta(cell->authored, cell->delta ? &*cell->delta : nullptr);
                 cell->group = m_next_group++;
@@ -630,6 +649,8 @@ const StreamingStats& WorldStreamer::settle(World& world, PhysicsWorld* physics)
             const auto want = this->want(cell);
             if (cell.state == CellState::loading || cell.state == CellState::activating || cell.state == CellState::deactivating) return true;
             if (cell.state == CellState::failed || cell.pinned) return false;
+            // Held by the ready predicate: what it waits for settles on its own, first.
+            if (cell.state == CellState::ready && want.active && m_ready && !m_ready(cell.info->index)) return false;
             // Waiting for room in the cells budget, and only to load ahead: nothing to wait for.
             if (cell.state == CellState::unloaded && !want.active && m_stats.bytes_loaded >= m_settings.resident_bytes) return false;
             return want.active ? cell.state != CellState::active : want.loaded ? cell.state != CellState::ready : cell.state != CellState::unloaded;

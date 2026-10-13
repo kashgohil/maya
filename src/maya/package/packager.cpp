@@ -1,4 +1,5 @@
 #include "maya/package/packager.hpp"
+#include "maya/assets/generator_file.hpp"
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/project.hpp"
 #include "maya/assets/property_context.hpp"
@@ -159,6 +160,22 @@ PackageReport package_project(const PackageOptions& options) {
         auto bytes = read_file(path);
         if (!bytes) return fail("cannot read " + scene.generic_string());
         scene_texts.emplace_back(scene, std::move(*bytes));
+    }
+    // Generators reach their heights, and scatter's meshes and materials (#1069); a generator only a generator
+    // names is followed too. Then the materials, the scatter generators' included, reach their textures.
+    for (auto pending = std::vector<AssetId>(needed.begin(), needed.end()); !pending.empty();) {
+        const auto id = pending.back();
+        pending.pop_back();
+        const auto& record = records.at(id);
+        if (record.kind != AssetKind::generator) continue;
+        auto input = std::ifstream(project.content_root / record.path);
+        if (!input) return fail("generator " + record.path.generic_string() + " cannot be read");
+        auto read = read_generator_file(input);
+        if (!read) return fail(record.path.generic_string() + ": " + read.error);
+        const auto before = needed;
+        if (const auto checked = validate_generator(read.generator, context); !checked)
+            return fail(record.path.generic_string() + ": " + std::string(checked.message));
+        std::ranges::set_difference(needed, before, std::back_inserter(pending));
     }
     for (const auto id : std::vector<AssetId>(needed.begin(), needed.end())) {
         const auto& record = records.at(id);

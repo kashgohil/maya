@@ -16,6 +16,7 @@
 #include "maya/streaming/world_streamer.hpp"
 #include "maya/world/components.hpp"
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <span>
@@ -81,6 +82,16 @@ public:
     std::span<const TerrainView> terrains() const noexcept { return m_views; }
     /// The height of the loaded terrain at a point, between its samples (none where no tile is loaded).
     std::optional<float> height_at(double x, double z) const;
+    /// Whether bodies can stand on the terrain over a square of ground now (#1069): `low` its low corner and `size`
+    /// its side, a world's cell. Every tile under it that a colliding terrain collides with here (within the
+    /// activation radius) must hold its height field in the physics world; tiles farther out are not collided with,
+    /// so they are not waited for. While a terrain's generator loads, where it reaches is not known: never. A
+    /// world's cells wait for it before they activate (link_terrain), so their bodies never fall through.
+    bool collides(const math::DVec3& low, double size) const;
+    /// Which tiles the World still stands on: a tile `held` names keeps its height field past the activation radius
+    /// and its hysteresis until it no longer does (a world's cells over it are out), so a cell's bodies never lose
+    /// their ground before the cell goes. None by default.
+    void set_held(std::function<bool(TileIndex)> held);
     /// Waits for every tile job in flight (tests and loading screens).
     void wait_idle();
     /// A loading screen: updates, waiting for generators and tiles, until nothing more would change around
@@ -94,5 +105,10 @@ private:
     std::vector<TerrainView> m_views;
     TerrainStats m_stats;
 };
+
+/// Makes a world's cells and its terrain wait for each other (#1069): a cell activates once the terrain under it
+/// collides, and a tile keeps its height field while a cell over it is in. Both must outlive what they are given;
+/// update and settle the terrain before the cells.
+void link_terrain(WorldStreamer& cells, TerrainStreamer& terrain);
 
 } // namespace maya

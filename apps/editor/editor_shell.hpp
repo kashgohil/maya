@@ -143,6 +143,8 @@ public:
     EditorCells* cells() noexcept { return m_cells.get(); }
     /// While playing a world: its streamer, in the play World.
     const WorldStreamer* play_streamer() const noexcept { return m_play_world.get(); }
+    /// While playing a scene with generators: its scatter, in the play World.
+    const ScatterStreamer* play_scatter() const noexcept { return m_play_scatter.get(); }
     /// Undo and redo as the editor does them: in a world, the cells the step touches are loaded first.
     EditResult undo_edit();
     EditResult redo_edit();
@@ -640,7 +642,8 @@ private:
     std::unique_ptr<VisibilityIndex> m_visibility;
     /// The drawn World's terrain (#1068): tiles around the view, and in Play, height fields in its physics.
     std::unique_ptr<TerrainStreamer> m_terrain;
-    void update_terrain(const World& world, const math::DVec3& source);
+    void update_terrain(const World& world, std::vector<math::DVec3> sources);
+    std::vector<math::DVec3> play_terrain_sources() const;
     /// The open world's cells (#1067): after the scene, so they go first; their listener and check are on it.
     std::unique_ptr<EditorCells> m_cells;
     /// Play of a world: its cells streamed into the play World around the play camera.

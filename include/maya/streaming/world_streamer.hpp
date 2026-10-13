@@ -95,6 +95,7 @@ struct StreamingStats {
     size_t bytes_loaded = 0; // ready, activating, or active
     size_t active_entities = 0;
     size_t deltas = 0; // cells holding play's changes while unloaded
+    size_t waiting = 0; // loaded cells the sources want active, held back by the ready predicate (#1069)
     std::string last_error;
 };
 
@@ -108,6 +109,11 @@ public:
 
     /// Where the world is seen from: the camera, the player. Cells near any of them stream in.
     void set_sources(std::vector<math::DVec3> positions);
+    /// Whether a loaded cell may activate now: what it stands on has to be there first (#1069: the terrain's
+    /// colliders under it, so its bodies never fall through; link_terrain). A cell it refuses stays loaded and is counted as
+    /// waiting; settle does not wait for it, so whatever the predicate waits for settles first. Every cell may
+    /// by default.
+    void set_ready(std::function<bool(CellIndex)> ready);
     /// One frame of streaming into `world` (and `physics`, when the world has one), on the owner thread
     /// between ticks: applies finished loads, decides what each cell should be, and commits within the
     /// frame budget.
@@ -119,6 +125,9 @@ public:
     void unload_all(World& world, PhysicsWorld* physics);
 
     CellState state(CellIndex cell) const;
+    /// Whether any cell over a square of ground (`low` its low corner, `size` its side) has entities in the World:
+    /// activating, active, or going out (#1069: the terrain keeps the height fields they stand on).
+    bool in_world(const math::DVec3& low, double size) const;
     const CellDelta* delta(CellIndex cell) const;
     const StreamingStats& stats() const noexcept { return m_stats; }
     void reset_peaks() noexcept { m_stats.longest_frame_ms = 0.0; }
@@ -144,6 +153,7 @@ private:
     CellLoader m_loader;
     StreamingSettings m_settings;
     std::vector<math::DVec3> m_sources;
+    std::function<bool(CellIndex)> m_ready;
     std::map<CellIndex, std::unique_ptr<Cell>> m_cells;
     std::unordered_map<StageGroup, CellIndex> m_published; // active cells, by the group they were published from
     StageGroup m_next_group = 1;

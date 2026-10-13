@@ -426,8 +426,11 @@ GeneratorBinding bind_generator(PropertyId id, std::string_view name, std::strin
                                 std::span<const EnumOption> choices = {}) {
     using V = typename MemberTraits<decltype(Member)>::Value;
     constexpr auto type = property_type<V>();
-    return {{id, name, label, type, property_value(GeneratorAsset{}.*Member), range, units, presentation, PropertyEncoding::value, choices,
-             description},
+    // Its references (scatter's heights, meshes, and materials) are checked against the catalog, as components' are,
+    // and found by what follows them, as packaging does (#1069).
+    constexpr auto encoding = type == PropertyType::mesh_ref || type == PropertyType::material_ref || type == PropertyType::generator_ref
+        ? PropertyEncoding::persistent_asset_id : PropertyEncoding::value;
+    return {{id, name, label, type, property_value(GeneratorAsset{}.*Member), range, units, presentation, encoding, choices, description},
         [](const GeneratorAsset& generator) -> PropertyValue { return property_value(generator.*Member); },
         [](GeneratorAsset& generator, const PropertyValue& input) {
             if constexpr (std::is_enum_v<V>) {
