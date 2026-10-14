@@ -9,16 +9,20 @@
 #include "maya/simulation/script_assets.hpp"
 #include "maya/streaming/terrain_streamer.hpp"
 #include "maya/streaming/scatter_streamer.hpp"
+#include "maya/streaming/world_streamer.hpp"
 #include "maya/world/spatial.hpp"
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <numeric>
 #include <sstream>
 #include <thread>
+#include <tuple>
 #include <stdexcept>
 #include <pthread.h>
 #include <unistd.h>
@@ -41,13 +45,15 @@ const char* workload_name(Workload workload) {
     case Workload::import: return "import";
     case Workload::animation: return "animation";
     case Workload::stream: return "stream";
+    case Workload::traverse: return "traverse";
+    case Workload::soak: return "soak";
     }
     return "?";
 }
 /// Workloads that generate a scene of one mesh and material.
 bool generated(Workload workload) {
     return workload != Workload::scene && workload != Workload::physics && workload != Workload::import && workload != Workload::animation &&
-           workload != Workload::stream;
+           workload != Workload::stream && workload != Workload::traverse && workload != Workload::soak;
 }
 
 // Manifests -------------------------------------------------------------------------------------------
@@ -146,6 +152,7 @@ struct Stage {
     std::unique_ptr<TerrainStreamer>& terrain; // when the scene has terrain, as the player streams it (#1068)
     std::unique_ptr<ScatterStreamer>& scatter; // when it runs generators (#1093), as the player streams them
     std::unique_ptr<WorldScatterSink>& scatter_sink; // into the running session
+    WorldStreamer* cells = nullptr; // traverse and soak (#1069): a world's cells, as the player streams them
 };
 math::DVec3 camera_position(const World& world, EntityId camera) {
     const auto handle = world.find(camera);
@@ -231,6 +238,10 @@ FrameSample run_frame(const Stage& stage, PlaySession& session, EntityId camera,
     if (stage.terrain) { // its tiles around the camera, before the tick steps physics, as the player does
         stage.terrain->set_sources({camera_position(session.world(), camera)});
         stage.terrain->update(session.world(), stage.registry, &session.physics());
+    }
+    if (stage.cells) { // a world's cells, after the terrain they wait for, as the player does (#1069)
+        stage.cells->set_sources({camera_position(session.world(), camera)});
+        stage.cells->update(session.world(), &session.physics());
     }
     if (stage.scatter && stage.scatter_sink) { // its items, as the player does
         stage.scatter->set_sources({camera_position(session.world(), camera)});
@@ -825,7 +836,10 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
             else if (text == "import") manifest.workload = Workload::import;
             else if (text == "animation") manifest.workload = Workload::animation;
             else if (text == "stream") manifest.workload = Workload::stream;
-            else return fail(number_of_line, "unknown workload '" + text + "'; use instances, scene, load_cycles, play_cycles, physics, import, animation, or stream");
+            else if (text == "traverse") manifest.workload = Workload::traverse;
+            else if (text == "soak") manifest.workload = Workload::soak;
+            else return fail(number_of_line, "unknown workload '" + text +
+                                                 "'; use instances, scene, load_cycles, play_cycles, physics, import, animation, stream, traverse, or soak");
         } else if (key == "content") {
             ok = bool(in >> std::quoted(text)) && !text.empty();
             manifest.content = (folder / text).lexically_normal();
@@ -891,6 +905,11 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
         } else if (key == "radii") {
             ok = bool(in >> manifest.load_radius >> manifest.activate_radius >> manifest.hysteresis) && manifest.activate_radius > 0.0 &&
                  manifest.load_radius >= manifest.activate_radius && manifest.hysteresis >= 0.0;
+        } else if (key == "delay") {
+            ok = bool(in >> manifest.delay_fraction >> manifest.delay_ms) && manifest.delay_fraction >= 0.0 && manifest.delay_fraction <= 1.0 &&
+                 manifest.delay_ms >= 0.0 && manifest.delay_ms <= 60000.0;
+        } else if (key == "reseed") {
+            ok = asset_id(in, manifest.reseed);
         } else if (key == "skinning") {
             ok = bool(in >> text) && (text == "on" || text == "off");
             manifest.skinning = text == "on";
@@ -914,7 +933,9 @@ ManifestResult read_manifest(std::istream& input, const fs::path& folder) {
                std::ranges::find(seen, "project") == seen.end()) {
         return {{}, "missing 'project'"};
     }
-    if ((manifest.workload == Workload::load_cycles || manifest.workload == Workload::play_cycles) && manifest.slope_from > manifest.cycles)
+    if (manifest.workload == Workload::soak && std::ranges::find(seen, "reseed") == seen.end()) return {{}, "the soak workload needs 'reseed'"};
+    if ((manifest.workload == Workload::load_cycles || manifest.workload == Workload::play_cycles || manifest.workload == Workload::soak) &&
+        manifest.slope_from > manifest.cycles)
         return {{}, "'slope_from' is past the last cycle"};
     if (generated(manifest.workload))
         for (const auto* required : {"mesh", "material"})
@@ -933,6 +954,304 @@ ManifestResult load_manifest(const fs::path& file) {
 
 namespace {
 /// The workload itself; run() records what surrounds it.
+// Traverse and soak (#1069) ------------------------------------------------------------------------------
+
+/// A cell loader whose cells a seeded fraction picks (by their index) load `delay_ms` late, as a slow disk would;
+/// the job waits in short steps, so a load cancelled meanwhile ends at once.
+CellLoader delaying(CellLoader loader, double fraction, double delay_ms, std::shared_ptr<std::atomic<uint64_t>> delayed) {
+    if (fraction <= 0.0 || delay_ms <= 0.0) return loader;
+    return [loader = std::move(loader), fraction, delay_ms, delayed](const WorldCell& cell, const JobContext& job) -> CellLoad {
+        const auto key = (uint64_t(uint32_t(cell.index.x)) << 32) | uint64_t(uint32_t(cell.index.z));
+        if (double(detail::mix(key) % 1'000'000) < fraction * 1'000'000.0) {
+            ++*delayed;
+            for (const auto waited = Stopwatch{}; waited.milliseconds() < delay_ms;) {
+                if (job.cancelled()) return {std::nullopt, "cancelled while delayed", 0};
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+        return loader(cell, job);
+    };
+}
+
+/// Entity-valued script properties in the World, and those whose target is not in it (decided 14 October 2026).
+std::pair<size_t, size_t> script_references(const World& world) {
+    auto count = size_t{0}, unresolved = size_t{0};
+    world.for_each<ScriptComponent>([&](EntityHandle, const ScriptComponent& script) {
+        for (const auto& value : script.values)
+            if (const auto* target = std::get_if<EntityId>(&value.data); target && value.type == ScriptValueType::entity && target->valid()) {
+                ++count;
+                unresolved += !world.find(*target);
+            }
+    });
+    return {count, unresolved};
+}
+
+size_t jobs_in_flight() {
+    const auto stats = job_system().stats();
+    const auto tier = [](const JobTierStats& t) { return size_t(t.submitted - t.succeeded - t.failed - t.cancelled); };
+    return tier(stats.frame) + tier(stats.background);
+}
+
+/// One traversal of a world along its first camera's path, or one soak cycle: load (a loading screen and the first
+/// frame), `ticks` frames, (soak) a new seed for the generator `reseed` and frames until its cells are remade, a
+/// reset (everything streamed in taken out, and what stayed counted), and an unload.
+WorldRun world_run(const Manifest& manifest, GraphicsDevice& device, AssetRegistry& registry, Renderer& renderer, RenderTarget& target,
+                   const Project& project, const WorldDocument& world_document, const fs::path& world_folder, std::shared_ptr<CookCache> cache,
+                   const PropertyValidationContext& context, uint32_t cycle) {
+    auto run = WorldRun{};
+    const auto streaming = project_streaming_settings(project.settings);
+    auto skins = SkinBindingCache{};
+    auto visibility = std::unique_ptr<VisibilityIndex>{};
+    auto terrain = std::unique_ptr<TerrainStreamer>{};
+    auto scatter = std::unique_ptr<ScatterStreamer>{};
+    auto scatter_sink = std::unique_ptr<WorldScatterSink>{};
+    // Loading: the persistent part plays, then the terrain, the cells, and scatter settle around the camera.
+    auto clock = Stopwatch{};
+    auto persistent = load_scene_file(world_folder / world_document.persistent, context);
+    if (!persistent) throw std::runtime_error(persistent.diagnostics.front().message);
+    const auto has_ground = has_terrain(persistent.document), runs_generators = has_generators(persistent.document);
+    auto started = PlaySession::start(std::move(persistent.document), context, play_systems(registry_script_sources(registry), registry_animation_clips(registry)));
+    if (!started) throw std::runtime_error(started.error.empty() ? started.diagnostics.front().message : started.error);
+    auto& session = *started.session;
+    if (!session.camera()) throw std::runtime_error("the world's persistent part has no camera");
+    const auto camera = *session.camera();
+    const auto persistent_entities = session.world().size();
+    const auto persistent_bodies = session.physics().stats().bodies;
+    auto delayed = std::make_shared<std::atomic<uint64_t>>(0);
+    auto cells = std::make_unique<WorldStreamer>(world_document,
+                                                 delaying(cooked_cell_loader(world_folder, cache, context), manifest.delay_fraction, manifest.delay_ms, delayed),
+                                                 streaming);
+    if (has_ground) {
+        auto settings = TerrainSettings{};
+        settings.streaming = streaming;
+        settings.collide = true;
+        terrain = std::make_unique<TerrainStreamer>(&device, cache, settings);
+        link_terrain(*cells, *terrain);
+    }
+    if (runs_generators) {
+        auto settings = ScatterSettings{};
+        settings.streaming = streaming;
+        scatter = std::make_unique<ScatterStreamer>(cache, settings);
+        scatter->set_ready([&cells](CellIndex cell) { return !cells->world().cell(cell) || cells->state(cell) == CellState::active; });
+    }
+    const auto stage = Stage{device, registry, renderer, target, manifest.width, manifest.height, false, nullptr, DebugView::none, skins, visibility,
+                             project_lod_pixels(project.settings), project_cull_pixels(project.settings), terrain, scatter, scatter_sink, cells.get()};
+    struct Clear { // whatever happens, the streamed content leaves the session's World and physics
+        const Stage& stage;
+        PlaySession& session;
+        WorldStreamer& cells;
+        ~Clear() {
+            clear_generated(stage, session);
+            cells.unload_all(session.world(), &session.physics());
+        }
+    } clear{stage, session, *cells};
+    const auto at = camera_position(session.world(), camera);
+    auto part = Stopwatch{};
+    if (terrain) {
+        terrain->set_sources({at});
+        terrain->settle(session.world(), registry, &session.physics());
+    }
+    run.load_terrain_ms = part.milliseconds();
+    part.restart();
+    cells->set_sources({at});
+    cells->settle(session.world(), &session.physics());
+    run.load_cells_ms = part.milliseconds();
+    part.restart();
+    if (scatter) {
+        scatter_sink = std::make_unique<WorldScatterSink>(session.world(), &session.physics());
+        scatter->set_sources({at});
+        scatter->settle(session.world(), registry, *scatter_sink);
+    }
+    run.load_scatter_ms = part.milliseconds();
+    part.restart();
+    preload_render_assets(session.world(), registry);
+    run.load_assets_ms = part.milliseconds();
+    run.load_ms = clock.milliseconds();
+    run.first_frame_ms = run.load_ms + run_frame(stage, session, camera, false).frame;
+    device.take_gpu_timings();
+    run.references = script_references(session.world()).first;
+
+    // The frames, each one tick, with the GPU's timings matched to them by submission serial.
+    auto& samples = run.samples;
+    const auto first_serial = device.stats().submitted_frames + 1;
+    const auto collect = [&] {
+        for (const auto& timing : device.take_gpu_timings()) {
+            if (timing.frame < first_serial) continue;
+            const auto index = size_t(timing.frame - first_serial);
+            if (index >= samples.gpu.size()) samples.gpu.resize(index + 1, std::nullopt);
+            samples.gpu[index] = timing.milliseconds;
+            samples.untimed_passes += timing.untimed_passes;
+            for (const auto& pass : timing.passes) {
+                auto& series = samples.gpu_passes[pass.label];
+                if (series.size() <= index) series.resize(index + 1, std::nullopt);
+                series[index] = series[index].value_or(0.0) + pass.milliseconds();
+                if (pass.start_ms < -0.05 || pass.end_ms > timing.milliseconds + 0.05) ++samples.gpu_pass_mismatches;
+            }
+        }
+    };
+    auto previous = cells->stats();
+    const auto scatter_state = [&] {
+        return scatter ? std::tuple{scatter->stats().items, scatter->stats().cells_active, scatter->stats().regenerations} : std::tuple<size_t, size_t, size_t>{};
+    };
+    auto previous_scatter = scatter_state();
+    const auto frame = [&] {
+        const auto sample = run_frame(stage, session, camera, true);
+        samples.frame.push_back(sample.frame);
+        samples.sampled_seconds += sample.frame / 1000.0;
+        samples.simulation.push_back(sample.simulation);
+        samples.wait.push_back(sample.wait);
+        samples.extract.push_back(sample.extract);
+        samples.encode.push_back(sample.encode);
+        samples.submit.push_back(sample.submit);
+        run.cpu_work.push_back(sample.simulation + sample.extract + sample.encode);
+        const auto& c = cells->stats();
+        const auto terrain_ms = terrain ? terrain->stats().update_ms : 0.0, scatter_ms = scatter ? scatter->stats().frame_ms : 0.0;
+        run.streaming.push_back(c.frame_ms + terrain_ms + scatter_ms);
+        // Anything going in or out: a cell published or hidden, or committing or discarding over several frames; a
+        // tile collided with or not; scatter's items or cells changing, or its cells being remade.
+        const auto now_scatter = scatter_state();
+        const auto moved = c.activations != previous.activations || c.deactivations != previous.deactivations ||
+                           c.cells[size_t(CellState::activating)] > 0 || c.cells[size_t(CellState::deactivating)] > 0 ||
+                           (terrain && (terrain->stats().activated > 0 || terrain->stats().deactivated > 0)) || now_scatter != previous_scatter;
+        run.activations.push_back(moved ? 1 : 0);
+        previous = c;
+        previous_scatter = now_scatter;
+        run.cells_waiting = std::max(run.cells_waiting, c.waiting);
+        run.longest_terrain_ms = std::max(run.longest_terrain_ms, terrain_ms);
+        run.longest_scatter_ms = std::max(run.longest_scatter_ms, scatter_ms);
+        run.unresolved.push_back(script_references(session.world()).second);
+        if (samples.frame.size() % 60 == 1) { // every second of play
+            const auto assets = registry.residency();
+            const auto report = residency_report(assets, c.bytes_loaded, renderer.shadow_bytes() + renderer.table_bytes() + target.gpu_bytes(),
+                                                 device.stats(), device.reported_memory(), std::nullopt);
+            auto point = WorldResidency{};
+            point.seconds = double(samples.frame.size() - 1) / 60.0;
+            for (size_t i = 0; i < residency_category_count; ++i) point.bytes[i] = report.bytes[i].total();
+            point.terrain_bytes = terrain ? terrain->stats().cpu_bytes + terrain->stats().gpu_bytes : 0;
+            point.total = report.total() + point.terrain_bytes;
+            if (const auto process = process_memory()) point.footprint = size_t(process->footprint);
+            run.residency.push_back(point);
+        }
+        if (samples.frame.size() % 64 == 0) collect();
+    };
+    for (uint32_t i = 0; i < manifest.ticks; ++i) frame();
+    if (manifest.workload == Workload::soak) {
+        // The soak's regeneration: a new seed for the generator, published as an edit is, and frames until the cells
+        // it covers are made again and in.
+        const auto ref = AssetRef<GeneratorAsset>{manifest.reseed};
+        auto generator = registry.acquire(ref);
+        if (!generator) throw std::runtime_error("the generator to reseed did not load: " + generator.diagnostic.message);
+        auto reseeded = generator.lease.value();
+        generator = {};
+        reseeded.seed = int32_t((uint32_t(reseeded.seed) + 7919u * (cycle + 1)) % 2147483520u);
+        if (auto error = registry.publish(ref, reseeded)) throw std::runtime_error("the generator could not be reseeded: " + error.message);
+        // Until its cells in reach are made again: the streamer counts each one it remakes, and has none left of the
+        // old version. A regeneration that never comes, or never finishes, fails the cycle.
+        const auto regenerating = Stopwatch{};
+        const auto before = scatter ? scatter->stats().regenerations : size_t{0};
+        auto done = false;
+        for (uint32_t i = 0; i < 600 && !done; ++i) {
+            frame();
+            done = scatter && scatter->stats().regenerations > before && scatter->stats().regenerating == 0;
+        }
+        run.regenerated_ms = regenerating.milliseconds();
+        if (!done) run.failure = "the reseeded generator's cells were not made again within 600 frames";
+    }
+    device.wait_idle();
+    collect();
+    samples.gpu.resize(samples.frame.size(), std::nullopt);
+    for (auto& [label, series] : samples.gpu_passes) series.resize(samples.frame.size(), std::nullopt);
+    const auto& c = cells->stats();
+    run.cell_loads = c.loads_started;
+    run.cells_delayed = delayed->load();
+    run.cells_cancelled = c.loads_cancelled;
+    run.cells_failed = c.loads_failed;
+    run.cell_activations = c.activations;
+    run.cell_deactivations = c.deactivations;
+    run.longest_cell_frame_ms = c.longest_frame_ms;
+    if (terrain) {
+        run.tiles_generated = terrain->stats().generated;
+        run.tiles_cached = terrain->stats().cached;
+    }
+    if (scatter) {
+        run.scatter_generated = scatter->stats().generated;
+        run.scatter_cached = scatter->stats().cached;
+        run.scatter_regenerations = scatter->stats().regenerations;
+    }
+    const auto outstanding = [&] {
+        auto o = WorldOutstanding{};
+        o.jobs = jobs_in_flight();
+        const auto loading = registry.load_stats();
+        o.loads = loading.in_flight + loading.prepared;
+        o.leased = registry.residency().leased;
+        return o;
+    };
+    run.outstanding = outstanding();
+    run.outstanding.cell_loads = c.cells[size_t(CellState::loading)];
+    run.outstanding.tile_loads = terrain ? terrain->stats().loading : 0;
+    run.outstanding.scatter_cells = scatter ? scatter->stats().cells_loading : 0;
+    // The reset: everything streamed in taken out of the live session; what stays beyond its persistent part is stale.
+    clear_generated(stage, session);
+    cells->unload_all(session.world(), &session.physics());
+    run.stale.entities = session.world().size() > persistent_entities ? session.world().size() - persistent_entities : 0;
+    run.stale.staged = session.world().staged_count();
+    const auto bodies = session.physics().stats().bodies;
+    run.stale.bodies = bodies > persistent_bodies ? bodies - persistent_bodies : 0;
+    run.stale.height_fields = session.physics().height_fields();
+    run.stale.scatter_items = session.world().component_count<GeneratedComponent>(); // items, by their marker
+    return run;
+}
+
+/// Traverse: `runs` traversals; soak: `cycles` cycles. Each one unloads at its end (the session and streamers gone,
+/// the GPU finished, unused versions released) before what remains is measured.
+void run_world(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader) {
+    auto opened = open_project(manifest.project);
+    if (!opened) throw std::runtime_error(opened.error);
+    const auto cache = std::make_shared<CookCache>(cook_cache_folder(opened.project));
+    auto assets = open_project_assets(opened.project, std::make_unique<FileAssetProvider>(device, cache));
+    if (!assets) throw std::runtime_error(assets.error);
+    auto& registry = *assets.registry;
+    const auto context = asset_property_context(registry);
+    const auto path = manifest.scene.empty() ? opened.project.startup_scene : opened.project.resolve(manifest.scene);
+    if (!path || path->extension() != ".world") throw std::runtime_error("the project has no world to traverse; name one with 'scene'");
+    auto file = std::ifstream(*path, std::ios::binary);
+    const auto read = read_world(std::string(std::istreambuf_iterator<char>(file), {}));
+    if (!read) throw std::runtime_error(path->filename().string() + ": " + read.error);
+    auto renderer = Renderer(device, std::move(renderer_shader));
+    auto target = RenderTarget(device, {Format::rgba8_unorm, false, "benchmark view"});
+    if (auto error = target.resize(manifest.width, manifest.height)) throw std::runtime_error(error.message);
+    if (auto error = device.begin_frame()) throw std::runtime_error(error.message);
+    auto warmed = renderer.render(RenderSnapshot{}, RenderView{manifest.width, manifest.height}, target);
+    if (auto ended = device.end_frame(); !warmed) warmed = std::move(ended);
+    if (warmed) throw std::runtime_error(warmed.message);
+    const auto renderer_gpu = [&] { return renderer.shadow_bytes() + renderer.table_bytes() + target.gpu_bytes(); };
+    result.baseline = memory(device, registry, 0, renderer_gpu());
+    const auto count = manifest.workload == Workload::soak ? manifest.cycles : manifest.runs;
+    for (uint32_t i = 0; i < count; ++i) {
+        auto run = world_run(manifest, device, registry, renderer, target, opened.project, *read.document, path->parent_path(), cache, context, i);
+        // Unloading as a scene closing does (docs/assets.md#residency): the clock noted, unused versions released,
+        // and the loads kept for no one since then cancelled and ended.
+        const auto closed = registry.use_clock();
+        device.wait_idle();
+        registry.evict_unused(closed);
+        registry.wait_idle();
+        registry.update();
+        run.after = memory(device, registry, 0, renderer_gpu());
+        run.after_outstanding.jobs = jobs_in_flight();
+        const auto loading = registry.load_stats();
+        run.after_outstanding.loads = loading.in_flight + loading.prepared;
+        run.after_outstanding.leased = registry.residency().leased;
+        result.world_runs.push_back(std::move(run));
+        footprint_snapshot(std::string(workload_name(manifest.workload)) + "-" + std::to_string(i + 1));
+    }
+    result.resident = memory(device, registry, 0, renderer_gpu());
+    result.loading = registry.load_stats();
+    if (manifest.workload == Workload::soak && manifest.reseed.valid()) { // the generator as authored again
+        if (auto restored = registry.reload(AssetRef<GeneratorAsset>{manifest.reseed}); !restored)
+            std::cerr << "[Benchmark] the reseeded generator was not reloaded: " << restored.diagnostic.message << '\n';
+    }
+}
+
 void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& device, std::string renderer_shader,
                   const std::function<void()>& poll) {
     if (manifest.workload == Workload::import) { // no views: imports, and loads into the device
@@ -954,6 +1273,17 @@ void run_workload(Result& result, const Manifest& manifest, GraphicsDevice& devi
         } catch (const std::exception& error) {
             result.failure = error.what();
         }
+        return;
+    }
+    if (manifest.workload == Workload::traverse || manifest.workload == Workload::soak) { // a world, as the player streams it (#1069)
+        if (!device.gpu_timing_supported()) result.unavailable.push_back({"gpu_frame_time", "this device does not report GPU execution time"});
+        result.unavailable.push_back({"stale_handles", "references are by persistent ID, so none can dangle; stale content is counted instead"});
+        try {
+            run_world(result, manifest, device, std::move(renderer_shader));
+        } catch (const std::exception& error) {
+            result.failure = error.what();
+        }
+        device.wait_idle();
         return;
     }
     if (manifest.workload == Workload::physics) { // headless: no project, views, or device work
@@ -1236,6 +1566,162 @@ void write_jobs(Json& json, const JobsRecord& jobs) {
     json.field("discarded", jobs.end.completions_discarded - jobs.start.completions_discarded);
     json.field("drain_ms", jobs.end.drain_ms - jobs.start.drain_ms);
     json.close('}');
+    json.close('}');
+}
+
+// Traverse and soak (#1069): every run's or cycle's frames, streaming, residency over time, and what was left.
+struct WorldTotals {
+    std::vector<double> frame, gpu, cpu_work, activation_frames;
+    double longest_activation_ms = 0.0;
+};
+WorldTotals world_totals(const Result& r) {
+    auto totals = WorldTotals{};
+    for (const auto& run : r.world_runs) {
+        totals.frame.insert(totals.frame.end(), run.samples.frame.begin(), run.samples.frame.end());
+        totals.cpu_work.insert(totals.cpu_work.end(), run.cpu_work.begin(), run.cpu_work.end());
+        for (const auto& value : run.samples.gpu)
+            if (value) totals.gpu.push_back(*value);
+        for (size_t i = 0; i < run.activations.size() && i < run.samples.frame.size(); ++i)
+            if (run.activations[i]) {
+                totals.activation_frames.push_back(run.samples.frame[i]);
+                totals.longest_activation_ms = std::max(totals.longest_activation_ms, run.samples.frame[i]);
+            }
+    }
+    return totals;
+}
+void write_world(Json& json, const Result& r) {
+    const auto totals = world_totals(r);
+    json.key("world");
+    json.open('{');
+    write_summary(json, "frame_ms", totals.frame);
+    write_summary(json, "gpu_ms", totals.gpu);
+    write_summary(json, "cpu_work_ms", totals.cpu_work);
+    write_summary(json, "activation_frame_ms", totals.activation_frames);
+    json.field("longest_activation_frame_ms", totals.longest_activation_ms);
+    json.field("steady_frame_ms", summarize(totals.frame).p50);
+    json.field("delay_fraction", r.manifest.delay_fraction);
+    json.field("delay_ms", r.manifest.delay_ms);
+    // Soak: what each cycle left, and its trend over the cycles from slope_from.
+    auto footprints = std::vector<double>{}, totals_after = std::vector<double>{};
+    for (size_t i = 0; i < r.world_runs.size(); ++i) {
+        const auto& after = r.world_runs[i].after;
+        if (i + 1 < r.manifest.slope_from) continue;
+        if (after.process) footprints.push_back(double(after.process->footprint));
+        totals_after.push_back(double(residency_report(after.assets, 0, after.renderer_gpu, after.device, after.gpu_reported, std::nullopt).total()));
+    }
+    json.field("footprint_slope_bytes_per_cycle", slope(footprints));
+    json.field("resident_slope_bytes_per_cycle", slope(totals_after));
+    json.key("runs");
+    json.open('[');
+    for (const auto& run : r.world_runs) {
+        json.open('{');
+        json.field("failure", run.failure);
+        json.field("load_ms", run.load_ms);
+        json.field("first_frame_ms", run.first_frame_ms);
+        json.key("load_parts_ms");
+        json.open('{');
+        json.field("terrain", run.load_terrain_ms);
+        json.field("cells", run.load_cells_ms);
+        json.field("scatter", run.load_scatter_ms);
+        json.field("assets", run.load_assets_ms);
+        json.close('}');
+        json.key("timing");
+        write_run(json, run.samples, std::nullopt);
+        write_summary(json, "cpu_work_ms", run.cpu_work);
+        write_summary(json, "streaming_ms", run.streaming);
+        json.field("activation_frames", size_t(std::ranges::count(run.activations, uint8_t{1})));
+        json.key("cells");
+        json.open('{');
+        json.field("loads", run.cell_loads);
+        json.field("delayed", run.cells_delayed);
+        json.field("cancelled", run.cells_cancelled);
+        json.field("failed", run.cells_failed);
+        json.field("activations", run.cell_activations);
+        json.field("deactivations", run.cell_deactivations);
+        json.field("most_waiting_for_terrain", run.cells_waiting);
+        json.field("longest_frame_ms", run.longest_cell_frame_ms);
+        json.close('}');
+        json.field("tiles_generated", run.tiles_generated);
+        json.field("tiles_cached", run.tiles_cached);
+        json.field("longest_terrain_update_ms", run.longest_terrain_ms);
+        json.field("scatter_cells_generated", run.scatter_generated);
+        json.field("scatter_cells_cached", run.scatter_cached);
+        json.field("longest_scatter_update_ms", run.longest_scatter_ms);
+        json.key("regenerated_ms");
+        if (run.regenerated_ms) json.value(*run.regenerated_ms); else json.null();
+        json.field("scatter_regenerations", run.scatter_regenerations);
+        json.field("references", run.references);
+        json.field("most_unresolved", run.unresolved.empty() ? size_t{0} : *std::ranges::max_element(run.unresolved));
+        json.field("frames_with_unresolved", size_t(std::ranges::count_if(run.unresolved, [](size_t n) { return n > 0; })));
+        const auto outstanding = [&](std::string_view name, const WorldOutstanding& o) {
+            json.key(name);
+            json.open('{');
+            json.field("jobs", o.jobs);
+            json.field("loads", o.loads);
+            json.field("leased", o.leased);
+            json.field("cell_loads", o.cell_loads);
+            json.field("tile_loads", o.tile_loads);
+            json.field("scatter_cells_loading", o.scatter_cells);
+            json.close('}');
+        };
+        outstanding("outstanding_at_end", run.outstanding);
+        outstanding("outstanding_after_unload", run.after_outstanding);
+        json.key("stale");
+        json.open('{');
+        json.field("entities", run.stale.entities);
+        json.field("staged", run.stale.staged);
+        json.field("bodies", run.stale.bodies);
+        json.field("height_fields", run.stale.height_fields);
+        json.field("scatter_items", run.stale.scatter_items);
+        json.close('}');
+        write_memory(json, "after_unload", run.after);
+        json.key("residency");
+        json.open('[');
+        for (const auto& point : run.residency) {
+            json.open('{');
+            json.field("seconds", point.seconds);
+            for (size_t c = 0; c < residency_category_count; ++c)
+                json.field(std::string(residency_category_name(ResidencyCategory(c))) + "_bytes", point.bytes[c]);
+            json.field("terrain_bytes", point.terrain_bytes);
+            json.field("total_bytes", point.total);
+            json.key("footprint_bytes");
+            if (point.footprint) json.value(*point.footprint); else json.null();
+            json.close('}');
+        }
+        json.close(']');
+        json.key("samples");
+        json.open('{');
+        json.key("frame_ms");
+        json.open('[');
+        for (const auto value : run.samples.frame) json.value(value);
+        json.close(']');
+        json.key("gpu_ms");
+        json.open('[');
+        for (const auto& value : run.samples.gpu) if (value) json.value(*value); else json.null();
+        json.close(']');
+        json.key("cpu_work_ms");
+        json.open('[');
+        for (const auto value : run.cpu_work) json.value(value);
+        json.close(']');
+        for (const auto& [name, values] : {std::pair{"simulation_ms", &run.samples.simulation}, {"extract_ms", &run.samples.extract},
+                                           {"encode_ms", &run.samples.encode}, {"wait_ms", &run.samples.wait}}) {
+            json.key(name);
+            json.open('[');
+            for (const auto value : *values) json.value(value);
+            json.close(']');
+        }
+        json.key("streaming_ms");
+        json.open('[');
+        for (const auto value : run.streaming) json.value(value);
+        json.close(']');
+        json.key("activation");
+        json.open('[');
+        for (const auto value : run.activations) json.value(size_t(value));
+        json.close(']');
+        json.close('}');
+        json.close('}');
+    }
+    json.close(']');
     json.close('}');
 }
 
@@ -1560,6 +2046,7 @@ std::string to_json(const Result& r) {
         }
         json.close(']');
     }
+    if (m.workload == Workload::traverse || m.workload == Workload::soak) write_world(json, r);
     if (m.workload == Workload::import) {
         json.key("imports");
         json.open('[');
@@ -1756,6 +2243,34 @@ std::string to_text(const Result& r) {
                 out << '\n';
             }
         }
+    if (r.manifest.workload == Workload::traverse || r.manifest.workload == Workload::soak) {
+        const auto totals = world_totals(r);
+        const auto frame = summarize(totals.frame), gpu = summarize(totals.gpu), work = summarize(totals.cpu_work);
+        out << "  frame " << frame.mean << " ms (P50 " << frame.p50 << ", P95 " << frame.p95 << ", P99 " << frame.p99 << "), GPU P95 " << gpu.p95
+            << " ms, CPU work P95 " << work.p95 << " ms; longest activation frame " << totals.longest_activation_ms << " ms ("
+            << totals.activation_frames.size() << " activation frames)\n";
+        for (size_t i = 0; i < r.world_runs.size(); ++i) {
+            const auto& run = r.world_runs[i];
+            if (!run.failure.empty()) {
+                out << "  " << i + 1 << ": FAILED: " << run.failure << '\n';
+                continue;
+            }
+            const auto peak = std::ranges::max(run.residency, {}, &WorldResidency::total);
+            const auto after = residency_report(run.after.assets, 0, run.after.renderer_gpu, run.after.device, run.after.gpu_reported, std::nullopt);
+            out << "  " << i + 1 << ": first frame " << run.first_frame_ms << " ms; " << run.samples.frame.size() << " frames, P95 "
+                << summarize(run.samples.frame).p95 << " ms; cells " << run.cell_loads << " loads (" << run.cells_delayed << " delayed, "
+                << run.cells_cancelled << " cancelled, " << run.cells_failed << " failed), " << run.cell_activations << " activations; resident peak "
+                << double(peak.total) / (1024.0 * 1024.0) << " MiB";
+            if (run.regenerated_ms) out << "; regenerated in " << *run.regenerated_ms << " ms";
+            out << "; after unload " << double(after.total()) / (1024.0 * 1024.0) << " MiB, stale " << run.stale.total() << ", outstanding "
+                << run.after_outstanding.jobs << " jobs, " << run.after_outstanding.loads << " loads, " << run.after_outstanding.leased << " leases\n";
+        }
+        const auto clean = std::ranges::count_if(r.world_runs, [](const WorldRun& run) {
+            return run.failure.empty() && run.stale.total() == 0 && run.after_outstanding.jobs == 0 && run.after_outstanding.loads == 0 &&
+                   run.after_outstanding.leased == 0;
+        });
+        out << "  nothing stale or outstanding after " << clean << " of " << r.world_runs.size() << " runs\n";
+    }
     if (r.manifest.workload == Workload::physics) {
         const auto& s = r.physics_scene;
         out << "  " << s.bodies << " bodies (" << s.dynamic_bodies << " dynamic: " << s.active_set << " dropped, " << s.sleeping_set

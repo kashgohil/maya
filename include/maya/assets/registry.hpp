@@ -171,7 +171,7 @@ public:
     template<Asset T> AssetResult<T> reload(AssetRef<T> ref) { return load<T>(ref, true); }
     /// Waits until the request and everything it includes are done; returns its state.
     AssetState wait(const AssetRequest& request);
-    /// Waits for every load in flight.
+    /// Waits for every load in flight, and for the jobs of cancelled loads to end: none of its jobs is running after.
     void wait_idle();
     /// Marks the owner thread's frame, from its update until its rendering ends: a load that waits
     /// meanwhile, with no ExplicitWait open, is counted in AssetLoadStats::waited_in_frames, the check

@@ -13,6 +13,7 @@
 #include <limits>
 #include <mutex>
 #include <numbers>
+#include <thread>
 
 namespace maya {
 namespace {
@@ -656,7 +657,10 @@ const StreamingStats& WorldStreamer::settle(World& world, PhysicsWorld* physics)
             return want.active ? cell.state != CellState::active : want.loaded ? cell.state != CellState::ready : cell.state != CellState::unloaded;
         });
         if (!busy) break;
-        m_jobs.wait(); // the loads finish; the next update applies them
+        // As soon as any load finishes, the next update applies it and starts another in its place: a slow load (a
+        // slow disk) holds up only itself, not the loads behind it (#1069).
+        for (const auto pending = m_jobs.pending(); pending > 0 && m_jobs.pending() >= pending;)
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
     // Room for the most the sources can hold active, so streaming never grows the World's tables: growing
     // them costs a frame milliseconds. That is the cells whose squares come within reach of a source, at

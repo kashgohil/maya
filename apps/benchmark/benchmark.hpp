@@ -2,6 +2,7 @@
 
 #include "maya/core/build_info.hpp"
 #include "maya/assets/registry.hpp"
+#include "maya/assets/residency.hpp"
 #include "maya/core/system_info.hpp"
 #include "maya/jobs/jobs.hpp"
 #include "maya/metrics/metrics.hpp"
@@ -27,6 +28,8 @@ enum class Workload {
     import, // glTF files imported into a new project, then loaded cold (cooking) and warm (cook cache)
     animation, // A1: copies of an imported skinned model playing their clips, with every system of play
     stream, // a generated grid world crossed back and forth while its cells stream (#1064), with no views
+    traverse, // a project's world traversed along its first camera's path, as the player streams it: S1 (#1069)
+    soak, // a project's world loaded, traversed, regenerated, reset, and unloaded, cycle after cycle (#1069)
 };
 
 /// A versioned benchmark description (docs/performance.md#manifests). Paths are relative to the
@@ -73,6 +76,13 @@ struct Manifest {
     uint32_t grid = 8;
     double speed = 30.0; // metres per second
     double load_radius = 640.0, activate_radius = 384.0, hysteresis = 64.0;
+    // Traverse and soak (#1069): a project's `.world` (`scene`, or its startup world), its cells streamed around its
+    // first camera, which follows its path; `ticks` frames a run or a cycle, one tick each. A seeded `delay_fraction`
+    // of the cells (chosen by their index) load `delay_ms` late, as a slow disk would. The soak gives the generator
+    // `reseed` a new seed each cycle.
+    double delay_fraction = 0.0;
+    double delay_ms = 0.0;
+    AssetId reseed{};
 };
 struct ManifestResult {
     Manifest manifest;
@@ -211,6 +221,52 @@ struct StreamRun {
     size_t cooked_cache_hits = 0;
 };
 
+/// Traverse and soak (#1069): one traversal, or one soak cycle.
+struct WorldResidency { // every second of a run
+    double seconds = 0.0;
+    std::array<size_t, residency_category_count> bytes{}; // by category: CPU and GPU
+    size_t terrain_bytes = 0; // the terrain's tiles and overview, CPU and GPU (not a category yet, #1068)
+    size_t total = 0; // the categories and the terrain
+    std::optional<size_t> footprint; // the process's physical footprint
+};
+struct WorldOutstanding { // what is still in flight or held
+    size_t jobs = 0; // queued or running, both tiers
+    size_t loads = 0; // the registry's loads in flight or prepared
+    size_t leased = 0; // resident versions held outside the registry
+    size_t cell_loads = 0, tile_loads = 0, scatter_cells = 0; // the streamers'
+};
+struct WorldStale { // what the engine still holds for content that went out (decided 14 October 2026)
+    size_t entities = 0; // in the World beyond the persistent part's
+    size_t staged = 0; // entities committed but never published or discarded
+    size_t bodies = 0; // physics bodies beyond the persistent part's
+    size_t height_fields = 0;
+    size_t scatter_items = 0;
+    size_t total() const noexcept { return entities + staged + bodies + height_fields + scatter_items; }
+};
+struct WorldRun {
+    std::string failure; // the soak's regeneration that never came or never finished
+    double load_ms = 0.0; // the loading screen: the persistent part, then the terrain, the cells, and scatter around the camera
+    double first_frame_ms = 0.0; // and the first frame, which draws what was loaded
+    double load_terrain_ms = 0.0, load_cells_ms = 0.0, load_scatter_ms = 0.0, load_assets_ms = 0.0; // the loading screen's parts
+    RunSamples samples; // every frame after the first, instrumented
+    std::vector<double> cpu_work; // per frame: simulation (with streaming), extraction, and encoding
+    std::vector<double> streaming; // per frame: the cells', terrain's, and scatter's updates
+    std::vector<uint8_t> activations; // per frame: whether a cell, a tile, or scatter's items went in or out
+    std::vector<size_t> unresolved; // per frame: entity-valued script properties whose target is not in the World
+    std::vector<WorldResidency> residency;
+    uint64_t cell_loads = 0, cells_delayed = 0, cells_cancelled = 0, cells_failed = 0, cell_activations = 0, cell_deactivations = 0;
+    size_t cells_waiting = 0; // the most held for the terrain at once
+    double longest_cell_frame_ms = 0.0, longest_terrain_ms = 0.0, longest_scatter_ms = 0.0;
+    size_t tiles_generated = 0, tiles_cached = 0, scatter_generated = 0, scatter_cached = 0;
+    size_t references = 0; // entity-valued script properties in the World after loading
+    std::optional<double> regenerated_ms; // soak: from the new seed until the regenerated cells were in
+    size_t scatter_regenerations = 0; // scatter's cells made again after a change (the soak's new seed)
+    WorldOutstanding outstanding; // at the run's end, before the reset
+    WorldStale stale; // after the reset: everything streamed in taken out
+    MemorySample after; // after unloading: the session gone, unused versions released
+    WorldOutstanding after_outstanding;
+};
+
 /// Import: one model in one run, in milliseconds.
 struct ImportSample {
     std::string model; // its file name
@@ -250,6 +306,7 @@ struct Result {
                                        // run cooked the same bytes
     std::vector<ImportSample> imports; // import: per run, per model
     std::vector<StreamRun> stream_runs; // stream: per run
+    std::vector<WorldRun> world_runs; // traverse: per run; soak: per cycle
     std::vector<std::pair<std::string, std::string>> unavailable; // metric, reason
     std::optional<double> refresh_hz; // presenting runs: the display's refresh rate
     std::string thermal_state_at_end; // system_info().thermal_state when the benchmark ended

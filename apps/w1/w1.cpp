@@ -570,7 +570,7 @@ Result assemble(const Options& options) {
     // The sun where the sky's is (48° up, toward -z and +x), as bright as the sky's (4.3 lux), and the sky at half
     // its strength: its sun lights everything again, unshadowed.
     auto sun = LightComponent{LightKind::directional, {1.0f, 0.96f, 0.9f}, 4.3f};
-    sun.shadow_distance = 250.0f;
+    sun.shadow_distance = 150.0f;
     entities.push_back({sun_entity, std::nullopt,
                         {NameComponent{"Sun"}, TransformComponent{{6144.0, 300.0, 6144.0}, looking({-0.377f, -0.742f, 0.554f}), {1, 1, 1}}, sun}});
     entities.push_back({sky_entity, std::nullopt,
@@ -603,7 +603,7 @@ Result assemble(const Options& options) {
     // Physics near S1's walk: 400 rocks resting on gentle ground, and 20 boulders on slopes of 25° to 35° that
     // roll down when their cells activate. Each is a unit-scale body with its collider, and its mesh, scaled, on
     // an entity below it.
-    auto random = Random{0x57310000ull + recipe_version};
+    auto random = Random{0x57310003ull}; // fixed since version 3, so a later version does not move them
     auto placed = std::vector<std::pair<double, double>>{};
     const auto clear_of = [&](double x, double z, double spacing) {
         return std::ranges::none_of(placed, [&](const auto& p) { return std::hypot(p.first - x, p.second - z) < spacing; });
@@ -649,6 +649,50 @@ Result assemble(const Options& options) {
         placed.push_back({x, z});
         ++count;
     }
+
+    // A cairn in every cell (version 3, decided 14 October 2026): rocks piled about a point the cell's seed chooses,
+    // clear of the clearing, S1's walk, and steep ground, each a static body (its box collider, its scale baked in).
+    struct Rock {
+        const Part* part;
+        math::Vec3 low, high; // the mesh's bounds
+    };
+    const auto rocks_for_cairns = std::array<Rock, 4>{{{&*small_rock, {-1.02f, -0.41f, -1.02f}, {1.09f, 0.69f, 1.06f}},
+                                                       {&*medium_rock, {-0.95f, -0.66f, -0.89f}, {1.18f, 1.11f, 1.08f}},
+                                                       {&*moss_rock, {-0.76f, -0.03f, -0.73f}, {0.82f, 0.7f, 0.72f}},
+                                                       {&*low_rock, {-1.31f, -0.47f, -0.9f}, {1.18f, 0.63f, 0.89f}}}};
+    for (auto cz = first_cell; cz <= last_cell; ++cz)
+        for (auto cx = first_cell; cx <= last_cell; ++cx) {
+            const auto cell = uint64_t(cz - first_cell) * uint64_t(last_cell - first_cell + 1) + uint64_t(cx - first_cell);
+            auto seeded = Random{0x43414952ull * 1000003ull + cell}; // "CAIR"
+            auto at = std::optional<std::pair<double, double>>{};
+            for (int attempt = 0; attempt < 64 && !at; ++attempt) {
+                const auto x = double(cx) * tile_size + seeded.uniform(16.0, tile_size - 16.0);
+                const auto z = double(cz) * tile_size + seeded.uniform(16.0, tile_size - 16.0);
+                const auto walk = x > s1_start_x - 16.0 && x < 5960.0 && std::abs(z - s1_z) < 12.0;
+                if (std::hypot(x - (clearing_x + loop_x) / 2, z - (clearing_z + loop_z) / 2) < 55.0 || walk || g.slope(x, z) > 25.0f ||
+                    !clear_of(x, z, 8.0)) // clear of the resting rocks and rolling boulders
+                    continue;
+                at = std::pair{x, z};
+            }
+            if (!at) at = std::pair{double(cx) * tile_size + 64.0, double(cz) * tile_size + 64.0};
+            for (size_t i = 0; i < cairn_rocks; ++i) {
+                const auto& rock = rocks_for_cairns[seeded.next() % rocks_for_cairns.size()];
+                const auto scale = float(seeded.uniform(0.4, 0.9));
+                const auto angle = seeded.uniform(0.0, 2.0 * math::PI), reach = seeded.uniform(0.0, 4.0);
+                const auto x = at->first + reach * std::cos(angle), z = at->second + reach * std::sin(angle);
+                // Resting on the ground under it, a tenth of its height sunk in.
+                const auto y = double(g.highest(x, z, 0.5 * double(scale))) - double(rock.low.y * scale) - 0.1 * double((rock.high.y - rock.low.y) * scale);
+                auto collider = ColliderComponent{};
+                collider.shape = ColliderShape::box;
+                collider.half_extents = (rock.high - rock.low) * 0.5f;
+                collider.offset = (rock.high + rock.low) * 0.5f;
+                entities.push_back({EntityId{w1_id, 0x10000 + cell * cairn_rocks + i}, std::nullopt,
+                                    {NameComponent{"Cairn " + std::to_string(cx) + "_" + std::to_string(cz) + " rock " + std::to_string(i)},
+                                     TransformComponent{{x, y, z}, math::Quat::from_axis_angle({0, 1, 0}, float(seeded.uniform(0.0, 2.0 * math::PI))),
+                                                        math::Vec3{scale}},
+                                     MeshRendererComponent{{rock.part->mesh}, {rock.part->material}, true}, collider}});
+            }
+        }
 
     // Saved as a world: the old parts go first, so a cell no longer used does not linger.
     auto document = SceneDocument{std::move(entities)};

@@ -745,6 +745,7 @@ AssetState AssetRegistry::wait(const AssetRequest& request) {
 
 void AssetRegistry::wait_idle() {
     while (!m_in_flight.empty()) wait_slot(m_in_flight.front());
+    m_jobs.wait(); // and the jobs of loads cancelled meanwhile, which end on their own (#1069)
 }
 
 AssetDiagnostic AssetRegistry::publish(AssetRef<MaterialAsset> ref, MaterialAsset value) {

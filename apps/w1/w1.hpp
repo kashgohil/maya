@@ -1,9 +1,10 @@
 #pragma once
-// W1, the reference world (#1069, docs/acceptance.md#w1), recipe version 2 from the world-scale record
-// (docs/architecture/world-scale-decision.md#w1-the-reference-world, with the owner's changes of 12 October
+// W1, the reference world (#1069, docs/acceptance.md#w1), recipe version 3 from the world-scale record
+// (docs/architecture/world-scale-decision.md#w1-the-reference-world, with the owner's changes of 12 and 14 October
 // 2026): 4 km of noise terrain in forest and rock from 4,096 m to 8,192 m, scattered boulders, rocks, and
 // deadwood, a clearing with ABeautifulGame and FlightHelmet, CesiumMan walking a loop across three cells, a
-// watch camera that follows him from the persistent part, 400 resting rocks and 20 boulders that roll, a
+// watch camera that follows him from the persistent part, 400 resting rocks and 20 boulders that roll, a cairn of
+// static rocks in every cell, a
 // shadowed sun under the Kloofendal sky, five named views, and S1's camera on its 160-second path. The content
 // is fetched by tools/fetch_world_samples.sh and tools/fetch_render_samples.sh and never committed, so the
 // project is assembled from it.
@@ -20,7 +21,9 @@
 
 namespace maya::w1 {
 
-inline constexpr uint32_t recipe_version = 2;
+inline constexpr uint32_t recipe_version = 3;
+/// Every cell's cairn (version 3): this many static rocks, so S1 streams authored cells all along its path.
+inline constexpr size_t cairn_rocks = 16;
 
 /// The world's cells, 32 to 63 along x and z: 4,096 m to 8,192 m.
 inline constexpr int32_t first_cell = 32, last_cell = 63;
