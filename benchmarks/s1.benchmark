@@ -1,0 +1,14 @@
+maya-benchmark 1
+# S1 (#1069, docs/acceptance.md#s1-and-the-soak): W1 traversed along S1's camera path, as the player streams it: the
+# terrain, the cells once the terrain under them collides, and scatter once the cells are in, around the camera,
+# 9,600 frames of one tick each (120 s on foot with three turn-backs, then 40 s of flyover), three times. 5% of the
+# cells, seeded by their index, load 500 ms late. Assemble W1 with ASTC first (maya_w1 build/world-samples
+# build/render-samples build/w1-astc) and run it once so the cook cache is warm.
+name "s1"
+workload traverse
+project "../build/w1-astc"
+scene "w1.world"
+resolution 1920 1080
+ticks 9600
+runs 3
+delay 0.05 500

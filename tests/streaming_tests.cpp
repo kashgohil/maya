@@ -285,6 +285,36 @@ TEST_CASE("Activation never takes more than the frame's entities, and a cell app
     CHECK(session->physics().stats().bodies_created == 42);
 }
 
+TEST_CASE("Settling starts a load as soon as another finishes, so a slow load holds up only itself", "[streaming]") {
+    // #1069: settle once waited for every load in flight before starting more, so one slow load (a slow disk) held up
+    // the loads behind it, and a loading screen took the sum of their delays. Now the slow cell's load waits until
+    // every other cell's load has started, which it sees only if they started around it.
+    auto saved = SavedWorld(2, 2); // 25 cells, more than the loads in flight at once
+    const auto cooked = saved.loader();
+    auto started = std::make_shared<std::atomic<size_t>>(0);
+    auto saw_all = std::make_shared<std::atomic<bool>>(false);
+    const auto total = saved.document.cells.size();
+    const auto loader = [=](const WorldCell& info, const JobContext& job) -> CellLoad {
+        ++*started;
+        if (info.index == CellIndex{0, 0}) // the slow one
+            for (const auto waited = std::chrono::steady_clock::now(); std::chrono::steady_clock::now() - waited < std::chrono::seconds(5);) {
+                if (*started >= total) {
+                    *saw_all = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        return cooked(info, job);
+    };
+    auto session = saved.session();
+    auto streamer = WorldStreamer(saved.document, loader, {});
+    streamer.set_sources({{64.0, 0.0, 64.0}}); // every cell within the default radii
+    streamer.settle(session->world(), &session->physics());
+    CHECK(streamer.stats().cells[size_t(CellState::active)] == total);
+    CHECK(*saw_all);
+    streamer.unload_all(session->world(), &session->physics());
+}
+
 TEST_CASE("Delayed, failed, and cancelled loads, a world closed mid-load, and fast crossings leave nothing behind", "[streaming]") {
     auto saved = SavedWorld(1, 10);
     struct Gate {

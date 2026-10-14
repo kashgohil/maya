@@ -212,6 +212,26 @@ TEST_CASE("Requests for an asset in flight merge into one load", "[assets][loadi
     CHECK(f.registry->load_stats().merged == 2);
 }
 
+TEST_CASE("Waiting until idle also waits for the jobs of cancelled loads to end", "[assets][loading]") {
+    // #1069: a cancelled load's job runs on until it sees the cancellation; once wait_idle returns, none is left.
+    Fixture f;
+    f.gate->close();
+    {
+        auto request = f.registry->request(plain);
+        REQUIRE(f.gate->wait_for_waiting(1));
+        request.cancel();
+        f.registry->update(); // cancelled: no longer in flight, its job still held at the gate
+    }
+    CHECK(f.registry->load_stats().in_flight == 0);
+    auto opener = std::thread([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        f.gate->release();
+    });
+    f.registry->wait_idle();
+    CHECK(f.gate->stopped == 1); // the job saw its cancellation and ended before wait_idle returned
+    opener.join();
+}
+
 TEST_CASE("Dropping or cancelling the last request cancels the load, and nothing becomes resident", "[assets][loading]") {
     auto f = Fixture{};
     f.gate->close();

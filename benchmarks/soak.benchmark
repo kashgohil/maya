@@ -1,0 +1,15 @@
+maya-benchmark 1
+# The soak (#1069, docs/acceptance.md#s1-and-the-soak): W1 loaded, 60 s of S1, the soak's rocks (cells 44-45 x 43-44)
+# regenerated with a new seed, reset, and unloaded, 20 times: 20 minutes of S1, which run unpaced in about 7. Each cycle records what it left: the
+# memory after unloading, jobs, loads and leases still outstanding, and anything stale. The trend is fitted from the
+# second cycle. Assemble build/w1-astc as for s1.benchmark.
+name "soak"
+workload soak
+project "../build/w1-astc"
+scene "w1.world"
+resolution 1920 1080
+ticks 3600
+cycles 20
+slope_from 2
+delay 0.05 500
+reseed 57310000 5

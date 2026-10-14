@@ -1,0 +1,11 @@
+maya-benchmark 1
+# S1, small (#1069): W1 (the w1_project fixture's build/w1) streamed along S1's first 5 s; it must complete and
+# leave nothing stale or outstanding.
+name "s1-smoke"
+workload traverse
+project "../../build/w1"
+scene "w1.world"
+resolution 640 360
+ticks 300
+runs 1
+delay 0.05 500

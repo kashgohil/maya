@@ -3,6 +3,7 @@
 #include "maya/streaming/terrain_streamer.hpp"
 #include "support/render_scene.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -278,7 +279,8 @@ TEST_CASE("A world's cells wait for the terrain under them to collide before the
     CHECK(physics.stats().dynamic_bodies == 0);
     // Frame by frame, terrain first: whenever the cell is active, the ground under the ball collides.
     auto waited = 0;
-    for (int frame = 0; frame < 400 && cells.state(cell) != CellState::active; ++frame) {
+    for (const auto start = std::chrono::steady_clock::now();
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(20) && cells.state(cell) != CellState::active;) { // by a deadline: its jobs share the machine
         fixture.project.registry->update();
         terrain.wait_idle();
         terrain.update(fixture.world, *fixture.project.registry, &physics);
@@ -305,7 +307,8 @@ TEST_CASE("A world's cells wait for the terrain under them to collide before the
     REQUIRE(fields >= 1);
     CHECK(physics.height_fields() == 1); // only the tile under the active cell is left
     CHECK(physics.raycast_nearest({middle.x, 1000.0, middle.z}, {0, -1, 0}, 2000.0f, filter));
-    for (int frame = 0; frame < 50 && cells.state(cell) != CellState::unloaded; ++frame) {
+    for (const auto start = std::chrono::steady_clock::now();
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(20) && cells.state(cell) != CellState::unloaded;) {
         terrain.update(fixture.world, *fixture.project.registry, &physics);
         cells.update(fixture.world, &physics);
     }
@@ -341,7 +344,8 @@ TEST_CASE("A world's larger cells wait for every terrain tile under them within 
     terrain.set_sources({source});
     cells.set_sources({source});
     auto checked = 0;
-    for (int frame = 0; frame < 400 && cells.state(cell) != CellState::active; ++frame) {
+    for (const auto start = std::chrono::steady_clock::now();
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(20) && cells.state(cell) != CellState::active;) { // by a deadline: its jobs share the machine
         fixture.project.registry->update();
         terrain.wait_idle();
         terrain.update(fixture.world, *fixture.project.registry, &physics);

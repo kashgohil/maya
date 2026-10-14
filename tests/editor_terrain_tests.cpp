@@ -3,6 +3,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 using namespace maya;
 using namespace maya::editor;
@@ -12,14 +14,16 @@ namespace {
 constexpr auto terrain_id = EntityId{0x6d617961, 0x602};
 constexpr auto boulder_id = EntityId{0x6d617961, 0x603};
 constexpr auto hills = AssetId{0x6d617961, 0x90};
-/// Frames until the editor's terrain has drawn every tile it wants and its overview.
+/// Frames until the editor's terrain has drawn every tile it wants and its overview: by a deadline, not a count of
+/// frames, since its tiles generate on jobs, which other tests running beside it slow.
 void settle(Harness& harness) {
-    for (int i = 0; i < 400; ++i) {
+    for (const auto start = std::chrono::steady_clock::now(); std::chrono::steady_clock::now() - start < std::chrono::seconds(20);) {
         harness.frame();
         const auto* terrain = harness.shell.terrain();
         if (terrain && terrain->stats().loading == 0 && terrain->stats().uploaded == 0 && !terrain->terrains().empty() &&
             terrain->terrains().front().overview)
             return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     FAIL("the terrain did not settle");
 }

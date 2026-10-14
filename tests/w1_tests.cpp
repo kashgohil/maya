@@ -11,6 +11,7 @@
 #include "support/w1_play.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
+#include <sstream>
 
 using namespace maya;
 using namespace maya::test;
@@ -68,11 +69,21 @@ TEST_CASE("W1 assembles into a world of its recipe", "[w1]") {
     CHECK(terrains == 1);
     CHECK(generators == 4);
     CHECK(exclusions == 2);
-    // The bodies: 400 resting rocks and 20 rolling boulders, in cells along S1's walk.
+    // The bodies: 400 resting rocks and 20 rolling boulders, in cells along S1's walk; and (version 3) a cairn of
+    // static rocks in every cell.
+    CHECK(world.cells.size() == size_t((w1::last_cell - w1::first_cell + 1) * (w1::last_cell - w1::first_cell + 1)));
     auto bodies = 0;
-    for (const auto& [index, cell] : whole.cells)
-        for (const auto& entity : cell.entities)
-            for (const auto& component : entity.components) bodies += std::holds_alternative<RigidBodyComponent>(component);
+    for (const auto& [index, cell] : whole.cells) {
+        auto statics = size_t{0};
+        for (const auto& entity : cell.entities) {
+            const auto moving = std::ranges::any_of(entity.components, [](const ComponentValue& c) { return std::holds_alternative<RigidBodyComponent>(c); });
+            bodies += moving;
+            statics += !moving && !entity.parent &&
+                       std::ranges::any_of(entity.components, [](const ComponentValue& c) { return std::holds_alternative<ColliderComponent>(c); });
+        }
+        INFO(cell_name(index));
+        CHECK(statics == w1::cairn_rocks);
+    }
     CHECK(bodies == 420);
     // Every scatter generator's spacing is one scatter takes (#1093), and the soak's covers its 2 x 2 cells.
     for (const auto name : {"boulders", "rocks", "soak_rocks", "deadwood"}) {
@@ -302,5 +313,82 @@ TEST_CASE("W1's views look the same in the editor's Play as in the player", "[vi
         CHECK(differing * 10000 <= compared);
         shell.stop_play();
     }
+    device.destroy(window.handle);
+}
+
+TEST_CASE("S1 in the editor's Play, timed (Release; MAYA_W1_BENCHMARK_OUT names the results file)", "[.][w1-benchmark]") {
+    // #1069: S1 in the editor's Play, as the player's traversal is benchmarked (benchmarks/s1.benchmark): the editor on
+    // Metal at 1920 x 1080, its Game view following S1's camera for its 9,600 ticks, one a frame. Each frame's time,
+    // its wait for a frame slot, its CPU work (update and render), and the GPU's time are recorded.
+    // MAYA_W1_BENCHMARK_PROJECT names the project (build/w1-astc for the baseline); otherwise build/w1.
+    const auto* named = std::getenv("MAYA_W1_BENCHMARK_PROJECT");
+    const auto folder = named ? fs::path(named) : w1_folder();
+    if (!fs::is_regular_file(folder / "w1.world")) SKIP("W1 is not assembled in " + folder.string());
+    Gpu gpu;
+    auto& device = gpu.device;
+    const auto read = [](const char* relative) {
+        auto file = std::ifstream(*FileSystem::resolve(relative), std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    auto shell = editor::EditorShell(device, FileSystem::read_text("resources/shaders/metal/renderer.metal"),
+                                     FileSystem::read_text("resources/shaders/metal/editor_ui.metal"), {},
+                                     {read("resources/fonts/Inter-Regular.ttf"), read("resources/fonts/Inter-SemiBold.ttf"),
+                                      read("resources/fonts/GeistMono-Regular.ttf"), read("resources/fonts/Phosphor-Light.ttf")});
+    REQUIRE(shell.open_project(folder));
+    REQUIRE(shell.cells());
+    const auto metrics = WindowMetrics{1920, 1080, 1920, 1080};
+    auto window = device.create_texture({metrics.framebuffer_width, metrics.framebuffer_height, Format::bgra8_unorm,
+                                         TextureUsage::render_target | TextureUsage::readback, "window"});
+    REQUIRE(window);
+    auto frames = std::vector<double>{}, waits = std::vector<double>{}, work = std::vector<double>{}, gpu_ms = std::vector<double>{};
+    const auto frame = [&] {
+        const auto start = Stopwatch{};
+        auto part = Stopwatch{};
+        shell.update(1.0f / 60.0f, {}, metrics);
+        const auto update = part.milliseconds();
+        part.restart();
+        REQUIRE_FALSE(device.begin_frame());
+        const auto wait = part.milliseconds();
+        for (const auto& timing : device.take_gpu_timings()) gpu_ms.push_back(timing.milliseconds); // the frames done so far
+        part.restart();
+        const auto error = shell.render(window.handle);
+        INFO(error.message);
+        REQUIRE_FALSE(error);
+        const auto render = part.milliseconds();
+        REQUIRE_FALSE(device.end_frame());
+        frames.push_back(start.milliseconds());
+        waits.push_back(wait);
+        work.push_back(update + render);
+    };
+    for (int i = 0; i < 3; ++i) frame();
+    device.wait_idle();
+    device.take_gpu_timings(); // the warm-up frames', so only S1's are counted
+    frames.clear(), waits.clear(), work.clear(), gpu_ms.clear();
+    const auto loading = Stopwatch{};
+    REQUIRE(shell.start_play()); // its loading screen: the terrain, the cells, and scatter around S1's start
+    shell.set_game_view(true);
+    const auto load_ms = loading.milliseconds();
+    auto* play = shell.play_session();
+    REQUIRE(play);
+    while (play->clock().tick() < w1::s1_ticks) frame();
+    device.wait_idle();
+    for (const auto& timing : device.take_gpu_timings()) gpu_ms.push_back(timing.milliseconds);
+    shell.stop_play();
+    const auto f = summarize(frames), w = summarize(waits), c = summarize(work), g = summarize(gpu_ms);
+    auto out = std::ostringstream{};
+    out << "{\"name\":\"s1-editor\",\"project\":\"" << folder.string() << "\",\"viewport\":[" << shell.viewport().width() << ','
+        << shell.viewport().height() << "],\"load_ms\":" << load_ms << ",\"frames\":" << frames.size();
+    const auto summary = [&](const char* name, const Summary& s) {
+        out << ",\"" << name << "\":{\"mean\":" << s.mean << ",\"p50\":" << s.p50 << ",\"p95\":" << s.p95 << ",\"p99\":" << s.p99 << ",\"max\":" << s.max
+            << ",\"count\":" << s.count << '}';
+    };
+    summary("frame_ms", f);
+    summary("wait_ms", w);
+    summary("cpu_work_ms", c);
+    summary("gpu_ms", g);
+    out << "}\n";
+    WARN(out.str());
+    if (const auto* file = std::getenv("MAYA_W1_BENCHMARK_OUT")) std::ofstream(file) << out.str();
+    CHECK(frames.size() >= w1::s1_ticks);
     device.destroy(window.handle);
 }

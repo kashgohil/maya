@@ -942,6 +942,18 @@ if(BUILD_TESTING)
             "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/stream.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-stream.json"
             -DEXIT_CODE=0 "-DEXPECT=crossings" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
         set_tests_properties(maya_benchmark_smoke_stream PROPERTIES LABELS "cpu;smoke;benchmark;streaming" TIMEOUT 300)
+        # Milestone 4 (#1069): S1 and the soak, small, on W1 (the w1_project fixture): they must complete and leave
+        # nothing stale or outstanding.
+        foreach(world_smoke s1:1 soak:2) # and how many runs each makes, every one of which must be clean
+            string(REPLACE ":" ";" parts ${world_smoke})
+            list(GET parts 0 world_smoke)
+            list(GET parts 1 world_runs)
+            add_test(NAME maya_benchmark_smoke_${world_smoke} COMMAND ${CMAKE_COMMAND}
+                "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/smoke/${world_smoke}.benchmark|${CMAKE_CURRENT_BINARY_DIR}/benchmark-smoke-${world_smoke}.json"
+                -DEXIT_CODE=0 "-DEXPECT=nothing stale or outstanding after ${world_runs} of ${world_runs} runs" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)
+            set_tests_properties(maya_benchmark_smoke_${world_smoke} PROPERTIES LABELS "gpu;smoke;benchmark;w1" TIMEOUT 1800 RUN_SERIAL TRUE
+                FIXTURES_REQUIRED w1_project)
+        endforeach()
         add_test(NAME maya_benchmark_bad_manifest COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND=$<TARGET_FILE:maya_benchmark>|${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
             -DEXIT_CODE=2 "-DEXPECT=expected a maya-benchmark header" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_exit.cmake)

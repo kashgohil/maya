@@ -1,5 +1,7 @@
 #include "benchmark.hpp"
 #include "maya/core/file_system.hpp"
+#include "maya/scene/scene_io.hpp"
+#include "maya/scene/world_io.hpp"
 #include "maya/rhi/metal/metal_device.hpp"
 #include "maya/rhi/null_device.hpp"
 #include "support/gltf.hpp"
@@ -636,4 +638,129 @@ TEST_CASE("The scene workload streams a scene's terrain as the player does and c
     const auto json = to_json(result);
     for (const auto* key : {"\"terrain_tiles\"", "\"height_fields\"", "\"terrain_patches_per_view\"", "\"terrain_longest_generate_ms\"", "\"scatter_items\""})
         CHECK(has(json, key));
+}
+
+namespace {
+/// A copy of the sample project whose terrain scene is a world (#1069): its persistent part (the camera, the sun, the
+/// terrain, its rocks generator and clearing), and a cube in each of 16 cells around the camera, with the boulder.
+fs::path sample_world(const fs::path& root) {
+    fs::create_directories(root);
+    fs::copy(fs::path(MAYA_SOURCE_DIR) / "samples/basic_scene", root / "game", fs::copy_options::recursive);
+    fs::remove_all(root / "game/.maya");
+    const auto content = root / "game/assets";
+    const auto any = PropertyValidationContext{[](AssetId, ReferenceKind) { return ReferenceStatus::valid; }};
+    auto loaded = load_scene_file(content / "terrain.scene", any);
+    REQUIRE(loaded);
+    auto document = std::move(loaded.document);
+    for (int z = -2; z < 2; ++z)
+        for (int x = -2; x < 2; ++x)
+            document.entities.push_back({EntityId{0x7465, uint64_t(0x1000 + (z + 2) * 4 + (x + 2))}, std::nullopt,
+                                         {NameComponent{"Prop"}, TransformComponent{{x * 128.0 + 40.0, 2.0, z * 128.0 + 40.0}, {}, {1.0f}},
+                                          MeshRendererComponent{{{0x6d617961, 2}}, {{0x6d617961, 0x11}}, true}}});
+    fs::create_directories(content / "levels");
+    REQUIRE(save_world(content / "levels/terrain.world", std::move(document), any).empty());
+    return root / "game";
+}
+Manifest world_manifest(const fs::path& project, Workload workload) {
+    auto manifest = Manifest{};
+    manifest.name = "world";
+    manifest.workload = workload;
+    manifest.project = project;
+    manifest.scene = "levels/terrain.world";
+    manifest.width = 64;
+    manifest.height = 36;
+    manifest.ticks = 20;
+    manifest.runs = 2;
+    manifest.cycles = 3;
+    manifest.slope_from = 1;
+    manifest.delay_fraction = 0.5;
+    manifest.delay_ms = 20.0;
+    manifest.reseed = {0x6d617961, 0x93}; // the rocks
+    return manifest;
+}
+} // namespace
+
+TEST_CASE("Traverse and soak manifests name their world, its delayed loads, and the generator to reseed", "[benchmark][world]") {
+    const auto s1 = load_manifest(fs::path(MAYA_SOURCE_DIR) / "benchmarks/s1.benchmark");
+    INFO(s1.error);
+    REQUIRE(s1);
+    CHECK(s1.manifest.workload == Workload::traverse);
+    CHECK(s1.manifest.ticks == 9600);
+    CHECK(s1.manifest.delay_fraction == 0.05);
+    CHECK(s1.manifest.delay_ms == 500.0);
+    const auto soak = load_manifest(fs::path(MAYA_SOURCE_DIR) / "benchmarks/soak.benchmark");
+    INFO(soak.error);
+    REQUIRE(soak);
+    CHECK(soak.manifest.workload == Workload::soak);
+    CHECK(soak.manifest.cycles == 20);
+    CHECK(soak.manifest.reseed == AssetId{0x57310000, 5});
+    CHECK_FALSE(parse(minimal + "workload soak\n")); // 'workload' twice
+    const auto unseeded = parse("maya-benchmark 1\nname \"t\"\nworkload soak\nproject \"../w\"\n");
+    CHECK_FALSE(unseeded);
+    CHECK(has(unseeded.error, "reseed"));
+    CHECK_FALSE(parse(minimal + "delay 1.5 100\n"));
+    CHECK_FALSE(parse(minimal + "delay 0.1\n"));
+}
+
+TEST_CASE("The traverse workload streams a world's cells, terrain, and scatter around its camera, delaying a seeded fraction of loads, and leaves nothing behind", "[benchmark][world]") {
+    const auto root = fs::temp_directory_path() / ("maya-benchmark-world-" + std::to_string(::getpid()));
+    const auto project = sample_world(root);
+    {
+        Device device;
+        const auto result = run(world_manifest(project, Workload::traverse), device, "renderer");
+        INFO(result.failure);
+        REQUIRE(result.failure.empty());
+        REQUIRE(result.world_runs.size() == 2);
+        for (const auto& run : result.world_runs) {
+            CHECK(run.samples.frame.size() == 20);
+            CHECK(run.cpu_work.size() == 20);
+            CHECK(run.activations.size() == 20);
+            CHECK(run.first_frame_ms >= run.load_ms);
+            CHECK(run.cell_loads >= 16);
+            CHECK(run.cell_activations >= 16);
+            CHECK(run.cells_delayed > 0); // half of them, by their index
+            CHECK(run.cells_delayed < run.cell_loads);
+            CHECK(run.tiles_generated + run.tiles_cached > 0);
+            CHECK(run.scatter_generated + run.scatter_cached > 0);
+            CHECK_FALSE(run.residency.empty());
+            CHECK(run.residency.front().total > 0);
+            CHECK_FALSE(run.regenerated_ms);
+            CHECK(run.scatter_regenerations == 0);
+            // Reset and unloaded: nothing stale, nothing outstanding.
+            CHECK(run.stale.total() == 0);
+            CHECK(run.after_outstanding.jobs == 0);
+            CHECK(run.after_outstanding.loads == 0);
+        }
+        const auto json = to_json(result);
+        for (const auto* key : {"\"longest_activation_frame_ms\"", "\"steady_frame_ms\"", "\"cpu_work_ms\"", "\"delayed\"", "\"stale\"",
+                                "\"outstanding_after_unload\"", "\"residency\"", "\"most_unresolved\""})
+            CHECK(has(json, key));
+    }
+    fs::remove_all(root);
+}
+
+TEST_CASE("The soak workload regenerates a generator with a new seed each cycle and returns to the same state", "[benchmark][world]") {
+    const auto root = fs::temp_directory_path() / ("maya-benchmark-soak-" + std::to_string(::getpid()));
+    const auto project = sample_world(root);
+    {
+        Device device;
+        const auto result = run(world_manifest(project, Workload::soak), device, "renderer");
+        INFO(result.failure);
+        REQUIRE(result.failure.empty());
+        REQUIRE(result.world_runs.size() == 3);
+        for (const auto& cycle : result.world_runs) {
+            REQUIRE(cycle.regenerated_ms);
+            CHECK(cycle.scatter_regenerations > 0); // the reseeded generator's cells, made again
+            CHECK(cycle.stale.total() == 0);
+            CHECK(cycle.after_outstanding.jobs == 0);
+            CHECK(cycle.after_outstanding.loads == 0);
+        }
+        // Each cycle unloads to the same tracked device memory.
+        const auto& first = result.world_runs.front().after.device;
+        for (const auto& cycle : result.world_runs) {
+            CHECK(cycle.after.device.buffers == first.buffers);
+            CHECK(cycle.after.device.textures == first.textures);
+        }
+    }
+    fs::remove_all(root);
 }

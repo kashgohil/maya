@@ -1,0 +1,13 @@
+maya-benchmark 1
+# The soak, small (#1069): two cycles of W1 (build/w1), 2 s of S1 each, the soak's rocks reseeded; each must unload
+# to nothing stale or outstanding.
+name "soak-smoke"
+workload soak
+project "../../build/w1"
+scene "w1.world"
+resolution 640 360
+ticks 120
+cycles 2
+slope_from 1
+delay 0.05 500
+reseed 57310000 5
