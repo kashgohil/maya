@@ -109,7 +109,7 @@ A manifest is a small versioned text file. Its keys may appear in any order, eac
 ```text
 maya-benchmark 1
 name "i1-10k"
-workload instances           # instances, scene, load_cycles, play_cycles, physics, import, animation, or stream
+workload instances           # instances, scene, load_cycles, play_cycles, physics, import, animation, stream, traverse, or soak
 project "../samples/basic_scene"
 mesh 6d617961 2              # catalog IDs of the shared mesh and material
 material 6d617961 11
@@ -139,6 +139,8 @@ stream_load off              # scene: on loads by streaming frames instead of a 
 | `import` | glTF import and cooking ([below](#import), #1036). No project or views: each model is imported into a new project and loaded into the device, cold and warm. |
 | `stream` | A generated grid world crossed while its cells stream ([below](#stream), #1064): headless, frames paced at 60 Hz. |
 | `animation` | A1 skeletal animation ([below](#animation), #1038): copies of an imported skinned model playing their clips under a sun that casts shadows, with every system of play. |
+| `traverse` | A project's world traversed along its first camera's path, as the player streams it ([below](#traverse-and-soak), #1069): [s1](../benchmarks/s1.benchmark) is [S1](acceptance.md#s1-and-the-soak) over W1. |
+| `soak` | A project's world loaded, traversed, regenerated, reset, and unloaded, cycle after cycle ([below](#traverse-and-soak), #1069): [soak](../benchmarks/soak.benchmark) is W1's soak. |
 
 Cycle workloads take `cycles`, `ticks` (frames per cycle), and `slope_from`, the first cycle of the footprint slope's fit (default 11). The L1 manifests run 300 cycles and fit from cycle 101, once allocator warm-up has finished (#1024).
 
@@ -156,6 +158,27 @@ warmup 300                   # ticks
 samples 3000
 runs 3
 ```
+
+### Traverse and soak
+
+`traverse` and `soak` (#1069) run a project's `.world` (`scene`, or the startup world) as the [player](play.md#the-player) does: its persistent part plays, with every system of play, and its terrain, its cells (each once the terrain under it collides, [world](world.md#streaming)), and its scatter (once the cells are in) stream around its first camera, which follows its clip, behind a loading screen and then before each frame's one tick, at the manifest's resolution offscreen. A run starts afresh each time: a new play session and new streamers, through the project's cook cache and one registry.
+
+```text
+workload traverse
+project "../build/w1-astc"
+scene "w1.world"
+ticks 9600                   # frames a run (a cycle, in the soak), one tick each
+runs 3                       # traverse: runs; soak: cycles
+delay 0.05 500               # a seeded 5% of the cells (by their index) load 500 ms late, as a slow disk would
+cycles 20                    # soak
+slope_from 2                 # soak: the first cycle of the trends' fit
+reseed 57310000 5            # soak: the generator given a new seed each cycle
+```
+
+- **A run** loads (`load_ms`: the persistent part, the terrain, the cells, scatter, and what the World draws; `first_frame_ms` adds the first frame), then plays `ticks` frames, each instrumented: the frame, its simulation (with the streamers' updates), extraction, encoding, and submission, the GPU's time and per-pass times, CPU work (simulation, extraction, and encoding), streaming (the cells', terrain's, and scatter's updates), whether anything went in or out (an activation frame: a cell, a tile, or scatter's items), and the entity-valued script properties whose target is not in the World. Every second it samples resident bytes by [category](assets.md#residency), the terrain's tiles, and the process's footprint.
+- **The soak** then gives the generator `reseed` a new seed (`AssetRegistry::publish`, as an edit does) and plays on until the cells it covers are remade and in (`regenerated_ms`, at most 600 frames).
+- **The reset** takes everything streamed in out of the live session: what stays beyond its persistent part is stale (entities, staged entities, physics bodies, height fields, scatter items), decided on 14 October 2026; references by persistent ID cannot dangle, so stale handles are reported unavailable. **The unload** ends the session and the streamers, waits for the GPU, and releases unused versions: the memory then (`after_unload`), and what is still outstanding (jobs in flight, the registry's loads, leases).
+- **Results** (`world`): over every run, the frame, GPU, CPU work, and activation frames' summaries, the longest activation frame, and the steady frame (the median); per run, the cells' loads (delayed, cancelled, failed), activations, the most cells waiting for the terrain, the streamers' longest updates and cooked or generated cells and tiles, the residency series, and raw per-frame samples. The soak fits slopes of the footprint and of resident bytes after unloading over the cycles from `slope_from`.
 
 ### Import
 
@@ -319,5 +342,6 @@ Observations, not budgets. The same machine and macOS, in the `nominal` thermal 
   - **JSON:** complete and balanced.
   - **Passes (#1026):** per-pass times summed by name for every sampled frame, none in the matched run, pass timing turned back on afterwards, passes outside their frame counted and flagged, and the reason when a device cannot time passes.
   - **Terrain (#1068):** the terrain manifest's scene, shortened, streams all 16 tiles of the sample's terrain, collides with some, draws and shadows patches, and writes the terrain counters; since #1093 it scatters the sample's rocks too, and writes the scatter counters.
+  - **Traverse and soak (#1069):** their manifests and refusals; a copy of the sample project whose terrain scene is a world, traversed twice and soaked three times: every frame recorded, cells delayed by their index, terrain and scatter streamed, residency sampled, a regeneration each soak cycle, and nothing stale or outstanding after each run, which returns to the same device memory.
   - **Presenting (#1026):** the window's events every frame; shown, never-shown, and unreported frames; intervals and a missed deadline across a dropped frame; refusal without a window; and offscreen runs saying pacing does not apply.
-- CTest runs the smoke manifests in [benchmarks/smoke](../benchmarks/smoke) on Metal, including `sample_present`, which presents to a window, and [p1_small](../benchmarks/p1_small.benchmark), which must end every run in the same state. It also checks the runner's refusal of a file that is not a manifest.
+- CTest runs the smoke manifests in [benchmarks/smoke](../benchmarks/smoke) on Metal, including `sample_present`, which presents to a window, and [p1_small](../benchmarks/p1_small.benchmark), which must end every run in the same state; and (#1069) `s1` and `soak` from benchmarks/smoke over W1 (the `w1_project` fixture), which must leave nothing stale or outstanding. It also checks the runner's refusal of a file that is not a manifest.

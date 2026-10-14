@@ -209,6 +209,8 @@ S1 and the soak become benchmark manifests with W1 in #1069, following the [work
 - **The soak's regeneration.** The rocks are two generators with the same rules: the main one, kept out of a 2 × 2-cell box by an exclusion naming it, and one over that box, whose seed each soak cycle changes, since a generator has one seed for its whole region.
 - **The cross-cell reference.** A world keeps every camera in its persistent part, so the watch camera is there, and CesiumMan, in a cell, is what it references.
 
+**Recipe version 3** (decided by the project owner on 14 October 2026): version 2's authored content was in 10 cells near S1's start, so S1 barely loaded or activated cells. Every cell now holds a cairn of 16 static rocks, so S1 streams authored cells along its whole path, and its delayed loads are real cell loads. Version 3 also gives the resting rocks and rolling boulders a fixed seed of their own (they moved with it), and puts each cairn at least 8 m from them.
+
 ## What the milestone's issues take from this
 
 | Issue | Decided here |

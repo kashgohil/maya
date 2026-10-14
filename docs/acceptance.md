@@ -471,7 +471,7 @@ The world-scale milestone ([#1059](https://work.rezee.app/kash/issues/1059)) add
 
 ### W1
 
-W1 is the reference world, recipe version 2: the [record's](architecture/world-scale-decision.md#w1-the-reference-world) version 1 with the project owner's changes of 12 October 2026 ([#1069](https://work.rezee.app/kash/issues/1069)). Its content is fetched by [fetch_world_samples.sh](../tools/fetch_world_samples.sh) and [fetch_render_samples.sh](../tools/fetch_render_samples.sh), never committed, so **`maya_w1`** ([apps/w1](../apps/w1)) assembles the project from it:
+W1 is the reference world, recipe version 3: the [record's](architecture/world-scale-decision.md#w1-the-reference-world) version 1 with the project owner's changes of 12 and 14 October 2026 ([#1069](https://work.rezee.app/kash/issues/1069)). Its content is fetched by [fetch_world_samples.sh](../tools/fetch_world_samples.sh) and [fetch_render_samples.sh](../tools/fetch_render_samples.sh), never committed, so **`maya_w1`** ([apps/w1](../apps/w1)) assembles the project from it:
 
 ```bash
 tools/fetch_world_samples.sh                    # once: build/world-samples
@@ -480,7 +480,7 @@ maya_w1 build/world-samples build/render-samples build/w1-astc                  
 maya_w1 --compression rgba8 build/world-samples build/render-samples build/w1   # what the tests use
 ```
 
-- **The world.** `w1.world`: 128 m cells 32 to 63 along x and z (4,096 m to 8,192 m), loaded at 640 m and activated at 384 m with 64 m of hysteresis, written in `project.maya`. Its persistent part holds the terrain, the generators and their exclusions, the sun, the sky, and the cameras; 10 cells hold the authored content, 939 entities in all. The rest of the world is terrain and scatter.
+- **The world.** `w1.world`: 128 m cells 32 to 63 along x and z (4,096 m to 8,192 m), loaded at 640 m and activated at 384 m with 64 m of hysteresis, written in `project.maya`. Its persistent part holds the terrain, the generators and their exclusions, the sun, the sky, and the cameras; every one of the 1,024 cells holds authored content, 17,323 entities in all.
 - **Terrain.** W1's noise (seed 990, 6 octaves, 900 m, 140 m, 120 m of warp) over the whole world, its heights from −104 m to 107 m: `forest_ground_04` everywhere, and `rock_face_03` on slopes from 28° to 38°, their color, normal, and ARM maps repeating every 8 m.
 - **Scatter** (version 2's spacings: scatter's must divide the 128 m cell):
 
@@ -494,19 +494,64 @@ maya_w1 --compression rgba8 build/world-samples build/render-samples build/w1   
   The main rocks are kept out of the soak's 2 × 2 cells by a box exclusion naming them ("Soak cells"), and the soak rocks cover those cells: the soak gives them a new seed each cycle (`w1::soak_rocks_generator()`). A 45 m sphere ("Clearing") keeps every generator off the clearing.
 - **The clearing** (the flattest ground near the middle, about 5,450 m by 5,620 m): ABeautifulGame's board and FlightHelmet at three times their size, and CesiumMan walking a 24 m loop at 1.2 m/s around the corner of cells 42_43, 43_43, and 42_44, 20 m from each edge, on the terrain's height. His walk loop is in `models/w1_walk.gltf`, which `maya_w1` writes, one clip with the terrain's heights in its keys, its node at rest where the clip starts.
 - **The watch camera**, in the persistent part as a world keeps every camera, runs `scripts/watch.luau`, which turns it each tick toward CesiumMan's walk loop in its cell, a weak reference: while his cell is not in, it holds still.
-- **Light.** The sun where the sky's is (48° up, toward −z and +x), 4.3 lux as the sky's sun is, with shadows to 250 m; the sky at half strength, since its own sun lights everything again unshadowed; and every camera at 1 EV100, a stop above R1's indoor 0.
+- **Light.** The sun where the sky's is (48° up, toward −z and +x), 4.3 lux as the sky's sun is, with shadows to 150 m (decided 14 October 2026: at 250 m S1's GPU P95 reached 7.9–9.1 ms, over its 8 ms budget in most runs); the sky at half strength, since its own sun lights everything again unshadowed; and every camera at 1 EV100, a stop above R1's indoor 0.
 - **Physics.** 400 rocks resting on gentle ground (under 15°) within 40 m of S1's walk, and 20 boulders on slopes of 25° to 35° within 80 m of it, which roll down once their cells are in. Each is a unit-scale body (rock, 2,600 kg/m³) with a box or sphere collider, its mesh scaled on an entity below it.
+- **Cairns** (version 3, so S1 streams authored cells all along its path): in every cell, 16 static rocks from the rock sets' four meshes, scaled 0.4 to 0.9 and piled within 4 m of a point the cell's seed chooses, clear of the clearing, S1's walk, slopes over 25°, and (by 8 m) the resting rocks and boulders, which version 3 placed with a fixed seed of their own. Each is a static body: its box collider is its mesh's bounds, its scale baked in.
 - **S1**, the traversal (version 2: the record's speeds and times): `models/w1_s1.gltf`'s camera, a key every tick, 9,600 ticks at 60 Hz. 120 s on foot at 8 m/s, 1.7 m over the terrain, east from the clearing along z = 5,640 m over the hill: 400 m, back 160 m, on 240 m, back 160 m, each turn-back across a cell edge; then a 40 s flyover at 60 m/s, 220 m up and north-east, looking 15° down: 3.36 km. It is the persistent part's first camera, so the player, the editor's Game view, and the packaged player follow it, and loop it. `w1::s1_point(tick)` gives the same path.
 - **Views.** Five cameras with fixed IDs, each looking away from the sun: `View: clearing` (the board, the helmet, and CesiumMan), `hillside` (the steepest ground near the walk, sunlit), `vista` (from the highest ground, 2 km across the world), `flyover` (20 s into it, looking 35° down, so the world's edge is out of sight), and `cell-edge` (across the corner where cells 44_43, 45_43, 44_44, and 45_44 meet).
 - **Again.** Assembling again imports again, which keeps every ID, writes the world's parts afresh, and keeps the cook cache.
 
-CTest's **`maya_w1_assemble`** (fixture `w1_project`, skipped with 77 without the samples) writes `build/w1` with RGBA8 textures; `maya_w1` checks the recipe: the parts, the cameras, the generators' spacings, the 420 bodies, and S1's length and turns.
+CTest's **`maya_w1_assemble`** (fixture `w1_project`, skipped with 77 without the samples) writes `build/w1` with RGBA8 textures; `maya_w1` checks the recipe: the parts, the cameras, the generators' spacings, the 420 bodies, a cairn of 16 in every cell, and S1's length and turns.
 
 **The visual bar** ([w1_tests.cpp](../tests/w1_tests.cpp), `maya_w1_reference`):
-- The five views match the references in [tests/references/w1](../tests/references/w1), at 640 × 360 with the usual tolerance; the project owner approved them on 13 October 2026, with the rock layer's maps visibly repeating at a distance (the flyover), since the terrain material has no anti-tiling. Each is rendered as Play reaches it: W1 settled around S1's start, two ticks, a frame from S1's camera, then settled around the view. The test streams W1 as the player does (`tests/support/w1_play.hpp`): the terrain, then the cells once the terrain under them collides, then scatter once the cells are in, drawn with the poses between the last two ticks, through a visibility index with the project's settings.
+- The five views match the references in [tests/references/w1](../tests/references/w1), at 640 × 360 with the usual tolerance; the project owner approved them on 13 October 2026, and again on 14 October 2026 with version 3's cairns and 150 m shadows, with the rock layer's maps visibly repeating at a distance (the flyover), since the terrain material has no anti-tiling. Each is rendered as Play reaches it: W1 settled around S1's start, two ticks, a frame from S1's camera, then settled around the view. The test streams W1 as the player does (`tests/support/w1_play.hpp`): the terrain, then the cells once the terrain under them collides, then scatter once the cells are in, drawn with the poses between the last two ticks, through a visibility index with the project's settings.
 - **The editor and the player** show the same image: the editor on Metal plays W1 in its Game view and, for each view, puts S1's camera where the view's camera is and streams around it frame by frame until nothing changes; every pixel of its viewport between its tool bar and its "Click to play" hint is within one level of the player's, but for at most 0.01% (an unoptimized build has shown 2 of 279,000 pixels differing in the flyover; Release, none).
 - **The package** ([package_tests.cpp](../tests/package_tests.cpp), `maya_w1_package`): W1 packaged through its warm cook cache (1.8 GB with RGBA8 textures) streams and draws each view within one level of its sources on all but 0.01% of the pixels (it makes terrain and scatter as it runs, with no cook cache: at most 4 pixels in 129,600 differed), and the packaged player runs from a folder outside the checkout.
 - **No seams** at the cell edges, in the cell-edge view; **no LOD popping** and **shadows on terrain and scatter**, in the views and along S1 in the [manual script](#manual-script-w1).
+
+### S1 and the soak
+
+S1 and the soak run as [benchmark manifests](performance.md#traverse-and-soak): [s1](../benchmarks/s1.benchmark) traverses W1 three times along S1's camera path, and [soak](../benchmarks/soak.benchmark) runs 20 cycles of loading W1, 60 s of S1, giving the soak's rocks a new seed, resetting, and unloading. Both stream W1 as the player does, at 1920 × 1080 offscreen, with 5% of the cells (chosen by their index) loading 500 ms late. Assemble `build/w1-astc` first and run `s1` once, so the cook cache is warm. S1 in the editor's Play is measured by a hidden test in [w1_tests.cpp](../tests/w1_tests.cpp): set `MAYA_W1_BENCHMARK_PROJECT=build/w1-astc` and `MAYA_W1_BENCHMARK_OUT=<file>`, then run `maya_editor_tests "[w1-benchmark]"` in a Release build.
+
+#### W1 baselines
+
+These are on the M4 Pro reference machine, in Release, on 14 October 2026, against W1 recipe version 3 with 150 m shadows (revision 5926d15 and stage 2's changes).
+- **S1's three traversals** ran at thermal state nominal, undisturbed.
+- **The soak's first three cycles are set apart**, as the [protocol](architecture/performance-baseline.md#measurement-protocol) says: other activity pushed their GPU P95 to 7.9–10.9 ms. The soak started and ended at thermal state "fair". Cycles 4–20 are measured here.
+
+| Measure | S1 | Soak (60 s of S1 a cycle; cycles 4–20) |
+| --- | --- | --- |
+| Frame | P50 3.94–4.03, P95 4.83–5.02, P99 5.63–6.26 ms | P50 4.17–4.62, P95 4.80–5.82, P99 5.14–6.84 ms |
+| GPU P95 | 6.27–6.58 ms (on foot; the flyover is 2.3–2.6 ms) | 6.36–7.13 ms |
+| CPU work P95 (simulation with streaming, extraction, encoding) | 2.64–3.87 ms | 1.32–3.61 ms |
+| Activation frames, against the steady frame (P50) | P99 +0.9–1.0 ms; longest +2.0–3.2 ms | P99 and longest +0.5–2.0 ms |
+| Warm first frame | 2.84–3.60 s: terrain 31–34 ms, cells 1.0 s (the delayed ones), scatter 50–77 ms, assets 1.7–2.4 s | 2.73–2.97 s |
+| Cells | 365 loads a traversal (26 delayed, none cancelled, none failed), 219 activations, none waiting for the terrain | 132 loads a cycle (11 delayed), 62 activations |
+| Resident peak (categories and terrain) | 521 MiB: textures 259, meshes 98, renderer 96, terrain 45, environments 22, cells 0.8 | the same |
+| After unloading | 95.67 MiB tracked; nothing stale; no jobs, loads, or leases outstanding | 95.67 MiB tracked after all 20 cycles; footprint 930–1,277 MiB, slope −10.3 MB a cycle; nothing stale or outstanding after any |
+| The soak's regeneration | | 16–39 ms from the new seed until its cells were made again |
+| Unresolved references | the watch camera's, in 2,199 frames of each traversal, while CesiumMan's cell is out (the flyover) | none |
+
+**Activation frames** are no slower than others: their P99 is at or below the other frames' P99 in every run. Single frames hitch to 16–71 ms regardless (the first frames after loading, and the system), so the longest frame of all measures the machine more than streaming.
+
+**CPU work** depends on the clock its thread runs at. The frame waits for the GPU, and the waiting thread's clock drops, as R1's did in #1066. Within one traversal, its P95 over 10-second windows moves between about 3.8, 2.2, and 1.3 ms for the same work; with the performance cores held busy by other processes, it stays at 1.4–3.2 ms.
+
+**S1's cancellations.** The record expected S1's turn-backs to cancel two loads; none are cancelled. A cell starts loading at the 640 m radius, and a load is cancelled only past 704 m (the radius and its hysteresis): 8 s of walking back at 8 m/s, while even a delayed load finishes in 0.5 s. Cancelled loads are covered by the [streaming tests](world.md#tests) instead.
+
+**S1 in the editor's Play** (recorded, not budgeted): the Game view is 1164 × 680 inside a 1920 × 1080 window. Frame P50 3.13, P95 3.96, P99 4.44 ms; GPU P95 4.48 ms; CPU work (update and render) P95 3.89 ms; Play's start, settling around S1's start, 0.9 s.
+
+#### W1 budgets
+
+Approved by the project owner on 14 October 2026; they were first approved with CPU work at 3 ms and the longest activation frame at +3 ms, then set to these after a second measurement. They apply to undisturbed runs on the M4 Pro at 1920 × 1080 in Release, started at thermal state nominal, and are checked by running the manifests on the reference machine, as the others are ([budgets](#budgets)).
+
+| Budget | Limit | Checked by | Observed | Rationale |
+| --- | --- | --- | --- | --- |
+| S1 GPU frame | P95 at most 8 ms | `s1`, `soak` | 6.27–7.13 ms | The record's; W1's shadows end at 150 m (at 250 m it was 7.9–9.1 ms) |
+| S1 CPU work | P95 at most 4 ms | `s1`, `soak` | 1.32–3.87 ms | The record's; it moves with the clock of the waiting thread |
+| Activation frames | P99 at most the steady frame (P50) + 2 ms, and the longest + 4 ms | `s1`, `soak` | P99 +0.5–2.0 ms; longest +0.5–3.2 ms | The record's +2 ms on the longest frame alone would measure one frame in 9,600, the machine's hitches more than activation |
+| Resident memory | Peak at most 640 MiB in S1 | `s1` | 521 MiB | About 20% above; well within the 1.5 GiB residency budget, which the record proposed |
+| Warm first frame | At most 4 s | `s1`, `soak` | 2.73–3.60 s | Includes S1's delayed cells (1.0 s); the record proposed 3 s |
+| Soak plateau | Tracked memory after unloading equal every cycle; footprint slope at most 1 MiB a cycle from cycle 2; nothing stale or outstanding after any cycle | `soak` | 95.67 MiB every cycle; −10.3 MB a cycle; none | Unloading returns exactly what loading took |
 
 ### Manual script, world editing
 

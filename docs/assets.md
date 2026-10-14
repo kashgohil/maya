@@ -250,7 +250,7 @@ The job's result returns through the registry's [completion queue](jobs.md#compl
 | `try_acquire(ref)` | The resident version; otherwise starts a load the registry itself keeps alive and reports `AssetError::loading` (or the asset's failure). Never blocks: what frames use. |
 | `update(budget)` | Once a frame: applies finished preparations, cancels loads nobody wants, and finalizes prepared loads in arrival order until `AssetLoadBudget` is spent (2 ms and 64 MiB by default), always at least one. |
 | `acquire(ref)`, `reload(ref)` | Explicit waits: start (or join) the load on the frame tier and block the owner thread until it is finalized. |
-| `wait(request)`, `wait_idle()` | Explicit waits for a request's tree, or every load in flight. |
+| `wait(request)`, `wait_idle()` | Explicit waits for a request's tree, or every load in flight; `wait_idle` also waits for the jobs of cancelled loads to end (#1069), so none of the registry's jobs is running after it. |
 
 - **Merging.** Requests for an asset already loading join its load; there is one preparation, and every request settles together.
 - **Cancellation.** A load nobody wants is cancelled at the next update: one with no live, uncancelled request that the registry does not keep. A load cancelled before its job starts never runs. A load cancelled while it prepares posts nothing; one whose completion was already posted is discarded when the completion is drained. Either way, partly prepared data is freed, and nothing becomes resident. `AssetRequest::cancel()` gives up interest at once.
