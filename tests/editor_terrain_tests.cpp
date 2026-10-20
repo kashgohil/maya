@@ -52,7 +52,15 @@ TEST_CASE("The editor draws a scene's terrain, picks it, and Play collides with 
     CHECK(terrain->stats().drawn == 16); // the 4 x 4-cell region, all within reach of the view
     CHECK(terrain->stats().height_fields == 0); // nothing collides while editing
     // The boulder and the sample's scattered rocks (#1093), outside the history; terrain is drawn apart from mesh renderers.
+    // The rocks come once their cells are made on jobs: waited for by a deadline, then a frame draws them.
     REQUIRE(harness.shell.scatter());
+    for (const auto start = std::chrono::steady_clock::now(); std::chrono::steady_clock::now() - start < std::chrono::seconds(30);) {
+        const auto& stats = harness.shell.scatter()->stats();
+        if (stats.items > 0 && stats.cells_waiting == 0) break;
+        harness.frame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    harness.frame();
     CHECK(harness.shell.extraction().mesh_renderers == 1 + harness.shell.scatter()->stats().items);
     CHECK(harness.shell.scene()->transient_count() == harness.shell.scatter()->stats().items);
     CHECK(harness.shell.scatter()->stats().items > 0);

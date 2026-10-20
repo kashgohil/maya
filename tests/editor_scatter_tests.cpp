@@ -7,9 +7,11 @@
 #include "maya/assets/property_context.hpp"
 #include "maya/scene/scene_io.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <thread>
 
 using namespace maya;
 using namespace maya::editor;
@@ -22,14 +24,16 @@ ImVec2 centre(const EditorLayout::Field* rect) {
     REQUIRE(rect);
     return {(rect->min.x + rect->max.x) / 2, (rect->min.y + rect->max.y) / 2};
 }
-/// Frames until scatter has made and put in everything the camera wants.
+/// Frames until scatter has made and put in everything the camera wants: by a deadline, not a count of frames, since
+/// its cells generate on jobs, which other tests running beside it slow, and an optimized build's frames are short.
 void settle(Harness& harness, bool some = true) {
-    for (int i = 0; i < 600; ++i) {
+    for (const auto start = std::chrono::steady_clock::now(); std::chrono::steady_clock::now() - start < std::chrono::seconds(30);) {
         harness.frame();
         const auto* scatter = harness.shell.scatter();
         const auto* cells = harness.shell.cells(); // in a world, its cells first: items wait for them
         const auto cells_done = !cells || (cells->stats().cells[size_t(EditorCellState::loading)] == 0 && cells->stats().loads_in_flight == 0);
         if (scatter && cells_done && (!some || scatter->stats().items > 0) && scatter->stats().cells_waiting == 0) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     const auto& stats = harness.shell.scatter()->stats();
     FAIL("scatter did not settle: " << stats.items << " items, " << stats.cells_loading << " loading, " << stats.regenerating << " regenerating, "
