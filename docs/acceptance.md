@@ -1,6 +1,6 @@
 # Milestone acceptance: author, save, and run a scene
 
-[Issue #1005](https://work.rezee.app/kash/issues/1005) closes the first milestone ([#988](https://work.rezee.app/kash/issues/988)), [#1024](https://work.rezee.app/kash/issues/1024) the second, physics and behavior ([#1014](https://work.rezee.app/kash/issues/1014); [below](#milestone-2-physics-and-behavior)), and [#1040](https://work.rezee.app/kash/issues/1040) the third, rendering and content ([#1029](https://work.rezee.app/kash/issues/1029); [below](#milestone-3-rendering-and-content)). This page is the acceptance record:
+[Issue #1005](https://work.rezee.app/kash/issues/1005) closes the first milestone ([#988](https://work.rezee.app/kash/issues/988)), [#1024](https://work.rezee.app/kash/issues/1024) the second, physics and behavior ([#1014](https://work.rezee.app/kash/issues/1014); [below](#milestone-2-physics-and-behavior)), [#1040](https://work.rezee.app/kash/issues/1040) the third, rendering and content ([#1029](https://work.rezee.app/kash/issues/1029); [below](#milestone-3-rendering-and-content)), and [#1069](https://work.rezee.app/kash/issues/1069) the fourth, world scale ([#1059](https://work.rezee.app/kash/issues/1059); [below](#milestone-4-world-scale)). This page is the acceptance record:
 
 - the automated checks, split by what they need;
 - a short manual script for what only a person at the machine can check;
@@ -25,22 +25,35 @@ cmake -S . -B build && cmake --build build -j 8
 tools/check_milestone.sh build
 ```
 
-[check_milestone.sh](../tools/check_milestone.sh) runs three CTest groups. It runs a group only when what it needs is there, and reports every group that could not run as **unavailable**, with the reason. It never reports a skipped group as passed.
+[check_milestone.sh](../tools/check_milestone.sh) runs five groups. It runs a group only when what it needs is there, and reports every group that could not run as **unavailable**, with the reason. It never reports a skipped group as passed.
 
-| Group | CTest selection | Needs | What it covers |
+| Group | Selection | Needs | What it covers |
 | --- | --- | --- | --- |
-| CPU | `-L cpu` | nothing else | World, properties, scenes, assets, projects, simulation, physics, scripting, metrics, the editor on the null device (including the authoring half of both acceptance workflows), the benchmark runner on the null device, argument handling, and UI isolation |
-| GPU, headless | `-L gpu -LE smoke` | a Metal device | Metal rendering and retirement, GPU timing, the authored scene through the player's path, the V1 visual references, resize/reload/play-reset steadiness, and the editor on Metal |
-| Windowed | `-L smoke` | Metal and a logged-in desktop session | The real `maya_player` on both authored projects from another directory, the player's failure exit codes, recording and replay, and debug views, the editor, player, and sample smoke runs, the desktop host, and benchmark CLI smoke runs, including `p1_small` |
+| CPU | `-L cpu` | nothing else | World, properties, scenes, assets, projects, simulation, physics, scripting, metrics, the editor on the null device (including the authoring half of every acceptance workflow), the benchmark runner on the null device, argument handling, and UI isolation |
+| Static analysis | [static_analysis.py](../tools/static_analysis.py) | `python3` and the build's `compile_commands.json` | Clang's analyzer on every `src/` and `apps/` source, with its own compile command, in parallel (about a minute on the M4 Pro). Any warning in the repository's own files, the analyzer's or the compiler's, fails the group; the SDK's and the dependencies' headers are left out. A source the analyzer cannot compile fails it too, and a compile database with none of this checkout's sources makes it unavailable. |
+| UBSan | `-L cpu -LE "r1\|w1"` in the UBSan build | a UBSan build of the same revision | The CPU checks again under UndefinedBehaviorSanitizer, without R1's and W1's data runs, which take too long under it |
+| GPU, headless | `-L gpu -LE smoke` | a Metal device | Metal rendering and retirement, GPU timing, the authored scene through the player's path, the visual references, resize/reload/play-reset steadiness, and the editor on Metal |
+| Windowed | `-L smoke` | Metal and a logged-in desktop session | The real `maya_player` on the authored projects from another directory, packaged players, the player's failure exit codes, recording and replay, and debug views, the editor, player, and sample smoke runs, the desktop host, and benchmark CLI smoke runs, including `p1_small` |
 
-The script ends by listing the manual steps and benchmark baselines as **manual**. Neither is run automatically: one needs a person, the other a quiet machine and a Release build.
+**The UBSan build** is `<build>-ubsan` (or `MAYA_UBSAN_BUILD`). The script uses it but never builds it:
+
+```bash
+cmake -S . -B build-ubsan -DMAYA_ENABLE_SANITIZERS=ON -DMAYA_SANITIZERS=undefined && cmake --build build-ubsan -j 8
+```
+
+Without one, or with one built from another revision than the build checked (each build records its revision, `git describe --dirty` with a digest of uncommitted changes), UBSan is reported unavailable, with the command. AddressSanitizer and ThreadSanitizer are not used: on the reference machine's toolchain their executables hang or crash at startup (#1071).
+
+**R1 and W1** are assembled from fetched samples, never committed. Without the render samples (`MAYA_RENDER_SAMPLES`, default `build/render-samples`), the checks labelled `r1` and `w1` are left out of every group; without the world samples (`MAYA_WORLD_SAMPLES`), those labelled `w1`. Each is reported unavailable, with the fetch script to run.
+
+`MAYA_CHECK_GROUPS` runs some groups alone: any of `cpu`, `analysis`, `ubsan`, `gpu`, and `windowed`, separated by spaces or commas (default: all). A name that is not a group runs nothing and exits 2. The script ends by listing the manual steps and benchmark baselines as **manual**. Neither is run automatically: one needs a person, the other a quiet machine and a Release build.
 
 ### Logs, failures, and flaky tests
 
 Each run keeps its logs in `<build>/milestone-logs/<date>-<time>/` (#1027). The summary ends with this folder's path.
 
 - `environment.txt`: the date, the revision (`git describe --always --dirty`), the build type, the machine and macOS version, the load average, and `pmset -g therm`'s thermal state.
-- `cpu.log`, `gpu.log`, `windowed.log`: each group's CTest output, with `--output-on-failure`.
+- `cpu.log`, `ubsan.log`, `gpu.log`, `windowed.log`: each CTest group's output, with `--output-on-failure`.
+- `analysis.log`: each source the analyzer warned about, with its warnings and the paths it followed, or could not analyze, then the count.
 - `<group>.<test>.rerun.log`: the output of each failed test, run again on its own.
 
 The script runs each failed test again once, alone. A test that fails again is **FAILED**. A test that passes alone is **FLAKY**, and its group is not reported as passed. Both lines name the test and its logs.
@@ -50,9 +63,9 @@ The script runs each failed test again once, alone. A test that fails again is *
 | 0 | Every group that ran passed. Groups that could not run are still listed as unavailable. |
 | 1 | At least one test failed twice. |
 | 3 | No test failed twice, but at least one was flaky. |
-| 2 | No configured build in the given directory. |
+| 2 | No configured build in the given directory, or an unknown group in `MAYA_CHECK_GROUPS`. |
 
-`maya_check_milestone_selftest` (CPU) checks this reporting. It runs the script on a throwaway CTest project with a passing, a failing, and a flaky test, and checks the summary, the exit codes, and the logs.
+`maya_check_milestone_selftest` (CPU) checks this reporting. It runs the script on a throwaway CTest project with a passing, a failing, and a flaky test, and checks the summary, the exit codes, and the logs. Since #1069 it also checks that UBSan is unavailable without a UBSan build, passes in one (the same project configured as one), and is unavailable for one of another revision; that static analysis is unavailable without a compile database; that a test labelled `w1` is left out and R1 and W1 reported unavailable without the samples, W1 alone with only the render samples, and run with both; and that commas separate groups and an unknown one exits 2.
 
 ### The acceptance workflow, automated
 
@@ -469,6 +482,29 @@ Approved on 7 October 2026 by the project owner, from the baselines above. They 
 
 The world-scale milestone ([#1059](https://work.rezee.app/kash/issues/1059)) adds checks as its issues land. The editor's side of worlds ([#1067](https://work.rezee.app/kash/issues/1067), [docs/editor.md](editor.md#worlds)) is covered automatically by [world_editor_tests.cpp](../tests/world_editor_tests.cpp): a world is created, filled across cells, linked across them, saved, reopened in part, and played. It is also covered by the overlay and Streaming panel references. A person checks what synthetic input cannot.
 
+In [check_milestone.sh](../tools/check_milestone.sh)'s groups ([#1069](https://work.rezee.app/kash/issues/1069)): the CPU group adds `maya_world_acceptance_author`, `maya_w1_assemble`, and `maya_w1`; the headless GPU group `maya_w1_reference` and `maya_w1_editor`; and the windowed group `maya_world_acceptance_package`, `maya_w1_package`, and the S1 and soak smoke runs. Without the fetched samples, the script leaves the W1 checks out and reports them unavailable. The static analysis and UBSan groups cover the whole engine.
+
+### The world workflow, automated
+
+[world_acceptance_tests.cpp](../tests/world_acceptance_tests.cpp) and [package_tests.cpp](../tests/package_tests.cpp), with two CTest entries chained by a fixture (`world_project`). The creator writes no engine C++: a Luau script and its catalog line, written in a text editor, are the only files made outside the editor.
+
+1. **`maya_world_acceptance_author`** (CPU) drives the editor on a fresh copy of the sample project in `build/acceptance/World Game`.
+   - **Create a world.** New world, named `levels/valley` in its prompt. Its camera is moved up over the valley.
+   - **Add terrain.** The Hierarchy's **+** menu, Terrain: a new `terrain/terrain.generator`, cataloged, named by a Terrain entity in the persistent part. Opened from the Assets panel, it becomes a gentle valley (4 octaves, 160 m, 6 m), and the terrain gets the grass material.
+   - **Add scatter.** **+**, Scatter: `terrain/scatter.generator` over the terrain, named by a Scatter entity in the persistent part, given the sphere in the rock material, 8 m apart. Its items appear in the scene.
+   - **Place and reference content across cells.** A crate dragged from the Assets panel into view (cell 0_0), a tower far east (2_0), a post south (0_-3), and a beacon by the crate (0_0), whose script points at the tower: a reference across cells.
+   - **Save.** ⌘S writes the world in its parts and both generators' files with their edits.
+   - **Stream and inspect residency.** The camera goes far away: every cell leaves, with the scatter's items, and the Residency panel's cells figure falls to 0. Back by the beacon with a 150 m radius, its cell loads from disk and the tower's does not; the Residency panel shows the loaded cells' cooked bytes, the same as the Streaming figures. Following the beacon's reference from the Inspector loads the tower's cell and selects the tower, and the cells' bytes grow.
+   - **Play.** The play World streams around the world's camera: both cells active, the scatter's items in, and the beacon turned toward the tower across cells. Stop leaves the editor's world as it was, unchanged and saved.
+   - **Reopen.** A fresh editor opens the world: nothing unsaved, its cells and scatter running again, the terrain and scatter in the persistent part, the crate and the beacon in 0_0, the beacon still pointing at the tower, and the world on disk as saved.
+2. **`maya_world_acceptance_package`** (windowed) packages the project with `levels/valley.world`: its three cells cooked, both generators, the scatter's mesh, the grass, and the script. It streams the world from the sources and from the package as the player does, from the world's camera after the ticks Play starts with: every channel within one level on all but 0.01% of the pixels, as W1's. From the package, the terrain, the rocks, and the crate, the beacon, and the tower are in. The packaged player, copied to a temporary folder with `MAYA_RESOURCES` unset, runs `levels/valley.world` for 30 frames.
+
+**Elsewhere in the milestone.**
+- Jobs and loading: [jobs_tests.cpp](../tests/jobs_tests.cpp) and [asset_loading_tests.cpp](../tests/asset_loading_tests.cpp); residency: [editor_residency_tests.cpp](../tests/editor_residency_tests.cpp) and [r1_tests.cpp](../tests/r1_tests.cpp).
+- Cells and streaming: [world_tests.cpp](../tests/world_tests.cpp), [streaming_tests.cpp](../tests/streaming_tests.cpp), [world_cells_tests.cpp](../tests/world_cells_tests.cpp), and [world_editor_tests.cpp](../tests/world_editor_tests.cpp); precision: [precision_tests.cpp](../tests/precision_tests.cpp).
+- Visibility: [spatial_tests.cpp](../tests/spatial_tests.cpp) and [visibility_tests.cpp](../tests/visibility_tests.cpp); terrain and scatter: [terrain_tests.cpp](../tests/terrain_tests.cpp), [procedural_tests.cpp](../tests/procedural_tests.cpp), [scatter_tests.cpp](../tests/scatter_tests.cpp), [editor_terrain_tests.cpp](../tests/editor_terrain_tests.cpp), and [editor_scatter_tests.cpp](../tests/editor_scatter_tests.cpp).
+- W1, S1, and the soak: [w1_tests.cpp](../tests/w1_tests.cpp), [benchmark_tests.cpp](../tests/benchmark_tests.cpp), and [below](#w1).
+
 ### W1
 
 W1 is the reference world, recipe version 3: the [record's](architecture/world-scale-decision.md#w1-the-reference-world) version 1 with the project owner's changes of 12 and 14 October 2026 ([#1069](https://work.rezee.app/kash/issues/1069)). Its content is fetched by [fetch_world_samples.sh](../tools/fetch_world_samples.sh) and [fetch_render_samples.sh](../tools/fetch_render_samples.sh), never committed, so **`maya_w1`** ([apps/w1](../apps/w1)) assembles the project from it:
@@ -566,6 +602,20 @@ Run on the reference machine with a Release build, in a copy of the sample proje
 7. **Follow a reference.** Give a cube a script with an entity property and choose, as its target, a cube in a cell that is not loaded, from that cell's list. The cell loads. Save, fly away until the target's cell unloads, then select the first cube: its target shows as unloaded, with its cell. Press the button beside it. The cell loads, the target is selected, and the view frames it.
 8. **Save and reopen.** Press ⌘S, quit, and open the world again from the scene menu. Only the cells near the camera load, and everything is as it was left.
 9. **Play and Stop.** Press ⌘P. Streaming shows the play World's cells around the play camera. Press ⌘P again: the editor's loaded cells are as they were, and nothing is unsaved.
+
+### Manual script, the world workflow
+
+Run on the reference machine with a Release build, in a copy of the sample project (`cp -R samples/basic_scene ~/Desktop/Valley`, then `maya_editor ~/Desktop/Valley`). It is the automated workflow as a person does it, with what synthetic input cannot see.
+
+1. **Create a world.** From the scene menu, choose New world… and name it `levels/valley`.
+2. **Add terrain.** Press **+** in the Hierarchy and choose Terrain. A Terrain entity appears and is being renamed, Diagnostics logs "Created terrain/terrain.generator", and its row appears in the Assets panel's GENERATORS column. Click that row and lower its amplitude and wavelength in the Inspector: the ground reshapes as you drag. Select the Terrain and choose the grass material for its first layer.
+3. **Add scatter.** Press **+** and choose Scatter. Click `terrain/scatter.generator` in the Assets panel, choose the sphere as its first mesh and the rock material for it. Rocks appear on the terrain around the camera, resting on the ground.
+4. **Place content across cells.** Drag `cube` into view. Fly a few hundred metres east and add another cube there. Back at the first, add a third cube and give it a script with an entity property (such as the workflow test's `beacon.luau`, cataloged as [scripting](scripting.md) says), and choose the far cube as its target from its cell's list.
+5. **Save.** Press ⌘S. The top bar no longer says "modified", and both generator files have your values.
+6. **Stream and watch residency.** Open the Streaming and Residency panels and press G for the Cells tool. Fly away and back: cells, rocks, and terrain come and go around the camera, the Streaming counts follow, and the Residency panel's cells bar grows and shrinks with them.
+7. **Play.** Press ⌘P. The Game view shows the terrain, the rocks, and the cubes from the world's camera; the scripted cube turns toward its target in the far cell. Press ⌘P again: the editor's cells are as they were, and nothing is unsaved.
+8. **Package.** Quit the editor, then run `maya_package ~/Desktop/Valley Valley.app --scene levels/valley.world` ([projects](projects.md#packages)) and copy `Valley.app` to another folder.
+9. **The package plays the same.** Open it with `Valley.app/Contents/MacOS/maya_player levels/valley.world`. It shows what Play showed: the same terrain, rocks, and cubes, and the scripted cube turning.
 
 ### Manual script, W1
 

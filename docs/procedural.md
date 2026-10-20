@@ -251,6 +251,7 @@ In the editor ([editor](editor.md#generators)):
 
 - **Drawing.** Terrain in the open scene is drawn around the editor camera, in the Scene and Game views, through the editor's cook cache. It is drawn in the shadow maps and the [debug views](renderer.md#debug-views); the `lod` view tints each patch by its level.
 - **Picking.** A click on the ground selects the terrain, and the pivot finds it (a ray marched over the loaded tiles to a centimetre).
+- **New generators** come from the Hierarchy's **+** menu (#1069): Terrain and Scatter each write a generator with its kind's defaults, catalog it, and create the entity that runs it ([editor](editor.md#generators)).
 - **Generators** are edited in the Inspector: folded under a selected terrain's component, or on their own when clicked in the Assets panel's GENERATORS column. Each change is one undo step in the scene's history (a drag is one), published to the registry, so the terrain regenerates at once; ⌘S writes the file. Undo, discarding, reloading, and watched files work as for [materials](editor.md#materials).
 - **Play** draws and collides with the terrain around the play camera, settled before the first tick; Stop takes the height fields out with the play session's physics.
 - **Scatter** is edited the same way: its items are a preview in the scene, outside its history, and are edited, removed, and baked as [generated content](editor.md#generated-content).
