@@ -226,6 +226,12 @@ public:
     /// Lights the scene with an environment: sets the scene's Environment component (the one with the
     /// lowest EntityId), or creates an entity named Environment with one, as one undo step.
     EditResult use_environment(AssetId asset);
+    /// The Create menu's Terrain and Scatter (#1069): writes a new generator of `kind` with its kind's defaults
+    /// to terrain/ (numbered when the name is taken), over the 4 x 4 cells around where the view looks, and
+    /// adds it to the catalog and the registry in use; then creates an entity that runs it (Terrain, with a
+    /// Terrain component; Scatter, with a Generator component), as one undo step. A scatter generator goes
+    /// over the scene's terrain, if it has one. Undo removes the entity; the file stays, as an import's do.
+    EditResult create_generator(GeneratorKind kind);
     /// Where a mesh dropped at a viewport point lands: on the surface under it, else on the ground
     /// plane, else in front of the camera. Null when the viewport is not shown.
     /// `mesh`, when given, rests on the surface: it is lifted by how far it reaches below its origin.
@@ -281,6 +287,10 @@ public:
     };
     /// Brings the Residency panel's tab forward.
     void show_residency() noexcept { m_focus_residency = true; }
+    /// What the Residency panel shows, as of its last refresh.
+    const ResidencyFigures& residency_figures() const noexcept { return m_shown_residency; }
+    /// Brings the Streaming panel's tab forward.
+    void show_streaming() noexcept { m_focus_streaming = true; }
     /// Shows these figures in the Residency panel from now on, never refreshed: for screenshots, which
     /// must not change from run to run.
     void pin_residency(ResidencyFigures figures) {

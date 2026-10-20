@@ -563,6 +563,16 @@ void EditorShell::draw_create_menu(std::optional<EntityId> parent) {
     // Local lights as bright as the default sun on a surface 3 m away (docs/renderer.md#lights).
     if (item(icon::lightbulb, "Point light", "create.point-light")) create("Point light", {LightComponent{LightKind::point, {1.0f}, 30.0f, 10.0f}});
     if (item(icon::flashlight, "Spot light", "create.spot-light")) create("Spot light", {LightComponent{LightKind::spot, {1.0f}, 30.0f, 15.0f}});
+    // Generators run from the scene's root (a world keeps them in its persistent part), so only at the top.
+    if (parent) return;
+    ImGui::Separator();
+    const auto generator = [&](GeneratorKind kind, const char* action) {
+        const auto result = create_generator(kind);
+        report(result, action);
+        if (result) start_rename(*m_scene->primary());
+    };
+    if (item(icon::mountains, "Terrain", "create.terrain")) generator(GeneratorKind::heightfield_noise, "Create terrain");
+    if (item(icon::tree_evergreen, "Scatter", "create.scatter")) generator(GeneratorKind::scatter, "Create scatter");
 }
 
 void EditorShell::draw_hierarchy_row(EntityId id) {

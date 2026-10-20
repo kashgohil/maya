@@ -6,7 +6,10 @@
 #include "maya/assets/generator_file.hpp"
 #include "maya/assets/material_file.hpp"
 #include "maya/assets/property_context.hpp"
+#include "maya/core/file_replace.hpp"
+#include "maya/procedural/height_field.hpp"
 #include "maya/scene/scene_io.hpp"
+#include "maya/scene/world_io.hpp"
 #include "maya/streaming/world_streamer.hpp"
 #include <imgui_internal.h>
 #include <algorithm>
@@ -17,6 +20,7 @@
 #include <utility>
 #include <sstream>
 #include <iomanip>
+#include <iterator>
 
 namespace maya::editor {
 using namespace detail;
@@ -1054,6 +1058,87 @@ EditResult EditorShell::use_environment(AssetId asset) {
     component.environment = {asset};
     if (owner) return m_scene->set_component(*owner, component);
     return m_scene->create("Environment", std::nullopt, {component});
+}
+
+EditResult EditorShell::create_generator(GeneratorKind kind) {
+    if (!m_scene || !m_project || !m_assets) return {false, "No scene is open"};
+    if (m_scene->locked()) return {false, "The scene is playing"};
+    const auto terrain = kind == GeneratorKind::heightfield_noise;
+    auto generator = GeneratorAsset{};
+    generator.kind = kind;
+    generator.version = current_algorithm(kind);
+    // Its region: 4 x 4 cells around where the view looks, as the sample's generators cover.
+    const auto center = ImVec2{(m_layout.viewport_min.x + m_layout.viewport_max.x) * 0.5f, (m_layout.viewport_min.y + m_layout.viewport_max.y) * 0.5f};
+    const auto focus = drop_point(center).value_or(m_camera.position);
+    const auto cell = cell_of(focus, double(tile_size));
+    generator.region_min_x = cell.x - 2;
+    generator.region_min_z = cell.z - 2;
+    generator.region_max_x = cell.x + 1;
+    generator.region_max_z = cell.z + 1;
+    // Scatter goes over the scene's terrain, where it has one: the first by EntityId.
+    if (!terrain) {
+        auto owner = std::optional<EntityId>{};
+        m_scene->world().for_each<TerrainComponent>([&](EntityHandle entity, const TerrainComponent& value) {
+            const auto id = *m_scene->world().persistent_id(entity);
+            if (value.heights.valid() && (!owner || id < *owner)) {
+                owner = id;
+                generator.heights = value.heights;
+            }
+        });
+    }
+    // The catalog as it is on disk, which may name what the registry does not yet: a catalog that is there but
+    // cannot be read is never replaced.
+    auto error = std::error_code{};
+    auto catalog = std::vector<AssetRecord>{};
+    auto previous = std::string{};
+    const auto existed = std::filesystem::exists(m_project->catalog, error);
+    if (existed) {
+        auto input = std::ifstream(m_project->catalog, std::ios::binary);
+        previous.assign(std::istreambuf_iterator<char>(input), {});
+        if (!input && !input.eof()) return {false, "The catalog cannot be read"};
+        auto text = std::istringstream(previous);
+        auto read = read_asset_catalog(text);
+        if (!read) return {false, "The catalog cannot be read: " + read.diagnostic.message};
+        catalog = std::move(read.records);
+    }
+    // A new file in terrain/, numbered when its name is taken, then the catalog naming it: a failure stops
+    // there, so the catalog never names what was not written.
+    const auto stem = std::string(terrain ? "terrain" : "scatter");
+    auto relative = std::filesystem::path{};
+    for (int n = 1;; ++n) {
+        relative = std::filesystem::path("terrain") / (stem + (n == 1 ? std::string() : "-" + std::to_string(n)) + ".generator");
+        const auto named = [&](const AssetRecord& r) { return r.path == relative; };
+        if (std::ranges::none_of(m_assets->records(), named) && std::ranges::none_of(catalog, named) &&
+            !std::filesystem::exists(m_project->content_root / relative, error))
+            break;
+    }
+    const auto record = AssetRecord{AssetId::generate(), AssetKind::generator, relative};
+    catalog.push_back(record);
+    const auto file = m_project->content_root / relative;
+    std::filesystem::create_directories(file.parent_path(), error);
+    if (auto failed = save_generator_file(file, generator); !failed.empty()) return {false, failed};
+    auto catalog_text = std::ostringstream{};
+    write_asset_catalog(catalog_text, catalog);
+    if (auto failed = replace_file(m_project->catalog, catalog_text.str(), "catalog"); !failed.empty()) {
+        std::filesystem::remove(file, error);
+        return {false, failed};
+    }
+    // Known at once to the registry in use, which a world's streamers share: no refresh. Refused, the catalog
+    // and the file are put back as they were.
+    if (const auto problem = m_assets->register_asset(record)) {
+        if (!existed) std::filesystem::remove(m_project->catalog, error);
+        else (void)replace_file(m_project->catalog, previous, "catalog");
+        std::filesystem::remove(file, error);
+        return {false, problem.message};
+    }
+    note_watched_file(record.id); // the editor's own file is not an outside change
+    scan_project();
+    m_log.add(DiagnosticSource::asset, "Created " + relative.generic_string(), m_frame);
+    const auto ref = AssetRef<GeneratorAsset>{record.id};
+    auto created = terrain ? m_scene->create("Terrain", std::nullopt, {TerrainComponent{ref}})
+                           : m_scene->create("Scatter", std::nullopt, {GeneratorComponent{ref}});
+    if (created && m_scene->primary()) m_reveal = m_scene->primary();
+    return created;
 }
 
 void EditorShell::assign_to_selection(AssetId asset) {

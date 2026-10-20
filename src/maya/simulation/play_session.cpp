@@ -5,6 +5,7 @@
 #include <cstring>
 #include <sstream>
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
@@ -184,13 +185,16 @@ void PlaySession::run_tick(std::vector<SimulationMessage>& messages) {
         const auto* bytes = static_cast<const unsigned char*>(data);
         for (size_t i = 0; i < size; ++i) m_trace = (m_trace ^ bytes[i]) * 1099511628211ull;
     };
+    // An event's values by their bit patterns, low byte first: the bytes they have in memory on these
+    // little-endian machines, taken from integers so the static analyzer can follow them (#1069).
+    const auto fold_bits = [this](uint64_t bits, size_t size) {
+        for (size_t i = 0; i < size; ++i) m_trace = (m_trace ^ ((bits >> (8 * i)) & 0xffu)) * 1099511628211ull;
+    };
     for (const auto& e : events) {
-        const uint64_t words[] = {uint64_t(e.kind), e.tick, e.first.high, e.first.low, e.second.high, e.second.low, uint64_t(e.removed)};
-        fold(words, sizeof words);
-        const double point[] = {e.point.x, e.point.y, e.point.z};
-        fold(point, sizeof point);
-        const float values[] = {e.normal.x, e.normal.y, e.normal.z, e.speed};
-        fold(values, sizeof values);
+        for (const auto word : {uint64_t(e.kind), e.tick, e.first.high, e.first.low, e.second.high, e.second.low, uint64_t(e.removed),
+                                std::bit_cast<uint64_t>(e.point.x), std::bit_cast<uint64_t>(e.point.y), std::bit_cast<uint64_t>(e.point.z)})
+            fold_bits(word, 8);
+        for (const auto value : {e.normal.x, e.normal.y, e.normal.z, e.speed}) fold_bits(std::bit_cast<uint32_t>(value), 4);
     }
     auto late = std::make_unique<BodyCommands>(*m_physics, *m_world);
     auto late_context = TickContext{*m_world, commands, input, m_clock.tick(), m_clock.time(), interval, *late, *m_physics, messages, events};
