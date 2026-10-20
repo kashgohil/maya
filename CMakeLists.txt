@@ -692,7 +692,7 @@ if(BUILD_TESTING)
         add_executable(maya_editor_tests tests/editor_tests.cpp tests/editor_gpu_tests.cpp tests/scene_editor_tests.cpp
             tests/picking_tests.cpp tests/editor_project_tests.cpp tests/editor_play_tests.cpp tests/editor_physics_tests.cpp tests/editor_terrain_tests.cpp tests/world_cells_tests.cpp tests/world_editor_tests.cpp tests/editor_scatter_tests.cpp
             tests/editor_scripting_tests.cpp tests/editor_replay_tests.cpp tests/editor_physics_debug_tests.cpp tests/physics_debug_gpu_tests.cpp tests/editor_texture_tests.cpp tests/editor_material_tests.cpp tests/editor_environment_tests.cpp tests/editor_import_tests.cpp tests/editor_lighting_tests.cpp tests/editor_debug_view_tests.cpp tests/sample_viewer_tests.cpp tests/animation_gpu_tests.cpp tests/editor_animation_tests.cpp tests/editor_residency_tests.cpp tests/r1_tests.cpp tests/w1_tests.cpp tests/content_acceptance_tests.cpp tests/acceptance_tests.cpp
-            tests/physics_acceptance_tests.cpp)
+            tests/physics_acceptance_tests.cpp tests/world_acceptance_tests.cpp)
         target_include_directories(maya_editor_tests PRIVATE tests)
         # The system zlib compresses reference images (tests/support/png.hpp). Linking it directly keeps
         # the SDK's C headers from being added ahead of libc++'s, as the ZLIB package would.
@@ -712,7 +712,7 @@ if(BUILD_TESTING)
 
         # Milestone acceptance (docs/acceptance.md): authoring in the editor writes a project that the
         # player's path renders on Metal and the real maya_player runs from another directory.
-        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]~[physics]~[content]")
+        add_test(NAME maya_acceptance_author COMMAND maya_editor_tests "[acceptance][author]~[physics]~[content]~[world]")
         set_tests_properties(maya_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 60
             FIXTURES_SETUP authored_project)
         add_test(NAME maya_acceptance_render COMMAND maya_editor_tests "[acceptance][gpu]~[w1]")
@@ -723,6 +723,12 @@ if(BUILD_TESTING)
         add_test(NAME maya_content_acceptance_author COMMAND maya_editor_tests "[acceptance][content][author]")
         set_tests_properties(maya_content_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 120
             FIXTURES_SETUP content_project)
+        # Milestone 4 (#1069): a world made in the editor (terrain and scatter from the Create menu, content across
+        # cells, a cross-cell reference), streamed, inspected, played, saved, and reopened; package_tests.cpp then
+        # packages it and runs it outside the checkout.
+        add_test(NAME maya_world_acceptance_author COMMAND maya_editor_tests "[acceptance][world][author]")
+        set_tests_properties(maya_world_acceptance_author PROPERTIES LABELS "cpu;acceptance" TIMEOUT 300
+            FIXTURES_SETUP world_project)
         # Milestone 2 (#1024): the reference physics interaction authored, played, edited, replayed, reset,
         # and broken in the editor; then the real player runs it from another directory.
         add_test(NAME maya_physics_acceptance_author COMMAND maya_editor_tests "[acceptance][physics][author]")
@@ -896,6 +902,10 @@ if(BUILD_TESTING)
         add_test(NAME maya_w1_package COMMAND maya_package_tests "[w1]")
         set_tests_properties(maya_w1_package PROPERTIES LABELS "gpu;smoke;package;w1" TIMEOUT 1800 RUN_SERIAL TRUE
             FIXTURES_REQUIRED w1_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
+        # Milestone 4 (#1069): the world workflow's world, packaged, drawn as from its sources, and run outside the checkout.
+        add_test(NAME maya_world_acceptance_package COMMAND maya_package_tests "[acceptance][world]")
+        set_tests_properties(maya_world_acceptance_package PROPERTIES LABELS "gpu;smoke;acceptance" TIMEOUT 600 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED world_project ENVIRONMENT "${MAYA_GPU_TEST_ENVIRONMENT}")
         # Milestone 3 (#1040): the content workflow's scene, packaged and run outside the checkout.
         add_test(NAME maya_content_acceptance_package COMMAND maya_package_tests "[acceptance][content]")
         set_tests_properties(maya_content_acceptance_package PROPERTIES LABELS "gpu;smoke;acceptance" TIMEOUT 300 RUN_SERIAL TRUE

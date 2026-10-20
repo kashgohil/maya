@@ -144,3 +144,91 @@ TEST_CASE("A generator edited in the Inspector regenerates the terrain, undoes i
     CHECK(on_disk(copy) == amplified);
     CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::asset, "Saved terrain/hills.generator"));
 }
+
+TEST_CASE("Terrain and Scatter from the Create menu write new generators, catalog them, and run them", "[editor][terrain]") {
+    const auto copy = ProjectCopy();
+    Harness harness(false);
+    REQUIRE(harness.shell.open_project(copy.folder));
+    harness.frames(2);
+    REQUIRE(harness.shell.new_scene());
+    auto& scene = *harness.shell.scene();
+    harness.shell.camera() = EditorCamera::looking_at({300, 60, 380}, {300, 0, 300}); // the ground looked at is in cell 2_2
+    harness.frames(2);
+    const auto create = [&](const char* key) {
+        press(harness, centre(harness.shell.layout().control("hierarchy.create")));
+        harness.frames(2);
+        press(harness, centre(harness.shell.layout().control(key)));
+        harness.frames(2);
+        REQUIRE(scene.primary());
+        return *scene.primary();
+    };
+    const auto record = [&](const char* path) {
+        const auto& records = harness.shell.assets()->records();
+        const auto found = std::ranges::find(records, std::filesystem::path(path), &AssetRecord::path);
+        INFO(path);
+        REQUIRE(found != records.end());
+        CHECK(found->kind == AssetKind::generator);
+        return found->id;
+    };
+    const auto file = [&](const char* path) {
+        auto input = std::istringstream(copy.read(path));
+        const auto read = read_generator_file(input);
+        INFO(path << ": " << read.error);
+        REQUIRE(read);
+        return read.generator;
+    };
+
+    // Terrain: a heights generator with its kind's defaults over the 4 x 4 cells around where the view looks.
+    const auto terrain = create("create.terrain");
+    const auto heights = record("terrain/terrain.generator");
+    CHECK(std::get<TerrainComponent>(*find_component(*scene.record(terrain), ComponentId::terrain)).heights.id == heights);
+    auto expected = GeneratorAsset{};
+    expected.region_min_x = 0;
+    expected.region_min_z = 0;
+    expected.region_max_x = 3;
+    expected.region_max_z = 3;
+    CHECK(file("terrain/terrain.generator") == expected);
+    {
+        auto input = std::istringstream(copy.read("catalog.maya")); // on disk too
+        const auto catalog = read_asset_catalog(input);
+        REQUIRE(catalog);
+        CHECK(std::ranges::count(catalog.records, heights, &AssetRecord::id) == 1);
+    }
+    CHECK(logged(harness.shell.diagnostics(), DiagnosticSource::asset, "Created terrain/terrain.generator"));
+    settle(harness); // it runs: the terrain streams around the camera
+    // Another is numbered.
+    const auto second = create("create.terrain");
+    CHECK(record("terrain/terrain-2.generator") != heights);
+    // Undo removes the entity; the file and its catalog line stay, as an import's.
+    REQUIRE(harness.shell.undo_edit());
+    CHECK_FALSE(scene.record(second));
+    CHECK(std::filesystem::is_regular_file(copy.content / "terrain/terrain-2.generator"));
+
+    // Scatter: over the scene's terrain, placing nothing until it has a mesh.
+    const auto scatter = create("create.scatter");
+    const auto rocks = record("terrain/scatter.generator");
+    CHECK(std::get<GeneratorComponent>(*find_component(*scene.record(scatter), ComponentId::generator)).generator.id == rocks);
+    const auto made = file("terrain/scatter.generator");
+    CHECK(made.kind == GeneratorKind::scatter);
+    CHECK(made.heights.id == heights);
+    CHECK(made.region_min_x == 0);
+    CHECK(made.region_max_z == 3);
+    const auto scattered = [&](bool some) { // by a deadline: scatter generates on jobs
+        for (const auto start = std::chrono::steady_clock::now(); std::chrono::steady_clock::now() - start < std::chrono::seconds(30);) {
+            harness.frame();
+            const auto& stats = harness.shell.scatter()->stats();
+            if (stats.generated + stats.cached > 0 && stats.cells_waiting == 0 && stats.cells_loading == 0 && (!some || stats.items > 0))
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    };
+    REQUIRE(scattered(false)); // its cells made, with nothing in them
+    CHECK(harness.shell.scatter()->stats().items == 0);
+    // Given a mesh, it places items.
+    if (!scene.generator(rocks)) scene.open_generator(rocks, harness.shell.assets()->acquire(AssetRef<GeneratorAsset>{rocks}).lease.value());
+    auto meshed = *scene.generator(rocks);
+    meshed.mesh0 = {AssetId{0x6d617961, 5}};
+    REQUIRE(scene.set_generator(rocks, meshed, "Edit scatter"));
+    REQUIRE(scattered(true));
+}

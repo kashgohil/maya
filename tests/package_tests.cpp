@@ -360,6 +360,11 @@ std::unique_ptr<AssetRegistry> package_registry(GraphicsDevice& device, const fs
     REQUIRE(assets);
     return std::move(assets.registry);
 }
+size_t generated_items_in(const World& world) {
+    auto count = size_t{0};
+    world.for_each<GeneratedComponent>([&](EntityHandle, const GeneratedComponent&) { ++count; });
+    return count;
+}
 /// The packaged player, launched from a copy of the bundle in another folder with no way back to the checkout.
 void launch_elsewhere(const fs::path& bundle, const fs::path& folder, const std::string& expect, const std::string& scene = {}) {
     fs::create_directories(folder);
@@ -651,6 +656,79 @@ TEST_CASE("The content workflow's scene runs from a standalone package outside t
         CHECK(std::ranges::count(from_sources.rgb, from_sources.rgb.front()) < std::ptrdiff_t(from_sources.rgb.size() / 2));
     }
     launch_elsewhere(bundle, scratch.root / "elsewhere", "Content Game / levels/lit.scene", scene.generic_string());
+}
+
+TEST_CASE("The world workflow's world packages, streams and draws from the package as from its sources, and runs outside the checkout",
+          "[acceptance][world][gpu]") {
+    // Written by maya_world_acceptance_author (world_acceptance_tests.cpp, fixture world_project).
+    const auto project = fs::path(MAYA_ACCEPTANCE_DIR) / "World Game";
+    const auto world = fs::path("levels/valley.world");
+    REQUIRE(fs::is_regular_file(project / "assets" / world));
+    const Scratch scratch;
+    const auto bundle = scratch.root / "World Game.app";
+    const auto report = package_project(options_for(project, bundle, {world}));
+    INFO(report.error);
+    REQUIRE(report);
+    // Its cells cooked, and what its generators and its beacon reach: both generators, the scatter's mesh and
+    // material, the terrain's grass, and the script.
+    const auto content = bundle / "Contents/Resources/project/content";
+    const auto files = files_in(content / "levels");
+    CHECK(std::ranges::count_if(files, [](const std::string& file) { return file.ends_with(".cell"); }) == 3);
+    const auto catalog = packaged_catalog(bundle);
+    const auto has = [&](const char* path) { return std::ranges::any_of(catalog, [&](const AssetRecord& r) { return r.path == path; }); };
+    CHECK(has("terrain/terrain.generator"));
+    CHECK(has("terrain/scatter.generator"));
+    CHECK(has("scripts/beacon.luau"));
+    CHECK(std::ranges::any_of(catalog, [](const AssetRecord& r) { return r.id == AssetId{0x6d617961, 5}; })); // the scatter's sphere
+    CHECK(std::ranges::any_of(catalog, [](const AssetRecord& r) { return r.id == AssetId{0x6d617961, 0x91}; })); // grass
+    {
+        // The world's camera, after the frames Play starts with, from the sources (with their cook cache) and from
+        // the package (none: it makes terrain and scatter as it runs): every channel within one level on all but
+        // 0.01% of the pixels, as W1's.
+        test::Gpu gpu;
+        auto opened_sources = open_project(project);
+        REQUIRE(opened_sources);
+        auto opened_package = open_project(bundle / "Contents/Resources/project/project.maya");
+        REQUIRE(opened_package);
+        const auto play = [&](test::W1Play& played) {
+            const auto camera = *played.session->camera();
+            const auto pose = played.session->world().world_matrix(*played.session->world().find(camera));
+            REQUIRE(pose);
+            played.settle_at(pose->translation);
+            played.run_to(test::W1Play::start_ticks);
+            return played.render(gpu, camera, 480, 270);
+        };
+        const auto from_sources = [&] {
+            auto sources = test::W1Play(gpu.device, test::w1_assets(gpu.device, project), opened_sources.project.settings,
+                                        project / "assets" / world, std::make_shared<CookCache>(cook_cache_folder(opened_sources.project)));
+            return play(sources);
+        }();
+        auto packaged = test::W1Play(gpu.device, package_registry(gpu.device, bundle), opened_package.project.settings, content / world, nullptr);
+        const auto from_package = play(packaged);
+        REQUIRE(from_package.rgb.size() == from_sources.rgb.size());
+        auto differing = size_t{0};
+        for (size_t i = 0; i < from_package.rgb.size(); i += 3)
+            for (size_t c = 0; c < 3; ++c)
+                if (std::abs(int(from_package.rgb[i + c]) - int(from_sources.rgb[i + c])) > 1) {
+                    ++differing;
+                    break;
+                }
+        INFO(differing << " pixels differ by more than one level");
+        CHECK(differing * 10000 <= from_package.rgb.size() / 3);
+        // The package streamed what was made: the terrain, the rocks, both cells' content (the tower too, in its
+        // own cell), and something besides the sky was drawn.
+        const auto& played = packaged.session->world();
+        CHECK(packaged.terrain->terrains().size() == 1);
+        CHECK(generated_items_in(played) > 0);
+        for (const auto* name : {"Crate", "Beacon", "Tower"}) {
+            auto found = false;
+            played.for_each<NameComponent>([&](EntityHandle, const NameComponent& value) { found = found || value.value == name; });
+            INFO(name);
+            CHECK(found);
+        }
+        CHECK(std::ranges::count(from_sources.rgb, from_sources.rgb.front()) < std::ptrdiff_t(from_sources.rgb.size() / 2));
+    }
+    launch_elsewhere(bundle, scratch.root / "elsewhere", "World Game / levels/valley.world", world.generic_string());
 }
 
 namespace {
